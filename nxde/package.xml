@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>nxde</name>
+  <version>0.0.0</version>
+  <description>
+    white 자율주행 스택의 ★아두이노 계층★ (Ubuntu 22.04 / ROS2 Humble 전용).
+    kasa A/B 2보드와 시리얼로 통신하는 노드들만 담는다 — ★런치파일은 없고 전부 ros2 run★ 이다:
+      arduino   A/B 2보드 브리지 (차량 구동의 필수 노드). white 규약 토픽을 직접 쓴다
+                (/cmd_vel_raw · /control_state · /brake_level  ↔  /encoder 등)
+      master    마우스·키보드 GUI 조종 (하드웨어 검증용)
+      joystick  조이스틱 메가 보드 조종 (자율주행 모드 한정 + 영점 후 SWA 필요)
+      check     런치 전 하드웨어 연결 점검 후 종료
+    GPS · IMU · 카메라의 연결은 white 패키지의 one_launch.py 가 담당하며,
+    자율주행 시에는 그 런치가 여기 arduino 노드를 함께 띄운다.
+    kasa_ws 의 동명 패키지에서 통신 노드만 가져와 토픽 계약을 white 에 맞춘 것으로,
+    kasa_ws 쪽은 수정하지 않았다.
+  </description>
+  <maintainer email="test@test.com">windo</maintainer>
+  <license>TODO</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <exec_depend>python3-serial</exec_depend>
+  <!-- check 노드 : 카메라 프레임 판정(cv2) + v4l2-ctl 로 지원 포맷 조회 -->
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>v4l-utils</exec_depend>
+  <!--
+    ★ white 를 의존하지 않는다 (일부러) ★
+    white 의 one_launch.py 가 이 패키지의 arduino 노드를 띄우므로 의존은
+    (white → nxde) 한 방향만 존재해야 한다. 반대 방향을 추가하면 colcon 의 토폴로지
+    정렬이 순환에 걸려 빌드가 깨진다. 그래서 check.py 는 GPS/IMU/카메라 VID/PID 표를
+    white/ports.py 에서 import 하지 않고 자체 사본으로 들고 있다
+    (check.py 헤더 경고 참고 — 하드웨어를 바꾸면 양쪽을 함께 고쳐야 한다).
+
+    구 g.launch.py 가 띄우던 nmea_navsat_driver · usb_cam 의존은 white 로 옮겼다.
+    sensor_msgs · tf2_ros 는 iahrs 노드가 white 로 돌아가면서 함께 빠졌다.
+  -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,13 @@
+# ROS2 colcon 빌드 산출물 (colcon build 로 재생성 가능)
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db

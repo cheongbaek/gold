@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>white</name>
+  <version>0.0.0</version>
+  <description>TODO: Package description</description>
+  <maintainer email="domi@todo.todo">domi</maintainer>
+  <license>TODO: License declaration</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <!-- iahrs 노드의 TF 브로드캐스트 (2026-08-05 IMU 가 white 로 환원되면서 필요해졌다) -->
+  <depend>tf2_ros</depend>
+
+  <!--
+    one_launch.py 가 띄우는 하드웨어 노드들의 실행 의존성.
+    ★nxde★ — 아두이노 A/B 2보드 브리지(arduino 노드). 의존은 이 방향(white → nxde)
+      한쪽만 존재한다. nxde 는 white 를 의존하지 않는다(순환 방지 — nxde/package.xml 참고).
+  -->
+  <exec_depend>nxde</exec_depend>
+  <exec_depend>nmea_navsat_driver</exec_depend>
+  <exec_depend>usb_cam</exec_depend>
+  <!-- usb_cam_ctrl · ports.resolve_camera_format 의 v4l2-ctl -->
+  <exec_depend>v4l-utils</exec_depend>
+  <!-- iahrs 시리얼 + ports.py 의 VID/PID 스캔 -->
+  <exec_depend>python3-serial</exec_depend>
+  <!-- ports.probe_camera 의 프레임 판정 -->
+  <exec_depend>python3-opencv</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
