@@ -78,12 +78,21 @@
 #      "x,0" 의 뜻은 **해제 직후에 적용될 마지막 명령을 안전한 값으로 두는 것**이다
 #      (조향 힘빼기 = 사람이 핸들을 잡고 있어도 급조향이 없다).
 #
-#  (2) 수동조종 모드    : A=페달 환산 펄스, B="x,0"
+#  (2) 수동조종 모드    : A=페달 펄스 ★또는★ ROS 지정펄스, B="x,0"
 #      D5 스위치가 개방(모드 0)인 동안. 사람이 핸들과 페달을 직접 잡으므로
 #        - 조향은 'x'(힘빼기) — DC모터에 힘이 들어가면 사람이 핸들을 못 돌린다
-#        - 주행은 A보드가 보고한 페달 raw 를 펄스로 환산해 되돌려 보낸다
 #        - 브레이크는 ★항상 0★ — 제동은 사람 발이 한다. ROS 가 개입하지 않는다.
-#      ★ /control_state 와 무관하게 항상 이 경로다 ★ 자율 명령을 보내면 사람과 싸운다.
+#        - 주행 펄스는 ★쓰로틀 우선★ 아래 순서로 정해진다:
+#            ① 페달을 밟고 있으면(환산 펄스 > 0) → 무조건 페달값
+#            ② 발을 뗐고 /control_state=True 면 → /cmd_vel_raw 의 지정 펄스
+#            ③ 그 외 → 0
+#      ★[2026-08-07] ②가 새로 생겼다★ 예전에는 수동에서 ROS 명령을 통째로 무시했다.
+#        그래서 '수동조종으로 매핑을 시작할 때 페달 없이 곧게 굴려 초기 헤딩을 잡는'
+#        일(white806)을 하려면 모드를 자율로 속이는 수밖에 없었는데, 그 오버라이드
+#        (/vehicle_mode_cmd)를 없애는 대신 이 경로를 열었다.
+#        ①이 ②보다 앞서므로 ★사람이 밟는 순간 소프트웨어 값은 즉시 밀려난다★.
+#        ②에 /control_state 게이트를 둔 이유는, 없으면 아무 노드가 남긴 낡은
+#        /cmd_vel_raw 하나로 수동 중인 차가 밀려 나가기 때문이다.
 #
 #  (3) /control_state=False : A="0", B="<마지막 조향각>,<stop_brake_level>"
 #      driving.py 가 정지를 지시한 상태(instant_stop / 경로 미로드 / STOP 명령).
@@ -407,10 +416,11 @@ class Arduino(Node):
         self.switch_mode = False   # ← B보드 D5 원값 (물리 스위치가 말하는 것)
         self.estop_active = False
 
-        # ── 소프트웨어 모드 오버라이드 (/vehicle_mode_cmd) ──
-        #   None = 물리 스위치를 따른다(기본) / True = 자율 강제 / False = 수동 강제
-        #   ★값 규약: 1 = 자율주행, 0 = 수동★ (-1 = 오버라이드 해제, 스위치 복귀)
-        self.mode_override = None
+        # [2026-08-07] 소프트웨어 모드 오버라이드(mode_override / /vehicle_mode_cmd)를
+        #   삭제했다. 주행모드의 소유자는 물리 스위치 하나다 — auto_mode 주석 참고.
+
+        # 수동조종에서 '지금 페달을 밟고 있다'고 볼 최소 펄스. 로그용 상태이기도 하다.
+        self._manual_src = None    # 'pedal' / 'ros' — 바뀔 때만 로그를 남긴다
 
         # ── ROS → 보드 명령 캐시 ──
         self.cmd_pulse = 0         # /cmd_vel_raw linear.x (펄스, 0~15)
@@ -444,13 +454,9 @@ class Arduino(Node):
         # ── 서브스크라이버 ──
         self.create_subscription(Twist, '/cmd_vel_raw', self.cb_cmd_vel, 10)
         self.create_subscription(Bool, '/control_state', self.cb_control_state, 10)
-        # [2026-08-04] 소프트웨어 모드 전환 (GUI 버튼 등)
-        #   ★모드 정책은 펌웨어가 아니라 이 노드에 있다★ compose() 가 자율/수동을 보고
-        #   보낼 페이로드를 만들므로(수동이면 STEER_RELEASE_TOKEN + 페달 환산 펄스),
-        #   여기서 모드를 바꾸면 실제 거동도 바뀐다. 그래서 물리 스위치 없이도 전환된다.
-        #   B보드 USB 링크가 불안정해 D5 값이 끊기는 상황(실측 재열거 28회/urb -32 55회)의
-        #   실질적 우회책이기도 하다.
-        self.create_subscription(Int32, '/vehicle_mode_cmd', self.cb_mode_cmd, 10)
+        # [2026-08-07] /vehicle_mode_cmd 구독을 삭제했다 — 주행모드는 물리 스위치만
+        #   바꿀 수 있다. 수동조종에서 ROS 펄스가 필요한 경우는 compose() (2) 가
+        #   직접 처리하므로 모드를 속일 이유가 없어졌다.
         # 브레이크 단계(0/1/2). Twist 에 필드가 없어 별 토픽으로 받는다. 선택 입력 —
         # 아무도 발행하지 않으면 0(놓음)으로 유지된다(white 의 driving 은 발행하지 않는다).
         self.create_subscription(Int32, '/brake_level', self.cb_brake_level, 10)
@@ -638,44 +644,23 @@ class Arduino(Node):
         return max(-STEER_DEG_MAX, min(STEER_DEG_MAX, int(deg)))
 
     # ═══════════════════════════════════════════════════════════════
-    #  주행모드 = 물리 스위치(B보드 D5) 또는 소프트웨어 오버라이드
+    #  주행모드 = ★물리 스위치(B보드 D5) 하나뿐★
     # ═══════════════════════════════════════════════════════════════
     @property
     def auto_mode(self):
-        """실효 주행모드. 오버라이드가 걸려 있으면 그것, 아니면 물리 스위치.
+        """실효 주행모드. ★물리 스위치가 유일한 소유자다★
 
-        아래 모든 판단(compose·텔레메트리·/board_status)이 이 값을 본다 —
-        물리 스위치와 GUI 버튼이 같은 자리로 들어오게 해서 경로가 갈라지지 않게 했다."""
-        return self.switch_mode if self.mode_override is None else self.mode_override
+        [2026-08-07] 소프트웨어 오버라이드(/vehicle_mode_cmd)를 삭제했다.
+          예전에는 GUI 버튼으로 자율/수동을 덮어쓸 수 있었다. 그런데 모드는
+          '사람이 핸들과 페달을 잡고 있는가'를 뜻하는 물리적 사실이라, 화면 클릭
+          한 번으로 뒤집을 수 있으면 안 된다 — 사람이 운전대를 잡은 채 소프트웨어가
+          자율로 바꾸면 조향모터에 힘이 들어간다.
 
-    def cb_mode_cmd(self, msg: Int32):
-        """/vehicle_mode_cmd — 1 자율 / 0 수동 / -1 오버라이드 해제(물리 스위치 복귀)."""
-        v = int(msg.data)
-        if v not in (-1, 0, 1):
-            self.get_logger().warn(
-                f"/vehicle_mode_cmd={v} 는 허용값(1 자율 / 0 수동 / -1 해제)이 아님 — 무시")
-            return
-
-        before = self.auto_mode
-        self.mode_override = None if v == -1 else bool(v)
-        after = self.auto_mode
-
-        if v == -1:
-            self.get_logger().info(
-                f"[모드 오버라이드 해제] 물리 스위치(B보드 D5)를 따릅니다 → "
-                f"{'자율주행' if after else '수동조종'}")
-        else:
-            note = ""
-            if self.mode_override != self.switch_mode:
-                # 사람이 핸들을 잡고 있을 수 있다 — 조용히 넘기면 위험하다
-                note = (f"  ⚠️ 물리 스위치는 '{'자율' if self.switch_mode else '수동'}' 인데 "
-                        f"소프트웨어가 덮어씁니다")
-            self.get_logger().warn(
-                f"[모드 오버라이드] {'자율주행' if self.mode_override else '수동조종'} 강제{note}")
-
-        if before != after:
-            self.get_logger().info(
-                f"[주행모드 전환] {'자율주행' if after else '수동조종'} (소프트웨어)")
+          오버라이드가 필요했던 실제 이유는 '수동조종에서도 ROS 가 지정한 펄스를
+          내보내고 싶다'였는데(white806 의 헤딩 초기화), 그건 compose() (2) 분기가
+          직접 지원하도록 바꿔서 더 이상 모드를 속일 이유가 없다.
+        """
+        return self.switch_mode
 
     def compose(self):
         """현재 상태에서 A/B 보드로 보낼 페이로드 두 개를 만든다.
@@ -697,8 +682,33 @@ class Arduino(Node):
         #     페달을 밟고 튀어나왔다(E-STOP 아닌데도). 사람이 넘겨받는 순간 페달이 물려
         #     있으면 오히려 출발도 못 한다.
         #     → 수동에서는 브레이크를 ★항상 0★ 으로 보낸다. 제동은 사람 발이 한다.
+        #
+        #     ★[2026-08-07] 수동에서도 ROS 지정 펄스를 받는다 — 단 쓰로틀이 최우선★
+        #       페달을 밟고 있으면 무조건 페달값이다. 발을 뗀 동안에만 /cmd_vel_raw 의
+        #       펄스를 쓴다. 사람이 운전대를 잡은 채 소프트웨어가 가속하는 일은 없고,
+        #       사람이 개입하는 즉시(밟는 즉시) 소프트웨어 값은 밀려난다.
+        #
+        #       쓰임새 : white806 의 헤딩 초기화. 수동조종으로 매핑을 시작할 때 사람이
+        #       페달을 밟지 않아도 차가 곧게 굴러가 초기 방위를 잡아야 한다.
+        #
+        #       ★/control_state 가 True 일 때만 유효하다★ 이 게이트가 없으면 아무
+        #       노드나 발행한 낡은 /cmd_vel_raw 하나로 수동 중인 차가 밀려 나간다.
+        #       조향은 그대로 힘빼기다 — 수동에서 핸들은 사람 것이다.
         if not self.auto_mode:
-            pulse = self.throttle_to_pulse(self.throttle_raw)
+            pedal = self.throttle_to_pulse(self.throttle_raw)
+            if pedal > 0:
+                pulse, src = pedal, 'pedal'
+            elif self.control_enabled:
+                pulse, src = self.cmd_pulse, 'ros'
+            else:
+                pulse, src = 0, None
+            if src != self._manual_src:
+                self._manual_src = src
+                if src == 'ros':
+                    self.get_logger().info(
+                        f"[수동조종] 페달 유휴 → ROS 지정펄스 사용 ({pulse})")
+                elif src == 'pedal':
+                    self.get_logger().info("[수동조종] 페달 입력 감지 → 페달 우선")
             return str(pulse), f'{STEER_RELEASE_TOKEN},0'
 
         # (3) ROS 가 정지를 지시한 상태. 조향각은 마지막 값을 유지한다(정면 급조향 방지).
@@ -840,15 +850,8 @@ class Arduino(Node):
                 new_mode = bool(int(fields[2]))
                 if new_mode != self.switch_mode:
                     self.switch_mode = new_mode
-                    if self.mode_override is None:
-                        self.get_logger().info(
-                            f"[주행모드 전환] {'자율주행' if new_mode else '수동조종'} (B보드 D5)")
-                    else:
-                        self.get_logger().info(
-                            f"[물리 스위치 변화] {'자율' if new_mode else '수동'} — 다만 "
-                            f"소프트웨어 오버라이드"
-                            f"({'자율' if self.mode_override else '수동'})가 유효합니다. "
-                            f"스위치로 돌리려면 /vehicle_mode_cmd 에 -1")
+                    self.get_logger().info(
+                        f"[주행모드 전환] {'자율주행' if new_mode else '수동조종'} (B보드 D5)")
         except ValueError:
             pass
 
@@ -891,12 +894,11 @@ class Arduino(Node):
            물리 스위치 원값(SW)도 붙인다 — 오버라이드가 조용히 숨어 있으면 "스위치를
            돌렸는데 왜 안 바뀌지"로 되돌아온다."""
         msg = String()
-        base = (f"A:{1 if self.ser_a else 0},B:{1 if self.ser_b else 0},"
-                f"ESTOP:{1 if self.estop_active else 0},"
-                f"MODE:{1 if self.auto_mode else 0}")
-        if self.mode_override is not None:
-            base += f",SRC:ovr,SW:{1 if self.switch_mode else 0}"
-        msg.data = base
+        # [2026-08-07] SRC:ovr / SW: 필드가 사라졌다 — 오버라이드가 없으니 MODE 가
+        #   곧 물리 스위치 값이고, 둘이 어긋날 방법이 없다.
+        msg.data = (f"A:{1 if self.ser_a else 0},B:{1 if self.ser_b else 0},"
+                    f"ESTOP:{1 if self.estop_active else 0},"
+                    f"MODE:{1 if self.auto_mode else 0}")
         self.pub_status.publish(msg)
 
     # ═══════════════════════════════════════════════════════════════

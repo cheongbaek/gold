@@ -95,19 +95,19 @@
 #   ★1단은 행정의 1/3, 2단은 풀브레이킹이다 — 정차 중에 2단을 걸면 리니어가 페달을
 #     끝까지 밟으므로, 시험 시에는 1단부터 확인하는 것이 안전하다★
 #
-# ── 자율주행 / 수동조종 모드 (B보드 D5 스위치 + 마우스) ──
+# ── 자율주행 / 수동조종 모드 (B보드 D5 스위치 전용) ──
 #   조향 레버 위 박스에 표시: 자율주행=연두 / 수동조종=노랑 / 모름=회색.
-#   표시는 /vehicle_mode(실효 모드)를 따른다.
+#   표시는 /vehicle_mode 를 따른다.
 #
-#   ★ [2026-08-04] 이 박스를 클릭해서도 모드를 바꿀 수 있다 ★ 예전에는 물리 스위치가
-#     유일한 권한이었는데, B보드 USB 링크가 불안정해 D5 값이 아예 안 들어오는 일이
-#     실제로 있었다(실측: 재열거 28회 / urb -32 55회 / 88초간 프레임 0개).
-#     그때는 스위치를 만져도 모드가 안 바뀌므로 소프트웨어 경로가 필요하다.
-#       좌클릭 : 자율 ↔ 수동 전환   (/vehicle_mode_cmd 1 또는 0)
-#       우클릭 : 오버라이드 해제 → 물리 스위치로 복귀   (/vehicle_mode_cmd -1)
-#     오버라이드가 걸려 있으면 박스에 [SW] 가 붙고 /board_status 에 SRC:ovr 가 실린다.
-#     ★강제는 arduino 노드가 한다★ 이 창은 요청만 보내고 실제 반영은 /vehicle_mode
-#     왕복으로 확인한다 — "버튼은 눌렸는데 차는 그대로"를 눈치챌 수 있게.
+#   ★ [2026-08-07] 이 박스는 ★표시 전용★ 으로 되돌렸다 ★ 2026-08-04 에 잠시 클릭으로
+#     모드를 바꿀 수 있게 했었다(B보드 USB 링크가 불안정해 D5 값이 안 들어오는 일이
+#     실제로 있었다 — 재열거 28회 / urb -32 55회 / 88초간 프레임 0개).
+#     그런데 모드는 '사람이 핸들과 페달을 잡고 있는가'라는 물리적 사실이라 화면 클릭
+#     한 번으로 뒤집히면 안 된다 — 사람이 운전대를 잡은 채 소프트웨어가 자율로 바꾸면
+#     조향모터에 힘이 들어간다. ★주행모드의 소유자는 B보드 D5 스위치 하나다★
+#     (/vehicle_mode_cmd 토픽 자체가 삭제됐다 — arduino.py 의 auto_mode 주석 참고).
+#     수동조종에서 ROS 지정펄스가 필요한 경우는 arduino.py compose() (2) 가 직접
+#     처리한다(쓰로틀 우선, 발을 뗐을 때만 ROS 값).
 #
 #   ★ 수동조종 모드 동작 ★
 #     - 마우스·키보드 입력을 전부 무시한다(레버 잠김).
@@ -200,9 +200,7 @@ class MasterNode(Node):
         self.pub_state = self.create_publisher(Bool, '/control_state', 10)
         # 브레이크 단계(0/1/2). Twist 에 필드가 없어 별 토픽으로 보낸다.
         self.pub_brake = self.create_publisher(Int32, '/brake_level', 10)
-        # 주행모드 소프트웨어 전환 (1 자율 / 0 수동 / -1 물리 스위치 복귀).
-        #   arduino 노드가 이 값을 물리 스위치보다 우선 적용한다.
-        self.pub_mode_cmd = self.create_publisher(Int32, '/vehicle_mode_cmd', 10)
+        # [2026-08-07] /vehicle_mode_cmd 발행을 삭제했다 — 주행모드는 물리 스위치 전용.
 
         self.create_subscription(Int32, '/encoder', self._cb_encoder, 10)
         self.create_subscription(Int32, '/steer_angle_measured', self._cb_steer, 10)
@@ -252,20 +250,6 @@ class MasterNode(Node):
         self.pub_brake.publish(
             Int32(data=int(max(0, min(BRAKE_LEVEL_MAX, int(brake_level))))))
         self.last_angle_cmd = int(msg.angular.z)
-
-    def publish_mode_cmd(self, value):
-        """/vehicle_mode_cmd 발행 — 1 자율 / 0 수동 / -1 물리 스위치 복귀.
-
-        ★강제는 arduino 노드가 한다★ 이 창은 요청만 보내고, 실제 반영은 /vehicle_mode
-        로 되돌아온 값으로 확인한다(그래야 "버튼은 눌렸는데 차는 그대로"를 알아챈다)."""
-        v = int(value)
-        if v not in (-1, 0, 1):
-            self.get_logger().warn(f"/vehicle_mode_cmd={v} 는 허용값이 아님 — 무시")
-            return
-        self.pub_mode_cmd.publish(Int32(data=v))
-        self.get_logger().info(
-            "[모드 요청] " + {1: "자율주행 강제", 0: "수동조종 강제",
-                             -1: "오버라이드 해제(물리 스위치 복귀)"}[v])
 
     def publish_stop(self):
         """종료 시 정지값. 조향은 마지막 값을 유지한다(정면 급조향 방지).
@@ -438,15 +422,13 @@ class MasterGui:
         #   유일한 권한). 이제 마우스로도 전환할 수 있게 Button 으로 바꿨다 —
         #   B보드 USB 링크가 불안정해 D5 값이 아예 안 들어오는 일이 있어서(실측 재열거 28회)
         #   물리 스위치만으로는 모드를 못 바꾸는 상황이 실제로 생긴다.
-        self.mode_box = tk.Button(steer_col, text="모드 확인 중...", bg=IDLE_COLOR, fg=TEXT,
-                                  font=("Consolas", 13, "bold"), width=18, pady=7,
-                                  relief=tk.RAISED, activebackground=IDLE_COLOR,
-                                  cursor="hand2", command=self._on_mode_click)
+        # ★표시 전용★ — 클릭해도 모드는 바뀌지 않는다(2026-08-07). Label 로 되돌렸다.
+        self.mode_box = tk.Label(steer_col, text="모드 확인 중...", bg=IDLE_COLOR, fg=TEXT,
+                                 font=("Consolas", 13, "bold"), width=18, pady=7,
+                                 relief=tk.RIDGE)
         self.mode_box.pack(pady=(0, 8))
-        tk.Label(steer_col, text="클릭: 자율 ↔ 수동 전환 / 우클릭: 스위치로 복귀",
+        tk.Label(steer_col, text="모드 전환은 B보드 D5 물리 스위치로만",
                  bg=BG, fg=DISABLED_TEXT, font=("Consolas", 8)).pack(pady=(0, 6))
-        # 우클릭 = 오버라이드 해제(물리 스위치 복귀)
-        self.mode_box.bind('<Button-3>', lambda e: self._on_mode_release())
         # ★부호 규약: 왼쪽 끝 −40 = 좌회전 / 오른쪽 끝 +40 = 우회전★
         #   레버를 미는 방향과 바퀴가 도는 방향이 같다(파일 헤더 ② 참고).
         tk.Label(steer_col, text="조향 (도, ←−  +→)", bg=BG, fg=TEXT,
@@ -521,21 +503,11 @@ class MasterGui:
             self._last_pub = (0, 0, 0, False)
             self._last_pub_t = time.monotonic()
 
-    # ---------- 주행모드 (마우스) ----------
-    def _on_mode_click(self):
-        """모드 박스 클릭 — 자율 ↔ 수동 전환.
-
-        현재 '실효 모드'의 반대를 강제한다. 모드를 아직 못 받았으면(None) 수동으로
-        간다 — 모르는 상태에서 자율을 켜는 쪽이 더 위험하다."""
-        want_auto = not (self.node.auto_mode is True)
-        self.node.publish_mode_cmd(1 if want_auto else 0)
-        # 화면은 /vehicle_mode 왕복으로 갱신된다(arduino 가 실효 모드를 되돌려준다).
-        #   여기서 미리 칠하지 않는 이유: 오버라이드가 반영됐는지 실제 토픽으로 확인해야
-        #   "버튼은 눌렸는데 차는 안 바뀐" 상태를 눈치챌 수 있다.
-
-    def _on_mode_release(self):
-        """모드 박스 우클릭 — 오버라이드 해제하고 물리 스위치(B보드 D5)로 복귀."""
-        self.node.publish_mode_cmd(-1)
+    # ---------- 주행모드 ----------
+    #   ★[2026-08-07] 마우스로 모드를 바꾸는 기능을 없앴다★
+    #   모드는 '사람이 핸들과 페달을 잡고 있는가'라는 물리적 사실이라 화면 클릭으로
+    #   뒤집을 수 있으면 안 된다. 이제 이 박스는 ★표시 전용★ 이며, 주행모드의 유일한
+    #   소유자는 B보드 D5 물리 스위치다(arduino.py 의 auto_mode 참고).
 
     def _kb_nudge(self, which, delta):
         if self.manual_active:

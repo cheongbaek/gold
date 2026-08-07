@@ -194,8 +194,9 @@ ros2 run nxde master                                      # 터미널 2
   레버가 올라가고(`/drive_pulse_cmd`), 핸들을 돌리면 조향 레버가 움직인다
   (`/steer_angle_measured`). "밟히는 게 보인다".
 - **E-stop** 이 걸리면 상단이 빨간 `E-Stop 발동!!!` 으로 바뀐다.
-- 물리 스위치가 안 잡히면 **주행모드 박스를 클릭해 자율로 바꿀 수 있다**
-  (`/vehicle_mode_cmd` — arduino 노드가 물리 스위치보다 우선 적용한다).
+- 주행모드 박스는 **표시 전용**이다(2026-08-07). 모드를 바꾸는 것은 **B보드 D5
+  물리 스위치뿐**이며 `/vehicle_mode_cmd` 는 삭제됐다 — 사람이 운전대를 잡고 있는지를
+  뜻하는 값이라 화면 클릭으로 뒤집으면 위험하기 때문이다.
 
 레버 구성:
 
@@ -282,7 +283,11 @@ tkinter GUI 대신 **터미널 한 줄 상태표시**로 줄였다(계측 확인
 | `/cmd_vel_raw` | `geometry_msgs/Twist` | `linear.x` = 주행 목표펄스 **0~15 (m/s 아님)**<br>`angular.z` = 조향각 **−40~40, ★− 좌 / + 우★** |
 | `/control_state` | `std_msgs/Bool` | `True` = 구동 허용 / `False` = 정지 |
 | `/brake_level` | `std_msgs/Int32` | 브레이크 **단계 0 / 1 / 2** (★0~255 PWM 아님★). 선택 — 안 오면 0 |
-| `/vehicle_mode_cmd` | `std_msgs/Bool` | 주행모드 **오버라이드** (물리 스위치보다 우선). master 가 발행 |
+
+> **[2026-08-07] `/vehicle_mode_cmd` 는 삭제됐다.** 주행모드의 소유자는 B보드 D5
+> 물리 스위치 하나다. 그 대신 **수동조종 모드에서도 `/cmd_vel_raw` 의 펄스가 먹는다** —
+> 단 ★쓰로틀이 최우선★ 이라 페달을 밟고 있으면 무조건 페달값이고, 발을 뗐고
+> `/control_state=True` 일 때만 지정펄스를 쓴다. 조향은 수동에서 언제나 힘빼기다.
 
 **`/brake_level` 발행자:** `master`(레버) · `joystick`(L스틱 아래) ·
 **`camera_judgment`(신호등 완전정지 시 2단)**.

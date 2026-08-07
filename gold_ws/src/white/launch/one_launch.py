@@ -163,6 +163,7 @@ def generate_launch_description():
     use_monitor  = LaunchConfiguration('use_monitor')
     use_camera   = LaunchConfiguration('use_camera')
     use_arduino  = LaunchConfiguration('use_arduino')
+    use_record   = LaunchConfiguration('use_record')
     image_topic  = LaunchConfiguration('image_topic')
     video_device = LaunchConfiguration('video_device')
     cam_exposure = LaunchConfiguration('cam_exposure')
@@ -183,6 +184,16 @@ def generate_launch_description():
             description='nxde 의 arduino 노드(A/B 2보드)를 이 런치가 함께 띄울지. '
                         'false 로 두면 별 터미널에서 `ros2 run nxde arduino` 로 직접 '
                         '띄운다(보드 로그를 따로 보고 싶을 때)'),
+        DeclareLaunchArgument(
+            'use_record', default_value='true',
+            description='record 노드(주행 CSV 기록) 실행 여부. 켜 두어도 아무 때나 '
+                        '쓰지 않는다 — 자율주행 모드 + prompt 주행 구간에서만 파일이 '
+                        '생긴다. 저장 위치는 <white 패키지>/ros2bag/ (record_dir 로 변경)'),
+        DeclareLaunchArgument(
+            'record_dir', default_value='',
+            description='기록 저장 폴더 override. 비우면 소스트리의 white/ros2bag/ 을 '
+                        '쓰고, 그걸 못 찾으면(심볼릭 링크 없이 빌드한 경우) ~/ros2bag/ 로 '
+                        '보낸다 — install/ 안에는 쌓지 않는다(재빌드하면 날아가므로)'),
         DeclareLaunchArgument(
             'image_topic', default_value='/image_raw',
             description='perception 이 구독할 카메라 이미지 토픽(usb_cam 이 발행)'),
@@ -476,6 +487,19 @@ def generate_launch_description():
         condition=IfCondition(use_monitor),
     )
 
+    # 주행 기록 — 구독만 하는 노드라 제어에 끼어들지 않는다(발행 토픽 없음).
+    #   기록 구간은 스스로 판정한다: /drive_cmd(경로 하달) + /vehicle_mode(자율) +
+    #   /control_state(제어중) + /estop(해제). 자세한 규약은 white/record.py 참고.
+    record = Node(
+        package=package_name,
+        executable='record',
+        name='record_node',
+        output='screen',
+        additional_env=NODE_ENV,
+        parameters=[{'output_dir': LaunchConfiguration('record_dir')}],
+        condition=IfCondition(use_record),
+    )
+
     return LaunchDescription(args + [
         # 하드웨어를 먼저 둔다 — 자율주행 노드가 첫 토픽을 놓칠 확률을 줄인다
         arduino,
@@ -491,4 +515,5 @@ def generate_launch_description():
         perception,
         camera_judgment,
         monitor,
+        record,
     ])

@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>white806</name>
+  <version>0.0.0</version>
+  <description>
+    kasa(금색차) 자율주행 스택 — ★GPS + IMU 전용, 최소 추종판★ (2026-08-06~)
+
+    구 white 패키지에서 갈라져 나온 재작성판이다. 하드웨어가 kasa A/B 2보드로
+    바뀌면서 기존 제어 파라미터(CTE·순수추종·가변LFD·지연보상 …)가 더 이상 맞지
+    않으므로, 튜닝의 출발점이 될 만큼 단순한 구조로 되돌렸다.
+
+      · 카메라 체인 없음 (perception · camera_judgment · lane_metrics 전부 제거)
+      · gps_imu 노드 없음 — GPS·IMU 융합을 driving 이 직접 한다
+      · kasa_units 없음 — /cmd_vel_raw 가 이미 펄스·도(degree) 단위라 환산이 불필요
+      · 추종은 '목표 웨이포인트 방위 − 현재 헤딩' 비례제어 하나뿐, 속도는 고정 펄스
+
+    아두이노 통신은 nxde 패키지의 arduino 노드를 ★수정 없이★ 그대로 쓴다.
+  </description>
+  <maintainer email="yellsote9@gmail.com">windo</maintainer>
+  <license>TODO</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+
+  <!--
+    one_launch.py 가 함께 띄우는 것들.
+    ★nxde★ — 아두이노 A/B 2보드 브리지. 의존은 (white806 → nxde) 한 방향뿐이다.
+  -->
+  <exec_depend>nxde</exec_depend>
+  <exec_depend>nmea_navsat_driver</exec_depend>
+  <!-- iahrs 시리얼 + ports.py 의 VID/PID 스캔 -->
+  <exec_depend>python3-serial</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

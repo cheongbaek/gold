@@ -47,6 +47,11 @@ setup(
             'driving        = white.driving:main',
             'prompt         = white.prompt:main',
             'sensor_monitor = white.sensor_monitor:main',
+            # ── 기록 ──
+            #   자율주행 모드 + prompt 주행 구간만 골라 토픽을 CSV 로 남긴다.
+            #   one_launch.py 가 함께 띄운다(use_record:=false 로 끌 수 있다).
+            #   저장 위치: <white 패키지>/ros2bag/rec_<날짜>_<시각>_<경로명>/
+            'record         = white.record:main',
             # ── 카메라 융합 ──
             'perception       = white.perception:main',        # 인지(차선 polyfit + 신호등)
             'camera_judgment  = white.camera_judgment:main',   # /lane_metrics 브리지 + 신호등 게이트
