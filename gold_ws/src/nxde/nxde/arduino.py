@@ -73,6 +73,24 @@
 #       · /brake_level (GUI 레버 · camera_judgment) — 사람/판단이 직접 요청한 값
 #       · stop_brake_level  (자율 정지 시, 기본 0)
 #
+#  ╔══════════════════════════════════════════════════════════════════════════╗
+#  ║ ★★ 불변식 : 모드 전환은 절대로 리니어를 체결하지 않는다 (2026-08-05) ★★   ║
+#  ╚══════════════════════════════════════════════════════════════════════════╝
+#     자율↔수동 전환은 그 자체가 제동 지시가 아니다. 사람이 차를 넘겨주거나 넘겨받는
+#     순간이므로, 그때 리니어가 밟히면 가장 위험하다. 전환 엣지에서 브레이크 관련
+#     상태를 전부 '풀린' 쪽으로 되돌린다 — _disarm_brakes_on_mode_edge():
+#       ① /brake_level 요청 캐시를 0 으로 지운다
+#          수동조종 중에도 camera_judgment 는 계속 돌아 /brake_level=2 를 요청할 수 있다
+#          (신호등 확정 — 그 노드는 D5 를 보지 않는다). 수동 분기가 0 을 보내므로 그
+#          순간엔 무해하지만 값이 캐시에 남아, 자율로 되돌리는 순간 (3)/(4) 가 그것을
+#          집어 리니어가 튀어나왔다.
+#       ② stop_brake_level 무장을 해제한다
+#          그 값이 1 이상이면 전환 직후 (3) 이 그것을 건다 — 그때 /control_state 는 아직
+#          False 다(자율주행을 아직 시작하지 않았다). 자율주행이 실제로 구동 허가를 받은
+#          뒤(cb_control_state 의 True)에만 다시 무장한다.
+#     ★둘 다 '거는' 로직이 아니라 '지우는' 로직이다★ 2026-08-04 에 삭제된 래치를
+#     되살린 것이 아니다 — 방향이 정반대다.
+#
 #  (1) E-stop 중        : A="0", B="x,0"
 #      브레이크 0 을 보낸다 — 모드 전환이나 e-stop 자체가 제동 지시는 아니다.
 #      "x,0" 의 뜻은 **해제 직후에 적용될 마지막 명령을 안전한 값으로 두는 것**이다
@@ -428,9 +446,26 @@ class Arduino(Node):
         self.control_enabled = False   # /control_state. 시작은 False(정지)
         self.cmd_brake = 0         # /brake_level (0/1/2). 안 오면 0(놓음)
 
-        # ★[2026-08-04] 수동조종 브레이크 래치 상태(_manual_brake / _manual_released /
-        #   _prev_auto_mode)를 삭제했다★ 래치 로직 자체가 없어져 전환 엣지를 볼 이유가 없다.
-        #   수동에서는 브레이크가 항상 0 이다.
+        # ★[2026-08-04] 수동조종 브레이크 래치 상태(_manual_brake / _manual_released)를
+        #   삭제했다★ 수동에서는 브레이크가 항상 0 이다.
+        #
+        # ★★ [2026-08-05] _prev_auto_mode 는 되살렸다 — 단, 용도가 정반대다 ★★
+        #   ⚠️ 이것은 삭제된 래치가 아니다. 이 엣지 감지는 브레이크를 ★거는★ 데 쓰지
+        #      않고 ★지우는★ 데만 쓴다(_disarm_brakes_on_mode_edge 참고).
+        #      브레이크를 거는 경로는 여전히 /brake_level·stop_brake_level·E-stop 뿐이다.
+        self._prev_auto_mode = None
+
+        # ★ stop_brake_level 무장 플래그 ★ 자율 정지 브레이크는 '자율주행이 한 번이라도
+        #   구동 허가(/control_state=True)를 받은 뒤'에만 걸린다.
+        #     False = 미무장 → 우선순위 (3) 에서 stop_brake_level 을 쓰지 않는다(0)
+        #     True  = 무장   → 종전대로 max(stop_brake_level, /brake_level)
+        #   모드 전환 엣지에서 다시 False 로 내려간다(_disarm_brakes_on_mode_edge).
+        #   왜 : stop_brake_level 을 1 이상으로 두면, 수동에서 자율로 스위치를 올리는
+        #   순간 (3) 분기가 그 값을 집어 ★사람이 차를 넘겨주는 그 순간 리니어가 체결★
+        #   된다(control_state 는 아직 False 다). '자율 정지 시 제동'이라는 이 값의 뜻은
+        #   자율주행이 실제로 몰다가 세울 때를 가리키지, 아직 한 번도 몰지 않은 상태를
+        #   가리키지 않는다. 기본값 0 에서는 어느 쪽이든 체결이 없다.
+        self._stop_brake_armed = False
 
         # ── 전송 변경 감지 ──
         self._last_a = None
@@ -602,6 +637,10 @@ class Arduino(Node):
             self.get_logger().info(
                 f"/control_state → {'구동 허용' if new_state else '정지'}")
         self.control_enabled = new_state
+        # 자율주행이 실제로 구동 허가를 받은 순간부터 stop_brake_level 이 유효해진다.
+        #   (그 전의 '정지'는 자율 정지가 아니라 그냥 대기 상태다 — 위 플래그 주석 참고)
+        if new_state:
+            self._stop_brake_armed = True
 
     def cb_brake_level(self, msg: Int32):
         """/brake_level — 브레이크 ★단계 0/1/2★ (0~255 PWM 이 아니다).
@@ -662,6 +701,63 @@ class Arduino(Node):
         """
         return self.switch_mode
 
+    def _disarm_brakes_on_mode_edge(self):
+        """★★ 불변식 : 모드 전환은 절대로 리니어를 체결하지 않는다 ★★
+
+        자율↔수동 전환 엣지에서 브레이크 관련 상태를 전부 '풀린' 쪽으로 되돌린다:
+          ① /brake_level 요청 캐시(self.cmd_brake) → 0
+          ② stop_brake_level 무장 해제(self._stop_brake_armed) → False
+
+        ⚠️ 삭제된 '수동 진입 시 2단 체결' 래치가 아니다. 방향이 정반대다 — 이 함수는
+           브레이크를 걸지 않고 ★지우기만★ 한다. 걸 수 있는 경로는 여전히 셋뿐이다
+           (/brake_level · stop_brake_level · E-stop = B보드 자체 동작).
+
+        ★왜 필요한가 (2026-08-05)★
+          수동조종으로 사람이 몰고 있어도 자율 스택은 계속 돌아간다 —
+          one_launch.py 로 띄운 camera_judgment 는 D5 를 보지 않으므로, 사람이 운전하는
+          동안 빨간불을 확정하면 /brake_level=2 를 그대로 발행한다.
+          compose() 의 수동 분기는 브레이크를 항상 0 으로 보내니 그 순간엔 아무 일도
+          없지만, 값은 self.cmd_brake 에 남는다. 그래서 사람이 D5 를 자율로 되돌리는
+          순간 (3)/(4) 분기가 그 남은 2 를 집어 ★리니어가 튀어나온다★ —
+          2026-08-04 에 제거한 증상과 겉모습이 똑같다(그때는 원인이 이 파일의 래치였다).
+          → 모드가 바뀌는 순간 요청을 0 으로 지운다. 지금 정말로 필요한 제동이라면
+            발행자가 다시 보낸다.
+
+          ②도 같은 이유다. stop_brake_level 을 1 이상으로 두면 (3) 분기가 전환 직후
+          그 값을 건다 — 그때 /control_state 는 아직 False 이므로(자율주행을 아직
+          시작하지 않았다) ★사람이 차를 넘겨주는 바로 그 순간 리니어가 밟힌다★.
+          그래서 전환 시 무장을 풀고, 자율주행이 실제로 구동 허가를 받은 뒤
+          (cb_control_state 의 True) 다시 무장한다. 기본값 0 에서는 어차피 차이가 없다.
+
+        ★감수하는 것★ camera_judgment 는 값이 '변할 때만' 발행한다. 그래서 자율로
+          되돌린 뒤에도 같은 빨간불이 계속 확정 상태면 2 를 다시 보내지 않아, 그 구간에서
+          리니어가 빠진 채로 남는다. 그래도 안전한 쪽이다 —
+            · 그 상태의 속도명령은 이미 0 이다(게이트가 TL_STOP 으로 덮는다)
+            · stop_brake_level 기본값도 0(코스트)이라 자율 정지의 기본 동작과 같다
+            · 신호가 바뀌는 순간(또는 게이트 상태가 변하는 순간) 다시 동기화된다
+          반대쪽(사람이 넘겨받거나 넘겨주는 순간 리니어가 튀어나오는 것)이 훨씬 위험하다.
+        """
+        mode = self.auto_mode
+        if self._prev_auto_mode is None:      # 첫 판정 — 엣지가 아니다
+            self._prev_auto_mode = mode
+            return
+        if mode == self._prev_auto_mode:
+            return
+
+        self._prev_auto_mode = mode
+        if self.cmd_brake != 0:
+            self.get_logger().warn(
+                f"[모드 전환] 남아 있던 브레이크 요청(/brake_level={self.cmd_brake}단)을 "
+                f"0 으로 지웁니다 — 전환 순간에 리니어가 체결되지 않게 합니다. "
+                f"제동이 필요하면 발행자가 다시 요청합니다")
+            self.cmd_brake = 0
+        if self._stop_brake_armed and self.stop_brake_level > 0:
+            self.get_logger().warn(
+                f"[모드 전환] stop_brake_level({self.stop_brake_level}단) 무장을 해제합니다 "
+                f"— 자율주행이 /control_state=True 로 구동 허가를 받은 뒤에 다시 무장됩니다 "
+                f"(전환 순간에는 리니어를 체결하지 않습니다)")
+        self._stop_brake_armed = False
+
     def compose(self):
         """현재 상태에서 A/B 보드로 보낼 페이로드 두 개를 만든다.
 
@@ -715,7 +811,12 @@ class Arduino(Node):
         #     브레이크는 stop_brake_level 이 /brake_level 보다 우선한다 — '정지 지시'가
         #     더 강한 의도이므로, 그때 0 을 받고 있었다고 브레이크를 풀면 안 된다.
         if not self.control_enabled:
-            brake = max(self.stop_brake_level, self.cmd_brake)
+            # ★stop_brake_level 은 '무장된' 뒤에만 쓴다★ 자율주행이 한 번도 구동 허가를
+            #   받지 않은 상태(= 방금 수동에서 넘어온 순간)는 '자율 정지'가 아니라 대기다.
+            #   여기서 무장을 보지 않으면 D5 를 올리는 순간 리니어가 밟힌다
+            #   (_disarm_brakes_on_mode_edge 참고). 기본값 0 에서는 차이가 없다.
+            stop_brake = self.stop_brake_level if self._stop_brake_armed else 0
+            brake = max(stop_brake, self.cmd_brake)
             brake = max(0, min(BRAKE_LEVEL_MAX, brake))
             return '0', f'{self.to_board_angle(self.cmd_angle)},{brake}'
 
@@ -729,6 +830,9 @@ class Arduino(Node):
         ★ 매 주기 무조건 쓰지 않는 이유 ★ B보드 handleLine 은 줄을 받을 때마다
         steer_state 를 ST_ACTIVE 로 되돌린다. 20Hz 로 계속 보내면 도달판정
         (SETTLE_MS=500ms)이 영구히 성립하지 않아 PD 가 목표 근처에서 계속 힘을 준다."""
+        # 모드 전환 엣지 정리를 compose() 앞에 둔다 — compose() 는 '지금 상태로 페이로드를
+        # 만드는' 순수 판정만 하게 유지한다(상태 변경은 이 함수에서).
+        self._disarm_brakes_on_mode_edge()
         a_payload, b_payload = self.compose()
         now = time.monotonic()
 

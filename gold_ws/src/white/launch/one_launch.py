@@ -235,7 +235,10 @@ def generate_launch_description():
             description='/control_state=False 일 때 걸 브레이크 단계. '
                         '0=코스트 / 1=약한 브레이킹으로 더 빨리 정지. '
                         '※ 신호등 정지의 리니어 2단은 이것과 별개로 camera_judgment 가 '
-                        '/brake_level 로 직접 요청한다'),
+                        '/brake_level 로 직접 요청한다. '
+                        '★[2026-08-05] 이 값은 자율주행이 한 번이라도 /control_state=True 를 '
+                        '받은 뒤에만 적용된다 — D5 를 자율로 올리는 순간에는 걸리지 않는다'
+                        '(모드 전환은 리니어를 체결하지 않는다는 불변식, nxde/README 7절)'),
         DeclareLaunchArgument(
             'manual_pulse_max', default_value='15',
             description='수동조종에서 페달 최대치가 대응할 펄스. 기본 15 ≈ 47km/h. '

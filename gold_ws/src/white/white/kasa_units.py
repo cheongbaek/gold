@@ -40,11 +40,15 @@ sensor_monitor.py 세 곳에 각자 하드코딩되어 있었다. kasa 차량으
  발행 직전에 ms_to_pulse() 로 환산한다 — 튜닝 자산(GAIN_TABLE/LFD_TABLE 등)을 모두
  물리 단위로 남기기 위함이다.
 
-   운용 상한별 사용 가능한 단계 수 (min = 1펄스 고정):
+   운용 상한별 사용 가능한 단계 수:
      max_speed_ms 1.77 → 펄스 1~2   ( 6.4 km/h)  2단계
-     max_speed_ms 2.65 → 펄스 1~3   ( 9.5 km/h)  3단계  ← 현재 기본값
-     max_speed_ms 4.42 → 펄스 1~5   (15.9 km/h)  5단계
+     max_speed_ms 2.65 → 펄스 1~3   ( 9.5 km/h)  3단계
+     max_speed_ms 4.42 → 펄스 1~5   (15.9 km/h)  5단계  ← ★현재 기본값 (driving.py)★
      max_speed_ms 8.84 → 펄스 1~10  (31.8 km/h) 10단계
+   ※ [2026-08-05 정정] 이 표의 '현재 기본값' 표시가 2.65(3펄스) 행에 붙어 있었는데,
+     driving.py 의 max_speed_ms 기본값은 같은 날 4.42(5펄스)로 올라갔다. 표시만 낡아
+     있었을 뿐 코드는 5펄스였다 — 하한도 상한 비례라 min_speed_ms 는 1.58 m/s(2펄스)다
+     (1펄스를 유지하려면 `ros2 param set /driving_node min_speed_ms 0.9`).
    ★ 상한을 2.2 m/s 이상으로 올릴 때 주의 ★ driving.py 의 GAIN_TABLE / LFD_TABLE 은
    최상단 행이 2.2 m/s 다. 그 위 속도는 최상단 행 값으로 클램프되어 스케줄이 끊긴다.
    본격적으로 속도를 올릴 때는 실차 로스백으로 그 위 행을 채워야 한다.

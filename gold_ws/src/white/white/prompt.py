@@ -18,6 +18,24 @@ prompt.py - 사용자 명령 인터페이스 노드 (CLI)
    모드는 물리 스위치(B보드 D5)가 유일한 권한이다. 이 화면에서 바꿀 수단은 없다.
    상태는 nxde arduino 노드가 발행하는 /vehicle_mode 로 실시간 표시된다.
 
+═══════════════════════════════════════════════════════════════════════════════
+ ★★ [2026-08-05] 메뉴 9 = 수동조종 주행 (기록 없음) ★★
+═══════════════════════════════════════════════════════════════════════════════
+   ★ 수동조종 주행은 nxde arduino 노드만 떠 있으면 항상 살아 있다 ★
+   이 프롬프트도, one_launch.py 의 자율주행 노드도 그 경로를 막지 않는다 —
+   arduino.compose() 가 **우선순위 2(수동조종)** 를 /control_state·/cmd_vel_raw 보다
+   먼저 판정해서, D5 가 개방인 동안에는 자율 명령을 아예 보지 않고
+   "A보드가 보고한 페달 raw → 주행펄스" 를 그대로 되돌려 보내기 때문이다(조향은 힘빼기).
+   즉 `ros2 run nxde arduino` 하나만 떠 있어도, 런치·프롬프트가 함께 떠 있어도
+   사람이 페달·핸들로 차를 몬다.
+
+   그래서 메뉴 9 는 '차를 움직이게 해 주는' 기능이 아니라, 그 경로가 실제로 살아 있는지
+   ★계측으로 확인시켜 주는 화면★ 이다:
+     · 자율 의도를 확실히 내려둔다 (/control_state=False + /drive_cmd STOP)
+     · 페달 raw → 목표펄스 / 실 주행펄스(엔코더) / 실측 조향각을 한 줄로 실시간 표시
+   수집(1)과 다른 점은 ★CSV 를 만들지 않는다★ 는 것뿐이다(경로를 남길 필요 없이
+   그냥 몰고 싶을 때 쓴다).
+
  ★ E-stop 감지 ★ /estop 이 걸린 동안에는 수집·주행을 시작할 수 없고, 메뉴 상단에
    경고가 표시된다. 실제 정지는 아두이노(13번 핀)와 B보드 리니어 2단이 이미 수행한다 —
    여기 표시는 "왜 차가 안 가는지"를 알려주는 용도다.
@@ -29,11 +47,14 @@ import rclpy
 from rclpy.node import Node
 from rcl_interfaces.srv import SetParameters
 from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
-from std_msgs.msg import String, Bool
+from std_msgs.msg import String, Bool, Int32
 import threading
 import time
 import os
 import sys
+
+# [kasa] 펄스·엔코더 ↔ m/s 환산의 단일 소유자 — 메뉴 9 의 계측 표시에 쓴다.
+from white import kasa_units as ku
 
 # [v1.1] GPS/IMU 비교주행 노브 — gps_imu_node의 fusion_mode 파라미터를 전환한다.
 # gps_imu.py의 FUSION_MODE 프리셋과 이름을 맞춤.
@@ -68,6 +89,22 @@ class PromptNode(Node):
         self.create_subscription(Bool, '/vehicle_mode', self._cb_vehicle_mode, 10)
         self.create_subscription(Bool, '/estop', self._cb_estop, 10)
         self.create_subscription(String, '/board_status', self._cb_board_status, 10)
+
+        # ── ★수동조종 계측 (메뉴 9 실시간 표시)★ 전부 nxde arduino 노드가 발행한다 ──
+        #   mapping 노드가 수집 CSV 에 기록하는 것과 같은 3종이다. 여기서는 파일을 만들지
+        #   않고 "수동 경로가 실제로 살아 있는가"를 눈으로 확인시키는 용도로만 쓴다.
+        #   ※ 환산 규칙(throttle_raw_min/max·manual_pulse_max)은 arduino 노드에만 있으므로
+        #     페달 raw 를 이쪽에서 다시 펄스로 환산하지 않는다 — /drive_pulse_cmd 를 그대로
+        #     믿는다(복제하면 파라미터를 바꿀 때 조용히 어긋난다).
+        self._pedal_raw    = None   # /throttle_pedal        A0 페달 raw 0~1023
+        self._pedal_pulse  = None   # /drive_pulse_cmd       A보드로 실제 나간 목표펄스
+        self._enc_count    = None   # /encoder               좌+우 펄스 합
+        self._steer_meas   = None   # /steer_angle_measured  실측 조향각 (− 좌 / + 우)
+        self._tele_last_rx = 0.0    # 위 4종 중 무엇이든 마지막으로 받은 시각(두절 판정용)
+        self.create_subscription(Int32, '/throttle_pedal', self._cb_pedal_raw, 10)
+        self.create_subscription(Int32, '/drive_pulse_cmd', self._cb_pedal_pulse, 10)
+        self.create_subscription(Int32, '/encoder', self._cb_encoder, 10)
+        self.create_subscription(Int32, '/steer_angle_measured', self._cb_steer_meas, 10)
 
     # ── [v1.2] 현재 카메라 모드 감지 ────────────────────────────────────
     # use_camera 는 launch 인자라서(one_launch.py) driving_cam(/cmd_vel_drive
@@ -105,10 +142,32 @@ class PromptNode(Node):
     def _cb_board_status(self, msg: String):
         self._board_status = msg.data
 
+    # ── 수동조종 계측 4종 (메뉴 9) ──────────────────────────────────────
+    def _cb_pedal_raw(self, msg: Int32):
+        self._pedal_raw = int(msg.data)
+        self._tele_last_rx = time.time()
+
+    def _cb_pedal_pulse(self, msg: Int32):
+        self._pedal_pulse = int(msg.data)
+        self._tele_last_rx = time.time()
+
+    def _cb_encoder(self, msg: Int32):
+        self._enc_count = int(msg.data)
+        self._tele_last_rx = time.time()
+
+    def _cb_steer_meas(self, msg: Int32):
+        self._steer_meas = int(msg.data)
+        self._tele_last_rx = time.time()
+
     def mode_str(self) -> str:
         if self._auto_mode is None:
             return "❓ 주행모드 확인 불가 (nxde arduino / B보드 연결 확인)"
-        return "🤖 자율주행 모드" if self._auto_mode else "🕹️ 수동조종 모드 (페달·핸들)"
+        if self._auto_mode:
+            return "🤖 자율주행 모드"
+        # ★수동조종에서는 지금 바로 페달·핸들로 몰 수 있다★ arduino 노드가 페달 경로를
+        #   직접 넘기므로 이 프롬프트에서 무엇을 고르든(고르지 않아도) 주행이 가능하다.
+        #   메뉴 9 는 그 계측을 비춰 주는 화면일 뿐이다.
+        return "🕹️ 수동조종 모드 (페달·핸들로 바로 주행 가능 — 계측은 메뉴 9)"
 
     def board_str(self) -> str:
         if not self._board_status:
@@ -182,13 +241,14 @@ class PromptNode(Node):
         print(" 1. 수집(매핑) 시작 (Enter로 종료/저장)   [수동조종 모드]")
         print(" 2. 경로 주행 시작 (Enter로 정지)         [자율주행 모드]")
         print(" 3. 저장된 경로 목록 확인")
+        print(" 9. 수동조종 주행 — 페달·핸들 직접, ★기록 없음★         [수동조종 모드]")
         print(" 5. [비교실험] GPS 단독 주행 (종료 후 자동 fused 복귀)      [자율주행 모드]")
         print(" 6. [비교실험] IMU 단독(DR) 주행 (종료 후 자동 fused 복귀)  [자율주행 모드]")
         print(" 7. [비교실험] 카메라 헤딩보정 OFF 주행 (종료 후 ON 복귀)   [자율주행 모드]")
         print(" 8. [추측항법] DR+카메라 주행 — 시작점 GPS 확정 후 GPS 두절 [자율주행 모드]")
         print(" 4. 터미널 종료 (Exit)")
         print("===================================================")
-        return input("메뉴 선택 (1/2/3/4/5/6/7/8): ").strip()
+        return input("메뉴 선택 (1/2/3/4/5/6/7/8/9): ").strip()
 
     # ── [v1.1] gps_imu_node fusion_mode 파라미터 전환 ────────────────────
     # 주의: 워커스레드에서 호출되지만 rclpy.spin은 메인스레드가 돌리고 있으므로
@@ -266,7 +326,11 @@ class PromptNode(Node):
 
         print("\n🗺️ 수집(매핑)을 시작합니다 — ★페달과 핸들로 직접 주행하세요★")
         print("   · 조향 DC모터는 힘이 빠져 있어 핸들이 손으로 돌아갑니다.")
-        print("   · 브레이크는 수동조종 진입 시 2단으로 잠겨 있고, 페달을 밟으면 풀립니다.")
+        # ★[2026-08-05] '수동 진입 시 리니어 2단 체결' 안내를 삭제했다★ 그 래치는
+        #   2026-08-04 에 arduino.py 에서 제거됐다(스위치를 수동으로 내리는 순간 리니어가
+        #   브레이크 페달을 밟고 튀어나왔다). 수동조종에서 ROS 는 브레이크를 항상 0 으로
+        #   보내고, 제동은 사람 발이 한다 — nxde/README.md 7절의 🚫 경고 참고.
+        print("   · 브레이크는 ROS 가 건드리지 않습니다(항상 0단) — 제동은 사람 발입니다.")
         print("   · 기록: 페달 환산펄스 / 실 주행펄스 / 실측 조향각 + GPS·IMU·차선")
         self.map_pub.publish(Bool(data=True))
 
@@ -277,6 +341,90 @@ class PromptNode(Node):
         if self._auto_mode:
             print("⚠️ 수집 도중 자율주행 모드로 전환되었습니다 — 그 구간 행은 "
                   "auto_mode=1 로 기록되어 있으니 분석에서 걸러 쓰세요.")
+
+    # ── 수동조종 주행 흐름 (메뉴 '9') — ★기록 없음★ ────────────────────────
+    #   ★ 이 메뉴가 주행을 '허가'하는 것이 아니다 ★ 수동조종 주행은 nxde arduino 노드만
+    #     떠 있으면 항상 살아 있다(compose() 우선순위 2 가 /control_state·/cmd_vel_raw 보다
+    #     앞이라 자율 스택이 함께 떠 있어도 사람 조작이 이긴다). 파일 헤더 참고.
+    #     여기서 하는 일은 두 가지뿐이다: ①자율 의도를 확실히 내려두고 ②계측을 비춘다.
+    MANUAL_REFRESH_S = 0.5          # 계측 한 줄 갱신 주기 [s]
+    MANUAL_TELE_TIMEOUT_S = 1.0     # 이보다 오래 계측이 없으면 '두절'로 본다
+
+    def _manual_drive_flow(self):
+        """사람이 페달·핸들로 직접 몬다. 프롬프트는 계측만 비춘다(CSV 를 만들지 않는다).
+
+        수집(1)과의 차이는 기록 여부뿐이다 — 경로를 남기지 않고 그냥 몰고 싶을 때 쓴다."""
+        if not self._require_mode(want_auto=False, action="수동조종 주행"):
+            return
+
+        # ★ 자율 의도를 확실히 내려둔다 ★ 수동 분기가 이미 우선하므로 지금 당장의 안전과는
+        #   무관하지만, 사람이 D5 를 자율로 되돌리는 순간을 위한 준비다:
+        #     · /control_state=False  — 직전 주행이 비정상 종료돼 True 가 남아 있을 수 있다
+        #     · /drive_cmd STOP       — driving 노드를 비활성(instant_stop)으로 만들어,
+        #                               자율로 되돌아간 순간 '남아 있던 경로추종 명령'이
+        #                               그대로 나가지 않게 한다
+        self.state_pub.publish(Bool(data=False))
+        self.drive_pub.publish(String(data="STOP"))
+
+        print("\n🕹️ 수동조종 주행 — ★페달과 핸들로 직접 주행하세요★  (기록하지 않습니다)")
+        print("   · 조향 DC모터는 힘이 빠져 있어(‘x’ 힘빼기) 핸들이 손으로 돌아갑니다.")
+        print("   · 브레이크는 ROS 가 건드리지 않습니다(항상 0단) — 제동은 사람 발입니다.")
+        print("   · 자율 명령은 나가지 않습니다 — arduino 노드가 수동 경로만 넘깁니다.")
+        print("   · 경로를 CSV 로 남기려면 이 메뉴가 아니라 메뉴 1(수집)을 쓰세요.\n")
+
+        stop_evt = threading.Event()
+        watcher = threading.Thread(target=self._manual_status_loop,
+                                   args=(stop_evt,), daemon=True)
+        watcher.start()
+        try:
+            # ※ 아래 계측 줄이 같은 줄을 계속 덮어쓰므로 입력 에코가 지워져 보인다.
+            #   [Enter] 만 누르면 되므로 문제되지 않는다.
+            input()
+        finally:
+            stop_evt.set()
+            watcher.join(timeout=1.0)
+        print("\n🕹️ 수동조종 계측 화면을 닫았습니다 — ★차량은 그대로 수동조종 상태★ 입니다")
+        print("   (D5 스위치가 수동인 동안에는 이 화면과 무관하게 페달·핸들로 계속 몰 수 있습니다.)")
+
+    def _manual_status_loop(self, stop_evt: threading.Event):
+        """계측 한 줄을 MANUAL_REFRESH_S 마다 제자리에 덮어쓴다(스크롤을 만들지 않는다).
+
+        ★ 워커스레드에서 돈다 ★ 값은 메인스레드의 spin_once 가 갱신하므로 여기서는
+        읽기만 한다(rclpy 를 건드리지 않는다)."""
+        while not stop_evt.is_set():
+            try:
+                sys.stdout.write("\r\033[K   " + self._manual_status_line())
+                sys.stdout.flush()
+            except Exception:
+                pass      # 파이프가 닫힌 채 종료되는 경우까지 화면 갱신이 막지 않게
+            stop_evt.wait(self.MANUAL_REFRESH_S)
+
+    def _manual_status_line(self) -> str:
+        """수동조종 계측 한 줄.
+
+        ★계측이 안 오는 상황을 값 0 으로 덮지 않는다★ arduino 노드가 없거나 A/B 보드가
+        빠졌을 때 '페달 0 / 조향 0' 으로 보이면 "밟았는데 왜 0 이지"로 되돌아온다."""
+        if (time.time() - self._tele_last_rx) > self.MANUAL_TELE_TIMEOUT_S:
+            return ("⛔ 계측 두절 — nxde arduino 노드 / 보드 연결을 확인하세요 "
+                    "(`ros2 run nxde check`)   " + self.board_str())
+
+        raw   = self._pedal_raw   or 0
+        pulse = self._pedal_pulse or 0
+        enc   = self._enc_count   or 0
+        steer = self._steer_meas  or 0
+
+        if self._estop:
+            head = "🚨 E-STOP 발동 — 인휠 정지 / 리니어 2단 (해제하면 그대로 재개)"
+        elif self._auto_mode:
+            # 주행 중에 D5 가 올라간 경우. 이제 사람 조작이 아니라 자율 경로다.
+            head = "⚠️ 자율주행 모드로 전환됨 — 페달 경로가 아닙니다(D5 확인)"
+        else:
+            head = "🕹️ 수동조종"
+
+        return (f"{head} │ 페달 {raw:4d} → {pulse:2d}펄스 "
+                f"({ku.pulse_to_ms(pulse):.2f} m/s) │ "
+                f"실측 {enc:3d}카운트 ({ku.encoder_count_to_ms(enc):.2f} m/s) │ "
+                f"조향 {steer:+3d}° │ [Enter]=닫기")
 
     # ── [v1.1] 경로 주행 흐름 (기존 메뉴 '2') — 비교주행에서도 재사용 ────────
     #   ★ 모드 게이트는 여기 한 곳에 둔다 ★ 2·5·6·7·8 이 전부 이 함수(또는
@@ -438,6 +586,9 @@ class PromptNode(Node):
             elif choice == '3':
                 self.list_routes()
 
+            elif choice == '9':
+                self._manual_drive_flow()
+
             elif choice == '5':
                 self._compare_drive_flow(FUSION_MODE_GPS_ONLY, "GPS 단독")
 
@@ -458,7 +609,7 @@ class PromptNode(Node):
                 return
 
             else:
-                print("⚠️ 1~8 사이의 숫자를 입력해주세요.")
+                print("⚠️ 1~9 사이의 숫자를 입력해주세요.")
 
 def main(args=None):
     rclpy.init(args=args)
