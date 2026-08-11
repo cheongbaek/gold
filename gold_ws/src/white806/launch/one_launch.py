@@ -8,6 +8,7 @@ one_launch.py ― white806 통합 런치 (GPS + IMU + 아두이노 + 자율주�
 띄우는 것 (카메라 없음):
     nxde/arduino          A/B 2보드 시리얼 브리지  ★수정 없이 그대로 쓴다★
     white806/iahrs        6축 IMU 드라이버 → /imu
+    white806/speed        /imu 적분 속도계 → /speed [km/h]
     nmea_navsat_driver    GPS → /fix
     white806/driving      ★GPS+IMU 융합 + 모드스위치 상태기계 + 경로추종★
     white806/mapping      /fix 만 보고 경로 수집
@@ -200,6 +201,21 @@ def generate_launch_description():
     )
 
     # ═══════════════════════════════════════════════════════════════════
+    #  [계측] /imu 적분 속도계 → /speed [km/h]  [2026-08-12 신설]
+    #    driving 의 ★저속 펄스 보정★ 이 이 값을 쓴다. 안 떠 있어도 driving 은
+    #    그대로 돌고, 보정이 엔코더로 내려갈 뿐이다(measured_pulse).
+    # ═══════════════════════════════════════════════════════════════════
+    speed = Node(
+        package=package_name,
+        executable='speed',
+        name='speed_node',
+        output='screen',
+        additional_env=NODE_ENV,
+        respawn=True,
+        respawn_delay=RESPAWN_DELAY,
+    )
+
+    # ═══════════════════════════════════════════════════════════════════
     #  [하드웨어] u-blox GPS → /fix. 외부 패키지라 respawn 에 의존한다.
     #    ★RTCM 보정을 넣지 않는다★ RTK 여부는 수신기가 만들고 GGA quality 로 드러난다.
     # ═══════════════════════════════════════════════════════════════════
@@ -262,6 +278,7 @@ def generate_launch_description():
         # 하드웨어를 먼저 — 자율주행 노드가 첫 토픽을 놓칠 확률을 줄인다
         arduino,
         iahrs,
+        speed,
         gps,
         # 자율주행
         driving,

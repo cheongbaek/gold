@@ -75,7 +75,7 @@ from rclpy.node import Node
 
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu, NavSatFix
-from std_msgs.msg import Bool, Float64MultiArray, Int32, String
+from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
 
 from white806 import paths
 
@@ -150,18 +150,24 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #   /drive_diag 는 driving 이 만든다(제어에 쓰지 않는 계측 전용 배열):
     #     [cte, head_err, target_idx, target_dist, goal_dist,
     #      gps_course, fuse_corr, gyro_z, brake_latched,
-    #      head_init_deg, head_sigma, head_resid, head_dist]
+    #      head_init_deg, head_sigma, head_resid, head_dist,
+    #      ref_pulse, out_pulse, meas_pulse]        ← [2026-08-12] 뒤 3종 추가
     TopicSpec('/drive_diag', Float64MultiArray,
               ('cte_m', 'heading_err_deg', 'target_idx', 'target_dist_m',
                'goal_dist_m', 'gps_course_deg', 'fuse_corr_deg', 'gyro_z_dps',
                'brake_latched', 'head_init_deg', 'head_sigma_deg',
-               'head_resid_m', 'head_dist_m'),
-              _array(13),
+               'head_resid_m', 'head_dist_m',
+               'ref_pulse', 'out_pulse', 'meas_pulse'),
+              _array(16),
               note='★cte_m 이 핵심★ 경로이탈 +왼쪽/−오른쪽. 나머지는 헤딩 융합 '
-                   '건전성과 출발 헤딩 품질'),
+                   '건전성과 출발 헤딩 품질. ref/out/meas 는 저속 펄스 보정 검증용 — '
+                   'out≠ref 인 구간이 보정이 걸린 구간이다'),
 
     TopicSpec('/encoder', Int32, ('encoder_sum',), _scalar,
               note='A보드 좌+우 펄스 합'),
+    TopicSpec('/speed', Float32, ('speed_kmh',), _scalar,
+              note='speed.py 의 IMU 적분 속도[km/h]. ★절대값은 못 믿는다★ — '
+                   '정지/기동 판정용(speed.py 헤더의 정확도 실측 참고)'),
     TopicSpec('/steer_angle_measured', Int32, ('steer_measured_deg',), _scalar,
               note='B보드 실측 조향각'),
     TopicSpec('/throttle_pedal', Int32, ('throttle_raw',), _scalar,

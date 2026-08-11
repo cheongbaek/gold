@@ -125,8 +125,11 @@ driving.py ― kasa 자율주행 [white806 / GPS+IMU 최소 추종판]
   ★언제 물렸는가★ 였다. 도착 판정(반경 0.2m)이 5Hz GPS 로는 성립할 수 없어 차가
   종점을 4펄스로 지나쳤고, 결국 CTE 이탈감지(2.0m)가 대신 차를 세웠다 — 종점에서
   2m 지난 지점이다. 그래서 밖에서 보면 '도착했는데 리니어가 안 걸린다'로 보였다.
-  고친 곳은 리니어가 아니라 ①종점 선행제동(GOAL_BRAKE_*) ②도착 판정(WP_REACH_M
-  0.2→0.9 + 통과 판정)이다.
+  고친 곳은 리니어가 아니라 ★도착 판정★ 이다(WP_REACH_M 0.2→0.9 + 통과 판정).
+    ※ 이때 종점 선행제동(순차 감속)도 함께 넣었었지만 [2026-08-12] 걷어냈다 —
+      상단 '종점 감속은 두지 않는다' 절 참고. 정지는 리니어가 전담한다.
+      ★그래서 도착 판정이 유일한 방벽이다★ 반경만으로는 못 잡으니 통과 판정이
+      반드시 함께 있어야 한다.
 
   ★왜 '현재펄스 > 목표펄스+3 이면 2단' 정책을 버렸는가 — 세 번 물려서 세 번 다 실패★
   그 정책은 매번 target_pulse 를 0 으로 덮었고, 그 0→양수 복귀가 A보드
@@ -162,7 +165,7 @@ from rclpy.node import Node
 
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu, NavSatFix
-from std_msgs.msg import Bool, Float64MultiArray, Int32, String
+from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
 
 from white806 import paths
 
@@ -179,7 +182,33 @@ HEADING_PULSE = 3            # 헤딩 초기화 중 속도 ≈ 9.5 km/h
 #  왜 파라미터 신뢰만으로 부족한가 : rec_20260811_214852 종점 접근에서 ★4펄스를
 #  지령했는데 GPS 실측이 4.83 m/s(=5.5펄스, 17.4 km/h)★ 였다. 지령은 개루프라
 #  실제 속도가 그보다 높게 나올 수 있으므로, 지령 자체의 천장을 낮게 못 박는다.
-MAX_PULSE_LIMIT = 4          # send() 가 마지막에 무조건 이 값으로 자른다
+MAX_PULSE_LIMIT = 4          # send() 가 ★기준속도(REF)★ 를 이 값으로 자른다
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ 저속 펄스 보정 — 지령대로 안 구르는 구간에서만 REF 를 밀어 준다 (2026-08-12) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 필요한가★ rec_20260811_214852 코너 구간에서 1펄스를 30.8초 지령했는데 차는
+#  10초를 아예 서 있었고 나머지도 0.04~1.0 m/s 로 기어갔다. 저속에서는 인휠 토크와
+#  타이어 스크럽 부하가 맞물려 ★지령 펄스와 실제 속도의 관계가 무너진다★.
+#  그래서 낮은 REF 구간에 한해 실제 속도를 보고 REF 를 일시적으로 밀어 올린다.
+#
+#      out = REF + clamp(REF − 실측펄스, −2, +2),   0 ≤ out ≤ 15
+#
+#  예 : REF 3 인데 실측이 1펄스 → out 5 로 밀어 굴리기 시작하고, 실측이 3 이 되는
+#       순간 보정이 0 이 되어 out 3 으로 돌아간다(속도 유지).
+#
+#  ★REF 3 이하에서만 동작한다★ 4펄스 이상은 이미 지령대로 구르는 구간이고, 거기서
+#  보정을 걸면 MAX_PULSE_LIMIT(4) 를 우회해 과속하는 길이 된다.
+#  ★보정 출력만은 15 까지 허용한다★ MAX_PULSE_LIMIT 는 '기준속도의 천장'이고 이것은
+#  '기동을 위한 일시적 가산'이라 성격이 다르다 — 실제 상한은 3+2 = 5펄스다.
+REF_TRIM_MAX_PULSE = 2       # 보정량 상한 ±2펄스
+REF_TRIM_REF_MAX   = 3       # ★REF 가 이 이하일 때만★ 보정한다
+REF_TRIM_OUT_MAX   = 15      # 보정 출력의 절대 상한(A보드 프로토콜 상한)
+#  ★20Hz 로 매 틱 다시 계산하면 채터링이 난다★ 보정은 속도가 따라올 시간을 줘야
+#  하므로 이 주기로만 다시 판단하고 그 사이에는 직전 보정을 유지한다.
+REF_TRIM_HOLD_S    = 0.3     # [s]
+KMH_PER_PULSE      = 3.182   # 1펄스 = 0.884 m/s = 3.182 km/h (MS_PER_PULSE 와 같은 값)
+SPEED_FRESH_S      = 0.5     # /speed 가 이보다 오래되면 안 믿고 엔코더로 내려간다
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ 차량 제원 — 순수추종 기하의 전제. 틀리면 전 구간이 어긋난다 ★★
@@ -324,25 +353,15 @@ CORNER_MIN_PULSE        = 2
 #     값이다). 노드를 재시작하지 않아 이 상수가 반영되지 않았다.
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ★★ 종점 감속 — 도착 지점을 향해 미리 줄인다 (2026-08-11) ★★
+#  ★★ 종점 감속은 두지 않는다 — 도착하면 곧바로 리니어 2단 (2026-08-12) ★★
 # ══════════════════════════════════════════════════════════════════════════════
-#  ★없어서 생긴 일★ corner_speed() 에는 '종점까지 남은 거리' 항이 아예 없었다.
-#  lookahead_m() 의 종점 캡은 ★LFD 만★ 줄이고 속도는 건드리지 않는다. 그래서 코너를
-#  빠져나온 뒤 남은 직선 8m 를 4펄스로 가속해 그대로 종점에 꽂았다(실측 4.83 m/s).
-#
-#  코너 선행제동(BRAKE_GATE_*)과 같은 식이되 감속도만 완만하게 잡는다 — 코너는
-#  '못 돌면 이탈'이라 보수적이어야 하지만, 종점은 '조금 일찍 줄여도 손해가 없다'.
-#      v_goal = √(2·a·(남은거리 − 여유))      a = GOAL_BRAKE_DECEL
-#  검산(a=1.5, 여유 1.0m, 상한 4펄스=3.54 m/s, 하한 2펄스=1.77 m/s):
-#      남은 4.5m → 3펄스   남은 2.2m → 2펄스   그 뒤로는 하한에 걸려 2펄스 유지
-#  즉 ★종점 약 2m 전부터는 1.77 m/s★ 로 들어가고, 그 속도의 GPS 샘플 간격이
-#  0.35m 라 WP_REACH_M(0.9m) 창을 절대 건너뛰지 못한다.
-GOAL_BRAKE_DECEL    = 1.5    # [m/s²] 종점 제동거리 가정 감속도
-GOAL_BRAKE_MARGIN_M = 1.0    # [m] 종점 이만큼 전에는 이미 최저속(2펄스)에 도달해 있게
-#  ※ 하한은 CORNER_MIN_PULSE(2) 와 같은 것을 쓴다 — 저속에서 인휠이 차를 못 굴리는
-#    문제는 종점 접근이라고 달라지지 않는다. 그래서 도착 순간 속도는 1.77 m/s 이고,
-#    DRIVE_DONE 의 리니어 2단이 나머지(관측 감속도 ≈2.2 m/s² → 정지거리 ≈0.7m)를
-#    맡는다. ★종점을 0.7m 정도 지나 서는 것은 설계된 동작이다★
+#  2026-08-11 에 종점 선행제동(GOAL_BRAKE_DECEL/MARGIN, 4→3→2펄스 순차 감속)을 넣었다가
+#  ★다시 걷어냈다★. 이 차의 정지는 리니어 2단이 담당하고(실측 감속도 2.2 m/s²),
+#  속도를 미리 깎는 것은 그 일을 대신하지 못하면서 종점 구간만 길게 만든다.
+#  ★지금 정책★ : 종점까지 곡률이 허락하는 속도로 가고, 도착·이탈 판정이 서는 순간
+#  DRIVE_DONE 으로 넘어가 조향 0 + 리니어 2단으로 세운다(enter 참고).
+#    ※ 그래서 도착 판정이 늦으면 그만큼 지나쳐 선다. 반경(WP_REACH_M)만으로 판정하면
+#      5Hz GPS 에서 놓치므로 ★통과 판정★ 이 함께 있어야 한다 — run_follow() 참고.
 
 #  ── 곡률 LFD 캡 ── 코너컷 오차 ≈ LFD²/(8R) 이므로 LFD 를 √(K·R) 로 눌러
 #     CTE ≤ 약 K/8 = 0.19m 를 보장한다. ★코너에서 조향 권한을 되찾는 장치이기도 하다★
@@ -561,6 +580,15 @@ class DrivingNode(Node):
         self.auto_mode = None             # /vehicle_mode. None = 미수신
         self.estop = False
 
+        # ── /speed (speed.py 의 IMU 적분 속도, km/h) ──
+        #   ★없어도 돈다★ 안 오면 저속 보정이 엔코더로 내려간다(measured_pulse).
+        self.speed_kmh = None
+        self.speed_time = 0.0
+        # ── 저속 펄스 보정 상태 ──
+        self._trim = 0                    # 지금 적용 중인 보정량 [펄스]
+        self._trim_t = 0.0                # 마지막으로 보정을 다시 계산한 시각
+        self._trim_ref = 0                # 그때의 REF (REF 가 바뀌면 즉시 다시 계산)
+
         # ── 상태기계 ──
         self.state = S_IDLE
         self.state_t0 = time.time()
@@ -583,6 +611,9 @@ class DrivingNode(Node):
         self._diag_target_dist = 0.0       # 그 WP 까지 거리 = 실효 선행거리 [m]
         self._diag_head_err = 0.0          # 제어기 입력 오차 [deg]
         self._diag_init = (0.0, 0.0, 0.0, 0.0)   # 확정 헤딩/σ/잔차/기선
+        self._diag_ref = 0.0               # 저속 보정 전 REF [펄스]
+        self._diag_out = 0.0               # 실제 발행한 펄스
+        self._diag_meas = None             # 보정이 믿은 실측 펄스(/speed 또는 엔코더)
 
         # ── 퍼블리셔 ──
         self.pub_cmd   = self.create_publisher(Twist,  '/cmd_vel_raw',      10)
@@ -604,6 +635,7 @@ class DrivingNode(Node):
         self.create_subscription(NavSatFix, '/fix',          self.cb_fix,     10)
         self.create_subscription(Imu,       '/imu',          self.cb_imu,     10)
         self.create_subscription(Int32,     '/encoder',      self.cb_encoder, 10)
+        self.create_subscription(Float32,   '/speed',        self.cb_speed,   10)
         self.create_subscription(Bool,      '/vehicle_mode', self.cb_mode,    10)
         self.create_subscription(Bool,      '/estop',        self.cb_estop,   10)
         self.create_subscription(String,    '/drive_cmd',    self.cb_drive_cmd, 10)
@@ -648,6 +680,13 @@ class DrivingNode(Node):
             del self._enc_buf[0]
         med = sorted(self._enc_buf)[len(self._enc_buf) // 2]
         self.enc_pulse = med * ENC_SUM_TO_PULSE
+
+    def cb_speed(self, msg: Float32):
+        """speed.py 의 IMU 적분 속도 [km/h]. ★저속 펄스 보정에만 쓴다★
+        (추종 기하·상태 판정에는 절대 쓰지 않는다 — speed.py 헤더의 정확도 실측 참고:
+        절대속도는 26초 창에서 2배 수준으로 틀린다. 정지/기동 판정만 정확하다)."""
+        self.speed_kmh = float(msg.data)
+        self.speed_time = time.time()
 
     def cb_mode(self, msg: Bool):
         new = bool(msg.data)
@@ -1103,10 +1142,9 @@ class DrivingNode(Node):
         # ── 판단 1. LFD = min(속도표, 곡률캡) ──
         lfd, lfd_win_only, lfd_speed = self.lookahead_m(d2goal, near_win, near_peak)
 
-        # ── 판단 2. 목표속도 = 곡률 선행제동 + 종점 선행제동 ──
+        # ── 판단 2. 목표속도 = 곡률 선행제동 ──
         pulse = self.corner_speed(near_win, near_peak, far_win, far_dist,
-                                  far_peak, far_peak_dist, lfd_win_only, lfd_speed,
-                                  d2goal)
+                                  far_peak, far_peak_dist, lfd_win_only, lfd_speed)
 
         # ── 제어 : 순수추종(도로휠각) → 전달계 보정 → pot 지령 ──
         road = self.pure_pursuit_steer(lfd)
@@ -1137,15 +1175,15 @@ class DrivingNode(Node):
         return win_max, win_d, peak_max, peak_d
 
     def corner_speed(self, near_win, near_peak, far_win, far_dist,
-                     far_peak, far_peak_dist, lfd_win_only, lfd_speed,
-                     d2goal=float('inf')):
-        """곡률·종점 선행제동 → 목표 주행펄스.
+                     far_peak, far_peak_dist, lfd_win_only, lfd_speed):
+        """곡률 선행제동 → 목표 주행펄스.
         [2026-08-11 구 white/driving.py '판단 2. 목표 속도' 이식 — 상수까지 동일]
 
         (a) 근거리 곡률 비례 감속 : 지금 코너에 맞는 속도
         (b) 원거리 제동거리 게이팅 : ★다가오는 코너에 딱 필요한 만큼만 미리 감속★
         (b2) ω_n 결속 : 곡률캡이 LFD 를 눌렀으면 그 LFD 에 맞는 속도로 묶는다
-        (c) ★종점 선행제동★ [2026-08-11 추가] : 코너와 같은 식으로 종점까지 미리 줄인다
+        ※ 종점 감속 항은 두지 않는다 [2026-08-12] — 파일 상단 '종점 감속은 두지
+          않는다' 절 참고. 종점 정지는 DRIVE_DONE 의 리니어 2단이 전담한다.
 
         ★왜 (b) 가 핵심인가★ 코너에 들어선 뒤 줄이면 이미 늦다 — 언더스티어 때문에
         진입속도가 높으면 조향을 다 써도 못 돈다(2026-08-11 실차). 그래서 코너를
@@ -1183,15 +1221,8 @@ class DrivingNode(Node):
         if lfd_win_only < lfd_speed - 0.05:
             v_target = min(v_target, OMEGA_N_MAX * lfd_win_only / math.sqrt(2.0))
 
-        # (c) 종점 선행제동 [2026-08-11] — 코너 게이팅과 같은 식, 감속도만 완만하게.
-        #     ★이 항이 없어서 마지막 8m 를 4펄스로 질주했다★ (상수 GOAL_BRAKE_* 주석)
-        #     ★남은 호길이가 아니라 직선거리(d2goal)를 쓴다★ 직선거리는 호길이보다
-        #     항상 짧으므로 더 일찍 줄이는 쪽이고(안전 방향), 무엇보다 wp_idx 에
-        #     의존하지 않는다 — 포인터가 굳어도 이 감속만은 반드시 걸린다.
-        if d2goal != float('inf'):
-            v_goal = math.sqrt(2.0 * GOAL_BRAKE_DECEL
-                               * max(0.0, d2goal - GOAL_BRAKE_MARGIN_M))
-            v_target = min(v_target, v_goal)
+        # (c) 종점 선행제동은 ★없다★ [2026-08-12 제거] — 위 '종점 감속은 두지 않는다'
+        #     절 참고. 정지는 DRIVE_DONE 의 리니어 2단이 전담한다.
 
         v_target = max(self.min_speed_ms, min(self.max_speed_ms, v_target))
         # 정수 펄스로 환산(구 kasa_units.ms_to_pulse 와 같은 반올림).
@@ -1471,17 +1502,70 @@ class DrivingNode(Node):
         실측 근거와 함께 기록). 자율주행 중 감속은 곡률 선행제동(corner_speed 가
         목표펄스를 미리 낮춘다) + 자연감속(코스트)이 전담하고, 리니어는 DRIVE_DONE
         에서만 물린다(enter() 가 직접 set_brake(BRAKE_FULL))."""
-        # ★절대 상한 [2026-08-11]★ 파라미터·계산 결과가 무엇이든 여기서 잘린다.
+        # ★기준속도(REF) 상한 [2026-08-11]★ 파라미터·계산 결과가 무엇이든 여기서 잘린다.
         #   예전 상한은 프로토콜 상한(15)이라 사실상 없는 것과 같았다.
-        target_pulse = int(max(0, min(MAX_PULSE_LIMIT, target_pulse)))
+        ref = int(max(0, min(MAX_PULSE_LIMIT, target_pulse)))
         if self.state == S_DRIVE_DONE:
-            target_pulse = 0                       # 도착 후에는 무조건 0
+            ref = 0                                # 도착 후에는 무조건 0
+
+        out = self.low_speed_trim(ref)
+        self._diag_ref = float(ref)                # 진단 : 보정 전/후를 둘 다 남긴다
+        self._diag_out = float(out)
 
         msg = Twist()
-        msg.linear.x = float(target_pulse)         # ★펄스 그대로 (m/s 아님)★
+        msg.linear.x = float(out)                  # ★펄스 그대로 (m/s 아님)★
         msg.angular.z = float(steer_deg)           # ★− 좌 / + 우★
         self.pub_cmd.publish(msg)
         self.pub_state.publish(Bool(data=bool(control)))
+
+    def measured_pulse(self):
+        """지금 실제로 몇 펄스로 구르고 있는가. ★/speed 를 우선 신뢰한다★
+
+        · /speed (speed.py, IMU 적분) — 저속에서 엔코더보다 낫다. 엔코더는 A보드
+          기동 블랭킹의 허수 카운트 때문에 ★정지 중에 2.5~5펄스를 뱉는다★(실측).
+        · 엔코더 — /speed 가 없거나 오래됐을 때의 대체값. 중앙값 3점을 거친 값이다.
+        둘 다 없으면 None 을 돌려 보정을 아예 하지 않게 한다.
+        """
+        if self.speed_kmh is not None \
+                and time.time() - self.speed_time <= SPEED_FRESH_S:
+            return max(0.0, self.speed_kmh) / KMH_PER_PULSE
+        if self._enc_buf:
+            return self.enc_pulse
+        return None
+
+    def low_speed_trim(self, ref):
+        """저속에서 실제 속도를 보고 REF 를 ±REF_TRIM_MAX_PULSE 만큼 밀어 준다.
+        [2026-08-12 신설 — 상단 '저속 펄스 보정' 절에 근거와 예시가 있다]
+
+            out = REF + clamp(REF − 실측펄스, −2, +2)      0 ≤ out ≤ 15
+
+        ★동작 조건이 좁다★ 자율주행 추종 중(DRIVE_RUN)이고 1 ≤ REF ≤ 3 일 때만이다.
+          · REF 0 에서는 절대 걸지 않는다 — 세우려는 지시를 보정이 뒤집으면 안 된다.
+          · REF 4 이상은 이미 지령대로 구르는 구간이고, 거기서 보정하면
+            MAX_PULSE_LIMIT 를 우회하는 과속 경로가 된다.
+          · DRIVE_HEADING 은 '곧게 굴러 헤딩을 잡는' 구간이라 속도를 흔들면 안 된다.
+        """
+        if self.state != S_DRIVE_RUN or not (1 <= ref <= REF_TRIM_REF_MAX):
+            self._trim = 0
+            self._trim_ref = ref
+            return ref
+
+        now = time.time()
+        # REF 가 바뀌면 즉시 다시 판단하고, 아니면 HOLD 주기로만 다시 판단한다
+        # (20Hz 로 매 틱 계산하면 속도가 따라오기 전에 보정이 널뛴다).
+        if ref != self._trim_ref or now - self._trim_t >= REF_TRIM_HOLD_S:
+            meas = self.measured_pulse()
+            self._diag_meas = meas
+            if meas is not None:
+                err = ref - meas
+                self._trim = max(-REF_TRIM_MAX_PULSE,
+                                 min(REF_TRIM_MAX_PULSE, int(round(err))))
+            else:
+                self._trim = 0
+            self._trim_t = now
+            self._trim_ref = ref
+
+        return max(0, min(REF_TRIM_OUT_MAX, ref + self._trim))
 
     def set_brake(self, level):
         if level == self.brake_now:
@@ -1558,6 +1642,13 @@ class DrivingNode(Node):
             #   의미가 호환되고 열 개수(13)도 그대로다.
             1.0 if self.brake_now == BRAKE_FULL else 0.0,
             float(hd0), float(sg0), float(rs0), float(ds0),   # head_init_*
+            # ── [2026-08-12] 저속 펄스 보정을 사후에 검증하기 위한 3종 ──
+            #   보정이 실제로 걸렸는지, 무엇을 실측으로 믿었는지가 남지 않으면
+            #   다음 로그로도 이 로직의 옳고 그름을 판정할 수 없다.
+            float(self._diag_ref),                    # ref_pulse   보정 전 REF
+            float(self._diag_out),                    # out_pulse   실제 나간 펄스
+            float(self._diag_meas if self._diag_meas is not None
+                  else float('nan')),                 # meas_pulse  보정이 믿은 실측
         ]
         self.pub_diag.publish(diag)
 

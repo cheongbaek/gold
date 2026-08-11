@@ -26,6 +26,7 @@ setup(
             # ── 센서 드라이버 ──
             #   GPS(nmea_serial_driver)는 외부 패키지라 여기 없고 one_launch.py 가 띄운다.
             'iahrs   = white806.iahrs:main',      # 6축 IMU → /imu (순수 드라이버)
+            'speed   = white806.speed:main',      # /imu 적분 → /speed [km/h]
             # ── 주행 ──
             #   ★driving 이 GPS·IMU 융합 + 상태기계 + 추종을 전부 맡는다★
             #   구 white 의 gps_imu 노드는 없다.

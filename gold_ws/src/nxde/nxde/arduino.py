@@ -113,6 +113,9 @@
 #      튀는 것을 막는다(white/motor.py 가 S,0 만 보내고 조향을 건드리지 않았던 것과 같은 태도).
 #
 #  (4) 정상 자율주행    : A="<펄스>", B="<조향각>,<stop_brake_level 아님, 0>"
+#      ★[2026-08-12] 단, 브레이크가 0 이 아니면 A 는 무조건 "0" 이다★
+#      구동과 제동을 동시에 걸면 서로 밀어낸다 — 제동이 걸린 순간부터는 제동이
+#      이긴다. 자세한 이유는 _compose() 의 (4) 분기 주석에 적었다.
 #
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ 전송 정책 ★★
@@ -801,7 +804,17 @@ class Arduino(Node):
 
         # (4) 정상 자율주행 — /brake_level 을 그대로 반영(안 오면 0)
         brake = max(0, min(BRAKE_LEVEL_MAX, self.cmd_brake))
-        return str(self.cmd_pulse), f'{self.to_board_angle(self.cmd_angle)},{brake}'
+        # ★[2026-08-12] 리니어가 물려 있으면 A보드 REF 는 무조건 0★
+        #   구동과 제동을 동시에 걸면 둘이 서로 밀어낸다 — 리니어는 차를 잡으려 하고
+        #   인휠은 목표펄스를 맞추려 전류를 더 밀어넣는다. 그 상태가 이어지면
+        #   ① 차가 안 서고 ② 모터·리니어가 서로 부하가 되며 ③ A보드가 '지령대로 안
+        #   구른다'고 보고 기동 블랭킹을 재트리거해 허수 카운트까지 쏟아진다.
+        #   ★제동이 걸린 순간부터는 제동이 이긴다★ 로 못 박는다.
+        #   (driving 은 DRIVE_DONE 에서 이미 펄스 0 을 보내므로 평소엔 값이 같다.
+        #    이 줄은 camera_judgment 처럼 ★주행 중에 브레이크를 요청하는 다른
+        #    발행자★ 가 있을 때 실제로 일을 한다.)
+        pulse = 0 if brake > 0 else self.cmd_pulse
+        return str(pulse), f'{self.to_board_angle(self.cmd_angle)},{brake}'
 
     def on_tx_timer(self):
         """값이 바뀌었거나 KEEPALIVE_S 가 지났을 때만 실제로 시리얼에 쓴다.
