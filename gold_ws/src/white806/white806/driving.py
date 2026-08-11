@@ -421,6 +421,44 @@ CTE_WINDOW_WP = 40
 #   두지 않는다 — 지금 추종기는 여전히 목표 WP 방위만 보고 조향한다.
 CTE_DEVIATION_M = 2.0
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ CTE 적분항 (Ki 단독) — 구 white 에서 이것만 되살렸다 (2026-08-12) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 P·D 가 아니라 I 만인가★ 어제 두 로그의 CTE 통계가 '진동'이 아니라
+#  ★한쪽 편향★ 이라고 말한다:
+#      rec_20260811_214350 : 평균 +0.222m, 부호 + 76%, 반전 3.1회/분
+#      rec_20260811_214852 : 평균 +0.135m, 부호 + 84%, 반전 3.0회/분
+#  반전이 분당 3회뿐이니 사행·발산이 아니다. 부호가 8할 가까이 한쪽(+ = 경로 왼쪽)
+#  으로 몰린 정상상태 오차이고, 그것이 정확히 적분이 지우라고 있는 오차다.
+#  구 white 의 게인표 주석도 같은 결론을 적어 두었다 — "진동은 거의 없고 한쪽 쏠림이
+#  문제였으므로 P 는 보수적으로 두고 Ki 로 정상상태 오차를 천천히 제거한다".
+#  P 를 넣으면 순수추종 기하와 권한이 겹쳐 두 배로 꺾이므로 지금은 넣지 않는다.
+#
+#  ★순수추종은 이 오차를 원리적으로 못 지운다★ lookahead_m() 주석의 계산대로
+#  B보드 조향 불감대(STEER_TOLERANCE_EXIT 6카운트 = 2.47°)는 LFD 5.16m 에서
+#  측방오차 ★0.46m★ 에 해당한다. 관측된 +0.13~0.27m 편향은 그 아래라 조향이
+#  물리적으로 반응하지 않는다. 적분만이 시간을 들여 그 문턱을 넘을 수 있다.
+#
+#  ★단위★ 적분항은 ★도로휠각[deg]★ 에 더한다(pot 지령이 아니다). steer_command()
+#  가 링키지비 1.75 를 곱하므로 pot 기준으로는 아래 값의 1.75배가 나간다.
+#  ★부호★ CTE + = 차가 경로 왼쪽 → 오른쪽으로 꺾어야 한다 → steer + (B보드 규약).
+#  그래서 그대로 더한다(부호 뒤집지 않는다).
+CTE_KI            = 0.30   # [deg(도로휠)/(m·s)] 적분 게인. ★크게 잡지 말 것★
+CTE_I_CLAMP       = 8.0    # [m·s] 적분값 자체의 클램프 (와인드업 1차 방어)
+CTE_I_MAX_DEG     = 2.5    # [deg] 적분 기여 상한 (2차 방어). pot 기준 4.4°
+#   검산 : CTE +0.2m 가 지속되면 5초 뒤 0.30° / 15초 뒤 0.90° / 30초 뒤 1.8°(pot 3.2°).
+#   느리게 들어간다 — 불감대(pot 2.47°)를 넘는 데 30초쯤 걸리는 것이 의도한 속도다.
+CTE_I_DEADBAND_M  = 0.05   # 이 안이면 적분하지 않고 감쇠시킨다(노이즈 적분 방지)
+CTE_I_DECAY_PER_S = 0.5    # [1/s] 불감대 안에서의 감쇠율
+#  ★부호반전 시 완전 리셋이 아니라 소프트 감쇠★ [구 white v6.6 의 결론을 그대로 가져옴]
+#  완전히 0 으로 지우면 좌우 왕복마다 적분이 리셋돼 ★실제 쏠림을 못 쌓는다★.
+#  ×0.35 로 줄이면 대칭 왕복은 0 근처로 수렴하되 한쪽 쏠림은 누적이 유지된다.
+CTE_I_FLIP_SCALE  = 0.35
+#  ★차가 서 있으면 적분하지 않는다★ 어제 코너에서 10초를 멈춰 있었는데(지령 1펄스)
+#  그 동안 CTE 는 +0.17m 로 굳어 있었다. 안 구르는 차에 조향 적분을 쌓아 봐야
+#  출발하는 순간 그만큼 튀기만 한다 — 전형적인 와인드업이다.
+CTE_I_MIN_PULSE   = 0.3    # 실측이 이 밑이면 적분을 ★동결★ 한다(감쇠도 안 한다)
+
 EARTH_R = 6378137.0
 
 
@@ -531,6 +569,7 @@ class DrivingNode(Node):
         #   실차에서 코너를 여전히 크게 돌면 steer_plant_gain 을 올린다(더 꺾는다).
         self.declare_parameter('steer_plant_gain', STEER_PLANT_GAIN)
         self.declare_parameter('steer_understeer', STEER_UNDERSTEER)
+        self.declare_parameter('cte_ki', CTE_KI)
 
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
         # ★파라미터도 MAX_PULSE_LIMIT 로 자른다 [2026-08-11]★ send() 에서만 자르면
@@ -547,6 +586,7 @@ class DrivingNode(Node):
         self.wheelbase = float(self.get_parameter('wheelbase_m').value)
         self.plant_gain = max(0.1, float(self.get_parameter('steer_plant_gain').value))
         self.understeer = float(self.get_parameter('steer_understeer').value)
+        self.cte_ki = max(0.0, float(self.get_parameter('cte_ki').value))
         self.road_max = STEER_MAX_DEG / self.plant_gain
 
         # ── 속도 대역 (구 white 의 max_speed_ms / min_speed_ms 와 같은 역할) ──
@@ -614,6 +654,11 @@ class DrivingNode(Node):
         self._diag_ref = 0.0               # 저속 보정 전 REF [펄스]
         self._diag_out = 0.0               # 실제 발행한 펄스
         self._diag_meas = None             # 보정이 믿은 실측 펄스(/speed 또는 엔코더)
+
+        # ── CTE 적분항 (Ki 단독) ──
+        self._cte_i = 0.0                  # [m·s] 적분값
+        self._cte_i_term = 0.0             # [deg] 이번 틱의 적분 기여(도로휠각)
+        self._cte_prev = 0.0               # 부호반전 판정용
 
         # ── 퍼블리셔 ──
         self.pub_cmd   = self.create_publisher(Twist,  '/cmd_vel_raw',      10)
@@ -898,6 +943,9 @@ class DrivingNode(Node):
         old = self.state
         self.state = new_state
         self.state_t0 = time.time()
+        # ★상태가 바뀌면 CTE 적분을 지운다★ 이전 구간의 누적이 다음 구간 첫 틱에
+        #   실리면 출발하자마자 한쪽으로 튄다(reset_cte_integral 주석).
+        self.reset_cte_integral()
         if msg:
             self.event(msg)
 
@@ -1146,8 +1194,9 @@ class DrivingNode(Node):
         pulse = self.corner_speed(near_win, near_peak, far_win, far_dist,
                                   far_peak, far_peak_dist, lfd_win_only, lfd_speed)
 
-        # ── 제어 : 순수추종(도로휠각) → 전달계 보정 → pot 지령 ──
+        # ── 제어 : 순수추종(도로휠각) + CTE 적분 → 전달계 보정 → pot 지령 ──
         road = self.pure_pursuit_steer(lfd)
+        road = self.apply_cte_integral(road, cte)
         steer = self.steer_command(road, pulse * MS_PER_PULSE)
         self.send(pulse, steer, control=True)
 
@@ -1231,6 +1280,58 @@ class DrivingNode(Node):
         pulse = int(v_target / MS_PER_PULSE + 0.5)
         return max(min(CORNER_MIN_PULSE, self.drive_pulse),
                    min(self.drive_pulse, pulse))
+
+    def apply_cte_integral(self, road_deg, cte):
+        """순수추종이 낸 도로휠각에 ★CTE 적분항만★ 더한다 (Ki 단독, P·D 없음).
+        [2026-08-12 구 white 의 적분 로직만 이식 — 근거는 상단 'CTE 적분항' 절]
+
+        구 white 의 와인드업 방어를 같은 순서로 옮겼다:
+          ① 부호반전 → ×CTE_I_FLIP_SCALE (완전 리셋이 아니라 소프트 감쇠)
+          ② 불감대 안 → 적분하지 않고 감쇠 / 밖 → 적분
+          ③ 적분값 클램프(CTE_I_CLAMP)
+          ④ 기여 자체도 클램프(CTE_I_MAX_DEG)
+        여기에 이 차 고유의 방어를 하나 더했다:
+          ⑤ ★차가 안 구르면 동결★ — 어제 코너에서 10초를 멈춘 채 CTE 가 +0.17m 로
+            굳어 있었다. 그때 쌓아 봐야 출발 순간 튀기만 한다(CTE_I_MIN_PULSE).
+        """
+        if math.isnan(cte) or self.cte_ki <= 0.0:
+            self._cte_i_term = 0.0
+            return road_deg
+
+        dt = 1.0 / CONTROL_HZ
+        meas = self.measured_pulse()
+        moving = meas is not None and meas > CTE_I_MIN_PULSE
+
+        # ① 부호반전 — 불감대 밖에서 실제로 넘어갔을 때만 본다(노이즈 반전 무시)
+        if (cte * self._cte_prev) < 0.0 \
+                and abs(cte) > CTE_I_DEADBAND_M \
+                and abs(self._cte_prev) > CTE_I_DEADBAND_M:
+            self._cte_i *= CTE_I_FLIP_SCALE
+        self._cte_prev = cte
+
+        # ⑤ 동결 — 안 구르는 동안은 쌓지도, 줄이지도 않는다
+        if moving:
+            if abs(cte) < CTE_I_DEADBAND_M:
+                # ② 불감대 안 : 서서히 놓아준다
+                self._cte_i -= self._cte_i * min(1.0, CTE_I_DECAY_PER_S * dt)
+            else:
+                self._cte_i += cte * dt
+            # ③ 적분값 클램프
+            self._cte_i = max(-CTE_I_CLAMP, min(CTE_I_CLAMP, self._cte_i))
+
+        # ④ 기여 클램프. ★부호 그대로 더한다★ — CTE + = 경로 왼쪽 = 우조향(+) 필요
+        i_term = max(-CTE_I_MAX_DEG,
+                     min(CTE_I_MAX_DEG, self.cte_ki * self._cte_i))
+        self._cte_i_term = i_term
+        # 합산 후 도로휠각 상한을 다시 지킨다(전달계 보정 전 기준)
+        return max(-self.road_max, min(self.road_max, road_deg + i_term))
+
+    def reset_cte_integral(self):
+        """적분 상태를 지운다. ★상태가 바뀔 때마다 부른다★ — 이전 주행/이전 경로의
+        누적이 다음 주행 첫 틱에 그대로 실리면 출발하자마자 한쪽으로 튄다."""
+        self._cte_i = 0.0
+        self._cte_i_term = 0.0
+        self._cte_prev = 0.0
 
     def steer_command(self, road_deg, v_ms):
         """도로휠각 → B보드 pot 지령. ★실측 역모델★ (상단 STEER_PLANT_GAIN 주석)
@@ -1649,6 +1750,11 @@ class DrivingNode(Node):
             float(self._diag_out),                    # out_pulse   실제 나간 펄스
             float(self._diag_meas if self._diag_meas is not None
                   else float('nan')),                 # meas_pulse  보정이 믿은 실측
+            # ── [2026-08-12] CTE 적분항 검증용 ──
+            #   i_term 이 실제로 자라는지, 클램프에 붙어 사는지(=게인 과소/과대)를
+            #   로그만 보고 판정할 수 있어야 한다.
+            float(self._cte_i),                       # cte_integral [m·s]
+            float(self._cte_i_term),                  # cte_i_term_deg [도로휠 deg]
         ]
         self.pub_diag.publish(diag)
 

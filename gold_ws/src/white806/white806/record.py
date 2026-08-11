@@ -151,17 +151,20 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #     [cte, head_err, target_idx, target_dist, goal_dist,
     #      gps_course, fuse_corr, gyro_z, brake_latched,
     #      head_init_deg, head_sigma, head_resid, head_dist,
-    #      ref_pulse, out_pulse, meas_pulse]        ← [2026-08-12] 뒤 3종 추가
+    #      ref_pulse, out_pulse, meas_pulse,        ← [2026-08-12] 저속 보정 3종
+    #      cte_integral, cte_i_term_deg]            ← [2026-08-12] CTE 적분항 2종
     TopicSpec('/drive_diag', Float64MultiArray,
               ('cte_m', 'heading_err_deg', 'target_idx', 'target_dist_m',
                'goal_dist_m', 'gps_course_deg', 'fuse_corr_deg', 'gyro_z_dps',
                'brake_latched', 'head_init_deg', 'head_sigma_deg',
                'head_resid_m', 'head_dist_m',
-               'ref_pulse', 'out_pulse', 'meas_pulse'),
-              _array(16),
+               'ref_pulse', 'out_pulse', 'meas_pulse',
+               'cte_integral', 'cte_i_term_deg'),
+              _array(18),
               note='★cte_m 이 핵심★ 경로이탈 +왼쪽/−오른쪽. 나머지는 헤딩 융합 '
                    '건전성과 출발 헤딩 품질. ref/out/meas 는 저속 펄스 보정 검증용 — '
-                   'out≠ref 인 구간이 보정이 걸린 구간이다'),
+                   'out≠ref 인 구간이 보정이 걸린 구간이다. cte_i_term_deg 는 '
+                   'CTE 적분이 조향에 더한 도로휠각(pot 기준 ×1.75)'),
 
     TopicSpec('/encoder', Int32, ('encoder_sum',), _scalar,
               note='A보드 좌+우 펄스 합'),

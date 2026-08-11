@@ -248,6 +248,7 @@ def generate_launch_description():
             'wheelbase_m':   LaunchConfiguration('wheelbase_m'),
             'steer_plant_gain': LaunchConfiguration('steer_plant_gain'),
             'steer_understeer': LaunchConfiguration('steer_understeer'),
+            'cte_ki':        LaunchConfiguration('cte_ki'),
             'wp_reach_m':    LaunchConfiguration('wp_reach_m'),
             'require_rtk':   LaunchConfiguration('require_rtk'),
         }],
