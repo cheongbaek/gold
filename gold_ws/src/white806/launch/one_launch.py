@@ -107,7 +107,9 @@ def generate_launch_description():
         # ── 주행 튜닝 (driving.py 상단 상수의 런치 override) ──
         DeclareLaunchArgument(
             'drive_pulse', default_value='4',
-            description='★주행 고정 속도[펄스]★ 4 ≈ 12.7 km/h (1펄스 ≈ 3.18 km/h)'),
+            description='★주행 고정 속도[펄스]★ 4 ≈ 12.7 km/h (1펄스 ≈ 3.18 km/h). '
+                        '[2026-08-11] driving.py 의 MAX_PULSE_LIMIT(4)로 잘린다 — '
+                        '이보다 크게 넣어도 4 로 내려간다'),
         DeclareLaunchArgument(
             'heading_pulse', default_value='3',
             description='헤딩 초기화 중 속도[펄스] 3 ≈ 9.5 km/h'),
@@ -136,8 +138,12 @@ def generate_launch_description():
             description='언더스티어 계수 [deg/(m/s²)]. 같은 반경이라도 속도가 오르면 '
                         '더 꺾어야 하는 양. 고속 코너에서 부족하면 올린다'),
         DeclareLaunchArgument(
-            'wp_reach_m', default_value='0.2',
-            description='마지막 WP 도착 허용반경[m]'),
+            'wp_reach_m', default_value='0.9',
+            description='마지막 WP 도착 허용반경[m]. ★[2026-08-11] 0.2 → 0.9★ — '
+                        'GPS 가 5Hz 라 0.2m 창은 접근속도에서 통째로 건너뛴다(실측 '
+                        '최근접 0.24·0.38m 로 두 주행 다 도착 판정 실패). 반경과 '
+                        '별개로 마지막 WP 를 지나쳤는지도 함께 본다 — driving.py '
+                        'run_follow() 의 종점 판정 참고'),
         DeclareLaunchArgument(
             'require_rtk', default_value='true',
             description='헤딩 초기화·추종에 RTK Fixed 를 요구할지. ★true 권장★ — '

@@ -56,9 +56,10 @@ driving.py ― kasa 자율주행 [white806 / GPS+IMU 최소 추종판]
         │                                                    초과: 경로이탈 — 둘 다 같은 처리)
         │                                                              ▼
         └──────────(자율→수동, 하강: 주행 중단)──────────────── DRIVE_DONE
-                                                       펄스0 + 리니어 2단 → 완전정지
-                                                       2초 뒤 자동으로 IDLE(메뉴 복귀)
-                                                       (또는 하강 엣지로 즉시 IDLE)
+                                            ★펄스0 + 조향0(일직선) + 리니어 2단★
+                                            완전정지(엔코더 0) 2초 유지 → 리니어 0단
+                                            + 자동으로 IDLE(메뉴 복귀)
+                                            (또는 하강 엣지로 즉시 IDLE)
 
   on_mode_edge() 가 하는 일은 이제 둘뿐이다 — ① 진행 중인 것이 스위치 위치와
   안 맞게 되면 즉시 취소한다(MAP_HEADING/DRIVE_HEADING → IDLE), ② 실제로 끝난
@@ -114,6 +115,18 @@ driving.py ― kasa 자율주행 [white806 / GPS+IMU 최소 추종판]
   리니어를 쓰는 곳은 이제 ★DRIVE_DONE 하나뿐★ 이다(도착·정지명령·경로이탈). 거기서는
   조건과 무관하게 2단을 물고, 푸는 것은 ①엔코더 완전정지 확인 후 2초(_check_done_
   release) ②수동조종으로 스위치를 내릴 때 ③이 노드가 내려갈 때 셋뿐이다.
+  ★진입 순간에 조향 0(일직선)·펄스 0 을 리니어와 같은 틱에 함께 낸다★ [2026-08-11]
+  — enter() 참고. 정지 지시와 조향 해제가 갈라지면 그 사이에 B보드가 직전 조향각을
+  향해 계속 슬루한다(실측 70°/s).
+
+  ★도착에서 리니어가 늦게 물렸던 일 (2026-08-11 rec_214350·214852)★
+  리니어 자체는 정상이었다 — /brake_level=2 는 발행됐고 nxde 의 (4) 정상 자율주행
+  분기가 그대로 B보드에 넘겼으며, 관측 감속도도 2.2 m/s² 로 분명했다. 문제는
+  ★언제 물렸는가★ 였다. 도착 판정(반경 0.2m)이 5Hz GPS 로는 성립할 수 없어 차가
+  종점을 4펄스로 지나쳤고, 결국 CTE 이탈감지(2.0m)가 대신 차를 세웠다 — 종점에서
+  2m 지난 지점이다. 그래서 밖에서 보면 '도착했는데 리니어가 안 걸린다'로 보였다.
+  고친 곳은 리니어가 아니라 ①종점 선행제동(GOAL_BRAKE_*) ②도착 판정(WP_REACH_M
+  0.2→0.9 + 통과 판정)이다.
 
   ★왜 '현재펄스 > 목표펄스+3 이면 2단' 정책을 버렸는가 — 세 번 물려서 세 번 다 실패★
   그 정책은 매번 target_pulse 를 0 으로 덮었고, 그 0→양수 복귀가 A보드
@@ -162,6 +175,11 @@ CONTROL_HZ = 20.0            # 제어 주기. A보드 텔레메트리(20Hz)와 �
 # ── 속도 (펄스. 1펄스 ≈ 0.884 m/s ≈ 3.18 km/h) ──
 DRIVE_PULSE   = 4            # ★주행 고정 속도★ ≈ 12.7 km/h
 HEADING_PULSE = 3            # 헤딩 초기화 중 속도 ≈ 9.5 km/h
+#  ★절대 상한 [2026-08-11]★ 파라미터로 무엇이 들어오든 이 위로는 절대 안 나간다.
+#  왜 파라미터 신뢰만으로 부족한가 : rec_20260811_214852 종점 접근에서 ★4펄스를
+#  지령했는데 GPS 실측이 4.83 m/s(=5.5펄스, 17.4 km/h)★ 였다. 지령은 개루프라
+#  실제 속도가 그보다 높게 나올 수 있으므로, 지령 자체의 천장을 낮게 못 박는다.
+MAX_PULSE_LIMIT = 4          # send() 가 마지막에 무조건 이 값으로 자른다
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ 차량 제원 — 순수추종 기하의 전제. 틀리면 전 구간이 어긋난다 ★★
@@ -233,7 +251,21 @@ LFD_GOAL_B   = 1.30
 LFD_GOAL_MIN = 2.2          # 이 구간만은 포화 임계(2.98m) 아래다 — 위 ★ 참고
 
 # ── 웨이포인트 ──
-WP_REACH_M      = 0.2        # ★도착 허용반경★ 마지막 WP 를 이 안에 들면 도착
+#  ★[2026-08-11] 0.2 → 0.9 로 넓혔다 — 0.2m 는 원리적으로 성립할 수 없는 값이었다★
+#  GPS 는 5Hz(0.20s)다. 종점 접근속도가 4.8 m/s 였으니 샘플 간 이동거리가 ★0.96m★ 로
+#  반경 0.2m 창을 통째로 건너뛴다. rec_20260811_214350·214852 두 주행 모두 최근접이
+#  0.24m·0.38m 로 아깝게 빗나가 도착이 성립하지 않았고, 차는 종점을 4펄스로 지나쳐
+#  2m 뒤 CTE 이탈감지에 걸려서야 섰다. 아래 종점 감속(GOAL_*)으로 접근속도를 2펄스
+#  (1.77 m/s, 샘플 간 0.35m)까지 낮추므로 0.9m 창이면 반드시 샘플이 들어간다.
+WP_REACH_M      = 0.9        # ★도착 허용반경★ 마지막 WP 를 이 안에 들면 도착
+#  ★반경만으로는 부족하다 — '지나쳤는가'도 함께 본다 [2026-08-11]★
+#  반경 판정은 '가까웠던 순간을 샘플했는가'에 의존하지만, 통과 판정은 마지막 WP 가
+#  차체 뒤로 넘어간 사실을 보므로 한 번 지나가면 반드시 성립한다. 둘 중 먼저 되는
+#  쪽이 도착이다. (구 코드의 유일한 조건이 반경이어서 놓치면 그대로 질주했다)
+GOAL_PASS_MAX_M = 2.5        # 통과 판정을 인정하는 최대 이격 — 이보다 멀면 '지나쳤다'가
+                             #   아니라 '벗어났다'로 보고 CTE 이탈감지에 맡긴다
+GOAL_ZONE_M     = 6.0        # 남은 호길이가 이 안일 때만 도착 판정을 본다.
+                             #   ★순환코스에서 출발점 부근을 종점으로 오검출하는 것을 막는다★
 #   진행 포인터(wp_idx)는 ★창 안의 최근접점★ 으로 옮긴다(advance_wp_idx).
 #   맵 간격 0.25m 기준 : 창 45개 = 11.25m, 한 주기 상한 5개 = 1.25m
 #   (20Hz·3.5m/s 면 실제로는 한 주기에 0.7개씩 나아간다 — 7배 여유)
@@ -287,6 +319,30 @@ MIN_SPEED_FLOOR         = 0.9  # [m/s] 그래도 이 밑으로는 내리지 않�
 #  멈춘 상태의 코일 통전이 기동 블랭킹 허수 카운트를 만들어 브레이크 채터까지 불렀다.
 #  ★2펄스 구간이 오히려 추종이 가장 좋았다★(10.9초, max|CTE| 0.17m) — 그래서 2.
 CORNER_MIN_PULSE        = 2
+#  ⚠️ 이 하한(2)은 ★아직 실차 검증 전★ 이다. rec_20260811_214350·214852 는 하한이
+#     1 이던 코드로 달린 기록이다(로그의 51~52%가 1펄스 — 지금 코드로는 나올 수 없는
+#     값이다). 노드를 재시작하지 않아 이 상수가 반영되지 않았다.
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ 종점 감속 — 도착 지점을 향해 미리 줄인다 (2026-08-11) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★없어서 생긴 일★ corner_speed() 에는 '종점까지 남은 거리' 항이 아예 없었다.
+#  lookahead_m() 의 종점 캡은 ★LFD 만★ 줄이고 속도는 건드리지 않는다. 그래서 코너를
+#  빠져나온 뒤 남은 직선 8m 를 4펄스로 가속해 그대로 종점에 꽂았다(실측 4.83 m/s).
+#
+#  코너 선행제동(BRAKE_GATE_*)과 같은 식이되 감속도만 완만하게 잡는다 — 코너는
+#  '못 돌면 이탈'이라 보수적이어야 하지만, 종점은 '조금 일찍 줄여도 손해가 없다'.
+#      v_goal = √(2·a·(남은거리 − 여유))      a = GOAL_BRAKE_DECEL
+#  검산(a=1.5, 여유 1.0m, 상한 4펄스=3.54 m/s, 하한 2펄스=1.77 m/s):
+#      남은 4.5m → 3펄스   남은 2.2m → 2펄스   그 뒤로는 하한에 걸려 2펄스 유지
+#  즉 ★종점 약 2m 전부터는 1.77 m/s★ 로 들어가고, 그 속도의 GPS 샘플 간격이
+#  0.35m 라 WP_REACH_M(0.9m) 창을 절대 건너뛰지 못한다.
+GOAL_BRAKE_DECEL    = 1.5    # [m/s²] 종점 제동거리 가정 감속도
+GOAL_BRAKE_MARGIN_M = 1.0    # [m] 종점 이만큼 전에는 이미 최저속(2펄스)에 도달해 있게
+#  ※ 하한은 CORNER_MIN_PULSE(2) 와 같은 것을 쓴다 — 저속에서 인휠이 차를 못 굴리는
+#    문제는 종점 접근이라고 달라지지 않는다. 그래서 도착 순간 속도는 1.77 m/s 이고,
+#    DRIVE_DONE 의 리니어 2단이 나머지(관측 감속도 ≈2.2 m/s² → 정지거리 ≈0.7m)를
+#    맡는다. ★종점을 0.7m 정도 지나 서는 것은 설계된 동작이다★
 
 #  ── 곡률 LFD 캡 ── 코너컷 오차 ≈ LFD²/(8R) 이므로 LFD 를 √(K·R) 로 눌러
 #     CTE ≤ 약 K/8 = 0.19m 를 보장한다. ★코너에서 조향 권한을 되찾는 장치이기도 하다★
@@ -458,8 +514,13 @@ class DrivingNode(Node):
         self.declare_parameter('steer_understeer', STEER_UNDERSTEER)
 
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
-        self.drive_pulse = int(self.get_parameter('drive_pulse').value)
-        self.heading_pulse = int(self.get_parameter('heading_pulse').value)
+        # ★파라미터도 MAX_PULSE_LIMIT 로 자른다 [2026-08-11]★ send() 에서만 자르면
+        #   max_speed_ms(속도대역·LFD 식의 기준)는 안 잘린 값으로 남아 계산과 실제
+        #   출력이 어긋난다 — 자를 거면 제일 앞에서 한 번에 잘라야 한다.
+        self.drive_pulse = min(MAX_PULSE_LIMIT,
+                               int(self.get_parameter('drive_pulse').value))
+        self.heading_pulse = min(MAX_PULSE_LIMIT,
+                                 int(self.get_parameter('heading_pulse').value))
         self.wp_reach = float(self.get_parameter('wp_reach_m').value)
         self.require_rtk = bool(self.get_parameter('require_rtk').value)
         self.lfd_omega_n = max(0.05, float(self.get_parameter('lfd_omega_n').value))
@@ -820,6 +881,13 @@ class DrivingNode(Node):
         # 브레이크
         if new_state == S_DRIVE_DONE:
             self._done_zero_t = None    # loop() 의 _check_done_release() 가 새로 잰다
+            # ★조향 0(일직선) + 펄스 0 을 리니어와 ★같은 틱에★ 내보낸다 [2026-08-11]★
+            #   예전엔 다음 loop() 틱(최대 50ms 뒤)에야 조향 0 이 나갔다. 종점에서
+            #   순수추종이 큰 각을 내고 있던 참이면 그 50ms 동안 B보드가 그 각을 향해
+            #   계속 슬루한다(실측 70°/s, 불감 0.25s) — rec_20260811_214350 에서
+            #   지령이 +40°→0° 로 끊긴 뒤에도 실측 조향각이 +34° 까지 더 갔다.
+            #   정지 지시와 조향 해제는 한 덩어리여야 한다.
+            self.send(0, 0.0, control=True)
             self.set_brake(BRAKE_FULL)
         else:
             # ★DRIVE_DONE 이 아닌 모든 상태에서는 반드시 풀어 준다★ 리니어를 물리는
@@ -891,6 +959,12 @@ class DrivingNode(Node):
 
         ★스위치를 내려도 여전히 즉시 IDLE 로 갈 수 있다★(on_mode_edge, 파일 헤더
         상태기계 참고) — 이건 그 대안 경로일 뿐, 사람이 넘겨받는 경로를 없애지 않는다.
+
+        ★엔코더 허수 카운트가 해제를 늦출 수 있다 (2026-08-11 실측, 고치지 않았다)★
+        rec_20260811_214350 에서 차는 t=64.46 에 이미 GPS 상 완전히 서 있었는데
+        엔코더가 t=65.46 에 한 번 1.0 펄스로 튀어 이 타이머가 리셋됐고, 해제가
+        2.0초가 아니라 4.35초 뒤에 났다. ★늦게 푸는 쪽은 안전한 방향★ 이라 그대로
+        둔다 — 여기서 임계를 올리면 '아직 구르는데 푼다'는 반대쪽 위험이 생긴다.
         """
         if self.enc_pulse > ENC_STOP_EPS:
             self._done_zero_t = None
@@ -990,13 +1064,33 @@ class DrivingNode(Node):
                        f"🚨 경로이탈 — CTE {cte:+.2f}m, 정지 + 리니어 2단")
             return
 
-        # 종점 판정 — 마지막 WP 에 도달하면 즉시 정지 + 리니어 2단
+        # ── 종점 판정 ★반경 or 통과, 둘 중 먼저 되는 쪽★ [2026-08-11] ──
+        #   구 조건은 `wp_idx == 마지막 and d2goal <= 0.2` 하나뿐이었다. 5Hz GPS 로
+        #   0.2m 창을 잡는 것은 원리적으로 불가능해서(상수 WP_REACH_M 주석) 두 주행
+        #   모두 도착이 성립하지 않았고, 종점을 4펄스로 지나쳐 2m 뒤 CTE 이탈감지가
+        #   대신 차를 세웠다. 그래서 ① 창을 실제로 잡히는 크기로 넓히고 ② '지나쳤다'
+        #   를 독립 조건으로 추가했다. 둘 다 ★종점 부근에서만★ 본다(GOAL_ZONE_M).
+        n_wp = len(self.waypoints)
         gx, gy = self.waypoints[-1]
         d2goal = math.hypot(gx - self.x, gy - self.y)
-        if self.wp_idx >= len(self.waypoints) - 1 and d2goal <= self.wp_reach:
-            self.enter(S_DRIVE_DONE,
-                       f"🎯 도착 — 마지막 WP {d2goal:.2f}m, 정지 + 리니어 2단")
-            return
+        #   wp_s 가 비어 있으면(있을 수 없지만) ★도착 판정을 하지 않는 쪽★ 으로 둔다
+        s_left = self.wp_s[-1] - self.wp_s[min(self.wp_idx, n_wp - 1)] \
+            if self.wp_s else float('inf')
+        if s_left <= GOAL_ZONE_M:
+            if d2goal <= self.wp_reach:
+                self.enter(S_DRIVE_DONE,
+                           f"🎯 도착 — 마지막 WP {d2goal:.2f}m, 조향 0 + 리니어 2단")
+                return
+            # 통과 판정 : 마지막 WP 가 차체기준 뒤로 넘어갔는가(전방거리 < 0).
+            #   반경을 놓쳐도 한 번 지나가면 반드시 성립한다 — 종점 질주의 마지막 방벽.
+            ch = math.cos(math.radians(self.heading))
+            sh = math.sin(math.radians(self.heading))
+            if (gx - self.x) * ch + (gy - self.y) * sh < 0.0 \
+                    and d2goal <= GOAL_PASS_MAX_M:
+                self.enter(S_DRIVE_DONE,
+                           f"🎯 도착(통과) — 마지막 WP 를 {d2goal:.2f}m 지났다, "
+                           f"조향 0 + 리니어 2단")
+                return
 
         # ── 인지 : 전방 곡률 (근거리=현재 코너 / 원거리=다가오는 코너) ──
         #   구 white 와 같은 2단 스캔. 근거리 스캔거리는 LFD 에 비례하므로 직전
@@ -1009,9 +1103,10 @@ class DrivingNode(Node):
         # ── 판단 1. LFD = min(속도표, 곡률캡) ──
         lfd, lfd_win_only, lfd_speed = self.lookahead_m(d2goal, near_win, near_peak)
 
-        # ── 판단 2. 목표속도 = 곡률 선행제동 ──
+        # ── 판단 2. 목표속도 = 곡률 선행제동 + 종점 선행제동 ──
         pulse = self.corner_speed(near_win, near_peak, far_win, far_dist,
-                                  far_peak, far_peak_dist, lfd_win_only, lfd_speed)
+                                  far_peak, far_peak_dist, lfd_win_only, lfd_speed,
+                                  d2goal)
 
         # ── 제어 : 순수추종(도로휠각) → 전달계 보정 → pot 지령 ──
         road = self.pure_pursuit_steer(lfd)
@@ -1042,13 +1137,15 @@ class DrivingNode(Node):
         return win_max, win_d, peak_max, peak_d
 
     def corner_speed(self, near_win, near_peak, far_win, far_dist,
-                     far_peak, far_peak_dist, lfd_win_only, lfd_speed):
-        """곡률 선행제동 → 목표 주행펄스.
+                     far_peak, far_peak_dist, lfd_win_only, lfd_speed,
+                     d2goal=float('inf')):
+        """곡률·종점 선행제동 → 목표 주행펄스.
         [2026-08-11 구 white/driving.py '판단 2. 목표 속도' 이식 — 상수까지 동일]
 
         (a) 근거리 곡률 비례 감속 : 지금 코너에 맞는 속도
         (b) 원거리 제동거리 게이팅 : ★다가오는 코너에 딱 필요한 만큼만 미리 감속★
         (b2) ω_n 결속 : 곡률캡이 LFD 를 눌렀으면 그 LFD 에 맞는 속도로 묶는다
+        (c) ★종점 선행제동★ [2026-08-11 추가] : 코너와 같은 식으로 종점까지 미리 줄인다
 
         ★왜 (b) 가 핵심인가★ 코너에 들어선 뒤 줄이면 이미 늦다 — 언더스티어 때문에
         진입속도가 높으면 조향을 다 써도 못 돈다(2026-08-11 실차). 그래서 코너를
@@ -1085,6 +1182,16 @@ class DrivingNode(Node):
         # (b2) ω_n 결속 — 곡률캡이 속도표 LFD 보다 짧게 눌렀을 때만
         if lfd_win_only < lfd_speed - 0.05:
             v_target = min(v_target, OMEGA_N_MAX * lfd_win_only / math.sqrt(2.0))
+
+        # (c) 종점 선행제동 [2026-08-11] — 코너 게이팅과 같은 식, 감속도만 완만하게.
+        #     ★이 항이 없어서 마지막 8m 를 4펄스로 질주했다★ (상수 GOAL_BRAKE_* 주석)
+        #     ★남은 호길이가 아니라 직선거리(d2goal)를 쓴다★ 직선거리는 호길이보다
+        #     항상 짧으므로 더 일찍 줄이는 쪽이고(안전 방향), 무엇보다 wp_idx 에
+        #     의존하지 않는다 — 포인터가 굳어도 이 감속만은 반드시 걸린다.
+        if d2goal != float('inf'):
+            v_goal = math.sqrt(2.0 * GOAL_BRAKE_DECEL
+                               * max(0.0, d2goal - GOAL_BRAKE_MARGIN_M))
+            v_target = min(v_target, v_goal)
 
         v_target = max(self.min_speed_ms, min(self.max_speed_ms, v_target))
         # 정수 펄스로 환산(구 kasa_units.ms_to_pulse 와 같은 반올림).
@@ -1364,7 +1471,9 @@ class DrivingNode(Node):
         실측 근거와 함께 기록). 자율주행 중 감속은 곡률 선행제동(corner_speed 가
         목표펄스를 미리 낮춘다) + 자연감속(코스트)이 전담하고, 리니어는 DRIVE_DONE
         에서만 물린다(enter() 가 직접 set_brake(BRAKE_FULL))."""
-        target_pulse = int(max(0, min(15, target_pulse)))
+        # ★절대 상한 [2026-08-11]★ 파라미터·계산 결과가 무엇이든 여기서 잘린다.
+        #   예전 상한은 프로토콜 상한(15)이라 사실상 없는 것과 같았다.
+        target_pulse = int(max(0, min(MAX_PULSE_LIMIT, target_pulse)))
         if self.state == S_DRIVE_DONE:
             target_pulse = 0                       # 도착 후에는 무조건 0
 
