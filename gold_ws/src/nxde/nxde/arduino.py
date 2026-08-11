@@ -96,21 +96,16 @@
 #      "x,0" 의 뜻은 **해제 직후에 적용될 마지막 명령을 안전한 값으로 두는 것**이다
 #      (조향 힘빼기 = 사람이 핸들을 잡고 있어도 급조향이 없다).
 #
-#  (2) 수동조종 모드    : A=페달 펄스 ★또는★ ROS 지정펄스, B="x,0"
+#  (2) 수동조종 모드    : A=페달 펄스뿐, B="x,0"
 #      D5 스위치가 개방(모드 0)인 동안. 사람이 핸들과 페달을 직접 잡으므로
 #        - 조향은 'x'(힘빼기) — DC모터에 힘이 들어가면 사람이 핸들을 못 돌린다
 #        - 브레이크는 ★항상 0★ — 제동은 사람 발이 한다. ROS 가 개입하지 않는다.
-#        - 주행 펄스는 ★쓰로틀 우선★ 아래 순서로 정해진다:
-#            ① 페달을 밟고 있으면(환산 펄스 > 0) → 무조건 페달값
-#            ② 발을 뗐고 /control_state=True 면 → /cmd_vel_raw 의 지정 펄스
-#            ③ 그 외 → 0
-#      ★[2026-08-07] ②가 새로 생겼다★ 예전에는 수동에서 ROS 명령을 통째로 무시했다.
-#        그래서 '수동조종으로 매핑을 시작할 때 페달 없이 곧게 굴려 초기 헤딩을 잡는'
-#        일(white806)을 하려면 모드를 자율로 속이는 수밖에 없었는데, 그 오버라이드
-#        (/vehicle_mode_cmd)를 없애는 대신 이 경로를 열었다.
-#        ①이 ②보다 앞서므로 ★사람이 밟는 순간 소프트웨어 값은 즉시 밀려난다★.
-#        ②에 /control_state 게이트를 둔 이유는, 없으면 아무 노드가 남긴 낡은
-#        /cmd_vel_raw 하나로 수동 중인 차가 밀려 나가기 때문이다.
+#        - 주행 펄스는 ★페달뿐★ — 밟은 만큼(throttle_to_pulse), 안 밟으면 0.
+#      ★[2026-08-11] '발을 뗐을 때 /cmd_vel_raw 지정펄스 사용' 경로를 도로 뺐다★
+#        [2026-08-07] white806 의 매핑 헤딩 초기화(페달 없이 곧게 굴려 초기 헤딩을
+#        잡는 절차)를 위해 열어 둔 경로였는데, 그 절차를 '사람이 페달로 직접 곧게
+#        굴리는' 방식으로 바꿔 더 이상 필요 없다. 수동조종 중 소프트웨어가 펄스를
+#        대신 낼 길을 남겨 두면 그만큼 사람 조작과 다툴 여지가 생기므로 없앤다.
 #
 #  (3) /control_state=False : A="0", B="<마지막 조향각>,<stop_brake_level>"
 #      driving.py 가 정지를 지시한 상태(instant_stop / 경로 미로드 / STOP 명령).
@@ -438,7 +433,7 @@ class Arduino(Node):
         #   삭제했다. 주행모드의 소유자는 물리 스위치 하나다 — auto_mode 주석 참고.
 
         # 수동조종에서 '지금 페달을 밟고 있다'고 볼 최소 펄스. 로그용 상태이기도 하다.
-        self._manual_src = None    # 'pedal' / 'ros' — 바뀔 때만 로그를 남긴다
+        self._manual_src = None    # 'pedal' — 바뀔 때만 로그를 남긴다
 
         # ── ROS → 보드 명령 캐시 ──
         self.cmd_pulse = 0         # /cmd_vel_raw linear.x (펄스, 0~15)
@@ -779,32 +774,16 @@ class Arduino(Node):
         #     있으면 오히려 출발도 못 한다.
         #     → 수동에서는 브레이크를 ★항상 0★ 으로 보낸다. 제동은 사람 발이 한다.
         #
-        #     ★[2026-08-07] 수동에서도 ROS 지정 펄스를 받는다 — 단 쓰로틀이 최우선★
-        #       페달을 밟고 있으면 무조건 페달값이다. 발을 뗀 동안에만 /cmd_vel_raw 의
-        #       펄스를 쓴다. 사람이 운전대를 잡은 채 소프트웨어가 가속하는 일은 없고,
-        #       사람이 개입하는 즉시(밟는 즉시) 소프트웨어 값은 밀려난다.
-        #
-        #       쓰임새 : white806 의 헤딩 초기화. 수동조종으로 매핑을 시작할 때 사람이
-        #       페달을 밟지 않아도 차가 곧게 굴러가 초기 방위를 잡아야 한다.
-        #
-        #       ★/control_state 가 True 일 때만 유효하다★ 이 게이트가 없으면 아무
-        #       노드나 발행한 낡은 /cmd_vel_raw 하나로 수동 중인 차가 밀려 나간다.
-        #       조향은 그대로 힘빼기다 — 수동에서 핸들은 사람 것이다.
+        #     ★주행 펄스는 페달뿐이다★ [2026-08-07] 에 열었던 'ROS 지정펄스 대체' 경로를
+        #     [2026-08-11] 되돌렸다(위쪽 (2) 요약 참고) — 소프트웨어가 수동조종 중
+        #     펄스를 대신 낼 길이 없어야 사람 조작과 다툴 여지가 아예 사라진다.
         if not self.auto_mode:
-            pedal = self.throttle_to_pulse(self.throttle_raw)
-            if pedal > 0:
-                pulse, src = pedal, 'pedal'
-            elif self.control_enabled:
-                pulse, src = self.cmd_pulse, 'ros'
-            else:
-                pulse, src = 0, None
+            pulse = self.throttle_to_pulse(self.throttle_raw)
+            src = 'pedal' if pulse > 0 else None
             if src != self._manual_src:
                 self._manual_src = src
-                if src == 'ros':
-                    self.get_logger().info(
-                        f"[수동조종] 페달 유휴 → ROS 지정펄스 사용 ({pulse})")
-                elif src == 'pedal':
-                    self.get_logger().info("[수동조종] 페달 입력 감지 → 페달 우선")
+                if src == 'pedal':
+                    self.get_logger().info("[수동조종] 페달 입력 감지")
             return str(pulse), f'{STEER_RELEASE_TOKEN},0'
 
         # (3) ROS 가 정지를 지시한 상태. 조향각은 마지막 값을 유지한다(정면 급조향 방지).

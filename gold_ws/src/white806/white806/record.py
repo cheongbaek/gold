@@ -39,6 +39,28 @@ one_launch.py 가 함께 띄우며, 단독 실행은 `ros2 run white806 record`.
   토픽을 늘리려면 RECORD_TOPICS 에 TopicSpec 한 줄만 더하면 된다
   (columns 이름은 파일 전체에서 유일해야 한다). 수신 여부를 되짚어 확인하는
   절차는 일부러 두지 않았다 — 그냥 구독하고 오는 대로 적는다.
+
+════════════════════════════════════════════════════════════════════════════════
+ ★[2026-08-08] '주행이 잘 되었는가' 를 판정하기 위한 열 추가★
+════════════════════════════════════════════════════════════════════════════════
+  종전 표에는 ★제어의 입력과 출력만★ 있고 제어가 얼마나 잘 됐는지를 말해 주는
+  값이 없었다. /cmd_vel_raw(무엇을 시켰나) 와 /ego_state(어디에 있나) 는 있는데,
+  '경로에서 얼마나 벗어났나' 가 없어서 로그만 보고는 성패를 판정할 수 없었다.
+
+  · /drive_diag  — driving 이 내놓는 추종 진단 13종. 아래 네 묶음이다.
+      추종품질 : cte_m(★부호 있는 경로이탈 — 이 열 하나가 성패 판정의 핵심★),
+                 heading_err_deg(제어기 입력 오차), target_dist_m(실효 선행거리)
+      진행     : target_idx, goal_dist_m
+      헤딩건전 : gps_course_deg, fuse_corr_deg, gyro_z_dps
+                 → 융합이 살아 있는지(RTK 가 Fixed 를 벗어나면 조용히 멈춘다),
+                   자이로 부호가 맞는지를 사후에 확인할 수 있다
+      출발조건 : head_init_* 4종. 확정 시점 값을 그대로 붙들고 있으므로
+                 '이 주행은 σ 몇 도짜리 헤딩으로 출발했나' 가 매 행에 남는다
+  · /board_status — A/B 보드 링크 상태. B보드 USB 가 끊기면 D5(주행모드)가
+      멈춰 상태기계가 굳는데, 그 원인을 로그에서 구별할 수단이 없었다.
+
+  ※ /drive_diag 를 아무도 발행하지 않아도 record 는 그대로 돈다 — 해당 열이
+    빈 칸으로 남을 뿐이다. 그래서 driving 쪽 발행 추가와 무관하게 배포해도 된다.
 """
 
 import csv
@@ -124,6 +146,20 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                'ego_wp_idx', 'ego_wp_total', 'ego_fix_ok'),
               _array(7),
               note='driving 이 직접 만든 위치·헤딩(로컬 평면) + 진행률'),
+    # ── 추종 진단 ★주행 성패를 판정하는 열들★ ──
+    #   /drive_diag 는 driving 이 만든다(제어에 쓰지 않는 계측 전용 배열):
+    #     [cte, head_err, target_idx, target_dist, goal_dist,
+    #      gps_course, fuse_corr, gyro_z, brake_latched,
+    #      head_init_deg, head_sigma, head_resid, head_dist]
+    TopicSpec('/drive_diag', Float64MultiArray,
+              ('cte_m', 'heading_err_deg', 'target_idx', 'target_dist_m',
+               'goal_dist_m', 'gps_course_deg', 'fuse_corr_deg', 'gyro_z_dps',
+               'brake_latched', 'head_init_deg', 'head_sigma_deg',
+               'head_resid_m', 'head_dist_m'),
+              _array(13),
+              note='★cte_m 이 핵심★ 경로이탈 +왼쪽/−오른쪽. 나머지는 헤딩 융합 '
+                   '건전성과 출발 헤딩 품질'),
+
     TopicSpec('/encoder', Int32, ('encoder_sum',), _scalar,
               note='A보드 좌+우 펄스 합'),
     TopicSpec('/steer_angle_measured', Int32, ('steer_measured_deg',), _scalar,
@@ -137,6 +173,9 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     TopicSpec('/vehicle_mode', Bool, ('vehicle_mode',), _scalar,
               note='True 자율 / False 수동 (B보드 D5)'),
     TopicSpec('/estop', Bool, ('estop',), _scalar, note='비상정지'),
+    TopicSpec('/board_status', String, ('board_status',), _scalar,
+              note='A:1,B:1,ESTOP:0,MODE:1 — B보드 링크가 끊기면 D5 가 멈춰 '
+                   '상태기계가 굳는다. 그 구간을 로그에서 구별하는 유일한 단서'),
     TopicSpec('/drive_state', String, ('drive_state',), _scalar,
               note='driving 상태기계 ★기록 구간을 정하는 신호★'),
     TopicSpec('/drive_cmd', String, ('drive_cmd',), _scalar, hold=False,

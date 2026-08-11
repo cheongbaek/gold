@@ -17,13 +17,14 @@ CLI 는 따로 띄운다 (별 터미널):
     ros2 run white806 prompt
 
 ════════════════════════════════════════════════════════════════════════════════
- 조작은 ★B보드 D5 모드 스위치★ 로 한다
+ 조작 [2026-08-11] prompt 의 1)매핑 / 2)주행 메뉴로 시작한다
 ════════════════════════════════════════════════════════════════════════════════
-    매핑 : 자율 → 수동 (하강)       끝낼 때 수동 → 자율 (상승) = 경로 저장
-    주행 : 수동 → 자율 (상승)       도착 후 자율 → 수동 (하강) = 기록 저장 + 리니어 해제
+    매핑 : prompt 에서 1 선택 — 스위치가 수동조종이면 즉시, 자율주행이면 내릴 때까지 대기
+    주행 : prompt 에서 2 선택(+경로) — 스위치가 자율주행이면 즉시, 수동조종이면 올릴 때까지 대기
 
-    스위치가 이미 원하는 쪽에 있으면 반대로 한 번 넘겼다 돌아와야 한다 —
-    ★위치가 아니라 전환(엣지)이 트리거★ 이기 때문이다. driving.py 헤더 참고.
+    ★B보드 D5 스위치는 더 이상 시작을 트리거하지 않는다★ 진행 중인 것이 스위치
+    위치와 안 맞게 되면 취소하고, 도착·저장 시점을 정리하는 역할만 한다 —
+    driving.py 헤더의 on_mode_edge 참고.
 """
 
 import os
@@ -78,7 +79,7 @@ def generate_launch_description():
             description='record 노드(주행 CSV 기록). 자율주행 구간에서만 파일이 생긴다'),
         DeclareLaunchArgument(
             'use_mapping', default_value='true',
-            description='mapping 노드(경로 수집). 스위치 하강 엣지에서만 동작한다'),
+            description='mapping 노드(경로 수집). prompt 에서 1)매핑을 시작해야 동작한다'),
         DeclareLaunchArgument(
             'gps_port', default_value=gps_dev,
             description='GPS 시리얼 경로 override (기본: udev 링크 → VID/PID 스캔)'),
@@ -110,12 +111,33 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'heading_pulse', default_value='3',
             description='헤딩 초기화 중 속도[펄스] 3 ≈ 9.5 km/h'),
+        # ★[2026-08-11] steer_kp 가 사라졌다★ 순수추종(Pure Pursuit)으로 바뀌어
+        #   비례게인이 없다. 조향 세기는 lfd_omega_n 으로 만진다.
         DeclareLaunchArgument(
-            'steer_kp', default_value='0.5',
-            description='헤딩오차[deg] → 조향[deg] 비례게인. ★사행이 나면 낮춘다★'),
+            'lfd_omega_n', default_value='0.97',
+            description='순수추종 목표 고유진동수[rad/s] → LFD = v·√2/ω_n. '
+                        '★낮추면 LFD 가 길어져 조향이 완만해진다★ (사행·발산 시 낮춘다). '
+                        '구 white 로스백 실측 발산임계가 1.2 이므로 그 위로 올리지 말 것'),
+        DeclareLaunchArgument(
+            'lfd_min_m', default_value='2.3',
+            description='LFD 하한[m]. ★최소회전반경(1.49m)보다 넉넉히 커야 한다★ — '
+                        '낮추면 목표점이 회전반경 안으로 들어와 제자리를 돈다'),
+        DeclareLaunchArgument(
+            'wheelbase_m', default_value='1.25',
+            description='축거[m] 실측 1250mm. 순수추종 조향식의 L'),
+        # ★[2026-08-11] 조향 전달계 실측 보정★ B보드의 ±40° 는 가변저항 행정 이름일
+        #   뿐 도로휠각이 아니다(실측 링키지비 1.75). driving.py 상단 주석 참고.
+        DeclareLaunchArgument(
+            'steer_plant_gain', default_value='1.75',
+            description='pot 지령 / 도로휠각. 126표본 최소자승 실측값. '
+                        '★코너를 여전히 크게 돌면 올린다(더 꺾는다)★'),
+        DeclareLaunchArgument(
+            'steer_understeer', default_value='7.2',
+            description='언더스티어 계수 [deg/(m/s²)]. 같은 반경이라도 속도가 오르면 '
+                        '더 꺾어야 하는 양. 고속 코너에서 부족하면 올린다'),
         DeclareLaunchArgument(
             'wp_reach_m', default_value='0.2',
-            description='웨이포인트 도달 허용반경[m]'),
+            description='마지막 WP 도착 허용반경[m]'),
         DeclareLaunchArgument(
             'require_rtk', default_value='true',
             description='헤딩 초기화·추종에 RTK Fixed 를 요구할지. ★true 권장★ — '
@@ -199,7 +221,11 @@ def generate_launch_description():
             'data_dir':      LaunchConfiguration('data_dir'),
             'drive_pulse':   LaunchConfiguration('drive_pulse'),
             'heading_pulse': LaunchConfiguration('heading_pulse'),
-            'steer_kp':      LaunchConfiguration('steer_kp'),
+            'lfd_omega_n':   LaunchConfiguration('lfd_omega_n'),
+            'lfd_min_m':     LaunchConfiguration('lfd_min_m'),
+            'wheelbase_m':   LaunchConfiguration('wheelbase_m'),
+            'steer_plant_gain': LaunchConfiguration('steer_plant_gain'),
+            'steer_understeer': LaunchConfiguration('steer_understeer'),
             'wp_reach_m':    LaunchConfiguration('wp_reach_m'),
             'require_rtk':   LaunchConfiguration('require_rtk'),
         }],

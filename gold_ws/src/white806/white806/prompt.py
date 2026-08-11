@@ -3,20 +3,35 @@
 """
 prompt.py ― CLI 메인화면 [white806]
 ════════════════════════════════════════════════════════════════════════════════
-★이 화면은 주행을 시작시키지 않는다★ 시작·종료 트리거는 전부 ★B보드 D5 모드
-스위치★ 다(driving.py 상태기계). 여기서 하는 일은 두 가지뿐이다.
+ [2026-08-11] 1)매핑 / 2)주행 번호 메뉴로 재편
+════════════════════════════════════════════════════════════════════════════════
+  ★시작은 이제 이 화면뿐이다★ [2026-08-11] driving.py 의 on_mode_edge 는 더 이상
+  아무것도 시작시키지 않는다(취소·정리만 한다) — 매핑·주행을 시작하는 유일한
+  경로는 이 화면이 /drive_cmd 로 보내는 'MAP_START'/'DRIVE_START' 뿐이다. 1(매핑)
+  ·2(주행)를 고르면:
 
-  · 달릴 경로를 고른다 (→ /drive_cmd 로 파일명 발행 = '선택'일 뿐 출발이 아니다)
-  · 지금 무슨 상태인지 보여준다 (/drive_state · /vehicle_mode · /estop)
+    · 스위치가 반대쪽이면      → 이 화면이 기다린다(자체 폴링 — driving.py 의
+                                엣지 감지에 의존하지 않는다). 사람이 스위치를
+                                넘기는 순간 /vehicle_mode 가 바뀌는 것을 이 화면이
+                                감지하고, 그 즉시 START 명령을 보낸다.
+    · 스위치가 이미 목표쪽이면 → 곧바로 START 명령을 보낸다.
+
+  두 경우 다 이 화면이 명령을 보낸다는 점은 같다 — 차이는 '언제' 보내느냐뿐이다.
+  안전 게이트(스위치 위치가 실제로 맞는가)는 driving.py 의 cb_drive_cmd 가 명령을
+  받을 때마다 다시 확인한다.
 
   ┌ 조작 요령 ────────────────────────────────────────────────────────────────┐
-  │  매핑 : 스위치를 ★자율 → 수동★ 으로 내린다                                 │
-  │         이미 수동이면 자율로 한 번 올렸다 다시 내린다 (엣지가 필요하다)      │
-  │         끝낼 때는 자율로 올린다 → 경로 저장 + 메인화면                      │
+  │  1) 매핑 : 스위치가 수동조종이면 바로 시작, 자율주행이면 내릴 때까지 대기.   │
+  │            시작되면 그 순간부터(헤딩이 잡히기 전부터) CSV 에 기록된다 —      │
+  │            기록되는 좌표가 이 화면에 그대로 표시된다.                       │
+  │            헤딩은 ★사람이 페달+핸들을 일자로★ 잡는다(driving 은 관찰만).    │
+  │            아무 키나 누르면 중단(저장) + 메뉴로. 스위치를 올려도 종료.      │
   │                                                                            │
-  │  주행 : 경로를 고른 뒤 스위치를 ★수동 → 자율★ 로 올린다                    │
-  │         이미 자율이면 수동으로 한 번 내렸다 다시 올린다                     │
-  │         도착하면 리니어 2단으로 선다 → 수동으로 내리면 기록 저장 + 메인화면  │
+  │  2) 주행 : 경로 파일을 고른 뒤, 스위치가 자율주행이면 바로 시작, 수동조종   │
+  │            이면 올릴 때까지 대기.                                          │
+  │            도착하면 리니어 2단 → 완전정지 확인 2초 뒤 자동으로 메뉴 복귀.   │
+  │            아무 키나 누르면 중단(리니어 2단 후 같은 자동복귀). 스위치를     │
+  │            내려도 즉시 중단.                                               │
   └────────────────────────────────────────────────────────────────────────────┘
 """
 
@@ -36,6 +51,14 @@ from white806 import paths
 
 BANNER = "═" * 74
 
+# ── 이 화면의 로컬 UI 모드 ── driving_node 의 self.state 와는 별개다. IDLE 인
+#   동안에도 '경로 고르는 중'·'스위치 전환 대기 중' 처럼 이 화면만의 하위 흐름이
+#   있어야 하기 때문이다.
+UI_MENU        = 'MENU'
+UI_PICK_ROUTE  = 'PICK_ROUTE'
+UI_WAIT_MAP    = 'WAIT_MAP'
+UI_WAIT_DRIVE  = 'WAIT_DRIVE'
+
 
 class PromptNode(Node):
 
@@ -51,14 +74,23 @@ class PromptNode(Node):
         self.estop = False
         self.selected = ''
         self.events = []          # 최근 이벤트 몇 줄
+        self.last_point = None    # 매핑 중 마지막으로 기록된 좌표 한 줄
 
         self.create_subscription(String, '/drive_state', self.cb_state, 10)
         self.create_subscription(String, '/drive_event', self.cb_event, 10)
         self.create_subscription(Bool, '/vehicle_mode', self.cb_mode, 10)
         self.create_subscription(Bool, '/estop', self.cb_estop, 10)
+        # ★mapping.py 가 CSV 에 실제로 쓴 행만 여기로 나온다★ 매핑 진행을
+        #   눈으로 확인하기 위한 용도일 뿐, 이 화면은 이 값을 판단에 쓰지 않는다.
+        self.create_subscription(String, '/mapping_point', self.cb_point, 10)
 
     def cb_state(self, m):
-        self.state = str(m.data)
+        new = str(m.data)
+        # 새 매핑 세션이 시작되는 순간(비-매핑 → MAP_HEADING) 이전 세션의 마지막
+        # 좌표가 화면에 남아 있지 않게 지운다.
+        if new == 'MAP_HEADING' and not self.state.startswith('MAP_'):
+            self.last_point = None
+        self.state = new
 
     def cb_event(self, m):
         self.events.append(str(m.data))
@@ -69,6 +101,9 @@ class PromptNode(Node):
 
     def cb_estop(self, m):
         self.estop = bool(m.data)
+
+    def cb_point(self, m):
+        self.last_point = str(m.data)
 
     # ── 화면 ───────────────────────────────────────────────────────────────────
     def routes(self):
@@ -91,33 +126,55 @@ class PromptNode(Node):
                 f" 선택된 경로: {self.selected or '(없음)'}\n"
                 f"{BANNER}")
 
-    def main_menu(self, routes):
-        lines = [self.header(), " 경로 목록 (최신순)"]
+    def menu_screen(self, routes):
+        latest = routes[0] if routes else '(없음)'
+        lines = [self.header(),
+                 f" 저장된 경로: {len(routes)}개   (최신: {latest})",
+                 "",
+                 " 1) 매핑 시작   2) 주행 시작   |  r = 새로고침  |  s = 정지(리니어 2단)  |  q = 종료",
+                 " ▶ 매핑: 스위치 수동조종이면 즉시 / 자율주행이면 내릴 때까지 대기",
+                 " ▶ 주행: 경로 선택 후 스위치 자율주행이면 즉시 / 수동조종이면 올릴 때까지 대기",
+                 ""]
+        return "\n".join(lines)
+
+    def pick_route_screen(self, routes):
+        lines = [self.header(), " 주행할 경로 (최신순)"]
         if not routes:
-            lines.append("   (없음 — 스위치를 자율→수동으로 내려 매핑부터)")
+            lines.append("   (없음)")
         for i, name in enumerate(routes[:12], 1):
             mark = "★" if name == self.selected else " "
             lines.append(f"  {mark}{i:2d}) {name}")
-        lines += [
-            "",
-            " 번호 = 경로 선택 |  r = 목록 새로고침 |  s = 정지(리니어 2단) |  q = 종료",
-            " ▶ 주행: 경로 고르고 스위치 ↑(수동→자율)   ▶ 매핑: 스위치 ↓(자율→수동)",
-            "",
-        ]
+        lines += ["", " 번호를 입력하세요 — 취소: q 또는 그냥 [Enter]", ""]
+        return "\n".join(lines)
+
+    def wait_screen(self, need_auto, label):
+        if self.auto_mode is None:
+            cur = "미수신"
+        else:
+            cur = "자율주행" if self.auto_mode else "수동조종"
+        need = "자율주행" if need_auto else "수동조종"
+        lines = [self.header(),
+                 f" ⏳ {label} 대기 중 — 스위치를 ★{need}★ 로 전환하세요 (현재: {cur})",
+                 " 아무 키나 누르면 취소하고 메뉴로 돌아갑니다.",
+                 ""]
         return "\n".join(lines)
 
     def busy_screen(self):
         lines = [self.header()]
         if self.state in ('MAP_HEADING', 'DRIVE_HEADING'):
-            lines.append(" 🧭 헤딩 초기화 중 — 조향 0°로 곧게 굴러간다. 확정되면 자동 정지.")
+            lines.append(" 🧭 헤딩 초기화 중 — 조향 0°로 곧게 굴러간다. 확정되면 자동 진행.")
         elif self.state == 'MAP_RUN':
-            lines.append(" 🗺️ 매핑 중 — 페달로 운전하세요. 끝내려면 스위치 ↑(수동→자율).")
+            lines.append(" 🗺️ 매핑 중 — 페달로 운전하세요.")
         elif self.state == 'DRIVE_RUN':
-            lines.append(" 🚗 자율주행 중 — 중단하려면 스위치 ↓(자율→수동).")
+            lines.append(" 🚗 자율주행 중.")
         elif self.state == 'DRIVE_DONE':
-            lines.append(" 🎯 도착 — 리니어 2단 체결됨. 스위치 ↓(자율→수동)로 해제+저장.")
+            lines.append(" 🎯 도착/정지 — 리니어 2단. 완전정지 2초 뒤 자동으로 메뉴 복귀.")
         elif self.state == 'ESTOP':
             lines.append(" 🚨 E-STOP — 해제하면 처음부터 다시 시작합니다.")
+        if self.state.startswith('MAP_') and self.last_point:
+            lines.append(f" 📍 최근 기록: {self.last_point}")
+        if self.state != 'ESTOP':
+            lines.append(" (아무 키나 누르면 중단하고 메뉴로 돌아갑니다)")
         lines.append("")
         lines += [f"   · {e}" for e in self.events[-5:]]
         lines.append("")
@@ -131,31 +188,96 @@ def main(args=None):
     spin = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin.start()
 
+    ui = UI_MENU
+    pending = None          # None | 'MAP' | 'DRIVE' — 목표 스위치 위치가 될 때까지 대기 중
     last_screen = None
+
     try:
         while rclpy.ok():
-            routes = node.routes()
             idle = node.state == 'IDLE'
-            screen = node.main_menu(routes) if idle else node.busy_screen()
 
-            # 상태가 바뀌었을 때만 다시 그린다(터미널이 깜빡이지 않게)
+            # ★상태가 IDLE 을 벗어나면 이 화면의 대기/선택 흐름은 의미가 없어진다★
+            #   (방금 보낸 MAP_START/DRIVE_START 가 먹혔거나, E-stop 등 다른 경로로
+            #   상태가 바뀐 경우 모두 포함) — 다음에 IDLE 로 돌아오면 깨끗한
+            #   메뉴에서 다시 시작한다.
+            if not idle:
+                ui = UI_MENU
+                pending = None
+
+            # ★목표 스위치 위치가 이미 됐으면 대기를 끝내고 명령을 보낸다★
+            if pending == 'MAP' and node.auto_mode is False:
+                node.pub_cmd.publish(String(data='MAP_START'))
+                pending = None
+                ui = UI_MENU
+            elif pending == 'DRIVE' and node.auto_mode is True:
+                node.pub_cmd.publish(String(data='DRIVE_START'))
+                pending = None
+                ui = UI_MENU
+
+            routes = node.routes()
+            if ui == UI_MENU:
+                screen = node.menu_screen(routes) if idle else node.busy_screen()
+            elif ui == UI_PICK_ROUTE:
+                screen = node.pick_route_screen(routes)
+            elif ui == UI_WAIT_MAP:
+                screen = node.wait_screen(need_auto=False, label="매핑")
+            else:  # UI_WAIT_DRIVE
+                screen = node.wait_screen(need_auto=True, label="주행")
+
             if screen != last_screen:
                 print(screen, flush=True)
                 last_screen = screen
-                if idle:
+                if ui == UI_MENU and idle:
                     print("> ", end="", flush=True)
 
-            # 입력을 0.4초씩 기다린다 — 블로킹 input() 을 쓰면 스위치로 상태가
-            # 바뀌어도 화면이 갱신되지 않는다.
             ready, _, _ = select.select([sys.stdin], [], [], 0.4)
             if not ready:
                 continue
             line = sys.stdin.readline().strip()
-            if not line:
-                if idle:
-                    print("> ", end="", flush=True)
+
+            # ── 대기 화면(스위치 전환 대기) : 아무 키나 취소로 처리 ──
+            if ui in (UI_WAIT_MAP, UI_WAIT_DRIVE):
+                pending = None
+                ui = UI_MENU
+                last_screen = None
                 continue
 
+            # ── 메뉴 화면인데 driving 이 바쁜 상태(매핑/주행 진행 중) : 아무 키나 중단 ──
+            if ui == UI_MENU and not idle:
+                if node.state != 'ESTOP':
+                    node.pub_cmd.publish(String(data='STOP'))
+                last_screen = None
+                continue
+
+            # ── 경로 선택 화면 ──
+            if ui == UI_PICK_ROUTE:
+                if line.lower() == 'q' or not line:
+                    ui = UI_MENU
+                    last_screen = None
+                    continue
+                if line.isdigit():
+                    i = int(line)
+                    if 1 <= i <= min(len(routes), 12):
+                        node.selected = routes[i - 1]
+                        node.pub_cmd.publish(String(data=node.selected))
+                        if node.auto_mode is None:
+                            print("⚠️ 주행모드를 아직 알 수 없습니다 (nxde arduino 연결 확인)")
+                            ui = UI_MENU
+                        elif node.auto_mode:
+                            node.pub_cmd.publish(String(data='DRIVE_START'))
+                            ui = UI_MENU
+                        else:
+                            pending = 'DRIVE'
+                            ui = UI_WAIT_DRIVE
+                        last_screen = None
+                        continue
+                last_screen = None
+                continue
+
+            # ── 메인 메뉴 (IDLE) ──
+            if not line:
+                print("> ", end="", flush=True)
+                continue
             if line.lower() == 'q':
                 break
             if line.lower() == 'r':
@@ -166,13 +288,25 @@ def main(args=None):
                 print("🛑 정지 명령 전송")
                 last_screen = None
                 continue
-            if line.isdigit() and idle:
-                i = int(line)
-                if 1 <= i <= min(len(routes), 12):
-                    node.selected = routes[i - 1]
-                    node.pub_cmd.publish(String(data=node.selected))
+            if line == '1':
+                if node.auto_mode is False:
+                    node.pub_cmd.publish(String(data='MAP_START'))
+                    ui = UI_MENU
+                elif node.auto_mode is True:
+                    pending = 'MAP'
+                    ui = UI_WAIT_MAP
+                else:
+                    print("⚠️ 주행모드를 아직 알 수 없습니다 (nxde arduino 연결 확인)")
+                last_screen = None
+                continue
+            if line == '2':
+                if not routes:
+                    print("⚠️ 저장된 경로가 없습니다 — 먼저 매핑하세요")
                     last_screen = None
                     continue
+                ui = UI_PICK_ROUTE
+                last_screen = None
+                continue
             print("입력을 이해하지 못했습니다.")
             last_screen = None
     except KeyboardInterrupt:

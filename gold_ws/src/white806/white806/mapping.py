@@ -32,7 +32,7 @@ import rclpy
 from rclpy.node import Node
 
 from sensor_msgs.msg import NavSatFix
-from std_msgs.msg import Bool, Int32
+from std_msgs.msg import Bool, Int32, String
 
 from white806 import paths
 
@@ -77,6 +77,10 @@ class MappingNode(Node):
         self.throttle_raw = 0
         self.auto_mode = False
         self.estop = False
+
+        # ★기록되는 순간의 좌표를 그대로 내보낸다★ prompt 가 매핑 진행을 눈으로
+        #   확인할 수 있게 한다(2026-08-11) — CSV 에 실제로 쓰인 행만 나간다.
+        self.pub_point = self.create_publisher(String, '/mapping_point', 10)
 
         self.create_subscription(NavSatFix, '/fix',          self.cb_fix,      10)
         self.create_subscription(Bool,      '/mapping_cmd',  self.cb_cmd,      10)
@@ -192,6 +196,8 @@ class MappingNode(Node):
             1 if self.estop else 0,
         ])
         self.rows += 1
+        self.pub_point.publish(String(
+            data=f"#{self.rows:04d}  lat={self.lat:.7f}  lon={self.lon:.7f}"))
         if self.rows % 20 == 0:
             try:
                 self.fp.flush()
