@@ -131,11 +131,12 @@ def generate_launch_description():
         # ★[2026-08-11] 조향 전달계 실측 보정★ B보드의 ±40° 는 가변저항 행정 이름일
         #   뿐 도로휠각이 아니다(실측 링키지비 1.75). driving.py 상단 주석 참고.
         DeclareLaunchArgument(
-            'steer_plant_gain', default_value='1.75',
-            description='pot 지령 / 도로휠각. 126표본 최소자승 실측값. '
-                        '★코너를 여전히 크게 돌면 올린다(더 꺾는다)★'),
+            'steer_plant_gain', default_value='1.26',
+            description='pot 지령 / 도로휠각. 126표본 최소자승 실측(1.75)을 '
+                        '[2026-08-12] 가변저항 하드리밋 재측정에 맞춰 ×0.7185 '
+                        '재환산한 값. ★코너를 여전히 크게 돌면 올린다(더 꺾는다)★'),
         DeclareLaunchArgument(
-            'steer_understeer', default_value='7.2',
+            'steer_understeer', default_value='5.17',
             description='언더스티어 계수 [deg/(m/s²)]. 같은 반경이라도 속도가 오르면 '
                         '더 꺾어야 하는 양. 고속 코너에서 부족하면 올린다'),
         DeclareLaunchArgument(
