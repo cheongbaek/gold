@@ -58,6 +58,14 @@ from std_msgs.msg import Bool, Float32, Int32, String
 
 from white806 import paths
 
+# ★음성 안내★ prompt.py 와 같은 셋만 이 화면이 낸다(시작 인사 + 대기 안내 2종).
+#   나머지는 nxde 의 sound 노드가 토픽을 보고 낸다 — prompt.py 헤더의 같은 주석 참고.
+try:
+    from nxde.sound import Player, SND_PROMPT, SND_WAIT_MAP, SND_WAIT_DRIVE
+except Exception:                       # noqa: BLE001
+    Player = None
+    SND_PROMPT = SND_WAIT_MAP = SND_WAIT_DRIVE = ''
+
 try:
     import tkinter as tk
     from tkinter import filedialog, messagebox
@@ -108,6 +116,14 @@ class PromptGuiNode(Node):
         self.create_subscription(Float32, '/speed',        self.cb_speed, 10)
         self.create_subscription(Int32,   '/encoder',      self.cb_encoder, 10)
         self.create_subscription(Twist,   '/cmd_vel_raw',  self.cb_cmd, 10)
+
+        self.sound = Player(log=self.get_logger().warning) if Player else None
+        self.play(SND_PROMPT)          # 창이 뜨자마자
+
+    def play(self, name):
+        """음성 안내. 재생기·음원이 없어도 조용히 지나간다."""
+        if self.sound and name:
+            self.sound.play(name)
 
     # ── 콜백 ★위젯을 만지지 않는다★ ──────────────────────────────────────────
     def cb_state(self, m):
@@ -225,6 +241,7 @@ class App:
             self.say('🗺️ 매핑 시작 — 페달로 곧게 굴려 헤딩을 잡을 것')
         else:
             self.pending = 'MAP'
+            self.node.play(SND_WAIT_MAP)               # "스위치를 수동조종으로"
             self.say('⏳ 스위치를 수동조종으로 내리면 그 순간 매핑을 시작한다')
 
     def on_drive(self):
@@ -265,6 +282,7 @@ class App:
             self.say(f'▶ 주행 시작 — {name}')
         else:
             self.pending = 'DRIVE'
+            self.node.play(SND_WAIT_DRIVE)             # "스위치를 자율주행으로"
             self.say(f'⏳ {name} 선택됨 — 스위치를 자율주행으로 올리면 출발한다')
 
     def on_quit(self):

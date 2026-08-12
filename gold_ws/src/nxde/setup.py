@@ -26,7 +26,8 @@ setup(
     entry_points={
         'console_scripts': [
             # ══════════════════════════════════════════════════════════════
-            #  노드 4개 — 전부 ros2 run 으로 띄운다 (런치파일 없음)
+            #  실행 대상 6개 — 전부 ros2 run 으로 띄운다 (런치파일 없음)
+            #    ※ tts 는 ROS 노드가 아닌 작업용 GUI 도구다
             # ══════════════════════════════════════════════════════════════
             # ★차량 구동의 필수 노드★ A/B 2보드 통신 전담. 이게 없으면 아무것도 안 움직인다.
             #   자율주행 시에는 white one_launch.py 가 이 노드를 함께 띄운다.
@@ -42,6 +43,15 @@ setup(
             # ★런치 전 하드웨어 연결 점검★ 보고하고 종료한다.  ros2 run nxde check
             #   메가 A/B · 조이스틱 · GPS(NMEA GGA 의 RTK quality) · IMU · 카메라
             'check    = nxde.check:main',
+            # ★음성 안내★ sound/*.mp3 를 사건에 맞춰 기본 스피커로 재생한다.
+            #   구독만 하므로 제어에 끼어들지 않는다.  ros2 run nxde sound
+            #   (white806 one_launch.py 가 use_sound:=true 로 함께 띄운다)
+            'sound    = nxde.sound:main',
+            # ★대화형 TTS★ 문장을 입력하면 그 자리에서 읽어 준다(edge-tts + tkinter).
+            #   sound/*.mp3 안내 음성을 만들거나 문구를 귀로 확인하는 작업용 도구다.
+            #   ROS 노드가 아니고 ★인터넷이 필요하다★.  ros2 run nxde tts
+            #   필요: pip install --user edge-tts pygame
+            'tts      = nxde.tts:main',
         ],
     },
 )

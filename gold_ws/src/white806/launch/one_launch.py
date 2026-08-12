@@ -69,6 +69,7 @@ def generate_launch_description():
     use_arduino = LaunchConfiguration('use_arduino')
     use_record  = LaunchConfiguration('use_record')
     use_mapping = LaunchConfiguration('use_mapping')
+    use_sound   = LaunchConfiguration('use_sound')
 
     args = [
         DeclareLaunchArgument(
@@ -81,6 +82,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'use_mapping', default_value='true',
             description='mapping 노드(경로 수집). prompt 에서 1)매핑을 시작해야 동작한다'),
+        DeclareLaunchArgument(
+            'use_sound', default_value='true',
+            description='nxde 의 sound 노드(음성 안내). 뜨는 즉시 one_launch_1 이 나오고, '
+                        'A·B 보드 연결·매핑/주행 시작·도착·E-stop 을 토픽으로 보고 안내한다. '
+                        '구독만 하므로 제어에는 영향이 없다 — 조용히 쓰려면 false'),
         DeclareLaunchArgument(
             'gps_port', default_value=gps_dev,
             description='GPS 시리얼 경로 override (기본: udev 링크 → VID/PID 스캔)'),
@@ -296,8 +302,24 @@ def generate_launch_description():
         condition=IfCondition(use_record),
     )
 
+    # ═══════════════════════════════════════════════════════════════════
+    #  [안내] 음성 — nxde 패키지, 구독 전용
+    #    ★respawn 을 걸지 않는다★ 되살아날 때마다 시작 안내(one_launch_1)가 다시
+    #    나오는 편이 조용히 없는 것보다 헷갈린다. 죽어도 주행에는 영향이 없다.
+    # ═══════════════════════════════════════════════════════════════════
+    sound = Node(
+        package='nxde',
+        executable='sound',
+        name='sound_node',
+        output='screen',
+        additional_env=NODE_ENV,
+        condition=IfCondition(use_sound),
+    )
+
     return LaunchDescription(args + [
-        # 하드웨어를 먼저 — 자율주행 노드가 첫 토픽을 놓칠 확률을 줄인다
+        # 음성 먼저 — '런치했다'는 안내가 하드웨어 탐색보다 늦으면 의미가 없다
+        sound,
+        # 하드웨어
         arduino,
         iahrs,
         speed,

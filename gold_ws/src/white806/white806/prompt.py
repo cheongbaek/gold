@@ -48,6 +48,17 @@ from std_msgs.msg import Bool, String
 
 from white806 import paths
 
+# ★음성 안내 [2026-08-12]★ 이 화면이 직접 내는 것은 세 개뿐이다 — 시작 인사와
+#   '스위치를 돌려 달라'는 대기 안내 둘. 셋 다 토픽에 나타나지 않는 이 화면의 로컬
+#   상태라서다. 나머지(매핑 시작·종료, 주행 시작·도착, E-stop …)는 전부 nxde 의
+#   sound 노드가 토픽을 보고 낸다 — 그래야 이 화면을 안 띄워도 안내가 나온다.
+#   ★nxde 가 없어도 이 화면은 그대로 돈다★ (exec_depend 이지만 방어한다)
+try:
+    from nxde.sound import Player, SND_PROMPT, SND_WAIT_MAP, SND_WAIT_DRIVE
+except Exception:                       # noqa: BLE001 — 음성이 없다고 CLI 를 막지 않는다
+    Player = None
+    SND_PROMPT = SND_WAIT_MAP = SND_WAIT_DRIVE = ''
+
 
 BANNER = "═" * 74
 
@@ -68,6 +79,9 @@ class PromptNode(Node):
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
 
         self.pub_cmd = self.create_publisher(String, '/drive_cmd', 10)
+
+        self.sound = Player(log=self.get_logger().warning) if Player else None
+        self.play(SND_PROMPT)          # "메인화면입니다" — 뜨자마자
 
         self.state = 'IDLE'
         self.auto_mode = None
@@ -104,6 +118,11 @@ class PromptNode(Node):
 
     def cb_point(self, m):
         self.last_point = str(m.data)
+
+    def play(self, name):
+        """음성 안내. 재생기·음원이 없어도 조용히 지나간다."""
+        if self.sound and name:
+            self.sound.play(name)
 
     # ── 화면 ───────────────────────────────────────────────────────────────────
     def routes(self):
@@ -269,6 +288,7 @@ def main(args=None):
                         else:
                             pending = 'DRIVE'
                             ui = UI_WAIT_DRIVE
+                            node.play(SND_WAIT_DRIVE)   # "스위치를 자율주행으로"
                         last_screen = None
                         continue
                 last_screen = None
@@ -295,6 +315,7 @@ def main(args=None):
                 elif node.auto_mode is True:
                     pending = 'MAP'
                     ui = UI_WAIT_MAP
+                    node.play(SND_WAIT_MAP)             # "스위치를 수동조종으로"
                 else:
                     print("⚠️ 주행모드를 아직 알 수 없습니다 (nxde arduino 연결 확인)")
                 last_screen = None
