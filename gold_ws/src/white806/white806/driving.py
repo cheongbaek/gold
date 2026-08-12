@@ -111,11 +111,16 @@ driving.py ― kasa 자율주행 [white806 / GPS+IMU 최소 추종판]
   확정한다).
 
 ════════════════════════════════════════════════════════════════════════════════
- 리니어 브레이크 — ★'감속 정책'은 완전히 없앴다 (2026-08-11)★
+ 리니어 브레이크 — ★'실측 되먹임 감속 정책'은 없앴다 (2026-08-11)★
 ════════════════════════════════════════════════════════════════════════════════
-  리니어를 쓰는 곳은 이제 ★DRIVE_DONE 하나뿐★ 이다(도착·정지명령·경로이탈). 거기서는
-  조건과 무관하게 2단을 물고, 푸는 것은 ①엔코더 완전정지 확인 후 2초(_check_done_
-  release) ②수동조종으로 스위치를 내릴 때 ③이 노드가 내려갈 때 셋뿐이다.
+  리니어를 쓰는 곳은 ★DRIVE_DONE(도착·정지명령·경로이탈)★ 과 ★종점 5m 접근제동★
+  둘뿐이다. DRIVE_DONE 에서는 조건과 무관하게 2단을 물고, 푸는 것은 ①엔코더 완전정지
+  확인 후 2초(_check_done_release) ②수동조종으로 스위치를 내릴 때 ③이 노드가 내려갈
+  때 셋뿐이다.
+  ★[2026-08-12] 종점 접근제동이 추가됐다★ 종점 5m 에서 2단을 물고 4km/h 에서 풀어
+  1펄스로 기어간다 — 상수 GOAL_BRAKE_M 위의 절에 근거와 검산이 있다. 아래에서 버린
+  정책과 다른 점은 ★실측을 보고 물었다 풀었다 하지 않는다★ 는 것이다: 거리 하나로
+  한 번 물고, 속도 임계 한 번으로 풀고, 그 뒤로는 다시 물지 않는다(되먹임 없음).
   ★진입 순간에 조향 0(일직선)·펄스 0 을 리니어와 같은 틱에 함께 낸다★ [2026-08-11]
   — enter() 참고. 정지 지시와 조향 해제가 갈라지면 그 사이에 B보드가 직전 조향각을
   향해 계속 슬루한다(실측 70°/s).
@@ -127,10 +132,10 @@ driving.py ― kasa 자율주행 [white806 / GPS+IMU 최소 추종판]
   종점을 4펄스로 지나쳤고, 결국 CTE 이탈감지(2.0m)가 대신 차를 세웠다 — 종점에서
   2m 지난 지점이다. 그래서 밖에서 보면 '도착했는데 리니어가 안 걸린다'로 보였다.
   고친 곳은 리니어가 아니라 ★도착 판정★ 이다(WP_REACH_M 0.2→0.9 + 통과 판정).
-    ※ 이때 종점 선행제동(순차 감속)도 함께 넣었었지만 [2026-08-12] 걷어냈다 —
-      상단 '종점 감속은 두지 않는다' 절 참고. 정지는 리니어가 전담한다.
-      ★그래서 도착 판정이 유일한 방벽이다★ 반경만으로는 못 잡으니 통과 판정이
-      반드시 함께 있어야 한다.
+    ※ 이때 넣었던 종점 선행제동(목표펄스를 미리 깎는 방식)은 [2026-08-12] 걷어냈고,
+      같은 날 ★리니어로 줄이는 방식★ 으로 다시 넣었다 — 상단 '종점 순차감속' 절.
+      도착 판정은 여전히 반경+통과 두 가지를 다 본다. 다만 접근속도가 4펄스에서
+      1펄스로 내려가 판정이 물리적으로 훨씬 쉬워졌다.
 
   ★왜 '현재펄스 > 목표펄스+3 이면 2단' 정책을 버렸는가 — 세 번 물려서 세 번 다 실패★
   그 정책은 매번 target_pulse 를 0 으로 덮었고, 그 0→양수 복귀가 A보드
@@ -372,15 +377,50 @@ CORNER_MIN_PULSE        = 2
 #     값이다). 노드를 재시작하지 않아 이 상수가 반영되지 않았다.
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ★★ 종점 감속은 두지 않는다 — 도착하면 곧바로 리니어 2단 (2026-08-12) ★★
+#  ★★ 종점 순차감속 — 5m 리니어 2단 → 4km/h 에서 풀고 1펄스 크립 (2026-08-12) ★★
 # ══════════════════════════════════════════════════════════════════════════════
-#  2026-08-11 에 종점 선행제동(GOAL_BRAKE_DECEL/MARGIN, 4→3→2펄스 순차 감속)을 넣었다가
-#  ★다시 걷어냈다★. 이 차의 정지는 리니어 2단이 담당하고(실측 감속도 2.2 m/s²),
-#  속도를 미리 깎는 것은 그 일을 대신하지 못하면서 종점 구간만 길게 만든다.
-#  ★지금 정책★ : 종점까지 곡률이 허락하는 속도로 가고, 도착·이탈 판정이 서는 순간
-#  DRIVE_DONE 으로 넘어가 조향 0 + 리니어 2단으로 세운다(enter 참고).
-#    ※ 그래서 도착 판정이 늦으면 그만큼 지나쳐 선다. 반경(WP_REACH_M)만으로 판정하면
-#      5Hz GPS 에서 놓치므로 ★통과 판정★ 이 함께 있어야 한다 — run_follow() 참고.
+#  ★앞선 두 번의 실패와 무엇이 다른가★
+#  · 2026-08-11 의 종점 선행제동(GOAL_BRAKE_DECEL/MARGIN, 4→3→2펄스)은 ★목표펄스를
+#    미리 깎는★ 방식이었고 다음 날 걷어냈다 — 펄스를 깎아도 인휠은 코스팅으로 천천히
+#    줄 뿐이라 '세우는 일'을 대신하지 못하면서 종점 구간만 길어졌다.
+#  · 그 앞의 '현재펄스 > 목표펄스+3 이면 2단' 정책은 ★목표펄스를 0 으로 덮어★ A보드
+#    기동 블랭킹을 재트리거하는 되먹임이었다(파일 헤더 '리니어 브레이크' 절).
+#
+#  이번 것은 둘 다 아니다. ★실제로 세우는 장치(리니어)를 종점 앞에서 한 번 쓰고★,
+#  그 뒤는 실측되먹임 없는 고정 1펄스로 굴러간다:
+#
+#    ① 종점 5m   : 리니어 2단 + 목표펄스 0. 이 순간 nxde 가 A보드 REF 를 0 으로 막아
+#                  (arduino.py (4) 분기) 구동과 제동이 서로 밀어내지 않는다.
+#    ② 4 km/h    : 리니어 해제 + 1펄스 크립. 저속 펄스 보정(low_speed_trim)이 실측을
+#                  보고 1펄스(≈3.18km/h)를 유지한다 — 서 있으면 2펄스로 밀고, 그보다
+#                  빠르면 0 으로 빼서 코스팅한다.
+#    ③ 도착      : 종전 그대로 DRIVE_DONE — 조향 0 + 리니어 2단, 완전정지 확인 2초 뒤
+#                  해제하고 IDLE 복귀(DRIVE_DONE_RELEASE_S, _check_done_release).
+#
+#  ★무엇이 좋아지나 — 도착 판정이 물리적으로 쉬워진다★
+#      접근속도 3.54 m/s(4펄스) : GPS 샘플간격 0.71m, 리니어 정지거리 2.85m
+#                                 → 반경 0.9m 창을 건너뛰고, 서는 곳은 종점 2m 뒤
+#                                   (rec_20260811_214350 실측 오버런과 일치)
+#      접근속도 0.88 m/s(크립)  : GPS 샘플간격 0.18m, 리니어 정지거리 0.18m
+#                                 → 창을 건너뛸 수 없고 오버런도 사실상 사라진다
+#  검산 : 3.54 → 1.11 m/s 를 실측 감속도 2.2 m/s² 로 줄이면 1.1초·2.57m. 5m 안에서
+#         끝나고 남은 2.4m 를 크립으로 간다.
+#
+#  ⚠️ ★임계는 IMU 속도라 speed.py 의 한계를 그대로 물려받는다★ 절대속도가 과소평가
+#     되는 구간이 있어(로그 대조 t=62 에서 GPS 17.4 vs IMU 8.1 km/h) 실제보다 일찍
+#     '4km/h 아래'로 볼 수 있다. 그래도 위험이 작은 이유는 해제 뒤 명령이 1펄스뿐이고,
+#     실측이 그보다 빠르면 저속 보정이 0 으로 내려 코스팅하기 때문이다. 실차에서 해제가
+#     이르면 goal_creep_kmh 를 낮춘다(런치 인자).
+GOAL_BRAKE_M     = 5.0    # [m] 종점까지 이 안이면 리니어 2단 (런치 goal_brake_m)
+GOAL_CREEP_KMH   = 4.0    # [km/h] 이 밑이면 리니어 해제 + 크립 (런치 goal_creep_kmh)
+GOAL_CREEP_PULSE = 1      # 크립 목표펄스 — 저속 보정이 이 값을 유지시킨다
+GOAL_BRAKE_MAX_S = 3.0    # [s] 속도를 못 읽어도 이만큼 물렸으면 크립으로 넘어간다
+#   ※ 마지막 줄이 없으면 /speed 도 엔코더도 없을 때 리니어를 문 채로 굳는다 — 차는
+#     서 있고 도착 판정은 영영 서지 않는다. 크립으로 넘어가는 쪽이 언제나 안전하다.
+GOAL_PHASE_NONE, GOAL_PHASE_BRAKE, GOAL_PHASE_CREEP = 0, 1, 2
+
+#  ※ 도착 판정 자체는 이 감속과 별개로 그대로 둔다 — 반경(WP_REACH_M)만으로는
+#    5Hz GPS 에서 놓칠 수 있으므로 ★통과 판정★ 이 계속 함께 있어야 한다(run_follow).
 
 #  ── 곡률 LFD 캡 ── 코너컷 오차 ≈ LFD²/(8R) 이므로 LFD 를 √(K·R) 로 눌러
 #     CTE ≤ 약 K/8 = 0.19m 를 보장한다. ★코너에서 조향 권한을 되찾는 장치이기도 하다★
@@ -589,6 +629,9 @@ class DrivingNode(Node):
         self.declare_parameter('steer_plant_gain', STEER_PLANT_GAIN)
         self.declare_parameter('steer_understeer', STEER_UNDERSTEER)
         self.declare_parameter('cte_ki', CTE_KI)
+        # ── 종점 순차감속 [2026-08-12] ── 상단 GOAL_* 절 참고
+        self.declare_parameter('goal_brake_m', GOAL_BRAKE_M)
+        self.declare_parameter('goal_creep_kmh', GOAL_CREEP_KMH)
 
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
         # ★파라미터도 MAX_PULSE_LIMIT 로 자른다 [2026-08-11]★ send() 에서만 자르면
@@ -606,6 +649,10 @@ class DrivingNode(Node):
         self.plant_gain = max(0.1, float(self.get_parameter('steer_plant_gain').value))
         self.understeer = float(self.get_parameter('steer_understeer').value)
         self.cte_ki = max(0.0, float(self.get_parameter('cte_ki').value))
+        # 0 이하로 주면 그 단계를 끄는 뜻이 된다 — 제동 없이 예전 거동으로 돌아간다.
+        self.goal_brake_m = max(0.0, float(self.get_parameter('goal_brake_m').value))
+        self.goal_creep_kmh = max(0.0,
+                                  float(self.get_parameter('goal_creep_kmh').value))
         self.road_max = STEER_MAX_DEG / self.plant_gain
 
         # ── 속도 대역 (구 white 의 max_speed_ms / min_speed_ms 와 같은 역할) ──
@@ -660,6 +707,12 @@ class DrivingNode(Node):
         # ── 출력 상태 ──
         self.brake_now = BRAKE_NONE
         self._done_zero_t = None      # DRIVE_DONE 에서 완전정지를 확인한 시각
+        # ── 종점 순차감속 [2026-08-12] ──
+        #   ★한 방향으로만 간다★ NONE → BRAKE → CREEP. 되돌아가지 않으므로 종점
+        #   부근에서 거리·속도가 흔들려도 리니어가 채터링하지 않는다. 초기화는
+        #   enter() 한 곳에서만 한다(= 상태가 바뀌면 무조건 처음으로).
+        self._goal_phase = GOAL_PHASE_NONE
+        self._goal_brake_t = 0.0      # 접근제동을 물기 시작한 시각
 
         # ── 진단 계측 (/drive_diag) ★제어 판단에 절대 쓰지 않는다★ ──
         #   여기 있는 값이 제어로 새어 들어가면 '계측을 위해 거동이 바뀌는' 상태가
@@ -965,6 +1018,10 @@ class DrivingNode(Node):
         # ★상태가 바뀌면 CTE 적분을 지운다★ 이전 구간의 누적이 다음 구간 첫 틱에
         #   실리면 출발하자마자 한쪽으로 튄다(reset_cte_integral 주석).
         self.reset_cte_integral()
+        # ★종점 순차감속도 함께 지운다★ 이것이 없으면 한 번 크립까지 갔던 세션 뒤에
+        #   다음 주행이 시작부터 CREEP 인 채로 출발한다(1펄스로 기어간다).
+        self._goal_phase = GOAL_PHASE_NONE
+        self._goal_brake_t = 0.0
         if msg:
             self.event(msg)
 
@@ -1213,11 +1270,69 @@ class DrivingNode(Node):
         pulse = self.corner_speed(near_win, near_peak, far_win, far_dist,
                                   far_peak, far_peak_dist, lfd_win_only, lfd_speed)
 
+        # ── 판단 3. 종점 순차감속 ★곡률보다 뒤에서 덮는다★ [2026-08-12] ──
+        #   종점 앞에서는 곡률이 무엇을 요구하든 이쪽이 이긴다. 조향은 그대로 계산해
+        #   내보낸다 — 제동 중에도 크립 중에도 차는 여전히 종점을 향해 굴러간다.
+        pulse = self.goal_approach(s_left, d2goal, pulse)
+
         # ── 제어 : 순수추종(도로휠각) + CTE 적분 → 전달계 보정 → pot 지령 ──
         road = self.pure_pursuit_steer(lfd)
         road = self.apply_cte_integral(road, cte)
         steer = self.steer_command(road, pulse * MS_PER_PULSE)
         self.send(pulse, steer, control=True)
+
+    def goal_approach(self, s_left, d2goal, pulse):
+        """종점 순차감속 : 5m 리니어 2단 → 4km/h 에서 해제 + 1펄스 크립 → (도착) 2단.
+        [2026-08-12 신설 — 상단 '종점 순차감속' 절에 근거·검산이 있다]
+
+        돌려주는 값은 ★이번 틱의 목표펄스★ 다. 단계 판정과 리니어 조작을 한 함수에
+        둔 이유는, 둘이 갈라지면 '리니어는 물렸는데 펄스는 4' 같은 조합이 한 틱이라도
+        생기기 때문이다 — 그것이 정확히 구동과 제동이 서로 미는 상태다.
+
+        ★진입에 s_left 와 d2goal 을 둘 다 요구한다★
+          · d2goal(직선거리) 단독이면 : 순환 코스에서 ★출발 지점이 종점 5m 안★ 일 때
+            출발하자마자 제동이 걸린다.
+          · s_left(남은 호길이) 단독이면 : wp_idx 가 앞서 튀었을 때 아직 멀었는데 걸린다.
+          둘 다 5m 안일 때만 물면 두 오작동이 동시에 성립해야 하므로 사실상 사라진다.
+          늦게 무는 쪽으로 틀려도 손해가 작다 — 종전 거동(도착 시 리니어)으로 돌아갈 뿐이다.
+        """
+        if self.goal_brake_m <= 0.0:               # 런치에서 껐다 → 종전 거동
+            return pulse
+
+        if self._goal_phase == GOAL_PHASE_NONE:
+            if not (s_left <= self.goal_brake_m and d2goal <= self.goal_brake_m):
+                return pulse
+            kmh = self.measured_kmh()
+            if kmh is not None and kmh <= self.goal_creep_kmh:
+                # 이미 느리다(저속 코너를 빠져나온 직후 등) — 물 이유가 없다
+                self._goal_phase = GOAL_PHASE_CREEP
+                self.event(f"🐢 종점 {d2goal:.1f}m — 이미 {kmh:.1f}km/h 라 제동 없이 "
+                           f"{GOAL_CREEP_PULSE}펄스 크립")
+            else:
+                self._goal_phase = GOAL_PHASE_BRAKE
+                self._goal_brake_t = time.time()
+                self.set_brake(BRAKE_FULL)
+                cur = '?' if kmh is None else f"{kmh:.1f}"
+                self.event(f"🛑 종점 {d2goal:.1f}m — 리니어 2단 (현재 {cur}km/h, "
+                           f"{self.goal_creep_kmh:.0f}km/h 에서 해제)")
+
+        if self._goal_phase == GOAL_PHASE_BRAKE:
+            kmh = self.measured_kmh()
+            held = time.time() - self._goal_brake_t
+            slow = (kmh is not None and kmh <= self.goal_creep_kmh)
+            if not (slow or held >= GOAL_BRAKE_MAX_S):
+                return 0                           # 제동 유지 — 구동은 내지 않는다
+            self.set_brake(BRAKE_NONE)
+            self._goal_phase = GOAL_PHASE_CREEP
+            if slow:
+                self.event(f"🐢 {kmh:.1f}km/h — 리니어 해제, "
+                           f"{GOAL_CREEP_PULSE}펄스로 종점까지")
+            else:
+                cur = '속도 미수신' if kmh is None else f"{kmh:.1f}km/h"
+                self.event(f"🐢 제동 {held:.1f}초 경과({cur}) — 굳지 않게 크립으로 "
+                           f"넘어간다(리니어 해제, {GOAL_CREEP_PULSE}펄스)")
+
+        return GOAL_CREEP_PULSE
 
     def scan_curve_demand(self, preview_dist):
         """wp_idx 앞 preview_dist 구간의 요구 도로휠각 최대값을 꺼낸다.
@@ -1661,6 +1776,16 @@ class DrivingNode(Node):
             return self.enc_pulse
         return None
 
+    def measured_kmh(self):
+        """지금 몇 km/h 로 구르고 있나 — /speed 우선, 오래되면 엔코더 환산.
+
+        ★measured_pulse() 와 같은 출처를 쓴다★ 종점 감속이 믿는 속도와 저속 보정이
+        믿는 속도가 다르면, 크립 구간에서 한쪽은 '빠르다' 다른 쪽은 '느리다'로 갈려
+        두 로직이 서로를 되돌린다.
+        """
+        p = self.measured_pulse()
+        return None if p is None else p * KMH_PER_PULSE
+
     def low_speed_trim(self, ref):
         """저속에서 실제 속도를 보고 REF 를 ±REF_TRIM_MAX_PULSE 만큼 밀어 준다.
         [2026-08-12 신설 — 상단 '저속 펄스 보정' 절에 근거와 예시가 있다]
@@ -1782,6 +1907,11 @@ class DrivingNode(Node):
             #   로그만 보고 판정할 수 있어야 한다.
             float(self._cte_i),                       # cte_integral [m·s]
             float(self._cte_i_term),                  # cte_i_term_deg [도로휠 deg]
+            # ── [2026-08-12] 종점 순차감속 단계 ──
+            #   0 없음 / 1 접근제동(리니어 2단) / 2 크립(1펄스). 이 열이 없으면 로그에서
+            #   '제동 구간'과 '그냥 느린 구간'을 구별할 수 없다 — brake_latched 는
+            #   DRIVE_DONE 의 2단과 접근제동의 2단이 같은 1.0 으로 찍힌다.
+            float(self._goal_phase),                  # goal_phase
         ]
         self.pub_diag.publish(diag)
 

@@ -145,6 +145,18 @@ def generate_launch_description():
                         '순수추종이 못 지우는 정상상태 측방편향(실측 +0.13~0.27m)을 '
                         '천천히 지우는 용도다. 0 이면 적분항을 끈다. 기여는 '
                         'driving.py 의 CTE_I_MAX_DEG(2.5°)로 한 번 더 잘린다'),
+        # ── 종점 순차감속 [2026-08-12] ── driving.py 상단 'GOAL_*' 절 참고
+        DeclareLaunchArgument(
+            'goal_brake_m', default_value='5.0',
+            description='종점까지 이 거리 안에 들면 리니어 2단을 물고 목표펄스를 0 으로 '
+                        '내린다. ★0 으로 주면 이 단계 자체가 꺼진다★(도착 시에만 '
+                        '리니어를 무는 종전 거동). 남은 호길이와 직선거리가 둘 다 이 '
+                        '안일 때만 걸린다 — 순환 코스 출발점 오작동 방지'),
+        DeclareLaunchArgument(
+            'goal_creep_kmh', default_value='4.0',
+            description='접근제동 중 IMU 속도가 이 밑으로 내려오면 리니어를 풀고 '
+                        '1펄스 크립으로 종점까지 간다. ★/speed 는 절대속도를 과소평가할 '
+                        '수 있다★(speed.py 헤더) — 해제가 이르면 낮춘다'),
         DeclareLaunchArgument(
             'wp_reach_m', default_value='0.9',
             description='마지막 WP 도착 허용반경[m]. ★[2026-08-11] 0.2 → 0.9★ — '
@@ -256,6 +268,8 @@ def generate_launch_description():
             'steer_plant_gain': LaunchConfiguration('steer_plant_gain'),
             'steer_understeer': LaunchConfiguration('steer_understeer'),
             'cte_ki':        LaunchConfiguration('cte_ki'),
+            'goal_brake_m':   LaunchConfiguration('goal_brake_m'),
+            'goal_creep_kmh': LaunchConfiguration('goal_creep_kmh'),
             'wp_reach_m':    LaunchConfiguration('wp_reach_m'),
             'require_rtk':   LaunchConfiguration('require_rtk'),
         }],
