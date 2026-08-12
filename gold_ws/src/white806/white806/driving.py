@@ -406,18 +406,40 @@ CORNER_MIN_PULSE        = 2
 #  검산 : 3.54 → 1.11 m/s 를 실측 감속도 2.2 m/s² 로 줄이면 1.1초·2.57m. 5m 안에서
 #         끝나고 남은 2.4m 를 크립으로 간다.
 #
-#  ⚠️ ★임계는 IMU 속도라 speed.py 의 한계를 그대로 물려받는다★ 절대속도가 과소평가
-#     되는 구간이 있어(로그 대조 t=62 에서 GPS 17.4 vs IMU 8.1 km/h) 실제보다 일찍
-#     '4km/h 아래'로 볼 수 있다. 그래도 위험이 작은 이유는 해제 뒤 명령이 1펄스뿐이고,
-#     실측이 그보다 빠르면 저속 보정이 0 으로 내려 코스팅하기 때문이다. 실차에서 해제가
-#     이르면 goal_creep_kmh 를 낮춘다(런치 인자).
+#  ★[2026-08-12 실차 2주행] 임계 속도의 출처를 IMU → GPS 로 바꿨다★
+#  첫 실차(rec route_20260812_162235-16:40:07 / 16:44:38)에서 이 단계는 설계대로
+#  동작하지 않았고, 원인은 전부 ★/speed 를 임계에 쓴 것★ 이었다:
+#      · 16:40 : /speed 4.10km/h 를 보고 해제했는데 ★GPS 실측은 7.44km/h★ 였다.
+#        차는 7km/h 로 종점을 지나 1.40m 뒤에 섰다(크립 구간은 0.15초뿐이었다).
+#      · 16:44 : GPS 가 2.81 → 0.33km/h 로 죽는 2.4초 내내 /speed 는 3.75~4.04 에
+#        붙박여 있다가 ZUPT 가 걸리자 0.00 으로 툭 떨어졌다.
+#  speed.py 헤더가 적어 둔 그대로다 — 지속 감속은 자세로 오인해 스스로 지우고,
+#  믿을 수 있는 것은 '서 있는가'뿐이다. 그래서 measured_kmh() 는 ★GPS 변위 속도★ 를
+#  1순위로 쓴다(_update_gps_speed). /speed 는 GPS 가 끊겼을 때의 대체값으로 내려갔다.
 GOAL_BRAKE_M     = 5.0    # [m] 종점까지 이 안이면 리니어 2단 (런치 goal_brake_m)
 GOAL_CREEP_KMH   = 4.0    # [km/h] 이 밑이면 리니어 해제 + 크립 (런치 goal_creep_kmh)
 GOAL_CREEP_PULSE = 1      # 크립 목표펄스 — 저속 보정이 이 값을 유지시킨다
 GOAL_BRAKE_MAX_S = 3.0    # [s] 속도를 못 읽어도 이만큼 물렸으면 크립으로 넘어간다
-#   ※ 마지막 줄이 없으면 /speed 도 엔코더도 없을 때 리니어를 문 채로 굳는다 — 차는
+#   ※ 마지막 줄이 없으면 GPS 도 /speed 도 없을 때 리니어를 문 채로 굳는다 — 차는
 #     서 있고 도착 판정은 영영 서지 않는다. 크립으로 넘어가는 쪽이 언제나 안전하다.
 GOAL_PHASE_NONE, GOAL_PHASE_BRAKE, GOAL_PHASE_CREEP = 0, 1, 2
+
+# ── 크립 재출발 킥 [2026-08-12] ─────────────────────────────────────────────────
+#  ★왜 필요한가★ 16:44 주행에서 크립이 종점 2.49m 앞에서 ★67초간 굳었다★. 저속
+#  보정은 제 일을 했다(ref 1 → out 2). 그런데 ★정지한 차는 2펄스로 안 움직인다★ —
+#  67초 동안 GPS 이동 0.0m 였고 엔코더만 허수 카운트를 뱉었다(정상 4~6, 최대 77).
+#  굴러갈 때 필요한 힘과 정지에서 떼어내는 힘이 다르다는 뜻이다.
+#  ★처방은 '크립을 빠르게'가 아니라 '짧게 세게'★ 크립 목표를 2펄스로 올리면 접근속도가
+#  6.4km/h 가 되어 오버런이 그대로 돌아온다. 서 있을 때만 잠깐 4펄스를 넣고 곧바로
+#  1펄스로 되돌린다. 킥은 저속 보정을 우회한다(low_speed_trim 참고) — 보정이 그 위에
+#  또 얹히면 ref 4 + 실측 0 → out 6 이 되어 종점 2m 앞에서 낼 속도가 아니게 된다.
+GOAL_KICK_KMH    = 1.0    # [km/h] 이 밑이면 '섰다'로 본다
+GOAL_KICK_WAIT_S = 0.7    # [s] 그 상태가 이만큼 이어져야 킥한다(제동 해제 직후 과민 방지)
+GOAL_KICK_PULSE  = 4      # 킥 목표펄스 (MAX_PULSE_LIMIT 와 같다 — 이 이상은 못 나간다)
+GOAL_KICK_S      = 0.6    # [s] 킥 지속
+GOAL_KICK_MAX_N  = 3      # 이만큼 시도해도 못 움직이면 구동을 끊는다
+#   ※ 끊는 이유 : 실차 로그의 67초가 정확히 '안 움직이는 차에 계속 전류를 넣는' 상태였다.
+#     ★도착으로 간주하지는 않는다★ — 종점 판정을 흔드는 변경은 별개로 검토할 일이다.
 
 #  ※ 도착 판정 자체는 이 감속과 별개로 그대로 둔다 — 반경(WP_REACH_M)만으로는
 #    5Hz GPS 에서 놓칠 수 있으므로 ★통과 판정★ 이 계속 함께 있어야 한다(run_follow).
@@ -443,6 +465,17 @@ MODE_SETTLE_S     = 0.7      # 스위치 엣지 직후 이만큼은 굴리지 �
 FUSE_GAIN          = 0.05    # GPS 코스헤딩으로 끌어당기는 비율(상보필터)
 FUSE_MIN_STEP_M    = 0.30    # 이만큼 움직였을 때만 GPS 코스헤딩을 신뢰한다
 GPS_TIMEOUT_S      = 2.0     # 이 시간 넘게 /fix 가 없으면 정지
+
+# ── GPS 변위 속도 [2026-08-12] ★속도의 1순위 출처★ ──────────────────────────────
+#   5Hz fix 두 점 사이의 ★직선거리★ 를 시간으로 나눈다. 구간마다 잘라 더하지 않는
+#   이유는 RTK 지터(±2cm)가 매 구간 양수로 더해져 정지 중에도 속도가 뜨기 때문이다.
+#   양 끝점만 쓰면 지터가 상쇄된다. 0.4초 창에서 곡선을 직선으로 보는 오차는 이 차의
+#   최소회전반경(2.0m)·속도에서 1% 미만이라 무시할 수 있다.
+#   ★지연★ 창의 절반(약 0.2초)만큼 늦는다. 20Hz 제어에는 늦지만, 이 값을 쓰는 곳은
+#   종점 감속 임계와 저속 보정뿐이고 둘 다 0.3초 단위로 판단하는 로직이다.
+GPS_SPEED_WIN     = 3        # 표본 수(5Hz 3점 = 0.4초 창)
+GPS_SPEED_FRESH_S = 0.6      # 마지막 갱신이 이보다 오래되면 못 믿는다
+GPS_SPEED_MAX_DT  = 1.0      # 창이 이보다 벌어지면 두절로 보고 버린다
 RTK_FIXED_STATUS   = 2       # NavSatFix.status.status (nmea_navsat_driver: GGA q4 → 2)
 
 # ── 브레이크 ──
@@ -687,9 +720,14 @@ class DrivingNode(Node):
         self.estop = False
 
         # ── /speed (speed.py 의 IMU 적분 속도, km/h) ──
-        #   ★없어도 돈다★ 안 오면 저속 보정이 엔코더로 내려간다(measured_pulse).
+        #   ★[2026-08-12] 1순위에서 내려왔다★ 지금은 GPS 가 끊겼을 때의 대체값이다
+        #   (measured_kmh 참고). 없어도 돌고, 없으면 엔코더까지 내려간다.
         self.speed_kmh = None
         self.speed_time = 0.0
+        # ── GPS 변위 속도 (속도의 1순위 출처) ──
+        self._gps_trail = []              # [(t, x, y)] 최근 GPS_SPEED_WIN 표본
+        self._gps_kmh = None
+        self._gps_kmh_t = 0.0
         # ── 저속 펄스 보정 상태 ──
         self._trim = 0                    # 지금 적용 중인 보정량 [펄스]
         self._trim_t = 0.0                # 마지막으로 보정을 다시 계산한 시각
@@ -713,6 +751,10 @@ class DrivingNode(Node):
         #   enter() 한 곳에서만 한다(= 상태가 바뀌면 무조건 처음으로).
         self._goal_phase = GOAL_PHASE_NONE
         self._goal_brake_t = 0.0      # 접근제동을 물기 시작한 시각
+        self._goal_still_t = 0.0      # 크립 중 '섰다'를 처음 본 시각
+        self._goal_kick_until = 0.0   # 킥을 이 시각까지 유지한다
+        self._goal_kicks = 0          # 이번 크립에서 시도한 킥 횟수
+        self._goal_kick_done = False  # 킥을 포기했다(구동 끊음)
 
         # ── 진단 계측 (/drive_diag) ★제어 판단에 절대 쓰지 않는다★ ──
         #   여기 있는 값이 제어로 새어 들어가면 '계측을 위해 거동이 바뀌는' 상태가
@@ -775,9 +817,33 @@ class DrivingNode(Node):
         self.fix_ok = (not self.require_rtk) or (msg.status.status >= RTK_FIXED_STATUS)
         self.fix_time = time.time()
 
+        self._update_gps_speed(self.fix_time)
+
         if self.state in (S_MAP_HEADING, S_DRIVE_HEADING) and self.fix_ok:
             self.head_est.add(self.x, self.y)
         self._fuse_gps_course()
+
+    def _update_gps_speed(self, now):
+        """5Hz fix 변위로 속도를 만든다. ★상수 GPS_SPEED_* 절에 근거가 있다★
+
+        ★fix_ok(RTK Fixed)를 따지지 않는다★ 이 값은 '얼마나 빠른가'만 답하면 되고,
+        Float 로 떨어져도 변위의 크기는 여전히 쓸 만하다. 반대로 Fixed 를 요구하면
+        RTK 가 흔들리는 순간 종점 감속이 임계를 못 넘어 굳는다 — 그쪽이 더 위험하다.
+        """
+        self._gps_trail.append((now, self.x, self.y))
+        if len(self._gps_trail) > GPS_SPEED_WIN:
+            del self._gps_trail[0]
+        if len(self._gps_trail) < 2:
+            return
+        t0, x0, y0 = self._gps_trail[0]
+        t1, x1, y1 = self._gps_trail[-1]
+        dt = t1 - t0
+        if dt <= 0.0 or dt > GPS_SPEED_MAX_DT:
+            # 두절 뒤 첫 표본 — 낡은 점과 이어 붙이면 엉뚱한 속도가 나온다
+            self._gps_trail = [self._gps_trail[-1]]
+            return
+        self._gps_kmh = 3.6 * math.hypot(x1 - x0, y1 - y0) / dt
+        self._gps_kmh_t = now
 
     def cb_imu(self, msg: Imu):
         now = time.time()
@@ -1022,6 +1088,10 @@ class DrivingNode(Node):
         #   다음 주행이 시작부터 CREEP 인 채로 출발한다(1펄스로 기어간다).
         self._goal_phase = GOAL_PHASE_NONE
         self._goal_brake_t = 0.0
+        self._goal_still_t = 0.0
+        self._goal_kick_until = 0.0
+        self._goal_kicks = 0
+        self._goal_kick_done = False
         if msg:
             self.event(msg)
 
@@ -1332,7 +1402,56 @@ class DrivingNode(Node):
                 self.event(f"🐢 제동 {held:.1f}초 경과({cur}) — 굳지 않게 크립으로 "
                            f"넘어간다(리니어 해제, {GOAL_CREEP_PULSE}펄스)")
 
-        return GOAL_CREEP_PULSE
+        return self.creep_pulse()
+
+    def creep_pulse(self):
+        """크립 구간의 목표펄스. ★서 있으면 짧게 세게 밀어 다시 굴린다★
+        [2026-08-12 신설 — 상단 '크립 재출발 킥' 절에 실차 근거가 있다]
+
+        킥 중에는 저속 보정을 태우지 않는다(low_speed_trim 의 같은 조건 참고).
+        움직이기 시작하면 곧바로 1펄스로 돌아가고, 그보다 빠르면 보정이 0 을 내어
+        코스팅한다 — 킥이 속도로 남지 않는다.
+        """
+        now = time.time()
+        if now < self._goal_kick_until:
+            return GOAL_KICK_PULSE                     # 킥 진행 중
+
+        kmh = self.measured_kmh()
+        # ★속도를 못 읽으면 '움직이는 중'으로 본다★ 모르는 상태에서 4펄스를 넣는 것이
+        #   기어가는 것보다 위험하다. 이때는 사람이 보고 판단하는 편이 낫다.
+        if kmh is None or kmh >= GOAL_KICK_KMH:
+            self._goal_still_t = 0.0
+            self._goal_kicks = 0
+            self._goal_kick_done = False
+            return GOAL_CREEP_PULSE
+
+        if self._goal_still_t == 0.0:
+            self._goal_still_t = now
+            return GOAL_CREEP_PULSE
+        if now - self._goal_still_t < GOAL_KICK_WAIT_S:
+            return GOAL_CREEP_PULSE                    # 제동 해제 직후의 순간 정지 대비
+
+        if self._goal_kicks >= GOAL_KICK_MAX_N:
+            if not self._goal_kick_done:
+                self._goal_kick_done = True
+                self.event(f"⚠️ 크립 재출발 {GOAL_KICK_MAX_N}회 실패 — 구동을 끊는다. "
+                           f"종점까지 {self.goal_left_m():.1f}m 남았다. "
+                           f"스위치를 내려 사람이 옮길 것")
+            return 0                                   # 안 움직이는 차에 전류를 계속 넣지 않는다
+
+        self._goal_kicks += 1
+        self._goal_kick_until = now + GOAL_KICK_S
+        self._goal_still_t = 0.0
+        self.event(f"👟 크립 정지({kmh:.1f}km/h) — {GOAL_KICK_PULSE}펄스 킥 "
+                   f"{self._goal_kicks}/{GOAL_KICK_MAX_N}")
+        return GOAL_KICK_PULSE
+
+    def goal_left_m(self):
+        """종점까지 직선거리 [m]. 이벤트 문구용."""
+        if not self.waypoints:
+            return float('nan')
+        gx, gy = self.waypoints[-1]
+        return math.hypot(gx - self.x, gy - self.y)
 
     def scan_curve_demand(self, preview_dist):
         """wp_idx 앞 preview_dist 구간의 요구 도로휠각 최대값을 꺼낸다.
@@ -1762,29 +1881,42 @@ class DrivingNode(Node):
         self.pub_state.publish(Bool(data=bool(control)))
 
     def measured_pulse(self):
-        """지금 실제로 몇 펄스로 구르고 있는가. ★/speed 를 우선 신뢰한다★
-
-        · /speed (speed.py, IMU 적분) — 저속에서 엔코더보다 낫다. 엔코더는 A보드
-          기동 블랭킹의 허수 카운트 때문에 ★정지 중에 2.5~5펄스를 뱉는다★(실측).
-        · 엔코더 — /speed 가 없거나 오래됐을 때의 대체값. 중앙값 3점을 거친 값이다.
-        둘 다 없으면 None 을 돌려 보정을 아예 하지 않게 한다.
-        """
-        if self.speed_kmh is not None \
-                and time.time() - self.speed_time <= SPEED_FRESH_S:
-            return max(0.0, self.speed_kmh) / KMH_PER_PULSE
-        if self._enc_buf:
-            return self.enc_pulse
-        return None
+        """지금 실제로 몇 펄스로 구르고 있는가. 출처는 measured_kmh() 하나다."""
+        v = self.measured_kmh()
+        return None if v is None else v / KMH_PER_PULSE
 
     def measured_kmh(self):
-        """지금 몇 km/h 로 구르고 있나 — /speed 우선, 오래되면 엔코더 환산.
+        """지금 몇 km/h 로 구르고 있나. ★이 노드에서 '속도'는 전부 여기로 온다★
+        (종점 순차감속의 임계도, 저속 펄스 보정의 실측도 같은 값을 본다 — 둘이 갈리면
+        크립에서 한쪽은 '빠르다' 다른 쪽은 '느리다'로 판단해 서로를 되돌린다.)
 
-        ★measured_pulse() 와 같은 출처를 쓴다★ 종점 감속이 믿는 속도와 저속 보정이
-        믿는 속도가 다르면, 크립 구간에서 한쪽은 '빠르다' 다른 쪽은 '느리다'로 갈려
-        두 로직이 서로를 되돌린다.
+        ★우선순위 [2026-08-12 실차 로그로 재배치]★
+          1) GPS 변위 (_update_gps_speed) — 5Hz 이고 0.2초 늦지만 ★크기가 맞는★
+             유일한 값이다.
+          2) /speed (IMU 적분) — GPS 두절 대비. 16:40 주행에서 실측 7.44km/h 를
+             4.10 으로, 16:44 주행에서는 감속 2.4초 내내 3.9 로 굳은 채 보고했다.
+             speed.py 헤더가 스스로 밝힌 한계이므로 여기서는 2순위로만 쓴다.
+          3) 엔코더 — 마지막 대체값. A보드 기동 블랭킹의 허수 카운트 때문에
+             ★정지 중에 25펄스까지 뱉는다★(16:44 정체 구간 실측 최대 77카운트).
+             그래서 제일 아래다.
+        셋 다 없으면 None — 보정도 감속 판정도 하지 않는다.
         """
-        p = self.measured_pulse()
-        return None if p is None else p * KMH_PER_PULSE
+        v = self.gps_kmh()
+        if v is not None:
+            return v
+        if self.speed_kmh is not None \
+                and time.time() - self.speed_time <= SPEED_FRESH_S:
+            return max(0.0, self.speed_kmh)
+        if self._enc_buf:
+            return self.enc_pulse * KMH_PER_PULSE
+        return None
+
+    def gps_kmh(self):
+        """GPS 변위 속도 [km/h]. 갱신이 끊겼으면 None."""
+        if self._gps_kmh is None \
+                or time.time() - self._gps_kmh_t > GPS_SPEED_FRESH_S:
+            return None
+        return self._gps_kmh
 
     def low_speed_trim(self, ref):
         """저속에서 실제 속도를 보고 REF 를 ±REF_TRIM_MAX_PULSE 만큼 밀어 준다.
@@ -1798,12 +1930,16 @@ class DrivingNode(Node):
             MAX_PULSE_LIMIT 를 우회하는 과속 경로가 된다.
           · DRIVE_HEADING 은 '곧게 굴러 헤딩을 잡는' 구간이라 속도를 흔들면 안 된다.
         """
-        if self.state != S_DRIVE_RUN or not (1 <= ref <= REF_TRIM_REF_MAX):
+        now = time.time()
+        # ★종점 크립의 킥은 보정을 태우지 않는다 [2026-08-12]★ 킥은 '정지 상태를
+        #   떼어내는 힘'을 정해 놓고 넣는 것이라, 실측 0 을 본 보정이 그 위에 또 얹히면
+        #   종점 2m 앞에서 낼 속도가 아니게 된다(ref 4 + 실측 0 → out 6).
+        if self.state != S_DRIVE_RUN or not (1 <= ref <= REF_TRIM_REF_MAX) \
+                or now < self._goal_kick_until:
             self._trim = 0
             self._trim_ref = ref
             return ref
 
-        now = time.time()
         # REF 가 바뀌면 즉시 다시 판단하고, 아니면 HOLD 주기로만 다시 판단한다
         # (20Hz 로 매 틱 계산하면 속도가 따라오기 전에 보정이 널뛴다).
         if ref != self._trim_ref or now - self._trim_t >= REF_TRIM_HOLD_S:
