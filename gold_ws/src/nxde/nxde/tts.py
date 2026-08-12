@@ -30,11 +30,31 @@ sound/*.mp3 안내 음성을 새로 만들거나, 문구를 귀로 확인할 때
     큐에 넣고 메인 스레드의 after() 틱이 꺼내 화면에 쓴다(Tk 는 스레드 안전하지
     않다 — prompt_g.py 와 같은 규약).
   · 필요한 것 : pip install --user edge-tts pygame
+
+════════════════════════════════════════════════════════════════════════════════
+ ★종료가 안 되던 문제 [2026-08-12 수정]★
+════════════════════════════════════════════════════════════════════════════════
+  창을 닫아도(그리고 Ctrl+C 를 눌러도) 프로세스가 남아 있었다. 원인은 둘이다.
+
+  ① pygame.mixer 를 ★워커 스레드에서 init/quit★ 했다. mainloop 자체는 정상적으로
+     빠져나오는데, 그 뒤 인터프리터 종료 단계에서 메인 스레드가 C 코드에 갇힌다
+     (faulthandler 로 잡으면 스레드 하나가 `<no Python frame>` 로 멈춰 있다).
+     SDL 오디오는 초기화한 스레드와 정리하는 스레드가 어긋나면 이렇게 굳는다.
+     → ★mixer 의 init·quit 을 메인 스레드로 옮겼다★ 워커는 load/play/stop 만 한다.
+  ② tkinter 는 콜백에서 난 예외를 report_callback_exception 으로 ★삼킨다★.
+     KeyboardInterrupt 도 예외라 Ctrl+C 가 화면에 역추적만 찍고 지나갔다.
+     → SIGINT 핸들러를 달아 창닫기와 같은 종료 경로로 보낸다.
+
+  그래도 남는 위험(SDL·ALSA 쪽 잔여 스레드)을 감안해 마지막에 os._exit 로 못을
+  박는다. 이 도구는 저장하는 것이 없어 그렇게 끝내도 잃을 상태가 없다.
 """
 
 import asyncio
 import io
+import os
 import queue
+import signal
+import sys
 import threading
 import time
 
@@ -98,6 +118,9 @@ class Speaker:
     ★한 문장씩 순서대로★ 처리한다. 재생 중에 [읽기]를 또 누르면 큐에 쌓여 앞의
     것이 끝난 뒤에 나온다 — 겹쳐 들리는 것보다 낫다. [정지]는 지금 나오는 것만
     끊는다(큐는 그대로).
+
+    ★mixer 의 init·quit 은 여기서 하지 않는다★ 메인 스레드가 한다(헤더 '종료가
+    안 되던 문제' ① 참고). 이 스레드는 load/play/stop 만 만진다.
     """
 
     def __init__(self, report):
@@ -105,7 +128,6 @@ class Speaker:
         self._q = queue.Queue()
         self._quit = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
-        self.ready = False
 
     def start(self):
         self._thread.start()
@@ -114,23 +136,19 @@ class Speaker:
         self._q.put((text, voice))
 
     def stop_playing(self):
-        if self.ready:
+        if pygame.mixer.get_init():
             pygame.mixer.music.stop()
 
-    def shutdown(self):
+    def shutdown(self, timeout=1.5):
+        """멈추라고 하고 ★실제로 멈출 때까지 기다린다★ — 재생 중에 창을 닫는
+        경우가 흔한데, 그때 mixer 를 만지는 쪽이 남아 있으면 정리가 엉킨다."""
         self._quit.set()
+        self.stop_playing()               # 재생 중이면 곧바로 끊어 대기를 짧게 한다
         self._q.put(None)                 # 대기 중인 get() 을 깨운다
+        self._thread.join(timeout)
 
     # ── 스레드 본체 ────────────────────────────────────────────────────────────
     def _run(self):
-        try:
-            pygame.mixer.init()
-            self.ready = True
-        except Exception as e:            # 오디오 장치가 없어도 창은 떠 있어야 한다
-            self.report(f"오디오 장치를 열지 못했다 — {e}", False)
-            return
-        self.report("준비", False)
-
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -149,14 +167,12 @@ class Speaker:
                     # 대부분 망이 없거나 목소리 이름이 틀린 경우다
                     self.report(f"[오류] {e}", False)
         finally:
-            try:
-                pygame.mixer.music.stop()
-                pygame.mixer.quit()
-            except Exception:
-                pass
             loop.close()
 
     def _play(self, buffer):
+        if not pygame.mixer.get_init():
+            self.report("오디오 장치가 없어 재생하지 못했다", False)
+            return
         pygame.mixer.music.load(buffer, "mp3")
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy() and not self._quit.is_set():
@@ -184,7 +200,23 @@ class App:
             lambda text, busy: self._status_q.put((text, busy)))
 
         self._build()
+
+        # ★오디오는 메인 스레드에서 연다★ 워커에서 열면 종료가 굳는다(헤더 ①).
+        self.audio_ok = False
+        try:
+            pygame.mixer.init()
+            self.audio_ok = True
+            self.v_status.set('준비')
+        except Exception as e:            # 장치가 없어도 창은 떠 있어야 한다
+            self.v_status.set(f'오디오 장치를 열지 못했다 — {e}')
+
         self.speaker.start()
+        # Ctrl+C 를 창닫기와 같은 경로로 보낸다. tkinter 는 콜백에서 난
+        # KeyboardInterrupt 를 삼키므로(헤더 ②) 핸들러가 없으면 아무 일도 안 난다.
+        try:
+            signal.signal(signal.SIGINT, self._on_sigint)
+        except ValueError:                # 메인 스레드가 아니면 그냥 넘어간다
+            pass
         self.tick()
 
     # ── 화면 ───────────────────────────────────────────────────────────────────
@@ -244,8 +276,21 @@ class App:
             return
         self.speaker.say(text, self.voice.get())
 
+    def _on_sigint(self, *_a):
+        # 시그널 핸들러 안에서 위젯을 만지지 않는다 — 다음 틱에 정식 경로로 종료한다
+        self.root.after(0, self.on_quit)
+
     def on_quit(self):
+        """창닫기·Ctrl+C 공통 종료 경로. ★정리 순서가 중요하다★
+        워커를 먼저 세우고(재생 정지 포함), 그 다음 mixer 를 메인 스레드에서 닫고,
+        마지막에 창을 없앤다."""
         self.speaker.shutdown()
+        if self.audio_ok:
+            try:
+                pygame.mixer.quit()
+            except Exception:
+                pass
+            self.audio_ok = False
         self.root.destroy()
 
     def tick(self):
@@ -265,13 +310,21 @@ class App:
 
 
 def main():
-    app = App()
+    try:
+        app = App()
+    except tk.TclError as e:
+        raise SystemExit(f"창을 열 수 없다({e}) — DISPLAY 가 있는 화면에서 실행할 것")
     try:
         app.run()
     except KeyboardInterrupt:
-        app.speaker.shutdown()
-    except tk.TclError as e:
-        raise SystemExit(f"창을 열 수 없다({e}) — DISPLAY 가 있는 화면에서 실행할 것")
+        app.on_quit()
+    finally:
+        # ★여기서 못을 박는다★ 위 정리로 정상 종료되는 것이 정상이지만, SDL·ALSA 가
+        #   남긴 스레드 하나에 붙들려 프로세스가 안 죽는 일이 실제로 있었다.
+        #   이 도구는 저장하는 것이 없어 강제 종료로 잃을 상태가 없다.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 if __name__ == '__main__':
