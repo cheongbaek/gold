@@ -20,8 +20,20 @@ one_launch.py 가 함께 띄우며, 단독 실행은 `ros2 run white806 record`.
 ════════════════════════════════════════════════════════════════════════════════
  출력 — 한 주행에 ★파일 하나★
 ════════════════════════════════════════════════════════════════════════════════
-  <white806 패키지>/ros2bag/rec_<날짜>_<시각>.csv
+  <white806 패키지>/ros2bag/<주행한 경로 CSV 이름>-<날짜>_<시각>.csv
       1행  열 이름 / 2행~ 데이터
+
+  ★[2026-08-12] 파일명 앞에 '무엇을 따라 달렸는가' 를 붙인다★ 종전 rec_<시각>.csv
+  는 기록 시각만 남아서, 로그를 나중에 열었을 때 어느 경로(gps_data/route_*.csv)로
+  달린 주행인지 파일 목록만 보고는 알 수 없었다 — 같은 날 여러 경로를 번갈아
+  달리면 특히 그렇다. 경로 이름은 prompt 가 /drive_cmd 로 보내는 파일명을 그대로
+  받아 적는다(선택 실패한 이름은 driving 이 거절하므로 여기로 오지 않는다).
+
+      gps_data/route_20260811_160932.csv 로 주행
+        → ros2bag/route_20260811_160932-20260812_134501.csv
+
+  경로 이름을 못 들은 채(record 를 주행 도중에 새로 띄운 경우 등) 기록이 시작되면
+  앞부분이 unknown 이 된다 — 기록을 거르지는 않는다.
 
   ★한 행 = 한 시점의 차량 전체 상태★ 다. 토픽마다 발행 주기가 달라서 수신할 때마다
   한 행씩 적으면 대부분 칸이 빈 희소 표가 된다. SAMPLE_HZ 주기로 스냅샷을 찍어
@@ -65,6 +77,7 @@ one_launch.py 가 함께 띄우며, 단독 실행은 `ros2 run white806 record`.
 
 import csv
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -82,6 +95,18 @@ from white806 import paths
 
 # 이 상태들에서만 기록한다 (driving.py 의 상태 이름과 같아야 한다)
 RECORD_STATES = ('DRIVE_HEADING', 'DRIVE_RUN', 'DRIVE_DONE')
+
+# ── 파일명 앞부분(= 주행한 경로)을 알아내는 두 경로 ──────────────────────────────
+#   1) /drive_cmd : prompt 가 경로를 고르는 순간 파일명을 그대로 보낸다. 아래 세
+#      단어는 명령이지 파일명이 아니다.
+#   2) /drive_event : driving 이 '경로 선택'·'주행 시작' 을 알릴 때 이름을 함께
+#      적는다. record 를 나중에 띄워 1) 을 놓쳤을 때의 보조 수단이다 — 이 이벤트는
+#      driving 의 enter() 안에서 /drive_state 보다 ★먼저★ 나가므로 세션 시작
+#      시점에는 이미 도착해 있다.
+ROUTE_CMD_WORDS = ('STOP', 'MAP_START', 'DRIVE_START')
+ROUTE_EVENT_HINTS = ('경로 선택', '주행 시작')
+ROUTE_IN_TEXT = re.compile(r'([^\s\[\]/\\]+\.csv)')
+UNKNOWN_ROUTE = 'unknown'
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -227,6 +252,7 @@ class RecordNode(Node):
         self.sample_hz = max(1.0, float(self.get_parameter('sample_hz').value))
 
         self.drive_state = 'IDLE'
+        self.route_name = ''       # 주행 중인 경로 CSV 이름 — 기록 파일명 앞부분
 
         self._hold: Dict[str, Any] = {}
         self._pending: Dict[str, str] = {}
@@ -260,6 +286,10 @@ class RecordNode(Node):
 
         if spec.topic == '/drive_state':
             self.drive_state = str(msg.data)
+        elif spec.topic == '/drive_cmd':
+            self._note_route_cmd(str(msg.data))
+        elif spec.topic == '/drive_event':
+            self._note_route_event(str(msg.data))
 
         self._stash(spec, msg)
 
@@ -269,6 +299,23 @@ class RecordNode(Node):
         elif was and not now_on:
             self._write_row()          # 종료 사유가 담긴 마지막 한 줄
             self._stop_session()
+
+    # ── 경로 이름 ──────────────────────────────────────────────────────────────
+    def _note_route_cmd(self, text: str):
+        """prompt 가 /drive_cmd 로 보낸 것이 경로 파일명이면 붙든다."""
+        name = text.strip()
+        if not name or name.upper() in ROUTE_CMD_WORDS:
+            return
+        if name.lower().endswith('.csv'):
+            self.route_name = os.path.basename(name)
+
+    def _note_route_event(self, text: str):
+        """driving 의 '경로 선택 / 주행 시작' 이벤트에서 이름을 줍는다(보조)."""
+        if not any(h in text for h in ROUTE_EVENT_HINTS):
+            return
+        m = ROUTE_IN_TEXT.search(text)
+        if m:
+            self.route_name = m.group(1)
 
     def _stash(self, spec: TopicSpec, msg):
         try:
@@ -294,11 +341,13 @@ class RecordNode(Node):
     # ── 세션 ───────────────────────────────────────────────────────────────────
     def _start_session(self):
         os.makedirs(self.out_root, exist_ok=True)
+        # ★파일명 = (주행한 경로 CSV 이름)-(기록 시작 시각).csv★
+        base = os.path.splitext(os.path.basename(self.route_name))[0] or UNKNOWN_ROUTE
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        self.csv_path = os.path.join(self.out_root, f"rec_{stamp}.csv")
+        self.csv_path = os.path.join(self.out_root, f"{base}-{stamp}.csv")
         n = 2
         while os.path.exists(self.csv_path):   # 같은 초에 두 번 시작한 경우만
-            self.csv_path = os.path.join(self.out_root, f"rec_{stamp}_{n}.csv")
+            self.csv_path = os.path.join(self.out_root, f"{base}-{stamp}_{n}.csv")
             n += 1
         # utf-8-sig : 엑셀이 한글 헤더를 깨뜨리지 않게 BOM
         self._fp = open(self.csv_path, 'w', newline='', encoding='utf-8-sig')
@@ -308,6 +357,10 @@ class RecordNode(Node):
         self._rows = 0
         self._rx = {s.topic: 0 for s in RECORD_TOPICS}
         self.recording = True
+        if not self.route_name:
+            self.get_logger().warning(
+                "경로 이름을 못 들었다(record 를 주행 도중에 띄웠는가?) — "
+                f"파일명 앞부분이 {UNKNOWN_ROUTE} 가 된다")
         self.get_logger().info(f"🔴 기록 시작 → {self.csv_path}")
 
     def _tick(self):

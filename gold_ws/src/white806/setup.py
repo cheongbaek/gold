@@ -33,6 +33,7 @@ setup(
             'driving = white806.driving:main',
             'mapping = white806.mapping:main',    # /fix 만 보고 경로 수집
             'prompt  = white806.prompt:main',     # CLI (경로 선택·상태 표시)
+            'prompt_g = white806.prompt_g:main',  # 위와 같은 기능의 tkinter GUI
             'record  = white806.record:main',     # 주행 구간 토픽 → CSV
         ],
     },

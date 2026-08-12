@@ -40,7 +40,8 @@ gold_ws/                 ← ROS2 워크스페이스 (빌드는 여기서)
     ports.py             GPS·IMU 장치 경로 식별 (카메라 코드 제거판)
     mapping.py           /fix 만 보고 경로 수집
     prompt.py            CLI (경로 선택·상태 표시)
-    record.py            자율주행 구간 토픽 → CSV
+    prompt_g.py          ★prompt 와 같은 기능의 tkinter GUI★ (버튼 3개 + 계기 4칸)
+    record.py            자율주행 구간 토픽 → CSV (파일명 = 경로이름-시각)
     paths.py             저장 위치 단일 소유자
 
   nxde/    아두이노(kasa A/B 2보드) 통신 계층 (ament_python 패키지, 런치파일 없음)
@@ -112,7 +113,12 @@ ros2 run nxde arduino                  # 이것만 떠 있어도 수동조종 �
 ```bash
 ros2 launch white806 one_launch.py     # 1) 하드웨어 + 자율주행
 ros2 run white806 prompt               # 2) CLI (별 터미널)
+ros2 run white806 prompt_g             # 2') 같은 기능의 GUI — 둘 중 하나만 띄운다
 ```
+
+`prompt_g` 는 `prompt` 와 기능이 같고 조작면만 tkinter 창이다(매핑·주행·종료 버튼과
+`/speed`·`/encoder`·조향각 명령·주행펄스 명령 4칸). 화면이 없는 ssh 세션에서는
+`prompt` 를 쓴다. 둘을 동시에 띄우면 서로 다른 대기 상태를 들고 있게 되어 헷갈린다.
 
 `white` 대비 없앤 것 — 카메라 체인 전부, `gps_imu` 노드(융합을 `driving` 이 직접 함),
 `kasa_units`(`/cmd_vel_raw` 가 이미 펄스·도 단위라 환산이 불필요), CTE·순수추종·가변
@@ -141,7 +147,17 @@ E-stop 은 어느 상태에서든 즉시 메인화면으로 되돌리고, 풀리
 에서만 스스로 켜져 토픽을 CSV 로 남긴다. 따로 시작·중지할 것이 없다.
 
 ```
-white/ros2bag/rec_<날짜>_<시각>.csv     ← 한 주행에 파일 하나 (1행 열이름, 2행~ 데이터)
+white/ros2bag/rec_<날짜>_<시각>.csv                    ← 한 주행에 파일 하나
+white806/ros2bag/<경로이름>-<날짜>_<시각>.csv          ← 재작성판 [2026-08-12]
+```
+
+`white806` 은 **어느 경로로 달렸는지를 파일명 앞에 붙인다** — 같은 날 여러 경로를
+번갈아 달리면 시각만으로는 구별이 안 되기 때문이다. 경로 이름은 prompt 가 보내는
+`/drive_cmd` 에서 받고, 놓치면 `/drive_event` 에서 줍는다(둘 다 놓치면 `unknown-`).
+
+```
+gps_data/route_20260811_160932.csv 로 주행
+  → ros2bag/route_20260811_160932-20260812_134501.csv
 ```
 
 **한 행 = 한 시점의 차량 전체 상태**다. 20Hz로 스냅샷을 찍어 그 순간 각 토픽의 최신값을

@@ -140,6 +140,12 @@ def generate_launch_description():
             description='언더스티어 계수 [deg/(m/s²)]. 같은 반경이라도 속도가 오르면 '
                         '더 꺾어야 하는 양. 고속 코너에서 부족하면 올린다'),
         DeclareLaunchArgument(
+            'cte_ki', default_value='0.30',
+            description='CTE 적분 게인 [deg(도로휠)/(m·s)]. ★크게 잡지 말 것★ — '
+                        '순수추종이 못 지우는 정상상태 측방편향(실측 +0.13~0.27m)을 '
+                        '천천히 지우는 용도다. 0 이면 적분항을 끈다. 기여는 '
+                        'driving.py 의 CTE_I_MAX_DEG(2.5°)로 한 번 더 잘린다'),
+        DeclareLaunchArgument(
             'wp_reach_m', default_value='0.9',
             description='마지막 WP 도착 허용반경[m]. ★[2026-08-11] 0.2 → 0.9★ — '
                         'GPS 가 5Hz 라 0.2m 창은 접근속도에서 통째로 건너뛴다(실측 '
