@@ -33,7 +33,9 @@ setup(
             'driving = white1.driving:main',
             'mapping = white1.mapping:main',    # /fix 만 보고 경로 수집
             'prompt  = white1.prompt:main',     # CLI (경로 선택·상태 표시)
-            'prompt_g = white1.prompt_g:main',  # 위와 같은 기능의 tkinter GUI
+            #  ★[2026-08-14] prompt_g(tkinter GUI)를 삭제했다★ 화면이 둘이면 각자
+            #   다른 대기 상태를 들고 있게 되고, 안전 게이트도 두 곳에 두게 된다.
+            #   화면은 prompt(CLI) 하나로 간다.
             'record  = white1.record:main',     # 주행 구간 토픽 → CSV
         ],
     },
