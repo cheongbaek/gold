@@ -206,7 +206,8 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                    'DRIVE_DONE 의 2단과 접근제동의 2단이 구별되지 않는다'),
 
     TopicSpec('/encoder', Int32, ('encoder_sum',), _scalar,
-              note='A보드 좌+우 펄스 합'),
+              note='A보드 좌+우 펄스 ★합★ — 바퀴 하나 기준(=양 바퀴 평균)으로 보려면 '
+                   '÷2 한다. cmd_pulse 는 바퀴 하나 기준이라 그대로 비교하면 2배 어긋난다'),
     TopicSpec('/speed', Float32, ('speed_kmh',), _scalar,
               note='speed.py 의 IMU 적분 속도[km/h]. ★절대값은 못 믿는다★ — '
                    '정지/기동 판정용(speed.py 헤더의 정확도 실측 참고)'),

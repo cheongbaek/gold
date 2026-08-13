@@ -39,8 +39,15 @@ from white1 import paths
 
 SPACING_M      = 0.25    # 이 거리마다 한 점 기록 (구 white 의 remodel_spacing 과 동일)
 MIN_MOVE_M     = 0.05    # 헤딩·속도를 낼 때 이보다 작은 변위는 노이즈로 본다
-ENC_SUM_TO_PULSE = 0.5   # /encoder 는 좌+우 합 → 바퀴 하나 기준
-MS_PER_ENC_COUNT = 0.442 # 1카운트 ≈ 0.442 m/s (둘레 1.6971m / 192 / 0.020s)
+ENC_SUM_TO_PULSE = 0.5   # /encoder 는 좌+우 합 → 바퀴 하나 기준(= 양 바퀴 평균)
+#  ★[2026-08-14] wheel_speed 열이 실제의 절반이었다★ 종전 상수는 MS_PER_ENC_COUNT
+#  =0.442 였는데 그것은 ★합 1카운트★ 당 값이다. 그런데 곱하는 대상(enc_pulse)은 이미
+#  ENC_SUM_TO_PULSE 로 절반이 된 '바퀴 하나 기준' 값이라, 절반을 두 번 먹였다.
+#  바퀴 하나 기준 1펄스 = 0.884 m/s 다(driving.py 의 MS_PER_PULSE 와 같은 값):
+#      둘레 1.697147m / 96펄스(3상 XOR 6에지 × 16극쌍) / 계측창 0.020s
+#  ※ 이 열은 기록용이고 driving 의 경로 로더는 latitude/longitude 만 읽는다 —
+#    지난 매핑 CSV 의 wheel_speed 를 다시 볼 때는 ★2를 곱해서★ 읽을 것.
+MS_PER_PULSE = 0.884     # 바퀴 하나 기준 1펄스 당 m/s
 EARTH_R = 6378137.0
 
 
@@ -189,7 +196,7 @@ class MappingNode(Node):
             "0.00", "0",            # pitch / terrain — IMU 지형판정을 쓰지 않는다
             self.drive_pulse,
             f"{self.enc_pulse:.1f}",
-            f"{self.enc_pulse * MS_PER_ENC_COUNT:.3f}",
+            f"{self.enc_pulse * MS_PER_PULSE:.3f}",
             self.steer_meas,
             self.throttle_raw,
             1 if self.auto_mode else 0,

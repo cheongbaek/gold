@@ -147,9 +147,14 @@ KEYBOARD_BRAKE_STEP = 1     # PageUp/PageDown 1회당 브레이크 단계 증감
 
 # 실차 실측 (kasa_ws master.py / PULSE_SPEED.md 와 동일)
 KMH_PER_PULSE = 3.18    # 1펄스 = 3.18 km/h → 15펄스 = 47.7 km/h
-# /encoder 1카운트(좌+우 합) 당 속도. white/kasa_units.py 의 MS_PER_ENCODER_COUNT 와 같은 값.
-#   ※ nxde 는 white 를 import 하지 않는다(패키지 독립) → 값을 복제하되 출처를 남긴다.
-KMH_PER_ENCODER_COUNT = KMH_PER_PULSE / 2.0    # 1.59 km/h
+# ★[2026-08-14] 실측 주행펄스를 '좌+우 합' 이 아니라 ★바퀴 하나 기준★ 으로 보인다★
+#   /encoder 는 A보드 좌+우 펄스의 ★합★ 이다(arduino.publish_telemetry 규약 3).
+#   그것을 그대로 '실측 주행펄스' 칸에 찍으면 바로 옆 '명령 주행펄스'(0~15, 바퀴 하나
+#   기준)와 스케일이 2배 어긋나 — 4펄스를 명령했는데 실측 8 로 읽혔다.
+#   그래서 표시 전에 절반으로 접는다(= 양 바퀴 평균). 이러면 두 칸이 같은 단위가 되고
+#   white1/driving.py 의 ENC_SUM_TO_PULSE=0.5 규약과도 같아진다.
+#   ※ km/h 값 자체는 종전과 같다 — 합×1.59 = 평균×3.18 로 결과가 같기 때문이다.
+ENC_SUM_TO_PULSE = 0.5      # /encoder(좌+우 합) → 바퀴 하나 기준 펄스
 
 KEYBOARD_PULSE_STEP = 1     # Up/Down 1회(또는 자동반복 1틱)당 엑셀 증감
 KEYBOARD_STEER_STEP = 2     # Left/Right 1회당 조향각 증감(도)
@@ -472,8 +477,8 @@ class MasterGui:
                      font=("Consolas", 10)).grid(row=1, column=col + 1)
             tk.Label(table, textvariable=self.command_vars[col], bg=BG, fg=OK_COLOR,
                      font=("Consolas", 10)).grid(row=2, column=col + 1)
-        tk.Label(table, text="실측 주행펄스는 좌+우 합(1카운트=1.59km/h) · 조향각은 가변저항 실측"
-                             " · 부호 − 좌 / + 우",
+        tk.Label(table, text="실측 주행펄스는 ★양 바퀴 평균★(1펄스=3.18km/h, 명령값과 같은 단위)"
+                             " · 조향각은 가변저항 실측 · 부호 − 좌 / + 우",
                  bg=BG, fg=DISABLED_TEXT, font=("Consolas", 8)).grid(
                      row=3, column=0, columnspan=4, pady=(6, 0))
 
@@ -622,9 +627,10 @@ class MasterGui:
         self.throttle_kmh.config(text=f"{pulse_cmd * KMH_PER_PULSE:.1f} km/h")
 
         # ── 값 표 ──
-        wp = self.node.wheel_pulse
-        self.measured_vars[0].set(str(wp))
-        self.measured_vars[1].set(f"{wp * KMH_PER_ENCODER_COUNT:.1f} km/h")
+        # ★바퀴 하나 기준으로 접어 보인다★ /encoder 는 좌+우 합이다(위 상수 주석)
+        wp = self.node.wheel_pulse * ENC_SUM_TO_PULSE
+        self.measured_vars[0].set(f"{wp:.1f}")
+        self.measured_vars[1].set(f"{wp * KMH_PER_PULSE:.1f} km/h")
         self.measured_vars[2].set(f"{self.node.steer_measured}°")
         self.command_vars[0].set(str(pulse_cmd))
         self.command_vars[1].set(f"{pulse_cmd * KMH_PER_PULSE:.1f} km/h")
