@@ -31,6 +31,7 @@
    L스틱 아래  브레이크 단계     중앙~맨아래를 3등분 → 0 / 1 / 2 (리니어모터)
    R스틱 좌우  조향각 −40~40    ★− 좌 / + 우 (white·kasa ROS 규약)★
    SWA 짧게    시작 / 일시정지 토글  (영점 완료 후에만)
+               ※ U 보드에는 SWA 가 없어 ★L·R 스틱 버튼 동시 누름★ 이 대신한다
    메가 리셋   3초 뒤 그 시점 값으로 영점 재보정
 
  조이스틱이 끊기면 입력 상실이므로 즉시 정지 + 일시정지로 떨어지고 3초마다 재연결한다.
@@ -48,8 +49,14 @@
       arduino.py 가 A보드로 항상 '단일값'만 보내기 때문이다. 직접 PWM(16~255)은
       PID·슬루레이트·폭주감지가 전부 빠지는 무보호 경로라 이 스택에서 봉쇄했다.
       (그래서 D13·SWB 에 걸려 있던 기능도 함께 없어졌다. 좌우 차동도 하지 않는다.)
-  · tkinter GUI 대신 ★터미널 한 줄 상태표시★ 로 줄였다. 마우스 조종·계측 확인은
-    master 노드가 담당한다 (ros2 run nxde master).
+  · [2026-08-14] ★터미널 한 줄 표시 → tkinter GUI★ 로 바꿨다(joystick.real.py 의
+    화면을 이 스택에 맞춰 옮겼다). 스틱 위치·스위치·게이트 사유가 한눈에 보인다.
+    ★조종 로직은 그대로다★ — GUI 는 값을 읽어 그리기만 하고, 발행은 종전과 같이
+    ROS 타이머(20Hz)가 한다. 위젯을 건드리는 것은 메인 스레드의 after() 틱뿐이다
+    (tkinter 는 스레드 안전하지 않다 — master.py·prompt_g.py 와 같은 규약).
+  · ★SWB 3초 조향 캘리브레이션은 넣지 않았다★ B보드(kasa_0813_B.ino)에 'a' 명령이
+    있지만, 그것은 IDE 로 직접 실행하는 절차로 둔다. 화면에 SWB 칸은 남기되
+    '미배정'으로 표시한다.
   · 위 안전장치 ①(자율주행 모드 게이트)이 새로 추가되었다.
 
  지원 보드는 원본과 같다 — 접두어로 구분한다(둘 다 메가라 VID/PID 로는 구분 불가):
@@ -59,9 +66,12 @@
      U 보드에는 SWA 가 없으므로 ★L·R 스틱 버튼 동시 누름★ 이 SWA 를 대신한다.
 """
 
+import math
+import signal
 import statistics
 import threading
 import time
+import tkinter as tk
 
 import rclpy
 from rclpy.node import Node
@@ -85,7 +95,7 @@ CALIBRATION_SAMPLES = 20      # 영점(중앙값) 보정에 사용할 샘플 개
 RECONNECT_S = 3.0             # 조이스틱이 끊기면 이 간격으로 재연결 시도
 RESET_CALIB_DELAY = 3.0       # 메가 RESET 수신 후 몇 초 뒤 값을 영점으로 삼을지
 STALE_INPUT_S = 0.6           # 이 시간 이상 조이스틱 줄이 안 오면 '입력 상실'로 본다
-STATUS_PERIOD_S = 1.0         # 터미널 상태표시 주기
+GUI_PERIOD_MS = 50            # 화면 갱신 주기 (제어 20Hz 와 같은 결)
 
 PULSE_MAX = 15                # A보드 단일값 입력 상한
 STEER_MAX = 40                # B보드 STEER_ANGLE_MAX
@@ -94,6 +104,28 @@ ADC_MAX = 1023
 
 DEADZONE_RAW = 120            # 영점 기준 raw ADC 편차가 이 값 미달이면 0으로 처리
 DEFAULT_CENTER = ADC_MAX // 2
+
+# ── 화면 (joystick.real.py 의 배치를 그대로 옮겼다) ──
+PAD      = 240     # 스틱 패드 한 변
+DOT_R    = 9       # 스틱 위치 점
+CENTER_R = 12      # 스틱 버튼(누름) 표시 원
+SW_R     = 15      # 스위치 원
+POT_R    = 28      # A0 다이얼 반지름 (표시 전용)
+POT_GAP  = 90      # 다이얼의 '입'(회전 불가 구간) 각도
+
+BG          = '#1e1e1e'
+PAD_BG      = '#2b2b2b'
+LINE        = '#4a4a4a'
+DOT_COLOR   = '#4fc3f7'
+PRESS_COLOR = '#ef5350'
+IDLE_COLOR  = '#3a3a3a'
+OK_COLOR    = '#66bb6a'
+WARN_COLOR  = '#ffb454'
+TEXT        = '#dddddd'
+# U 보드에 물리적으로 없는 칸 — 지우지 않고 회색으로 죽인다(레이아웃 유지)
+DEAD_FILL   = '#242424'
+DEAD_LINE   = '#333333'
+DEAD_TEXT   = '#5a5a5a'
 
 # 접두어 한 글자로 보드를 구분한다 (JOY_FIELD_COUNT 는 접두어 포함 총 필드 수)
 JOY_KINDS = ('J', 'U')
@@ -243,8 +275,10 @@ class JoystickNode(Node):
         self.swa_prev = 1                # active-low (1 = 안 눌림)
         self.rearm_reason = "첫 실행"     # 왜 일시정지인지 (터미널 표시용)
 
+        # ★GUI 표시 전용★ 제어틱이 마지막으로 발행한 값을 남긴다(제어에는 쓰지 않는다)
+        self.last_pulse = 0
         self.last_steer = 0
-        self._last_status_t = 0.0
+        self.last_brake = 0
 
         self._running = True
         self._reader = threading.Thread(target=self._reader_loop,
@@ -252,7 +286,6 @@ class JoystickNode(Node):
         self._reader.start()
 
         self.create_timer(CONTROL_PERIOD_S, self._control_tick)
-        self.create_timer(STATUS_PERIOD_S, self._print_status)
 
         # 부모(런치) 사망 시에도 정지값을 내보내고 끝낸다
         #   ※ 이 콜백 안에서 print 하지 않는다 — proc_guard.py 헤더 경고 참고
@@ -474,12 +507,15 @@ class JoystickNode(Node):
         steer = max(-STEER_MAX, min(STEER_MAX, steer))
         self.last_steer = steer
 
+        brake = max(0, min(BRAKE_LEVEL_MAX, brake))
+        self.last_pulse, self.last_brake = pulse, brake
+
         msg = Twist()
         msg.linear.x = float(pulse)         # ★m/s 가 아니라 주행 목표펄스★
         msg.angular.z = float(steer)
         self.pub_cmd.publish(msg)
         self.pub_state.publish(Bool(data=True))
-        self.pub_brake.publish(Int32(data=max(0, min(BRAKE_LEVEL_MAX, brake))))
+        self.pub_brake.publish(Int32(data=brake))
 
     def _publish_stop(self):
         """정지값 발행. ★발행을 '멈추면' 안 된다★
@@ -489,6 +525,7 @@ class JoystickNode(Node):
         조향은 0 을 넣어도 arduino 가 control_state=False 에서 마지막 각도를
         유지한다(주행 중 0도로 급조향하면 위험하므로 그쪽이 맞다).
         """
+        self.last_pulse = self.last_brake = 0
         msg = Twist()
         msg.linear.x = 0.0
         msg.angular.z = 0.0
@@ -496,36 +533,33 @@ class JoystickNode(Node):
         self.pub_state.publish(Bool(data=False))
         self.pub_brake.publish(Int32(data=0))
 
-    # ── 터미널 상태표시 ───────────────────────────────────────────────
-    def _print_status(self):
+    # ── 화면이 읽어 갈 상태 한 덩어리 ────────────────────────────────
+    def snapshot(self):
+        """GUI 가 한 번에 읽어 가는 상태. ★lock 은 여기서만 잡는다★
+
+        위젯을 만지는 쪽(메인 스레드)과 값을 바꾸는 쪽(리더 스레드·ROS 타이머)이
+        다르므로, 화면은 매 틱 이 한 덩어리를 받아 그리기만 한다.
+        """
         with self.lock:
-            conn = self.connected
-            kind = self.kind
-            calibrated = self.calibrated
-            calib_n = len(self.calib_buf['y1']) if self.calib_buf else 0
-            paused = self.paused
             data = self.data
             gate = self._gate_reason()
-            reason = self.rearm_reason
-
-        if not conn:
-            state = "🔌 조이스틱 미연결"
-        elif not calibrated:
-            state = f"⏳ 영점 수집 {calib_n}/{CALIBRATION_SAMPLES} (스틱을 건드리지 마십시오)"
-        elif gate is not None:
-            state = f"⛔ 차단: {gate}"
-        elif paused:
-            state = f"⏸ 일시정지 ({reason}) — SWA 를 누르면 시작"
-        else:
-            state = "▶ 작동 중"
-
-        mode = ("자율주행" if self.auto_mode is True
-                else "수동조종" if self.auto_mode is False else "모드 미수신")
-        sticks = ""
-        if data is not None:
-            sticks = f" | L(Y)={data[1]:4d} R(X)={data[3]:4d} SWA={'눌림' if data[6] == 0 else '  -  '}"
-        print(f"[joystick] {state} | 보드={kind or '-'} | 주행모드={mode}{sticks}",
-              flush=True)
+            return {
+                'connected':  self.connected,
+                'kind':       self.kind,
+                'calibrated': self.calibrated,
+                'calib_n':    len(self.calib_buf['y1']) if self.calib_buf else 0,
+                'paused':     self.paused,
+                'reason':     self.rearm_reason,
+                'gate':       gate,
+                'data':       data,
+                'auto_mode':  self.auto_mode,
+                'estop':      self.estop,
+                'center':     (self.center_x1, self.center_y1,
+                               self.center_x2, self.center_y2),
+                'pulse':      self.last_pulse,
+                'steer':      self.last_steer,
+                'brake':      self.last_brake,
+            }
 
     # ── 종료 ─────────────────────────────────────────────────────────
     def stop_and_close(self):
@@ -547,18 +581,265 @@ class JoystickNode(Node):
                 self.ser = None
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  화면 (joystick.real.py 의 배치를 이 스택에 맞춰 옮겼다)
+#    ★그리기만 한다★ 발행·판단은 전부 노드가 한다. 여기서 조종값을 만들지 않는다.
+# ══════════════════════════════════════════════════════════════════════════════
+class JoystickGui:
+    def __init__(self, root, node):
+        self.root = root
+        self.node = node
+        self.running = True
+        self.kind_applied = None      # 보드 종류 전환을 감지해 칸 활성/비활성을 반영
+
+        root.title("nxde joystick — 조이스틱 조종")
+        root.configure(bg=BG)
+        root.protocol('WM_DELETE_WINDOW', self.on_close)
+
+        main = tk.Frame(root, bg=BG)
+        main.pack(padx=16, pady=(14, 8))
+
+        self.pad_l = self._make_pad(main, 'L  (주행/제동)', column=0, highlight='h')
+        self._make_switch_column(main)
+        self.pad_r = self._make_pad(main, 'R  (조향)',      column=2, highlight='v')
+
+        # ── 아래쪽 : 상태 3줄 ──
+        # ★textvariable 을 쓰지 않는다★ master.py 와 같이 라벨을 직접 config 한다.
+        #   textvariable + config 를 섞었더니 이 환경의 Tk 가 'Tcl_Release couldn't find
+        #   reference' 로 죽었다(전체 _tick 조합에서만 재현). 굳이 두 경로를 섞을 이유가
+        #   없어 검증된 쪽(master.py)으로 통일했다.
+        self.state_label = tk.Label(root, text='시작 중…', bg=BG, fg=TEXT,
+                                    font=('Consolas', 13, 'bold'), wraplength=820)
+        self.state_label.pack(pady=(2, 2))
+
+        self.gate_label = tk.Label(root, text='', bg=BG, fg=TEXT,
+                                   font=('Consolas', 11), wraplength=820)
+        self.gate_label.pack()
+
+        self.cmd_label = tk.Label(root, text='발행: -', bg=BG, fg=DOT_COLOR,
+                                  font=('Consolas', 12, 'bold'))
+        self.cmd_label.pack(pady=(4, 12))
+
+        self._tick()
+
+    # ── 위젯 만들기 ───────────────────────────────────────────────────
+    def _make_pad(self, parent, label, column, highlight):
+        frame = tk.Frame(parent, bg=BG)
+        frame.grid(row=0, column=column, padx=10)
+        tk.Label(frame, text=label, bg=BG, fg=TEXT,
+                 font=('Consolas', 12, 'bold')).pack()
+
+        c = tk.Canvas(frame, width=PAD, height=PAD, bg=PAD_BG,
+                      highlightthickness=1, highlightbackground=LINE)
+        c.pack()
+        # 그 패드가 실제로 쓰는 축만 색을 준다 — L 은 세로(주행/제동), R 은 가로(조향)
+        if highlight == 'h':
+            c.create_line(PAD / 2, 0, PAD / 2, PAD, fill=LINE)
+            hi = c.create_line(0, PAD / 2, PAD, PAD / 2, fill=DOT_COLOR)
+        else:
+            hi = c.create_line(PAD / 2, 0, PAD / 2, PAD, fill=DOT_COLOR)
+            c.create_line(0, PAD / 2, PAD, PAD / 2, fill=LINE)
+        k = c.create_oval(PAD / 2 - CENTER_R, PAD / 2 - CENTER_R,
+                          PAD / 2 + CENTER_R, PAD / 2 + CENTER_R, fill='', outline=LINE)
+        dot = c.create_oval(0, 0, 0, 0, fill=DOT_COLOR, outline='')
+
+        lbl = tk.Label(frame, text='X:---- Y:----', bg=BG, fg=TEXT, font=('Consolas', 10))
+        lbl.pack()
+        return {'canvas': c, 'dot': dot, 'k': k, 'hi': hi,
+                'label': lbl, 'highlight': highlight}
+
+    def _make_switch_column(self, parent):
+        frame = tk.Frame(parent, bg=BG)
+        frame.grid(row=0, column=1, padx=10, sticky='s')
+        self.pot = self._make_pot_dial(frame)
+        self.toggle_ids = self._make_switch_row(frame, ('D12', 'D13'))
+        self.sw_ids = self._make_switch_row(frame, ('SWA', 'SWB'))
+
+    def _make_switch_row(self, parent, names):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(pady=(0, 6))
+        ids = {}
+        for name in names:
+            box = tk.Frame(row, bg=BG)
+            box.pack(side=tk.LEFT, padx=6)
+            c = tk.Canvas(box, width=SW_R * 2 + 6, height=SW_R * 2 + 6,
+                          bg=BG, highlightthickness=0)
+            c.pack()
+            oid = c.create_oval(3, 3, SW_R * 2 + 3, SW_R * 2 + 3,
+                                fill=IDLE_COLOR, outline=LINE)
+            lbl = tk.Label(box, text=name, bg=BG, fg=TEXT, font=('Consolas', 9))
+            lbl.pack()
+            ids[name] = (c, oid, lbl)
+        return ids
+
+    def _make_pot_dial(self, parent):
+        frame = tk.Frame(parent, bg=BG)
+        frame.pack(pady=(0, 8))
+        size = POT_R * 2 + 10
+        cx = cy = size / 2
+        c = tk.Canvas(frame, width=size, height=size, bg=BG, highlightthickness=0)
+        c.pack()
+        arc = c.create_arc((cx - POT_R, cy - POT_R, cx + POT_R, cy + POT_R),
+                           start=90 + POT_GAP / 2, extent=360 - POT_GAP,
+                           fill=PAD_BG, outline=LINE)
+        needle = c.create_line(cx, cy, cx, cy - POT_R, fill=DOT_COLOR, width=3)
+        lbl = tk.Label(frame, text='A0:----', bg=BG, fg=TEXT, font=('Consolas', 9))
+        lbl.pack()
+        return {'canvas': c, 'needle': needle, 'arc': arc, 'label': lbl,
+                'cx': cx, 'cy': cy}
+
+    def _apply_board_widgets(self, reduced):
+        """U 보드에는 SWA/SWB/D12/D13/A0 가 물리적으로 없다. 칸은 그대로 두고 회색으로
+        죽인다 — 지우면 레이아웃이 바뀌어 J 보드와 화면이 달라 보인다."""
+        on = not reduced
+        for ids in (self.sw_ids, self.toggle_ids):
+            for c, oid, lbl in ids.values():
+                c.itemconfig(oid, fill=IDLE_COLOR if on else DEAD_FILL,
+                             outline=LINE if on else DEAD_LINE)
+                lbl.config(fg=TEXT if on else DEAD_TEXT)
+        # SWB 는 J 보드에서도 이 노드가 쓰지 않는다(조향 캘리브레이션 미구현)
+        c, oid, lbl = self.sw_ids['SWB']
+        lbl.config(text='SWB(미배정)', fg=DEAD_TEXT)
+        c.itemconfig(oid, fill=DEAD_FILL, outline=DEAD_LINE)
+        if not on:
+            _c, _o, l = self.sw_ids['SWA']
+            l.config(text='L+R 동시', fg=TEXT)   # U 보드의 SWA 대체 입력
+            _c.itemconfig(_o, fill=IDLE_COLOR, outline=LINE)
+        cv = self.pot['canvas']
+        cv.itemconfig(self.pot['arc'], outline=LINE if on else DEAD_LINE)
+        cv.itemconfig(self.pot['needle'], fill=DOT_COLOR if on else DEAD_LINE)
+        self.pot['label'].config(text='A0:----' if on else 'A0:없음',
+                                 fg=TEXT if on else DEAD_TEXT)
+
+    # ── 갱신 ─────────────────────────────────────────────────────────
+    def _draw_pad(self, pad, x_raw, y_raw, k, cx, cy):
+        sx = (1 - normalize(x_raw, cx)) / 2 * PAD
+        sy = (1 - normalize(y_raw, cy)) / 2 * PAD
+        c = pad['canvas']
+        c.coords(pad['dot'], sx - DOT_R, sy - DOT_R, sx + DOT_R, sy + DOT_R)
+        if pad['highlight'] == 'h':
+            c.coords(pad['hi'], 0, sy, PAD, sy)
+        else:
+            c.coords(pad['hi'], sx, 0, sx, PAD)
+        c.itemconfig(pad['k'], fill=PRESS_COLOR if k == 0 else '')
+        pad['label'].config(text=f'X:{x_raw:4d} Y:{y_raw:4d}')
+
+    def _tick(self):
+        if not self.running:
+            return
+        s = self.node.snapshot()
+
+        # 보드 종류가 바뀌면(재연결 포함) 칸 활성/비활성을 다시 반영
+        if s['kind'] != self.kind_applied:
+            self.kind_applied = s['kind']
+            self._apply_board_widgets(reduced=(s['kind'] == 'U'))
+
+        data = s['data']
+        cx1, cy1, cx2, cy2 = s['center']
+        if data is not None:
+            x1, y1, k1, x2, y2, k2, swa, swb, d12, d13, a0 = data
+            self._draw_pad(self.pad_l, x1, y1, k1, cx1, cy1)
+            self._draw_pad(self.pad_r, x2, y2, k2, cx2, cy2)
+            if s['kind'] == 'J':
+                for name, v in (('D12', d12), ('D13', d13)):
+                    c, oid, _ = self.toggle_ids[name]
+                    c.itemconfig(oid, fill=PRESS_COLOR if v == 0 else IDLE_COLOR)
+                theta = math.radians(POT_GAP / 2 + (a0 / ADC_MAX) * (360 - POT_GAP))
+                px = self.pot['cx'] - POT_R * math.sin(theta)
+                py = self.pot['cy'] - POT_R * math.cos(theta)
+                self.pot['canvas'].coords(self.pot['needle'],
+                                          self.pot['cx'], self.pot['cy'], px, py)
+                self.pot['label'].config(text=f'A0:{a0:4d}')
+            # SWA 는 두 보드 모두 표시한다(U 는 L+R 동시 누름이 여기로 들어온다)
+            c, oid, _ = self.sw_ids['SWA']
+            c.itemconfig(oid, fill=PRESS_COLOR if swa == 0 else IDLE_COLOR)
+
+        # ── 상태 3줄 ──
+        if not s['connected']:
+            text, color = '조이스틱 미연결 — 재연결 시도 중', WARN_COLOR
+        elif not s['calibrated']:
+            text = (f"영점 수집 {s['calib_n']}/{CALIBRATION_SAMPLES}"
+                    '  — ★스틱을 건드리지 마십시오★')
+            color = WARN_COLOR
+        elif s['gate'] is not None:
+            text, color = f"⛔ 차단 : {s['gate']}", PRESS_COLOR
+        elif s['paused']:
+            text = f"⏸ 일시정지 ({s['reason']}) — SWA 를 누르면 시작"
+            color = TEXT
+        else:
+            text, color = '▶ 작동 중 — SWA 를 누르면 일시정지', OK_COLOR
+        self.state_label.config(text=text, fg=color)
+
+        mode = ('자율주행' if s['auto_mode'] is True else
+                '수동조종' if s['auto_mode'] is False else '모드 미수신')
+        self.gate_label.config(
+            text=f"보드 {s['kind'] or '-'}   |   주행모드 {mode}"
+                 f"   |   E-STOP {'발동' if s['estop'] else '정상'}")
+        self.cmd_label.config(
+            text=f"발행: 펄스 {s['pulse']:2d}   조향 {s['steer']:+3d}"
+                 f"   브레이크 {s['brake']}")
+
+        self.root.after(GUI_PERIOD_MS, self._tick)
+
+    # ── 종료 ─────────────────────────────────────────────────────────
+    def stop(self):
+        self.running = False
+
+    def on_close(self):
+        self.running = False
+        self.root.quit()      # mainloop 를 빠져나오고, 정리는 main() 의 finally 가 한다
+
+
 def main(args=None):
+    """★master.py 와 같은 결합 방식★ rclpy 는 별 스레드에서 돌고 tkinter 가 메인
+    스레드를 잡는다. 조종값 계산·발행은 노드의 ROS 타이머(20Hz)가 하고, 화면은
+    snapshot() 을 읽어 그리기만 한다 — 위젯을 다른 스레드에서 만지지 않기 위함이다.
+
+    ★arduino 노드가 떠 있어야 한다★ 이 노드는 토픽만 발행하고 보드에는 직접 쓰지
+    않는다(A/B 보드 시리얼은 arduino 노드가 독점한다). 조이스틱 보드만 이 노드가
+    직접 연다 — 그쪽은 arduino 가 잡지 않는 별개의 메가다.
+    """
     rclpy.init(args=args)
     node = JoystickNode()
+
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread.start()
+
+    root = tk.Tk()
+    gui = JoystickGui(root, node)
+
+    # ★Ctrl+C 는 tkinter 가 삼킨다★ (콜백 예외를 report_callback_exception 이 먹는다)
+    #   그래서 신호를 받아 창닫기와 같은 경로로 보낸다.
     try:
-        rclpy.spin(node)
+        signal.signal(signal.SIGINT, lambda *_a: root.after(0, gui.on_close))
+    except ValueError:
+        pass
+
+    try:
+        root.mainloop()
     except KeyboardInterrupt:
         pass
     finally:
-        node.stop_and_close()
-        node.destroy_node()
+        gui.stop()
+        # ★반드시 정지값을 남긴다★ A보드에는 무입력 타임아웃이 없어, arduino 노드가
+        #   마지막 명령을 1초마다 재전송한다 — 안 내고 끝내면 차가 계속 간다.
+        try:
+            node.stop_and_close()
+        except Exception:
+            pass
         if rclpy.ok():
             rclpy.shutdown()
+        spin_thread.join(timeout=1.0)
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        print("joystick 종료 — 정지값 발행됨", flush=True)
 
 
 if __name__ == '__main__':
