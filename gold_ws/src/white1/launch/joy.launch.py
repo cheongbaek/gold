@@ -59,7 +59,7 @@ joy.launch.py ― white1 ★수동 계측★ 런치 (조이스틱 + 전 센서 +
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -71,6 +71,10 @@ from white1 import ports
 NODE_ENV = {'PYTHONUNBUFFERED': '1',
             'RCUTILS_LOGGING_BUFFERED_STREAM': '0'}
 RESPAWN_DELAY = 2.0
+#  조이스틱 기동 지연 [s] — arduino 가 A/B 보드를 먼저 붙잡게 한다(아래 근거).
+#  보드 탐색은 포트당 몇 초가 걸리므로 넉넉히 준다. 조이스틱을 꽂아 두었다면
+#  이 시간만큼 늦게 잡히는 것뿐이고, 안 꽂았다면 아무 차이가 없다.
+JOYSTICK_START_DELAY_S = 8.0
 
 
 def generate_launch_description():
@@ -226,8 +230,21 @@ def generate_launch_description():
             'pulse_max':         LaunchConfiguration('joy_pulse_max'),
             'deadzone_raw':      LaunchConfiguration('joy_deadzone_raw'),
             'require_auto_mode': LaunchConfiguration('joy_require_auto_mode'),
+            # 아는 장치는 아예 열어보지 않는다(열면 그쪽이 리셋되거나 끊긴다)
+            'exclude_ports':     exclude_for_arduino,
         }],
     )
+
+    # ★[2026-08-14] 조이스틱은 arduino 뒤에 띄운다★
+    #   ★증상★ 이 런치에서만 arduino 가 A/B 보드 연결에 실패했다(master.launch.py 는
+    #   멀쩡). ★원인★ 조이스틱 노드도 같은 후보 포트들을 훑는데, 아두이노는 포트를
+    #   여는 순간 DTR 로 ★자동 리셋★ 된다. 둘이 동시에 시작하면 조이스틱이 A/B 를
+    #   열어 리셋시키고, arduino 는 그때마다 붙잡기를 실패한다.
+    #   ★대책★ arduino 가 먼저 배타 open 으로 자기 보드를 쥐게 한다. 그 뒤에는
+    #   조이스틱의 open 이 애초에 실패하므로 ★리셋 자체가 일어나지 않는다★.
+    #   (조이스틱 쪽에도 방어를 넣었다 — A/B 텔레메트리를 보면 즉시 포기하고,
+    #    실패한 포트는 30초간 다시 열지 않는다. joystick.py 의 PORT_COOLDOWN_S)
+    joystick_delayed = TimerAction(period=JOYSTICK_START_DELAY_S, actions=[joystick])
 
     # ═══════════════════════════════════════════════════════════════════
     #  [기록] record — 구독만 한다(발행 토픽 없음). force_record 로 상시 기록.
@@ -252,6 +269,6 @@ def generate_launch_description():
         speed,
         gps,
         # 조종 · 기록
-        joystick,
+        joystick_delayed,
         record,
     ])

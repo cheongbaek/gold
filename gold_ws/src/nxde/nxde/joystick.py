@@ -132,6 +132,25 @@ JOY_KINDS = ('J', 'U')
 JOY_FIELD_COUNT = {'J': 12, 'U': 7}
 VERIFY_WINDOW_S = 3.5         # 후보 포트 하나당 "J,"/"U," 줄을 기다려볼 최대 시간
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ 남의 보드를 붙잡지 않기 [2026-08-14] ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★증상★ joy.launch.py 로 띄우면 arduino 노드가 A/B 보드 연결에 실패한다
+#  (master.launch.py 는 멀쩡하다 — 그쪽엔 이 노드가 없다).
+#  ★원인★ 조이스틱이 안 꽂혀 있으면 이 노드가 RECONNECT_S(3초)마다 전 포트를 다시
+#  훑는데, 후보 하나당 VERIFY_WINDOW_S(3.5초)씩 ★열어 놓고★ 기다린다.
+#  아두이노는 포트를 여는 순간 DTR 로 ★자동 리셋★ 되므로, A·B 보드가 몇 초마다
+#  리부팅되어 arduino 노드가 붙잡을 틈이 없다.
+#  ★대책 두 가지★
+#    ① A/B 텔레메트리가 보이면 그 포트는 ★즉시 포기★ 한다(3.5초를 기다리지 않는다).
+#    ② 실패한 포트는 PORT_COOLDOWN_S 동안 다시 열지 않는다 — 3초마다 두드리던 것이
+#       한 번으로 줄어 아두이노가 자기 보드를 잡고 유지할 수 있다.
+#  ※ 근본적으로는 런치가 arduino 를 먼저 띄워 배타 open 을 선점하게 한다
+#    (joy.launch.py 의 TimerAction). 그러면 이 노드의 open 자체가 실패해 리셋도 없다.
+ARDUINO_PREFIXES = ('S,', 'P,', 'STOP')   # A보드 "S,좌,우,쓰로틀" / B보드 "P,각,모드"·"STOP"
+PORT_COOLDOWN_S  = 30.0       # 실패한 포트를 다시 열어보기까지 기다리는 시간
+_port_cooldown   = {}         # {device: 이 시각 전에는 열지 않는다(monotonic)}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  파싱 · 스케일링 (kasa_ws 원본과 동일 — 검증된 로직이라 손대지 않았다)
@@ -195,8 +214,10 @@ def scaled_with_deadzone(raw, center, deadzone_raw, max_out):
     return magnitude if diff >= 0 else -magnitude
 
 
-def find_and_verify_joystick_port(logger):
+def find_and_verify_joystick_port(logger, exclude=None):
     """조이스틱 포트 탐색. (device, serial, kind) — 못 찾으면 (None, None, None).
+
+    exclude : 아예 열어보지 않을 경로(런치가 넘겨주는 GPS·IMU 확정 경로).
 
     ★조이스틱은 A/B 보드와 같은 메가라 VID/PID·description 으로는 구분이 안 된다★
     후보 포트를 실제로 열어 "J,"/"U," 줄이 오는지 확인한 뒤에만 채택한다.
@@ -206,8 +227,12 @@ def find_and_verify_joystick_port(logger):
     같은 포트를 동시에 두드릴 수 있다. 서로 배타 open 으로 튕기고 각자 재시도하므로
     결국 각자 제 보드를 잡는다(원본에서도 같은 방식으로 공존했다).
     """
-    for device in candidate_ports():
+    now = time.monotonic()
+    for device in candidate_ports(exclude=exclude):
+        if now < _port_cooldown.get(device, 0.0):
+            continue                    # 최근에 '조이스틱이 아니다'로 판명된 포트
         ser = None
+        skip_reason = None
         try:
             ser = serial.Serial(device, BAUD, timeout=1, exclusive=True)
             deadline = time.monotonic() + VERIFY_WINDOW_S
@@ -215,15 +240,29 @@ def find_and_verify_joystick_port(logger):
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 kind = joy_kind_of(line)
                 if kind is not None:
+                    _port_cooldown.pop(device, None)
                     logger.info(f"[조이스틱 연결] {device} ({kind} 보드)")
                     return device, ser, kind
+                if line.startswith(ARDUINO_PREFIXES):
+                    # ★A/B 보드다 — 3.5초를 기다리지 않고 즉시 놓아준다★
+                    #   붙잡고 있는 동안 그 보드는 리셋된 채로 멎어 있다.
+                    skip_reason = 'A/B 보드'
+                    break
         except (serial.SerialException, OSError):
-            pass
+            # 열리지 않는다 = 대개 arduino 노드가 배타 open 으로 이미 쥐고 있다.
+            #   ★이 경우가 가장 좋다★ — 열리지도 않았으니 그 보드는 리셋되지 않는다.
+            skip_reason = '이미 다른 노드가 사용 중'
         if ser is not None:
             try:
                 ser.close()
             except (serial.SerialException, OSError):
                 pass
+        _port_cooldown[device] = time.monotonic() + PORT_COOLDOWN_S
+        # ★throttle 을 걸지 않는다★ 이 한 줄에서 여러 포트를 찍으므로 throttle 을 걸면
+        #   두 번째 포트부터 조용히 사라진다(실제로 그래서 ttyUSB0 이 로그에 없었다).
+        #   쿨다운이 이미 빈도를 30초로 낮추므로 그대로 찍어도 시끄럽지 않다.
+        logger.info(f"[포트 건너뜀] {device} — {skip_reason or '조이스틱 신호 없음'} "
+                    f"({PORT_COOLDOWN_S:.0f}초간 다시 열지 않는다)")
     return None, None, None
 
 
@@ -243,6 +282,13 @@ class JoystickNode(Node):
         #   벤치에서 보드만 놓고 시험할 때를 위한 탈출구다 — 실차에서 끄지 말 것.
         self.require_auto_mode = bool(
             self.declare_parameter('require_auto_mode', True).value)
+        # ★[2026-08-14] 열어보지 않을 포트★ 런치가 확정한 GPS·IMU 경로를 받는다.
+        #   arduino·iahrs 와 같은 이름·같은 뜻이다. 남의 장치를 여는 순간 그쪽이
+        #   리셋되거나 스트림이 끊기므로, 아는 것은 미리 빼 준다.
+        #   ※ 기본값을 [''] 로 둔다 — 빈 리스트는 rclpy 가 타입을 못 정해 죽는다
+        #     (arduino.py·iahrs.py 도 같은 이유로 같은 관례를 쓴다).
+        self.exclude_ports = [
+            str(p) for p in self.declare_parameter('exclude_ports', ['']).value if str(p)]
 
         # ── 발행 (white 규약) ──
         self.pub_cmd   = self.create_publisher(Twist, '/cmd_vel_raw',    10)
@@ -329,7 +375,8 @@ class JoystickNode(Node):
     def _reader_loop(self):
         while self._running and rclpy.ok():
             if self.ser is None:
-                dev, ser, kind = find_and_verify_joystick_port(self.get_logger())
+                dev, ser, kind = find_and_verify_joystick_port(
+                    self.get_logger(), exclude=self.exclude_ports)
                 if ser is None:
                     self.get_logger().warn(
                         f"조이스틱 보드를 찾지 못했습니다 — {RECONNECT_S}s 후 재시도 "
