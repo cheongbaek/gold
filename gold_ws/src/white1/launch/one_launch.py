@@ -13,6 +13,11 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
     white1/driving      ★GPS+IMU 융합 + 모드스위치 상태기계 + 경로추종★
     white1/mapping      /fix 만 보고 경로 수집
     white1/record       자율주행 구간 토픽 → CSV
+    usb_cam             카메라 → /image_raw                      (use_camera)
+    white1/traffic_light 신호등 인지 — 빨간불이면 리니어 2단      (use_camera)
+        ★DRIVE_RUN 중에만 개입한다★ 빨간불이 사라지거나 초록불이면 즉시 풀고,
+        driving 이 계속 내던 목표펄스가 그대로 통해 스스로 재출발한다.
+        카메라를 안 꽂았으면 use_camera:=false (usb_cam 이 respawn 루프를 돈다)
 
 CLI 는 따로 띄운다 (별 터미널):
     ros2 run white1 prompt
@@ -36,7 +41,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from white1 import ports
+from white1 import camera_launch, paths, ports
 
 
 # 파이썬 stdout 버퍼링을 끄지 않으면 노드 로그가 뭉쳐서 늦게 나온다
@@ -65,6 +70,9 @@ def generate_launch_description():
     print("=====================================================\n")
 
     exclude_for_arduino = [gps_dev, imu_dev]
+
+    # 카메라(신호등 인지) — 조각은 white1/camera_launch.py 가 소유한다
+    cam_dev, cam_format = camera_launch.banner(ports)
 
     use_arduino = LaunchConfiguration('use_arduino')
     use_record  = LaunchConfiguration('use_record')
@@ -183,7 +191,13 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'record_dir', default_value='',
             description='주행 기록 CSV 폴더. 비우면 소스트리의 white1/ros2bag/'),
-    ]
+        # ★[2026-08-14] 음원이 white1/sound 로 옮겨 왔다★ nxde 의 sound 노드는
+        #   기본적으로 자기 패키지(<nxde>/sound)를 보므로, 여기서 경로를 넘겨 준다.
+        DeclareLaunchArgument(
+            'sound_dir', default_value=paths.sound_dir(),
+            description='음성 안내 mp3 폴더. 기본은 소스트리의 white1/sound/ — '
+                        '안내 문구가 전부 white1 의 사건이라 음원의 주인도 white1 이다'),
+    ] + camera_launch.declare_args(cam_dev)     # 카메라·신호등 인자
 
     # ═══════════════════════════════════════════════════════════════════
     #  [하드웨어] 아두이노 A/B — nxde 패키지, ★수정 없이 사용★
@@ -313,6 +327,7 @@ def generate_launch_description():
         name='sound_node',
         output='screen',
         additional_env=NODE_ENV,
+        parameters=[{'sound_dir': LaunchConfiguration('sound_dir')}],
         condition=IfCondition(use_sound),
     )
 
@@ -328,4 +343,4 @@ def generate_launch_description():
         driving,
         mapping,
         record,
-    ])
+    ] + camera_launch.actions(package_name, cam_format, NODE_ENV, RESPAWN_DELAY))

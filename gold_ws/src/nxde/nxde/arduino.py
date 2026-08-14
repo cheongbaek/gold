@@ -203,6 +203,20 @@ ADC_MAX = 1023
 SERIAL_POLL_S = 0.05         # 시리얼 수신 폴링 + 텔레메트리 발행 (보드 50ms 와 일치)
 TX_PERIOD_S   = 0.05         # 전송 판정 주기 (실제 write 는 변경/keepalive 시에만)
 KEEPALIVE_S   = 1.0          # 값이 안 바뀌어도 이 간격으로는 한 번 재전송
+# ★[2026-08-14] 브레이크 해제 유예 [s]★ 자율주행 분기 (4) 에서만 쓴다.
+#   0 이 아닌 요청을 받은 뒤 이 시간 동안은 ★푸는 방향으로 내려가지 않는다★.
+#   근거 : 로스백 manual-20260814_151206 에서 /brake_level 이 ★0.10초 주기로 2↔0★ 을
+#   50회 반복했다(mode·board·estop 정상). 리니어는 물리적으로 왕복하는 장치라
+#   그 왕복이 기구에 가장 나쁘다. 상류(traffic_light·driving·master)에도 유예를
+#   두었지만, 발행자는 앞으로도 늘 수 있고 ★여기가 모든 요청이 합쳐지는 마지막
+#   지점★ 이므로 여기서 한 번 더 막는다. 더 센 값(0→1→2)은 즉시 반영한다.
+#   ★[2026-08-14 조정] 1.0 → 0.5, 그리고 유예를 ★여기 하나로 모았다★★
+#   종전에는 신호등(1.0) → master·driving(1.0) → 여기(1.0) 가 ★직렬로 쌓여★ 해제가
+#   3초 가까이 늦었다. 게다가 중간 소비자가 붙들면 신호등이 0 을 내는 동안 값이
+#   0↔2 로 갈려 새 왕복까지 생긴다. 그래서 소비자 유예는 걷어내고,
+#       ★신호등 0.5초(빨간불 미감지 확인) + 여기 0.5초(글리치 차단) = 1.0초★
+#   로 나눴다. 사람이 체감하는 해제 지연이 정확히 1초다.
+BRAKE_RELEASE_HOLD_S = 0.5
 
 # ── 보드 탐색 ──
 DETECT_READ_S  = 5.0         # 포트 하나를 A/B 로 식별하기 위해 읽어보는 시간
@@ -443,6 +457,21 @@ class Arduino(Node):
         self.cmd_angle = 0         # /cmd_vel_raw angular.z (− 좌 / + 우, -40~40)
         self.control_enabled = False   # /control_state. 시작은 False(정지)
         self.cmd_brake = 0         # /brake_level (0/1/2). 안 오면 0(놓음)
+        # ── ★[2026-08-14] 브레이크 해제 유예 — 리니어 왕복을 여기서 못 박는다★ ──
+        #   /brake_level 은 ★마지막 발행자가 이기는★ 명령 토픽이고 발행자가 여럿이다
+        #   (driving · traffic_light · master · GUI). 그중 하나라도 0 을 한 번 흘리면
+        #   그 순간 리니어가 빠졌다가 다음 요청에 다시 나온다 — 실차에서 관측된
+        #   '나왔다 들어갔다' 가 그것이다. 상류(각 발행자)에도 유예를 넣었지만,
+        #   ★여기가 모든 요청이 합쳐지는 마지막 지점★ 이므로 여기서 한 번 더 막는다:
+        #       0 이 아닌 요청을 받은 뒤 BRAKE_RELEASE_HOLD_S 동안은 그보다 낮은 값으로
+        #       내려가지 않는다(같거나 더 센 값은 즉시 반영).
+        #   ★자율주행 분기 (4) 에만 적용한다★ 수동조종·E-stop 분기는 종전 그대로
+        #   브레이크 0 을 보낸다 — '모드 전환은 절대로 리니어를 체결하지 않는다'는
+        #   불변식을 이 유예가 건드리면 안 되기 때문이다. 모드 전환 시에는
+        #   _disarm_brakes_on_mode_edge() 가 유예까지 함께 지운다.
+        self._brake_rx_t = 0.0        # 마지막 /brake_level 수신 시각(진단 로그용)
+        self._brake_hold_level = 0    # 마지막으로 받은 '0 아닌' 단계
+        self._brake_hold_t = 0.0
 
         # ★[2026-08-04] 수동조종 브레이크 래치 상태(_manual_brake / _manual_released)를
         #   삭제했다★ 수동에서는 브레이크가 항상 0 이다.
@@ -653,8 +682,17 @@ class Arduino(Node):
                 throttle_duration_sec=5.0)
             return
         if level != self.cmd_brake:
-            self.get_logger().info(f"/brake_level → {level}단")
+            # ★진단★ 값이 언제 바뀌었는지, 직전 값이 얼마나 유지됐는지 함께 남긴다.
+            #   '리니어가 나왔다 들어갔다' 를 추적할 때 필요한 것은 이 시간차다.
+            held = time.monotonic() - self._brake_rx_t
+            self.get_logger().info(
+                f"/brake_level → {level}단  (직전 {self.cmd_brake}단을 {held:.2f}초 유지)")
+        self._brake_rx_t = time.monotonic()
         self.cmd_brake = level
+        if level > 0:
+            # 해제 유예의 기준 — ★마지막으로 '물어라' 를 받은 시각·단계★
+            self._brake_hold_level = level
+            self._brake_hold_t = self._brake_rx_t
 
     # ═══════════════════════════════════════════════════════════════
     #  ROS → 보드 : 명령 조립 + 전송
@@ -749,6 +787,10 @@ class Arduino(Node):
                 f"0 으로 지웁니다 — 전환 순간에 리니어가 체결되지 않게 합니다. "
                 f"제동이 필요하면 발행자가 다시 요청합니다")
             self.cmd_brake = 0
+        # ★해제 유예도 함께 지운다★ 모드 전환은 '사람이 차를 넘겨받는 순간' 이라
+        #   유예가 남아 리니어가 1초 더 물려 있으면 안 된다 — 위 불변식이 우선한다.
+        self._brake_hold_level = 0
+        self._brake_hold_t = 0.0
         if self._stop_brake_armed and self.stop_brake_level > 0:
             self.get_logger().warn(
                 f"[모드 전환] stop_brake_level({self.stop_brake_level}단) 무장을 해제합니다 "
@@ -804,6 +846,13 @@ class Arduino(Node):
 
         # (4) 정상 자율주행 — /brake_level 을 그대로 반영(안 오면 0)
         brake = max(0, min(BRAKE_LEVEL_MAX, self.cmd_brake))
+        # ★해제 유예 [2026-08-14]★ 0 이 아닌 요청을 받은 뒤 BRAKE_RELEASE_HOLD_S 동안은
+        #   그보다 낮은 값으로 내려가지 않는다. 발행자가 여럿인 토픽에서 누가 0 을 한 번
+        #   흘려도 리니어가 빠졌다 나오지 않게 하는 ★마지막 방벽★ 이다(상수 주석 참고).
+        #   더 센 값은 즉시 반영한다 — 막는 것은 '푸는 방향'뿐이다.
+        if (time.monotonic() - self._brake_hold_t) <= BRAKE_RELEASE_HOLD_S:
+            if self._brake_hold_level > brake:
+                brake = self._brake_hold_level
         # ★[2026-08-12] 리니어가 물려 있으면 A보드 REF 는 무조건 0★
         #   구동과 제동을 동시에 걸면 둘이 서로 밀어낸다 — 리니어는 차를 잡으려 하고
         #   인휠은 목표펄스를 맞추려 전류를 더 밀어넣는다. 그 상태가 이어지면

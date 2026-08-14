@@ -77,10 +77,15 @@ class PromptNode(Node):
         super().__init__('prompt_node')
         self.declare_parameter('data_dir', '')
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
+        # ★[2026-08-14] 음원 폴더를 직접 넘긴다★ 음원이 nxde/sound → white1/sound 로
+        #   옮겨 왔는데, Player 를 빈 인자로 만들면 nxde 자기 패키지 폴더(이제 없다)를
+        #   본다. 이 화면이 내는 세 안내(시작 인사·스위치 대기 둘)가 조용히 사라진다.
+        self.declare_parameter('sound_dir', '')
+        sound_path = paths.sound_dir(self.get_parameter('sound_dir').value or '')
 
         self.pub_cmd = self.create_publisher(String, '/drive_cmd', 10)
 
-        self.sound = Player(log=self.get_logger().warning) if Player else None
+        self.sound = Player(sound_path, log=self.get_logger().warning) if Player else None
         self.play(SND_PROMPT)          # "메인화면입니다" — 뜨자마자
 
         self.state = 'IDLE'

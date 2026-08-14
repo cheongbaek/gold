@@ -235,6 +235,22 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     TopicSpec('/drive_event', String, ('drive_event',), _scalar, hold=False,
               note='헤딩 확정·도착·브레이크 등 이벤트'),
 
+    # ── 신호등 인지 (white1/traffic_light.py) [2026-08-14] ──
+    #   ★'왜 여기서 섰나 / 왜 멀리서도 섰나' 를 사후에 판정하기 위한 세 열★
+    #   brake_level 만으로는 '리니어가 물렸다'는 결과만 남고 그 근거가 남지 않는다.
+    #   세 열을 나란히 놓으면 판정 경로가 그대로 드러난다:
+    #       tl_state=RED     + tl_near_metric 60  → 가까워서 섰다(정상)
+    #       tl_state=RED     + tl_near_metric 26  → ★임계(25px)를 겨우 넘어 멀리서 섰다★
+    #       tl_state=RED_FAR + tl_red_far=True    → 빨갛지만 멀다고 보고 안 섰다
+    TopicSpec('/tl/state', String, ('tl_state',), _scalar,
+              note='RED / RED_FAR / GREEN / UNKNOWN — 프레임 판정'),
+    TopicSpec('/tl/near_metric', Float32, ('tl_near_metric',), _scalar,
+              note='근접도 게이트에 걸리는 값(빨간 박스 중 최대). 기본 단위는 '
+                   '★박스 높이[px]★ 이고 tl_red_stop_min_area_frac>0 이면 면적비다. '
+                   '임계(tl_red_stop_min_height, 기본 25)와 비교해서 읽는다'),
+    TopicSpec('/tl/red_far', Bool, ('tl_red_far',), _scalar,
+              note='이번 프레임이 RED_FAR 인가 = 빨갛지만 아직 멀다고 본 것'),
+
     # ── 원시 센서 ──
     TopicSpec('/fix', NavSatFix,
               ('fix_lat', 'fix_lon', 'fix_alt_m', 'fix_status', 'fix_cov_xx'),

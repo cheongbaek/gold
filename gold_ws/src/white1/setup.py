@@ -14,6 +14,11 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'),
             sorted(set(glob('launch/*.launch.py')) | set(glob('launch/*.py')))),
+        # ★[2026-08-14] 음성 안내 음원 — nxde/sound 에서 옮겨 왔다★
+        #   .gitignore 가 *.mp3 를 막으므로 새로 clone 하면 이 폴더는 비어 있다
+        #   (glob 이 빈 목록이 되어 설치도 조용히 건너뛴다). sound 노드는 '음원 없음'
+        #   경고만 한 번 내고 계속 돈다 — 다시 만들려면 `ros2 run nxde tts`.
+        (os.path.join('share', package_name, 'sound'), glob('sound/*.mp3')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -37,6 +42,10 @@ setup(
             #   다른 대기 상태를 들고 있게 되고, 안전 게이트도 두 곳에 두게 된다.
             #   화면은 prompt(CLI) 하나로 간다.
             'record  = white1.record:main',     # 주행 구간 토픽 → CSV
+            # ── 카메라 ──
+            #   ★[2026-08-14] 신호등 인지·정지★ 빨간불이면 리니어 2단, 사라지거나
+            #   초록불이면 해제. 개입 허락은 DRIVE_RUN 또는 master 의 체크박스.
+            'traffic_light = white1.traffic_light:main',
         ],
     },
 )

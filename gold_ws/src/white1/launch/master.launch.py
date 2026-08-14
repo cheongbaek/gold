@@ -16,6 +16,16 @@ master.launch.py ― white1 ★수동 계측★ 런치 (마우스 레버 창 + �
     nmea_navsat_driver    GPS → /fix
     nxde/master           ★레버 창 → /cmd_vel_raw · /control_state · /brake_level★
     white1/record         전 토픽 → CSV (force_record — 뜨는 즉시 manual-<시각>.csv)
+    usb_cam               카메라 → /image_raw                        (use_camera)
+    white1/traffic_light  신호등 인지 — 빨간불이면 리니어 2단          (use_camera)
+
+★신호등 인지는 master 창 최하단 체크박스로 켠다★ 체크가 켜져 있는 동안만 개입한다
+  (/tl_enable). 빨간불이 사라지거나 초록불이 보이면 리니어를 풀고, 그 순간
+  ★레버에 남아 있던 명령값이 그대로 되살아난다★ — E-STOP 이 풀릴 때와 같은 성질이다.
+  그렇게 되도록 traffic_light 는 /cmd_vel_raw 를 건드리지 않는다(arduino 의 명령
+  캐시를 덮지 않는다). 자세한 근거는 traffic_light.py 헤더.
+  ⚠️ D5 가 ★수동조종★ 이면 arduino 가 브레이크를 항상 0 으로 보내므로 체크를 켜도
+    리니어는 물리지 않는다 — 신호등 정지를 보려면 D5 를 자율주행으로 올려야 한다.
 
 ════════════════════════════════════════════════════════════════════════════════
  어느 쪽을 쓸 것인가 — joy.launch.py vs 이 런치
@@ -50,7 +60,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from white1 import ports
+from white1 import camera_launch, ports
 
 
 NODE_ENV = {'PYTHONUNBUFFERED': '1',
@@ -76,6 +86,9 @@ def generate_launch_description():
     print("=====================================================\n")
 
     exclude_for_arduino = [gps_dev, imu_dev]
+
+    # 카메라(신호등 인지) — 조각은 white1/camera_launch.py 가 소유한다
+    cam_dev, cam_format = camera_launch.banner(ports)
 
     use_arduino = LaunchConfiguration('use_arduino')
     use_record  = LaunchConfiguration('use_record')
@@ -115,7 +128,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'record_dir', default_value='',
             description='기록 CSV 폴더. 비우면 소스트리의 white1/ros2bag/'),
-    ]
+    ] + camera_launch.declare_args(cam_dev)     # 카메라·신호등 인자
 
     arduino = Node(
         package='nxde',
@@ -207,4 +220,4 @@ def generate_launch_description():
         # 조종 · 기록
         master,
         record,
-    ])
+    ] + camera_launch.actions(package_name, cam_format, NODE_ENV, RESPAWN_DELAY))

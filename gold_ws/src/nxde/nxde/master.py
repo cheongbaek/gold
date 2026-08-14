@@ -163,6 +163,21 @@ KEEPALIVE_S = 0.5           # 값 변화 없어도 이 주기로 재발행
 UPDATE_MS   = 50            # GUI/발행 tick 주기
 CONFLICT_CHECK_S = 2.0      # driving_node 발행자 충돌 검사 주기
 
+# ── 신호등 인지 체크박스 [2026-08-14] ──
+#   traffic_light 는 /tl_enable 이 2초 넘게 안 오면 '허락 없음'으로 되돌린다.
+#   그 절반보다 빠르게 계속 보내야 창이 살아 있는 동안 허락이 끊기지 않는다.
+TL_ENABLE_HZ    = 5.0
+TL_STATE_STALE_S = 2.0      # /tl/state 가 이보다 낡으면 '판정 없음'으로 본다
+TL_REQ_STALE_S   = 1.0      # /tl_brake_req 가 이보다 낡으면 '요구 없음'으로 본다
+                            #   (신호등 노드는 30Hz 로 낸다 — 1초면 충분히 넉넉하다)
+#  ★해제 유예는 여기 두지 않는다 — 0.0 [2026-08-14]★
+#  여기서 붙들면 ★새 왕복이 생긴다★ — 신호등 노드가 해제하며 /brake_level=0 을 내는
+#  동안 이 창은 아직 2단을 주장하게 되어, 그 사이 토픽이 0↔2 로 갈린다.
+#  해제 지연은 ★신호등 노드 0.5초 + arduino 0.5초 = 1.0초★ 로 두고, 이 창은 요구를
+#  ★그대로 따라간다★(발행자들이 같은 값을 내는 것이 다툼을 없애는 핵심이다).
+#  낡음 가드(TL_REQ_STALE_S)는 그대로 남는다 — 신호등 노드가 죽으면 풀려야 한다.
+TL_REQ_RELEASE_HOLD_S = 0.0
+
 # ================= 다크 테마 팔레트 (kasa_ws master 와 동일 톤) =================
 BG = "#1e1e1e"
 TRACK_BG = "#2b2b2b"
@@ -206,6 +221,12 @@ class MasterNode(Node):
         # 브레이크 단계(0/1/2). Twist 에 필드가 없어 별 토픽으로 보낸다.
         self.pub_brake = self.create_publisher(Int32, '/brake_level', 10)
         # [2026-08-07] /vehicle_mode_cmd 발행을 삭제했다 — 주행모드는 물리 스위치 전용.
+        # ★[2026-08-14] 신호등 인지 허락★ 최하단 체크박스 상태를 그대로 낸다.
+        #   white1 의 traffic_light 노드가 이 값을 '개입 허락'으로 읽는다.
+        #   ★주기적으로 계속 낸다★ — 그쪽은 2초 넘게 안 오면 '허락 없음'으로 되돌린다
+        #   (이 창이 죽었는데 켜진 값이 굳어 있는 상태를 막기 위한 규약이다).
+        self.pub_tl_enable = self.create_publisher(Bool, '/tl_enable', 10)
+        self.tl_enable = False
 
         self.create_subscription(Int32, '/encoder', self._cb_encoder, 10)
         self.create_subscription(Int32, '/steer_angle_measured', self._cb_steer, 10)
@@ -214,6 +235,16 @@ class MasterNode(Node):
         self.create_subscription(Bool, '/vehicle_mode', self._cb_mode, 10)
         self.create_subscription(Bool, '/estop', self._cb_estop, 10)
         self.create_subscription(String, '/board_status', self._cb_status, 10)
+        # 신호등 판정 표시용(RED / RED_FAR / GREEN / UNKNOWN). 제어에는 쓰지 않는다.
+        self.create_subscription(String, '/tl/state', self._cb_tl_state, 10)
+        # ★[2026-08-14] 신호등 노드가 요구하는 브레이크 단계★ — 이건 제어에 쓴다.
+        #   ★왜 필요한가★ /brake_level 은 마지막 발행자가 이기는 '명령' 토픽이다.
+        #   이 창은 값이 안 바뀌어도 KEEPALIVE_S(0.5s)마다 자기 레버값을 재발행하므로,
+        #   신호등이 2단을 걸어도 0.5초 뒤 우리 0단이 그것을 덮어 ★리니어가 나왔다
+        #   들어간다★ (2026-08-14 실측 로그: 2단 → 0.43초 뒤 0단, 신호등 노드는 그동안
+        #   내내 '정지 유지 중'이었다). 그래서 그쪽 요구를 받아 ★우리 값과 max 로
+        #   합쳐서★ 낸다 — 두 발행자가 같은 값을 내면 다툼 자체가 없어진다.
+        self.create_subscription(Int32, '/tl_brake_req', self._cb_tl_req, 10)
 
         # ── 텔레메트리 캐시 ──
         self.wheel_pulse = 0        # /encoder (좌+우 합)
@@ -226,6 +257,12 @@ class MasterNode(Node):
         self.auto_mode = None
         self.estop = False
         self.board_status = None     # "A:1,B:1,ESTOP:0,MODE:1"
+        self.tl_state = ''           # /tl/state 마지막 판정 (표시 전용)
+        self.tl_state_t = 0.0
+        self.tl_brake_req = 0        # /tl_brake_req 신호등이 요구하는 단계 (제어에 반영)
+        self.tl_brake_req_t = 0.0
+        self.tl_req_hold_level = 0   # 마지막으로 받은 '0 아닌' 요구 (해제 유예용)
+        self.tl_req_hold_t = 0.0
 
         self.last_angle_cmd = 0      # 마지막으로 발행한 조향각 (종료 시 참고)
 
@@ -236,6 +273,40 @@ class MasterNode(Node):
     def _cb_throttle(self, msg):       self.throttle_raw = int(msg.data)
     def _cb_estop(self, msg):          self.estop = bool(msg.data)
     def _cb_status(self, msg):         self.board_status = msg.data
+
+    def _cb_tl_state(self, msg):
+        self.tl_state = str(msg.data).strip()
+        self.tl_state_t = time.monotonic()
+
+    def _cb_tl_req(self, msg):
+        self.tl_brake_req = max(0, min(BRAKE_LEVEL_MAX, int(msg.data)))
+        self.tl_brake_req_t = time.monotonic()
+        if self.tl_brake_req > 0:
+            # 0 이 아닌 요구를 마지막으로 받은 시각·단계 — 해제 유예의 기준이다
+            self.tl_req_hold_level = self.tl_brake_req
+            self.tl_req_hold_t = self.tl_brake_req_t
+
+    def tl_brake_now(self, now):
+        """신호등이 지금 요구하는 브레이크 단계. ★해제는 1초 유예를 둔다★
+
+        ★왜 유예가 필요한가★ 요구가 0 으로 떨어지는 순간 바로 풀면, 인지가 한 번
+        흔들리거나 토픽이 잠깐 밀릴 때마다 리니어가 물렸다 풀렸다 한다(실차 증상).
+        리니어는 물리적으로 왕복하는 장치라 그 왕복이 가장 나쁘다.
+          · 무는 것은 즉시(요구가 오는 순간)
+          · 놓는 것은 마지막 '0 아닌 요구' 로부터 TL_REQ_RELEASE_HOLD_S 뒤
+        ★신선도 가드는 그대로 살려 둔다★ 신호등 노드가 죽어 요구가 아예 끊기면
+        유예가 지난 뒤 0 이 되어 리니어가 풀린다 — 차가 영영 물려 있으면 안 된다.
+        """
+        if (now - self.tl_req_hold_t) <= TL_REQ_RELEASE_HOLD_S:
+            return self.tl_req_hold_level
+        if (now - self.tl_brake_req_t) > TL_REQ_STALE_S:
+            return 0
+        return self.tl_brake_req
+
+    def publish_tl_enable(self, on):
+        """신호등 인지 허락. ★같은 값이어도 주기적으로 계속 낸다★ (위 발행자 주석)."""
+        self.tl_enable = bool(on)
+        self.pub_tl_enable.publish(Bool(data=self.tl_enable))
 
     def _cb_mode(self, msg):
         self.auto_mode = bool(msg.data)
@@ -445,6 +516,7 @@ class MasterGui:
 
         self._build_value_table(root)
         self._build_conn_status(root)
+        self._build_traffic_light(root)      # ★최하단★ 신호등 인지 체크박스
 
         root.bind('<KeyPress-Up>', lambda e: self._kb_nudge('throttle', KEYBOARD_PULSE_STEP))
         root.bind('<KeyPress-Down>', lambda e: self._kb_nudge('throttle', -KEYBOARD_PULSE_STEP))
@@ -489,6 +561,67 @@ class MasterGui:
         self.conn_b = tk.Label(row, text="B보드: 연결 중...", bg=BG, fg=TEXT, font=("Consolas", 9))
         for w in (self.conn_a, self.conn_b):
             w.pack(side=tk.LEFT, padx=16)
+
+    def _build_traffic_light(self, root):
+        """★[2026-08-14] 최하단 '신호등 인지' 체크박스★
+
+        켜면 /tl_enable=True 를 내고, white1 의 traffic_light 노드가 그것을 ★허락★ 으로
+        읽어 빨간불에 리니어 2단을 건다. 끄면 그 즉시 손을 뗀다(그쪽 tick 이 해제한다).
+
+        ★이 체크는 '감지 허락'이지 '정지 명령'이 아니다★ 켜 두어도 신호등이 안 보이면
+        아무 일도 없고, 빨간불이 사라지면 리니어가 풀리며 ★레버에 남아 있던 명령이
+        그대로 되살아난다★ — E-STOP 이 풀릴 때와 같다(arduino 가 캐시를 들고 있고,
+        traffic_light 는 /cmd_vel_raw 를 건드리지 않는다).
+        """
+        row = tk.Frame(root, bg=BG)
+        row.pack(side=tk.BOTTOM, fill='x', pady=(0, 10))
+
+        self.tl_var = tk.BooleanVar(value=False)
+        self.tl_check = tk.Checkbutton(
+            row, text=" 신호등 인지 (빨간불 → 리니어 2단)", variable=self.tl_var,
+            command=self._on_tl_toggle,
+            bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT,
+            selectcolor=TRACK_BG, font=("Consolas", 11, "bold"))
+        self.tl_check.pack(side=tk.LEFT, padx=(18, 10))
+
+        self.tl_state_label = tk.Label(row, text="꺼짐", bg=BG, fg=DISABLED_TEXT,
+                                       font=("Consolas", 11, "bold"), width=26, anchor='w')
+        self.tl_state_label.pack(side=tk.LEFT)
+
+    # ---------- 신호등 인지 ----------
+    def _on_tl_toggle(self):
+        """체크박스를 눌렀다 — 즉시 한 번 내고, 이후는 _tl_tick 이 주기적으로 낸다."""
+        self.node.publish_tl_enable(self.tl_var.get())
+        self._tl_pub_t = time.monotonic()
+
+    def _tl_tick(self, now):
+        """허락을 TL_ENABLE_HZ 로 계속 내고, 신호등 판정을 화면에 비춘다.
+
+        ★계속 내는 이유★ traffic_light 는 2초 넘게 이 값이 안 오면 '허락 없음'으로
+        되돌린다. 창이 죽었는데 마지막 True 가 굳어 브레이크가 걸리는 상태를 막는
+        규약이라, 창이 살아 있는 동안은 심장박동처럼 계속 보내야 한다.
+        """
+        if now - getattr(self, '_tl_pub_t', 0.0) >= 1.0 / TL_ENABLE_HZ:
+            self._tl_pub_t = now
+            self.node.publish_tl_enable(self.tl_var.get())
+
+        if not self.tl_var.get():
+            self.tl_state_label.config(text="꺼짐", fg=DISABLED_TEXT)
+            return
+        state = self.node.tl_state
+        fresh = state and (now - self.node.tl_state_t) <= TL_STATE_STALE_S
+        if not fresh:
+            # 켰는데 판정이 안 온다 = 카메라/노드가 없다. ★그래도 차는 그냥 간다★
+            # (traffic_light 는 fail-open 이다) — 그 사실을 화면에 분명히 적는다.
+            self.tl_state_label.config(text="⚠️ 판정 없음(카메라·노드 확인)",
+                                       fg=ESTOP_COLOR)
+            return
+        text, color = {
+            'RED':     ("🔴 빨간불 — 리니어 2단", ESTOP_COLOR),
+            'RED_FAR': ("🔴 빨간불(원거리) — 대기", TEXT),
+            'GREEN':   ("🟢 초록불 — 통과", OK_COLOR),
+        }.get(state, ("⚪ 신호등 없음", DISABLED_TEXT))
+        self.tl_state_label.config(text=text, fg=color)
 
     # ---------- 토글 ----------
     def _on_toggle_click(self):
@@ -565,6 +698,9 @@ class MasterGui:
             self.estop_active = self.node.estop
             self._update_status_text()
 
+        # ── 신호등 인지 : 허락 재발행 + 판정 표시 ──
+        self._tl_tick(now)
+
         # ── 주행모드 판정 ──
         #   ★ None(미수신)도 '수동'처럼 잠근다 ★ 모드를 모르는 상태에서 마우스 명령을
         #     내보내면 수동조종 중인 차에 자율 명령을 쏘는 셈이 된다.
@@ -597,6 +733,19 @@ class MasterGui:
             enabled = self.enabled
             if not enabled:
                 pulse_cmd = 0   # OFF 동안에는 정지값을 계속 내보낸다(헤더 참고)
+
+        # ── 신호등 요구를 합친다 [2026-08-14] ──
+        #   ★max 로 합친다★ 우리가 0 을 내는 사이 신호등의 2단이 덮이지 않게, 그리고
+        #   사람이 레버로 건 더 강한 제동을 신호등이 약화시키지 않게(둘 다 max 다).
+        #   해제는 신호등 요구가 0 으로 돌아오는 순간 자동으로 따라온다.
+        #   ★체크박스가 켜져 있으면 상시 합친다★ [2026-08-14 지시] 수동조종 모드에서도
+        #   값을 그대로 낸다 — 실제로 리니어가 물릴지는 arduino 가 정한다(수동조종에서는
+        #   (2) 분기가 브레이크를 항상 0 으로 보낸다는 불변식이 그대로 살아 있다).
+        #   즉 여기서 막지 않아도 그 규약은 깨지지 않고, 화면·토픽은 '무엇을 요구했는지'
+        #   를 정직하게 보여 준다.
+        tl_req = self.node.tl_brake_now(now)
+        if tl_req > brake_cmd:
+            brake_cmd = tl_req
 
         # ── 발행 : 값이 바뀌었거나 KEEPALIVE_S 가 지났을 때 ──
         state = (pulse_cmd, angle_cmd, brake_cmd, enabled)

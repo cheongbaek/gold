@@ -513,6 +513,36 @@ RTK_FIXED_STATUS   = 2       # NavSatFix.status.status (nmea_navsat_driver: GGA 
 #   쓰는 곳은 DRIVE_DONE 하나뿐이고, 거기서는 조건 없이 2단을 문다.
 BRAKE_FULL         = 2
 BRAKE_NONE         = 0
+#  ★[2026-08-14] 자기 브레이크 재확인 주기★ /brake_level 발행자가 둘이 됐다(이 노드 +
+#  traffic_light). 남이 낸 0 에 내 제동이 풀리지 않도록, 물고 있는 동안만 이 주기로
+#  같은 값을 다시 낸다(keep_brake). 0단은 재발행하지 않는다 — 그 이유는 그 함수 주석에.
+#  traffic_light 의 같은 상수와 값을 맞춰 둔다(어느 쪽이 늦게 내도 결과가 같도록).
+BRAKE_KEEPALIVE_S  = 0.25
+#  ★신호등 요구를 받아 합칠 때의 규칙 [2026-08-14]★ master 의 같은 상수와 값을 맞춘다.
+#    무는 것은 즉시 / 놓는 것은 마지막 '0 아닌 요구' 로부터 이만큼 뒤.
+#    인지가 한 번 흔들리거나 토픽이 잠깐 밀려도 리니어가 왕복하지 않게 하는 장치다.
+TL_REQ_STALE_S        = 1.0    # 요구가 이보다 낡으면 '요구 없음'(노드 사망 대비)
+#  ★[2026-08-14 조정] 1.0 → 0.0★ master 와 같은 이유다 — 소비자가 붙들면 신호등이
+#  해제하는 동안 둘이 다른 값을 내어 새 왕복이 생긴다. 해제 지연은 신호등 노드(0.5s)와
+#  arduino(0.5s)가 나눠 갖고, 이쪽은 요구를 그대로 따라간다.
+TL_REQ_RELEASE_HOLD_S = 0.0    # 해제 유예 없음(따라만 간다)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ 신호등 인지를 쓸 것인가 [2026-08-14] ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  True  : 경로추종 중(DRIVE_RUN)에 traffic_light 노드의 개입을 ★허락★ 한다.
+#          빨간불이 확정되면 그쪽이 /brake_level=2 를 걸어 차를 세우고, 빨간불이
+#          사라지거나 초록불이 보이면 곧바로 푼다. 그 순간 이 노드가 20Hz 로 계속
+#          내던 목표펄스가 그대로 다시 통해 ★스스로 재출발★ 한다.
+#  False : 허락을 내주지 않는다 = ★카메라가 없어도 종전과 똑같이 돈다★.
+#          (런치에서 use_camera:=false 로 노드 자체를 안 띄우는 것과는 별개다 —
+#           이건 '띄워 뒀더라도 자율주행에는 끼어들지 말라'는 이 노드의 의사표시다)
+#
+#  ★매핑(MAP_*)에서는 값과 무관하게 절대 허락하지 않는다★ 매핑은 사람이 페달로 모는
+#  절차이고, 그 구간에 리니어가 튀어나오면 사람 조작과 다툰다. 허락은 DRIVE_RUN 하나뿐.
+#  ※ master 의 '신호등 인지' 체크박스는 이 상수와 무관하게 따로 동작한다(사람의 허락).
+TRAFFIC_LIGHT_ENABLE = True
+
 ENC_STOP_EPS       = 0.5     # 이 밑이면 '완전정지'로 본다(엔코더 반펄스 노이즈 바닥)
 DRIVE_DONE_RELEASE_S = 2.0   # 완전정지 확인 후 이만큼 지나면 자동으로 리니어 해제 + IDLE 복귀
 
@@ -774,7 +804,14 @@ class DrivingNode(Node):
         self.route_path = ''
 
         # ── 출력 상태 ──
-        self.brake_now = BRAKE_NONE
+        self.brake_now = BRAKE_NONE   # ★내가★ 요청하는 단계
+        self._brake_out = -1          # 마지막으로 ★실제 발행한★ 값 (max 합산 결과)
+        self._brake_t = 0.0           # 그 발행 시각(재확인 주기 기준)
+        # ── 신호등 노드의 요구(/tl_brake_req) — max 로 합쳐 낸다 ──
+        self._tl_req = 0
+        self._tl_req_t = 0.0
+        self._tl_hold_level = 0       # 마지막 '0 아닌' 요구 (해제 유예용)
+        self._tl_hold_t = 0.0
         self._done_zero_t = None      # DRIVE_DONE 에서 완전정지를 확인한 시각
         # ── 종점 순차감속 [2026-08-12] ──
         #   ★한 방향으로만 간다★ NONE → BRAKE → CREEP. 되돌아가지 않으므로 종점
@@ -813,6 +850,9 @@ class DrivingNode(Node):
         #   전용이고, 수동조종에서의 펄스는 arduino 가 직접 받아 준다.
         self.pub_map   = self.create_publisher(Bool,   '/mapping_cmd',      10)
         self.pub_dstate = self.create_publisher(String, '/drive_state',     10)
+        # ★신호등 개입 허락★ 상수 TRAFFIC_LIGHT_ENABLE + DRIVE_RUN 일 때만 True.
+        #   traffic_light 는 이것과 master 의 /tl_enable 을 OR 로 본다.
+        self.pub_tl_permit = self.create_publisher(Bool, '/tl_permit',      10)
         self.pub_event = self.create_publisher(String, '/drive_event',      10)
         self.pub_ego   = self.create_publisher(Float64MultiArray, '/ego_state', 10)
         # ★[2026-08-08] 추종 진단 — record 전용, 제어는 이 값을 읽지 않는다★
@@ -825,6 +865,8 @@ class DrivingNode(Node):
         self.create_subscription(NavSatFix, '/fix',          self.cb_fix,     10)
         self.create_subscription(Imu,       '/imu',          self.cb_imu,     10)
         self.create_subscription(Int32,     '/encoder',      self.cb_encoder, 10)
+        # 신호등 노드의 브레이크 요구 — 내 요청과 max 로 합쳐서 낸다(cb_tl_brake_req)
+        self.create_subscription(Int32,     '/tl_brake_req', self.cb_tl_brake_req, 10)
         self.create_subscription(Float32,   '/speed',        self.cb_speed,   10)
         self.create_subscription(Bool,      '/vehicle_mode', self.cb_mode,    10)
         self.create_subscription(Bool,      '/estop',        self.cb_estop,   10)
@@ -1221,6 +1263,8 @@ class DrivingNode(Node):
     # ══════════════════════════════════════════════════════════════════════════
     def loop(self):
         self.publish_state_topics()
+        # 내가 물고 있는 제동은 내가 지킨다(발행자가 둘이다 — keep_brake 주석 참고)
+        self.keep_brake()
 
         if self.state == S_IDLE:
             self.send(0, 0.0, control=False)
@@ -2017,11 +2061,77 @@ class DrivingNode(Node):
 
         return max(0, min(REF_TRIM_OUT_MAX, ref + self._trim))
 
+    def cb_tl_brake_req(self, msg: Int32):
+        """신호등 노드가 요구하는 브레이크 단계. ★내 값과 max 로 합쳐서 낸다★
+
+        합치는 이유는 master 와 같다 — /brake_level 은 마지막 발행자가 이기는 명령
+        토픽이라, 두 발행자가 다른 값을 내면 리니어가 그 주기로 왕복한다. 같은 값을
+        내면 다툼 자체가 없어진다.
+        """
+        lvl = max(0, min(BRAKE_FULL, int(msg.data)))
+        self._tl_req = lvl
+        self._tl_req_t = time.time()
+        if lvl > 0:
+            self._tl_hold_level = lvl        # 해제 유예의 기준
+            self._tl_hold_t = self._tl_req_t
+
+    def tl_brake_req(self):
+        """신호등이 지금 요구하는 단계. ★해제는 TL_REQ_RELEASE_HOLD_S 유예★
+
+        무는 것은 즉시, 놓는 것은 마지막 '0 아닌 요구' 로부터 1초 뒤다. 인지가 한 번
+        흔들리거나 토픽이 잠깐 밀려도 리니어가 왕복하지 않게 하려는 것이고, 신호등
+        노드 자체에도 같은 유예가 있다(그쪽 red_release_hold_s) — ★두 겹으로 막는다★.
+        요구가 아예 끊기면(노드 사망) 유예가 지난 뒤 0 이 되어 풀린다.
+        """
+        now = time.time()
+        if (now - self._tl_hold_t) <= TL_REQ_RELEASE_HOLD_S:
+            return self._tl_hold_level
+        if (now - self._tl_req_t) > TL_REQ_STALE_S:
+            return 0
+        return self._tl_req
+
     def set_brake(self, level):
+        """내 브레이크 요청을 갱신한다. 실제 발행은 _publish_brake 가 한다."""
         if level == self.brake_now:
             return
         self.brake_now = level
-        self.pub_brake.publish(Int32(data=int(level)))
+        self._publish_brake(force=True)
+
+    def _publish_brake(self, force=False):
+        """★실제로 나가는 값 = max(내 요청, 신호등 요청)★ 값이 바뀌었거나 재확인
+        주기가 지났을 때만 낸다(같은 값을 20Hz 로 쏟아 봐야 arduino 만 시끄럽다).
+
+        ★0 은 재확인하지 않는다★ '놓음'을 계속 주장하면 반대로 남의 정지를 푼다.
+        """
+        out = max(int(self.brake_now), int(self.tl_brake_req()))
+        now = time.time()
+        if not force and out == self._brake_out:
+            if out <= 0 or (now - self._brake_t) < BRAKE_KEEPALIVE_S:
+                return
+        self._brake_out = out
+        self._brake_t = now
+        self.pub_brake.publish(Int32(data=out))
+
+    def keep_brake(self):
+        """★브레이크 재확인 [2026-08-14]★ 물고 있는 동안 주기적으로 다시 낸다.
+
+        ★왜 필요한가★ /brake_level 에는 이제 발행자가 둘이다 — 이 노드와 신호등
+        노드(traffic_light)다. 그쪽은 자기가 걸었던 2단을 풀 때 0 을 한 번 내는데,
+        그 순간 이 노드가 ★종점 접근제동(goal_phase=BRAKE)★ 으로 2단을 물고 있으면
+        남의 0 이 내 제동을 풀어 버린다. set_brake 는 '값이 바뀔 때만' 내므로 스스로
+        되돌리지 못한다(내 쪽 상태는 여전히 2단이라 변화가 없다).
+        traffic_light 에는 DRIVE_DONE 가드가 있지만 종점 접근제동은 ★DRIVE_RUN 상태★
+        라 그 가드에 걸리지 않는다 — 그래서 소유자 쪽에서 지킨다.
+
+        0단은 재발행하지 않는다. '놓음'을 계속 주장하면 반대로 남의 정지(신호등 2단)를
+        우리가 푸는 꼴이 된다 — ★지킬 것은 물려 있는 제동뿐이다★.
+
+        ★[2026-08-14] 신호등 요구까지 합쳐서 낸다★ 실제 발행은 _publish_brake 가
+        max(내 요청, 신호등 요청) 으로 만든다. 그래서 신호등이 2단을 요구하는 동안은
+        driving 도 같은 2단을 주장하게 되고, 두 발행자가 다른 값을 내며 리니어를
+        왕복시키는 일이 구조적으로 사라진다.
+        """
+        self._publish_brake()
 
     def signed_cte(self):
         """경로에서 얼마나 벗어나 있는가. ★+ 왼쪽 / − 오른쪽★ (경로 진행방향 기준)
@@ -2061,6 +2171,11 @@ class DrivingNode(Node):
 
     def publish_state_topics(self):
         self.pub_dstate.publish(String(data=self.state))
+        # ★신호등 개입 허락 [2026-08-14]★ DRIVE_RUN 에서만, 그리고 상수가 True 일 때만.
+        #   ★신선도가 곧 허락이다★ 이 노드가 죽으면 값이 끊겨 traffic_light 가 스스로
+        #   손을 뗀다(그쪽 TL_ENABLE_STALE_S). 그래서 False 도 계속 내보낸다.
+        self.pub_tl_permit.publish(Bool(
+            data=bool(TRAFFIC_LIGHT_ENABLE and self.state == S_DRIVE_RUN)))
         ego = Float64MultiArray()
         ego.data = [
             float(self.x), float(self.y),
