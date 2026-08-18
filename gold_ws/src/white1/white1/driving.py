@@ -639,6 +639,24 @@ MODE_SETTLE_S     = 0.7      # 스위치 엣지 직후 이만큼은 굴리지 �
 # ── GPS/IMU 융합 ──
 FUSE_GAIN          = 0.05    # GPS 코스헤딩으로 끌어당기는 비율(상보필터)
 FUSE_MIN_STEP_M    = 0.30    # 이만큼 움직였을 때만 GPS 코스헤딩을 신뢰한다
+FUSE_SIGMA_K       = 6.0
+#  ★★ 문턱을 σ 에 비례시킨다 — gps.py 의 min_quality 하향과 한 짝이다 [2026-08-18] ★★
+#  0.30m 는 ★RTK Fixed(σ 2cm) 기준★ 값이다. gps.py 의 min_quality 가 2(DGPS)로 내려가면
+#  이 함수가 DGPS(σ 0.10~0.16m) 좌표로도 돌기 시작하는데, 그때 0.30m 스텝의 방위는
+#  ★잡음이 이동량을 압도해 사실상 난수★ 다. 실차 로그로 그 산포를 직접 재봤다
+#  (DRIVE_HEADING = 직진 구간이므로 코스 차분은 0 에 가까워야 한다):
+#        RTK Fixed  코스 차분 표준편차  2.9°   최대   9.6°   ← 곡선 주행 포함값
+#        DGPS (a)                    1.6°   최대   6.5°
+#        DGPS (b)                    5.6°   최대  20.5°
+#        DGPS (c)                 ★ 26.2°   최대 177.1° ★  ← 방위가 뒤집혔다
+#  (c)는 1.33m 를 10.1초에 가는 저속 구간이었다 — 느릴수록 0.30m 를 채우는 데 오래 걸려
+#  그 사이 잡음이 쌓인다. FUSE_GAIN(0.05)이라도 177° 오차는 한 스텝에 ★8.9°★ 를
+#  헤딩에 주입하고, 그것이 반복되면 헤딩이 무작위보행한다.
+#  → 필요 변위 = max(0.30m, 6σ) 로 둔다:
+#        Fixed(σ 0.02) → 0.30m  ★종전과 완전히 동일★
+#        DGPS (σ 0.14) → 0.84m  → 방위 오차 atan(0.14·√2/0.84) ≈ 13° 로 묶인다
+#  ★gps.py 의 COURSE_SIGMA_K 와 같은 값·같은 이유다★ — 그쪽도 '변위가 잡음보다 충분히
+#  커야 방위를 믿을 수 있다'는 같은 문제를 같은 방식으로 막는다(그 상수 주석 참고).
 GPS_TIMEOUT_S      = 2.0     # 원시 fix 가 이 시간 넘게 없으면 정지
 #   ★[2026-08-18] '원시 fix 의 나이' 로 잰다★ gps.py 가 IMU 로 메운 표본이 20Hz 로
 #   계속 도착하므로, '배열이 마지막으로 도착한 시각'으로 재면 두절을 영영 못 잡는다.
@@ -1494,6 +1512,10 @@ class DrivingNode(Node):
 
         ★정지·저속에서는 쓰지 않는다★ — 1cm 노이즈가 방향을 180° 뒤집는다.
         FUSE_MIN_STEP_M 이상 움직였을 때만 한 번 반영한다.
+
+        ★[2026-08-18] 그 문턱을 σ 에 비례시켰다★ 품질이 나쁘면 같은 0.30m 안에
+        잡음이 더 많이 섞이므로 더 멀리 가야 방위를 믿을 수 있다. 실측 근거는
+        상수 FUSE_SIGMA_K 주석(DGPS 에서 코스 차분 최대 177°).
         """
         if self.heading is None or not self.fix_ok:
             self._last_fuse_pt = (self.x, self.y)
@@ -1503,7 +1525,12 @@ class DrivingNode(Node):
             return
         px, py = self._last_fuse_pt
         dx, dy = self.x - px, self.y - py
-        if math.hypot(dx, dy) < FUSE_MIN_STEP_M:
+        # 필요 변위 = max(고정 문턱, 6σ). σ 는 gps.py 가 준 값이고, 이 함수는 원시
+        #   표본에서만 불리므로(cb_gps_fused) DR 팽창분이 섞이지 않은 값이다.
+        need = FUSE_MIN_STEP_M
+        if math.isfinite(self.gps_sigma_m):
+            need = max(need, FUSE_SIGMA_K * self.gps_sigma_m)
+        if math.hypot(dx, dy) < need:
             return
         course = math.degrees(math.atan2(dy, dx))
         corr = FUSE_GAIN * wrap180(course - self.heading)
@@ -1610,6 +1637,22 @@ class DrivingNode(Node):
                 self.send(0, 0.0, control=True)
                 return
             self.send(self.heading_pulse, 0.0, control=True)   # 조향 0 으로 곧게
+
+        # ★★ 품질 게이트에 막혀 표본이 안 쌓이는 것을 소리내어 알린다 [2026-08-18] ★★
+        #  head_est.add() 는 fix_ok 일 때만 불린다(cb_gps_fused). 품질이 문턱 미달이면
+        #  ★표본이 한 개도 안 들어가 헤딩이 영영 확정되지 않는다★ — 그런데 종전에는
+        #  DRIVE_HEADING 에서 조용히 멈춰 있을 뿐이라 화면·로그에 이유가 없었다.
+        #  2026-08-18 실차 3주행이 정확히 그 상태였다(DGPS 100%, pos_ok 0%) — 차는
+        #  12km/h 로 굴렀는데 왜 안 되는지 알 방법이 없어 로그를 뒤져야 했다.
+        #  ★사유를 그 자리에서 말해 주는 것이 이 몇 줄의 전부다.★
+        if not self.fix_ok:
+            self.throttle_event(
+                f"⚠️ 헤딩 표본이 쌓이지 않는다 — GPS 품질 "
+                f"{Q_LABEL.get(self.gps_quality, '?')}(σ={self.gps_sigma_m:.2f}m) 가 "
+                f"gps_node 의 min_quality 문턱 미달이다. 차를 굴려도 확정되지 않는다. "
+                f"→ ros2 param set /gps_node min_quality "
+                f"{max(1, self.gps_quality)}  (또는 require_rtk:=false)")
+            return
 
         sol = self.head_est.solve()
         if sol is None:

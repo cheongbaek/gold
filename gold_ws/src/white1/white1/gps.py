@@ -471,13 +471,43 @@ class GpsNode(Node):
         super().__init__('gps_node')
 
         # ── 파라미터 ──
-        #   ★min_quality 기본값 3(FLOAT)은 '종전 동작 그대로'를 뜻한다★
-        #   종전 driving 의 게이트는 status>=2 였고 그건 Float 이상과 정확히 같다.
-        #   4(FIXED)로 올리면 Float 구간에서 헤딩 확정·코스 융합이 아예 멈추므로,
-        #   Float 밖에 안 잡히는 장소에서는 차가 출발하지 않는다. ★안전한 실패지만
-        #   조용한 실패다★ — 그래서 기본값으로 삼지 않았다.
-        #     ros2 param set /gps_node min_quality 4
-        self.declare_parameter('min_quality', Q_FLOAT)
+        #  ★★ min_quality 기본값 = Q_DGPS(2) — 2026-08-18 실차 로그로 내렸다 ★★
+        #  이 값은 driving 의 fix_ok 가 되고, fix_ok 는 ① 헤딩 초기화 표본 수집
+        #  (head_est.add) ② 코스 융합(_fuse_gps_course) 두 곳을 막는 문턱이다.
+        #  ★위치 추종에는 쓰이지 않는다★ — 좌표는 품질과 무관하게 그대로 나간다.
+        #
+        #  ★왜 내렸나 — 실차 3주행이 DGPS 라 헤딩을 못 잡고 전부 실패했다★
+        #  ros2bag/route_*-2026081820{1804,2118,2531}.csv : fix_status 1(GGA q2=DGPS)
+        #  100%, gps_pos_ok 0%, 그래서 head_est 에 표본이 ★한 개도★ 안 들어가
+        #  DRIVE_HEADING 에서 못 나왔다(차는 실제로 12km/h 로 굴렀다).
+        #  종전 기본값 3(FLOAT)이 DGPS(2)를 막은 것이다.
+        #  ※ 이건 이번에 생긴 회귀가 아니다 — 종전 driving 도 `status >= 2` 로 막았고
+        #    DGPS 는 status=1 이라 똑같이 막혔다. 달라진 것은 ★이유가 로그에 보인다★ 는 점뿐이다.
+        #
+        #  ★DGPS 로 헤딩을 잡아도 되는가 — 그 로그로 실제 추정기를 재생해 확인했다★
+        #    (HeadingEstimator 를 그대로 돌려 지도 시작방위와 대조)
+        #        DGPS  +173.1° vs 지도 +173.9°  → 차이 −0.8°   σ=1.24° 잔차 2.9cm
+        #        DGPS  −15.1° vs 지도 −10.7°   → 차이 −4.4°   σ=1.08° 잔차 1.8cm
+        #        DGPS  −14.0° vs 지도 −12.8°   → 차이 −1.3°   σ=1.22° 잔차 2.3cm
+        #        FIXED −10.8° vs 지도 −12.8°   → 차이 +2.0°   σ=1.02° 잔차 0.9cm
+        #    ★DGPS 의 헤딩 오차가 RTK Fixed 와 같은 급이다★. 게다가 이 '차이'는
+        #    헤딩 오차 + 사람이 차를 놓은 각도 오차의 합이므로 실제 오차는 더 작다.
+        #    확정 문턱(σ 3.0° / 잔차 15cm)에도 여유가 크다 → 문턱을 손댈 필요가 없었다.
+        #
+        #  ★그래도 SPS(1)는 계속 막는다★ HeadingEstimator 에는 자체 품질검사가 있지만
+        #    `forced = dist >= HEAD_MAX_DIST_M(5.0)` 경로가 있어 ★5m 를 가면 정확도
+        #    미달이어도 확정한다★. SPS(기본 EPE 4m)면 그 경로로 엉뚱한 헤딩이 박힌다.
+        #    2 로 두면 DGPS 만 통과하고 그 구멍이 막힌다 — 그래서 1 이 아니라 2 다.
+        #
+        #  ⚠️ 잔차가 작은 것이 헤딩이 정확하다는 ★증거는 아니다★. DGPS 오차는 백색잡음이
+        #    아니라 서행 편향이고, 편향이 매끄럽게 흐르면 직선처럼 보여 잔차에 안 나타난다
+        #    (1.1m 기선에서 10cm 횡편향 드리프트 = 5.2° 헤딩 오차인데 잔차는 작다).
+        #    위 −0.8~−4.4° 는 ★결과가 좋았다는 관측★ 이고 σ 가 보증한 값이 아니다.
+        #    σ 계산의 HEAD_SIGMA_FLOOR(0.02m)도 주석에 'RTK Fixed 기준'이라 적혀 있다.
+        #    → 출발 헤딩이 몇 도 틀어질 수 있고, 그 뒤는 코스 융합이 당겨서 맞춘다.
+        #      그 융합이 DGPS 에서 안전하도록 driving 의 FUSE_SIGMA_K 를 함께 넣었다.
+        #     Fixed 만 쓰려면 : ros2 param set /gps_node min_quality 4
+        self.declare_parameter('min_quality', Q_DGPS)
         self.declare_parameter('dr_enable', DR_ENABLE)
         self.declare_parameter('dr_max_s', DR_MAX_S)
         self.declare_parameter('pub_hz', PUB_HZ)

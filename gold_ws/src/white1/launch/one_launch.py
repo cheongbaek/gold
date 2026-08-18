@@ -182,9 +182,19 @@ def generate_launch_description():
                         'run_follow() 의 종점 판정 참고'),
         DeclareLaunchArgument(
             'require_rtk', default_value='true',
-            description='헤딩 초기화·추종에 RTK Fixed 를 요구할지. ★true 권장★ — '
-                        'Float 에서 초기 헤딩이 20°씩 틀어지면 경로를 벗어난 채 '
-                        '필터가 수렴해 버린다(driving.py 헤더 표 참고)'),
+            description='헤딩 초기화·코스 융합에 품질 문턱을 걸지. ★true 권장★ — '
+                        'false 면 품질을 아예 안 본다(SPS σ4m 도 통과). 문턱의 높이는 '
+                        '아래 min_quality 가 정한다'),
+        DeclareLaunchArgument(
+            'min_quality', default_value='2',
+            description='★헤딩 초기화·코스 융합을 허용할 최저 GPS 품질★ '
+                        '1=SPS 2=DGPS 3=RTK_FLOAT 4=RTK_FIXED. 기본 2(DGPS) — '
+                        '2026-08-18 실차에서 DGPS 헤딩 오차가 RTK Fixed 와 같은 급'
+                        '(−0.8~−4.4° vs +2.0°)임을 로그 재생으로 확인해 내렸다. '
+                        '⚠️ 1(SPS)로 내리지 말 것 — HeadingEstimator 가 5m 를 가면 '
+                        '정확도 미달이어도 강제확정하므로 엉뚱한 헤딩이 박힌다. '
+                        '4 로 올리면 Fixed 가 아닐 때 아예 출발하지 않는다(안전하지만 '
+                        '조용한 실패 — 로그의 "헤딩 표본이 쌓이지 않는다" 경고를 볼 것)'),
 
         # ── 저장 위치 (비우면 white1/paths.py 규칙) ──
         DeclareLaunchArgument(
@@ -290,6 +300,7 @@ def generate_launch_description():
         additional_env=NODE_ENV,
         respawn=True,
         respawn_delay=RESPAWN_DELAY,
+        parameters=[{'min_quality': LaunchConfiguration('min_quality')}],
     )
 
     # ═══════════════════════════════════════════════════════════════════
