@@ -288,7 +288,14 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     TopicSpec('/gps_fused', Float64MultiArray,
               ('gps_lat', 'gps_lon', 'gps_quality', 'gps_sigma_m', 'gps_pos_ok',
                'gps_is_raw', 'gps_raw_age_s', 'gps_dr_dist_m', 'gps_kmh',
-               'gps_course_deg',
+               # ★'gps_course_deg' 가 아니다★ 그 이름은 위 /drive_diag 가 이미 쓴다
+               #   (driving 의 _diag_course = 융합에 실제로 먹인 코스). 같은 이름을 두 번
+               #   쓰면 CSV 헤더가 중복되고 ★csv.DictReader 가 뒤엣것만 남겨 앞 열이
+               #   조용히 사라진다★ — 실제로 그렇게 냈다가 잡았다. 둘은 다른 값이다:
+               #     gps_course_deg     : driving 이 자기 융합에 쓴 코스(0.30m 고정 문턱)
+               #     gps_fix_course_deg : gps.py 가 원시 fix 로 낸 코스(σ 비례 문턱)
+               #   ★둘을 나란히 보는 것이 진단에 쓸모 있다★ — 갈리면 문턱 차이가 원인이다.
+               'gps_fix_course_deg',
                # ── [2026-08-18 (3)] 이상치 게이트 + DEGRADED 융합 3종 ──
                'gps_mode', 'gps_reject_n', 'gps_resid_m'),
               _array(13),
@@ -314,6 +321,27 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
 COMMON_COLUMNS = ('t_wall', 't_rel')
 ALL_COLUMNS: Tuple[str, ...] = COMMON_COLUMNS + tuple(
     c for spec in RECORD_TOPICS for c in spec.columns)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★열 이름 중복 검사 — import 시점에 크게 터뜨린다 [2026-08-18]★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 필요한가 — 중복은 조용히 데이터를 지운다★
+#  CSV 헤더에 같은 이름이 두 번 들어가도 파일은 정상으로 보이고 행 수도 맞는다.
+#  그런데 ★csv.DictReader 는 뒤엣것만 남긴다★ — 앞 열의 값이 분석 단계에서 통째로
+#  사라진다. 파일을 열어 봐도 안 보이고, 열 번호로 읽는 도구와 이름으로 읽는 도구가
+#  서로 다른 값을 보게 된다. 사후분석이 목적인 이 파일에서 제일 나쁜 실패다.
+#  실제로 [2026-08-18] /gps_fused 에 'gps_course_deg' 를 넣어 /drive_diag 의 같은
+#  이름과 겹쳤고, 79열이 DictReader 에서 78키로 줄어드는 것으로 발견했다.
+#  → 이름을 새로 넣을 때 사람이 기억해서 피하는 것이 아니라 ★기동 자체를 막는다★.
+#    노드가 안 뜨면 즉시 알 수 있고, 잘못된 CSV 가 한 줄도 생기지 않는다.
+_dups = sorted({c for c in ALL_COLUMNS if ALL_COLUMNS.count(c) > 1})
+if _dups:
+    raise RuntimeError(
+        f"record.py 열 이름 중복: {_dups} — CSV 헤더가 겹치면 csv.DictReader 가 "
+        f"뒤엣것만 남겨 앞 열이 조용히 사라진다. RECORD_TOPICS 에서 이름을 바꿀 것 "
+        f"(전체 {len(ALL_COLUMNS)}열 중 고유 {len(set(ALL_COLUMNS))}개)")
+del _dups
 
 
 # ══════════════════════════════════════════════════════════════════════════════
