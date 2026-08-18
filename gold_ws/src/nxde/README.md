@@ -65,8 +65,32 @@ nxde/arduino.py     A/B 2보드 브리지 (구 white/motor.py 대체)
 nxde/master.py      마우스·키보드 GUI 조종
 nxde/joystick.py    조이스틱 조종 (kasa_ws 판을 white 규약으로 이식)
 nxde/check.py       하드웨어 연결 점검 (자립형 — 어떤 패키지도 import 하지 않는다)
+nxde/video.py       ★인지 카메라 화면 녹화★ /image_raw → video/cam-<시각>.mp4
+                    구독만 한다(제어에 끼어들지 않는다). 장치를 직접 열지 않아
+                    usb_cam 과 다투지 않는다 — 그쪽이 죽으면 신호등 인지가 죽는다.
 nxde/proc_guard.py  부모 프로세스 사망 감지 (고아 방지, POSIX 전용판)
 ```
+
+### `ros2 run nxde video` — 인지 화면 녹화
+
+```bash
+ros2 run nxde video                                    # 그대로 녹화
+ros2 run nxde video --ros-args -p scale:=0.5           # 용량 1/4 (사람이 볼 용도면 충분)
+ros2 run nxde video --ros-args -p fps:=30.0            # 실측 생략 = ★첫 프레임부터★ 적는다
+ros2 run nxde video --ros-args -p codec:=MJPG          # .avi — 강제종료에도 앞부분을 살린다
+```
+
+`white1` 의 `usb_cam` 이 떠 있어야 한다(`use_camera:=true`). **저장 위치는 이 패키지
+루트의 `video/`** 이고, **Ctrl-C · 런치 종료 모두 그 시점까지 재생 가능한 상태로 닫힌다**
+(둘 다 실측 확인). 녹화되는 것은 **인지가 받는 프레임 그대로**이고 YOLO 박스·HUD 는
+그리지 않는다 — 판정의 *입력* 을 남기는 것이 목적이다. 자세한 근거는 `video.py` 헤더.
+
+| 주의 | |
+|---|---|
+| 용량 | 1080p 기준 **영상 1분당 20~60MB**. 남은 디스크가 500MB 밑이면 스스로 끝낸다 |
+| CPU | 인코딩은 CPU 를 쓴다. 인지 FPS 가 떨어지면 `scale` 을 낮춘다 |
+| 강제종료 | `kill -9`·전원차단은 mp4 를 살릴 수 없다 → 그 위험이 크면 `codec:=MJPG` |
+| git | `*.mp4/avi/mkv/mov` 는 `.gitignore` 로 막혀 있다(이력에 넣지 않는다) |
 
 ### 의존 방향 — ★white 를 의존하지 않는다★
 

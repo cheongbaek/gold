@@ -26,7 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             # ══════════════════════════════════════════════════════════════
-            #  실행 대상 6개 — 전부 ros2 run 으로 띄운다 (런치파일 없음)
+            #  실행 대상 7개 — 전부 ros2 run 으로 띄운다 (런치파일 없음)
             #    ※ tts 는 ROS 노드가 아닌 작업용 GUI 도구다
             # ══════════════════════════════════════════════════════════════
             # ★차량 구동의 필수 노드★ A/B 2보드 통신 전담. 이게 없으면 아무것도 안 움직인다.
@@ -43,6 +43,13 @@ setup(
             # ★런치 전 하드웨어 연결 점검★ 보고하고 종료한다.  ros2 run nxde check
             #   메가 A/B · 조이스틱 · GPS(NMEA GGA 의 RTK quality) · IMU · 카메라
             'check    = nxde.check:main',
+            # ★영상 기록★ 인지가 보는 화면(/image_raw)을 파일로 적는다.
+            #   ros2 run nxde video    → <nxde 루트>/video/cam-<날짜>_<시각>.mp4
+            #   ★Ctrl-C 로 끝내면 그 시점까지 재생 가능한 상태로 닫힌다★
+            #   구독만 하므로 제어에 끼어들지 않는다. 장치를 직접 열지 않아 usb_cam 과
+            #   다투지 않는다(그쪽이 죽으면 신호등 인지가 죽는다 — video.py 헤더 참고).
+            #   용량이 크다 : 1080p 기준 분당 20~60MB. 줄이려면 scale:=0.5
+            'video    = nxde.video:main',
             # ★음성 안내★ sound/*.mp3 를 사건에 맞춰 기본 스피커로 재생한다.
             #   구독만 하므로 제어에 끼어들지 않는다.  ros2 run nxde sound
             #   (white806 one_launch.py 가 use_sound:=true 로 함께 띄운다)
