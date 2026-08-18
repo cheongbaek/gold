@@ -12,6 +12,8 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
     usb_cam       V4L2 → /image_raw
     usb_cam_ctrl  기동 2초 뒤 v4l2-ctl 로 노출·게인 등을 ★장치 범위로 클램프해★ 재적용
     traffic_light /image_raw → 빨간불이면 /brake_level=2 (white1/traffic_light.py)
+                  ★[2026-08-14] 정지선을 보면 그 앞에서 선다★ 정지선이 안 보이면
+                  종전대로 그 자리에서 선다 (sl_enable · sl_trigger_y_frac)
 
 ⚠️ ★카메라를 안 꽂은 채 use_camera:=true 로 띄우면 usb_cam 이 respawn 루프를 돈다★
    그 로그가 다른 노드 로그를 덮는다. 카메라를 쓸 일이 없는 날은 use_camera:=false.
@@ -57,7 +59,35 @@ def declare_args(cam_dev):
         DeclareLaunchArgument(
             'tl_red_stop_min_height', default_value='25',
             description='★근접도 게이트★ 빨간불 박스 높이가 이 픽셀 이상이어야 정지한다. '
-                        '작으면 멀리서 서고, 크면 늦게 선다(1920x1080 기준)'),
+                        '작으면 멀리서 서고, 크면 늦게 선다(1920x1080 기준). ⚠️ 상한이 '
+                        '있다 — 너무 크면 서 있는 동안 등기구가 화면 위로 벗어나 해제되어 '
+                        '차가 굴러간다. 상한은 gold/tl_tune.py 가 기록으로 계산해 준다'),
+        DeclareLaunchArgument(
+            'tl_near_release_ratio', default_value='0.7',
+            description='★근접도 히스테리시스★ 이미 물고 있는 동안에는 위 임계를 이 비율로 '
+                        '낮춰서 본다. 같은 신호등이 인식 흔들림으로 몇 px 작아졌다고 놓으면 '
+                        '리니어가 왕복한다. 1.0 이면 히스테리시스 없음'),
+        DeclareLaunchArgument(
+            'sl_enable', default_value='true',
+            description='★정지선 앞 정지★ 켜면 빨간불이 확정돼도 정지선이 보이는 동안은 '
+                        '트리거 행에 닿을 때까지 브레이크를 참는다. 정지선을 못 보면 '
+                        '종전대로 즉시 정지한다 — 즉 인지가 안 되는 날은 이 인자가 '
+                        '아무 일도 하지 않는다. false 면 정지선 추론 자체를 안 돌린다'),
+        DeclareLaunchArgument(
+            'sl_trigger_y_frac', default_value='0.75',
+            description='★정지선 트리거 행★ 정지선 마스크의 최하단이 화면 높이의 이 '
+                        '비율보다 아래로 오면 정지. ⚠️ 근거 없는 기본값이다 — 2단 '
+                        '정지거리(4펄스 1.6~2.8m, BRAKING.md)를 감안해 "정지선이 '
+                        '2.5~3m 앞"인 지점의 HUD 값으로 정한다(todo.txt 9항). '
+                        '차체가 화면 하단을 가리므로 그보다 위여야 한다'),
+        DeclareLaunchArgument(
+            'sl_conf', default_value='0.30',
+            description='정지선 seg 신뢰도 임계. 구 white 의 lane_conf 와 같은 값'),
+        DeclareLaunchArgument(
+            'sl_gate_red_s', default_value='1.0',
+            description='빨간 박스를 이 시간 안에 본 적이 있을 때만 정지선 추론을 돌린다 '
+                        '(평상시 비용 0). ★튜닝할 때는 크게 준다★ — 신호등 없이 정지선만 '
+                        '보고 싶으면 sl_gate_red_s:=99999 로 상시 추론시킨다(todo 9-1)'),
         DeclareLaunchArgument(
             'tl_show_window', default_value='true',
             description='인지 결과 창(OpenCV)을 띄울지. ★기본 true★ — ROI·근접도·색 '
@@ -183,6 +213,11 @@ def actions(package_name, cam_format, node_env, respawn_delay):
             'device':                 LaunchConfiguration('tl_device'),
             'tl_conf':                LaunchConfiguration('tl_conf'),
             'tl_red_stop_min_height': LaunchConfiguration('tl_red_stop_min_height'),
+            'tl_near_release_ratio':  LaunchConfiguration('tl_near_release_ratio'),
+            'sl_enable':              LaunchConfiguration('sl_enable'),
+            'sl_trigger_y_frac':      LaunchConfiguration('sl_trigger_y_frac'),
+            'sl_conf':                LaunchConfiguration('sl_conf'),
+            'sl_gate_red_s':          LaunchConfiguration('sl_gate_red_s'),
             'show_window':            LaunchConfiguration('tl_show_window'),
             'window_width':           LaunchConfiguration('tl_window_width'),
             'stop_latch':             LaunchConfiguration('tl_stop_latch'),
