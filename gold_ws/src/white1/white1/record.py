@@ -189,21 +189,29 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #      head_init_deg, head_sigma, head_resid, head_dist,
     #      ref_pulse, out_pulse, meas_pulse,        ← [2026-08-12] 저속 보정 3종
     #      cte_integral, cte_i_term_deg,            ← [2026-08-12] CTE 적분항 2종
-    #      goal_phase]                              ← [2026-08-12] 종점 순차감속 단계
+    #      goal_phase,                              ← [2026-08-12] 종점 순차감속 단계
+    #      cb_state, cb_v0_ms, cb_v_corner_ms]      ← [2026-08-18] 코너 1단 선행제동 3종
     TopicSpec('/drive_diag', Float64MultiArray,
               ('cte_m', 'heading_err_deg', 'target_idx', 'target_dist_m',
                'goal_dist_m', 'gps_course_deg', 'fuse_corr_deg', 'gyro_z_dps',
                'brake_latched', 'head_init_deg', 'head_sigma_deg',
                'head_resid_m', 'head_dist_m',
                'ref_pulse', 'out_pulse', 'meas_pulse',
-               'cte_integral', 'cte_i_term_deg', 'goal_phase'),
-              _array(19),
+               'cte_integral', 'cte_i_term_deg', 'goal_phase',
+               'cb_state', 'cb_v0_ms', 'cb_v_corner_ms'),
+              _array(22),
               note='★cte_m 이 핵심★ 경로이탈 +왼쪽/−오른쪽. 나머지는 헤딩 융합 '
                    '건전성과 출발 헤딩 품질. ref/out/meas 는 저속 펄스 보정 검증용 — '
                    'out≠ref 인 구간이 보정이 걸린 구간이다. cte_i_term_deg 는 '
                    'CTE 적분이 조향에 더한 도로휠각(pot 기준 ×1.75). goal_phase 는 '
                    '종점 순차감속 0없음/1접근제동/2크립 — brake_latched 만으로는 '
-                   'DRIVE_DONE 의 2단과 접근제동의 2단이 구별되지 않는다'),
+                   'DRIVE_DONE 의 2단과 접근제동의 2단이 구별되지 않는다. '
+                   '★cb_state(0없음/1제동/2잠금) 는 코너 1단 선행제동★ — '
+                   'cb_state=1 구간의 gps_kmh 기울기가 ★a1 실측(구동차단)★ 이고 '
+                   '그 값으로 driving.py 의 A_BRAKE1_MS2(현재 0.88 = 구동이 살아 '
+                   '있던 하한)를 갱신한다. 1→2 로 바뀐 행의 gps_kmh 가 '
+                   'cb_v_corner_ms 보다 크게 낮으면 해제가 늦은 것 → '
+                   'CORNER_BRAKE_RELEASE_LEAD_MS 를 키운다'),
 
     TopicSpec('/encoder', Int32, ('encoder_sum',), _scalar,
               note='A보드 좌+우 펄스 ★합★ — 바퀴 하나 기준(=양 바퀴 평균)으로 보려면 '
@@ -250,11 +258,52 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                    '임계(tl_red_stop_min_height, 기본 25)와 비교해서 읽는다'),
     TopicSpec('/tl/red_far', Bool, ('tl_red_far',), _scalar,
               note='이번 프레임이 RED_FAR 인가 = 빨갛지만 아직 멀다고 본 것'),
+    #   ★정지선 두 열 [2026-08-14]★ 위 세 열이 '왜 섰나'라면 이 둘은 ★'어디서 섰나'★ 다.
+    #       tl_state=RED + sl_wait=True  → 빨간불은 확정, 정지선을 기다리는 중(안 섰다)
+    #       brake_level 2 로 넘어간 행의 sl_y → ★그 순간 정지선이 화면 어디였나★
+    #         = 실제 정지 지점. 트리거 행(sl_trigger_y_frac)을 정하는 근거가 이 값이다.
+    #       sl_y=-1 인 채 brake_level 2 → 정지선을 못 보고 그 자리에서 선 것(종전 동작)
+    TopicSpec('/tl/stop_line_y', Float32, ('sl_y',), _scalar,
+              note='정지선 마스크 최하단 y ÷ 프레임 높이(0~1). −1 = 미검출. '
+                   '값이 클수록 가깝다 — 트리거 행과 비교해서 읽는다'),
+    TopicSpec('/tl/stop_line_wait', Bool, ('sl_wait',), _scalar,
+              note='RED 확정인데 정지선이 아직 멀어 브레이크를 참고 있는 구간'),
 
     # ── 원시 센서 ──
     TopicSpec('/fix', NavSatFix,
               ('fix_lat', 'fix_lon', 'fix_alt_m', 'fix_status', 'fix_cov_xx'),
               _navsat, note='GPS 원시'),
+    # ── GPS 후처리 [2026-08-18 gps.py 신설] ★배열 규약의 소유자는 gps.py 헤더★ ──
+    #   ★/fix 와 나란히 기록해야 뜻이 있다★ 이 두 줄을 겹쳐 보면 gps.py 가 한 일이
+    #   그대로 드러난다: fix_status 가 2 인 구간이 gps_quality 3(Float)과 4(Fixed)로
+    #   갈리는 것이 ①품질 판정이고, gps_is_raw=0 인 행에서 lat/lon 이 /fix 보다
+    #   앞서 나가 있는 것이 ②IMU 공백 메움이다.
+    #   분석 착안점:
+    #     · gps_sigma_m 히스토그램 → 두 무리로 갈린다. 그 골짜기가 Fixed 문턱의 실측근거
+    #       (gps.py 의 RTK_FIXED_SIGMA_M 0.30 이 맞는 값인지 여기서 확인한다)
+    #     · gps_dr_dist_m 의 최대값 → DR 이 실제로 얼마나 메웠나. 0.2초 공백이면
+    #       속도×0.2 근처여야 한다. 그보다 크면 fix 를 놓치고 있다는 뜻이다
+    #     · is_raw=1 행에서 직전 DR 예측좌표와의 거리 → ★DR 오차 실측★.
+    #       DR_SIGMA_GROWTH_M_PER_S(현재 0.5, 미검증 추정)를 이 값으로 대체할 수 있다
+    TopicSpec('/gps_fused', Float64MultiArray,
+              ('gps_lat', 'gps_lon', 'gps_quality', 'gps_sigma_m', 'gps_pos_ok',
+               'gps_is_raw', 'gps_raw_age_s', 'gps_dr_dist_m', 'gps_kmh',
+               'gps_course_deg',
+               # ── [2026-08-18 (3)] 이상치 게이트 + DEGRADED 융합 3종 ──
+               'gps_mode', 'gps_reject_n', 'gps_resid_m'),
+              _array(13),
+              note='gps.py 후처리 좌표. quality 0없음/1SPS/2DGPS/3RTK_FLOAT/4RTK_FIXED '
+                   '— ★status.status 로는 Float 과 Fixed 가 구별되지 않아서 σ 로 '
+                   '갈라낸 것이다★. is_raw=0 은 IMU 로 메운 표본이고 그때 '
+                   'dr_dist_m 만큼 원시 fix 앞으로 외삽돼 있다. raw_age_s 는 '
+                   'driving 의 GPS 두절 판정 기준(DR 로 메운 시간이 판정을 늦추지 '
+                   '않도록 원시 fix 의 나이를 그대로 싣는다). '
+                   '★gps_reject_n 이 늘어나는 구간이 GPS 가 튀는 구간이다★ — '
+                   'fix_lat/fix_lon(원값)과 겹쳐 보면 무엇을 버렸는지 보인다. '
+                   'gps_mode 0=NORMAL(fix 스냅) 1=DEGRADED(DR + 잔차 중앙값 융합). '
+                   'gps_resid_m 은 DEGRADED 에서 GPS 와 DR 의 불일치 크기 — '
+                   '★DEGRADED_RESID_MAX_M(3.0) 근처로 굳으면 DR 이 GPS 를 못 따라가는 '
+                   '것이므로 엔코더 환산(ENC_MS_PER_PULSE)이나 자이로를 의심할 것★'),
     TopicSpec('/imu', Imu,
               ('imu_quat_x', 'imu_quat_y', 'imu_quat_z', 'imu_quat_w',
                'imu_gyro_x', 'imu_gyro_y', 'imu_gyro_z',

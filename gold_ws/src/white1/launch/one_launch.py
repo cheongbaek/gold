@@ -9,9 +9,11 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
     nxde/arduino          A/B 2보드 시리얼 브리지  ★수정 없이 그대로 쓴다★
     white1/iahrs        6축 IMU 드라이버 → /imu
     white1/speed        /imu 적분 속도계 → /speed [km/h]
-    nmea_navsat_driver    GPS → /fix
-    white1/driving      ★GPS+IMU 융합 + 모드스위치 상태기계 + 경로추종★
-    white1/mapping      /fix 만 보고 경로 수집
+    nmea_navsat_driver    GPS 수신기 → /fix
+    white1/gps          ★/fix + /imu → /gps_fused★ RTK Fixed/Float 판정 +
+                          5Hz fix 사이 공백을 IMU 로 메운 20Hz 가상좌표
+    white1/driving      ★헤딩 + 모드스위치 상태기계 + 경로추종★ (위치는 gps 가 준다)
+    white1/mapping      ★/fix 원값만★ 보고 경로 수집 (gps 후처리를 거치지 않는다)
     white1/record       자율주행 구간 토픽 → CSV
     usb_cam             카메라 → /image_raw                      (use_camera)
     white1/traffic_light 신호등 인지 — 빨간불이면 리니어 2단      (use_camera)
@@ -270,7 +272,29 @@ def generate_launch_description():
     )
 
     # ═══════════════════════════════════════════════════════════════════
-    #  [자율주행] driving — 융합·상태기계·추종·브레이크를 혼자 맡는다
+    #  [GPS 후처리] gps — /fix + /imu → /gps_fused   ★[2026-08-18] 신설★
+    #    ① RTK Fixed / Float 판정 : nmea_navsat_driver 는 GGA q4(Fixed, 2cm)와
+    #       q5(Float, 수 m)를 ★같은 status.status=2 로★ 내보낸다. 두 값을 가르는
+    #       것은 position_covariance 이고 그 판정을 이 노드가 한다(gps.py 헤더 ①절).
+    #    ② 5Hz fix 사이 공백을 IMU 로 메워 20Hz 가상좌표를 만든다 — 4.42m/s 에서
+    #       마지막 틱의 좌표는 최대 0.88m 낡아 있었다.
+    #    ★없으면 차가 서 있는다★ driving 이 /gps_fused 를 못 받아 GPS 두절로 판단한다
+    #    (안전한 실패). driving 이 그 경우를 구별해서 경고한다.
+    #    ★매핑에는 영향이 없다★ mapping 은 /fix 원값을 직접 받는다.
+    # ═══════════════════════════════════════════════════════════════════
+    gps_post = Node(
+        package=package_name,
+        executable='gps',
+        name='gps_node',
+        output='screen',
+        additional_env=NODE_ENV,
+        respawn=True,
+        respawn_delay=RESPAWN_DELAY,
+    )
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  [자율주행] driving — 헤딩·상태기계·추종·브레이크를 맡는다
+    #    (위치는 gps 노드가 만든다 — [2026-08-18])
     # ═══════════════════════════════════════════════════════════════════
     driving = Node(
         package=package_name,
@@ -339,6 +363,8 @@ def generate_launch_description():
         iahrs,
         speed,
         gps,
+        # GPS 후처리 — driving 이 이 노드의 출력에 의존한다(먼저 띄운다)
+        gps_post,
         # 자율주행
         driving,
         mapping,

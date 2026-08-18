@@ -30,8 +30,14 @@ driving.py ― kasa 자율주행 [white1 / GPS+IMU 최소 추종판]
 ════════════════════════════════════════════════════════════════════════════════
  이 노드가 혼자 맡는 것 (구 white 와 다른 점)
 ════════════════════════════════════════════════════════════════════════════════
-  · GPS+IMU 융합 — 구 gps_imu.py 노드는 white1 에 없다. /fix 와 /imu 를 직접 받아
-    위치·헤딩을 여기서 만든다.
+  · 헤딩은 여기서 만든다 — 구 gps_imu.py 노드는 white1 에 없다. /imu 를 직접 받아
+    헤딩 초기화(HeadingEstimator)와 자이로 적분·GPS 코스 융합을 이 노드가 맡는다.
+  · ★위치는 [2026-08-18] 부터 gps.py 가 만든다★ 종전에는 /fix 를 직접 받았는데,
+    ① RTK Fixed 와 Float 이 status.status 로 구별되지 않는 것을 판정해 주고
+    ② 5Hz fix 사이의 공백(4.42m/s 에서 최대 0.88m 낡음)을 IMU 로 메워야 해서
+    그 두 가지를 하는 노드를 따로 세웠다. 이 노드는 /gps_fused 를 받는다.
+    ★판정 문턱(min_quality)의 소유자도 그쪽이다★ — 여기서 또 판정하지 않는다.
+    근거·배열 규약·한도는 gps.py 헤더에 전부 있다. (매핑은 종전대로 /fix 원값)
   · 단위 환산 없음 — /cmd_vel_raw 는 이미 ★펄스(0~15)·도(degree)★ 단위다
     (nxde/arduino.py 헤더 규약). 그래서 kasa_units 를 거치지 않는다.
   · 모드 스위치는 이제 아무것도 ★시작★시키지 않는다 [2026-08-11] — 매핑·주행의
@@ -196,10 +202,16 @@ import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import Imu, NavSatFix
+from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
 
 from white1 import paths
+# ★[2026-08-18] GPS 는 이제 gps.py 가 받는다★ 이 노드는 /fix 를 직접 구독하지 않고
+#   후처리된 /gps_fused(품질 판정 + IMU 공백 메움)를 받는다. 배열 규약과 품질 코드는
+#   ★gps.py 가 단일 소유자★ 이므로 리터럴을 여기 다시 적지 않고 import 한다.
+#   (mapping.py 는 종전대로 /fix 원값을 직접 받는다 — gps.py 헤더의 '매핑' 절 참고)
+from white1.gps import (GPS_FUSED_FIELDS, GPS_FUSED_TOPIC, Q_FIXED, Q_LABEL,
+                        Q_NONE)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -405,6 +417,133 @@ CORNER_MIN_PULSE        = 2
 #     값이다). 노드를 재시작하지 않아 이 상수가 반영되지 않았다.
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  ★★ 코너 1단 선행제동 (2026-08-18) — 목표펄스만 낮추는 것으로는 못 줄인다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 필요한가 — 목표펄스를 낮춰도 차를 줄여 주는 장치가 없다★
+#  corner_speed 는 코너 앞에서 목표펄스를 미리 낮춘다. 그런데 그 낮은 목표에 실제로
+#  도달하는 수단은 ★코스트(자연감속)뿐★ 이고 실측 a0 = 0.41 m/s² 다(todo 3-2).
+#  4펄스(3.54)→2펄스(1.77) 를 코스트로 줄이려면 ★11.4m★ 가 필요한데 전방 곡률 스캔
+#  상한이 CURVE_PREVIEW_FAR_MAX = 14m 다 — 스캔창의 82% 를 감속에만 쓰는 셈이다.
+#  게다가 BRAKE_GATE_DECEL(2.0)은 ★2단에서만 참인 값★ 이라(BRAKING.md 3절) 게이트는
+#  코스트보다 5배 세게 줄일 수 있다고 착각한 채 목표를 낸다. 그래서 코너 진입속도가
+#  목표를 넘고, 언더스티어로 밀린다(2026-08-11 실차).
+#
+#  ★실측 감속도 (todo.txt 3항 [x] / 로그 ros2bag/a1a2.csv / 정리 BRAKING.md)★
+#      a0 코스트 : 0.29 / 0.54            → 평균 0.41 m/s²
+#      a1 1단    : 0.62 / 0.97 / 1.05     → 평균 ★0.88 m/s²★
+#      a2 2단    : 2.21 / 3.82            → 2.2~3.8 m/s²
+#  1단이면 4→2펄스가 5.33m(스캔창의 38%) 다 — ★들어온다★.
+#
+#  ★a1 = 0.88 은 보수적 하한이다★ 그 세 측정은 전부 지령펄스가 5~9 로 ★살아 있는★
+#  상태였다(BRAKING.md 1절 표). 자율주행에서는 arduino 가 브레이크>0 이면 A보드 REF 를
+#  0 으로 덮으므로(arduino.py compose (4) 분기) 구동이 끊긴 채 제동한다 → 실제 감속도는
+#  0.88 보다 ★세다★. 즉 이 값을 쓰면 제동거리를 과대평가해 ★일찍 체결하고 목표보다
+#  위에서 끝난다★ = 재가속이 없는 안전한 방향이다. 굳이 재측정하지 않고 그대로 쓴다.
+#
+#  ★2단은 주행 중에 쓰지 않는다★ (사용자 결정) 2단은 정지 장치다 — DRIVE_DONE(도착·
+#  이탈·정지명령), 종점 접근제동, 신호등, E-STOP 만 쓴다. 코너는 1단 전용.
+#
+#  ★구조는 종점 접근제동과 같다 — 되먹임을 만들지 않는다★
+#  파일 헤더 '리니어 브레이크' 절의 세 번의 실패는 ★실측 되먹임★('현재펄스 > 목표+3
+#  이면 2단')이 원인이었다. 그 정책은 매번 목표를 0 으로 덮어 A보드 기동 블랭킹을
+#  재트리거하고, 그때 쏟아지는 엔코더 허수를 '과속'으로 읽어 또 물었다.
+#  여기서는 그 셋을 전부 피한다:
+#    ① 체결 판정은 ★경로 기하★(남은 거리 + 목표속도)로만 한다. 실측속도는 ★해제에만★ 쓴다.
+#    ② 목표펄스를 0 으로 덮지 않는다 — corner_speed 가 낸 값을 그대로 보낸다.
+#    ③ ★코너당 한 번★ 물고, 풀면 잠금(LOCKOUT). 되먹임 루프가 성립할 수 없다.
+#  더해서 ④ 속도 출처가 엔코더가 아니라 GPS 다(2026-08-12 이후) — 3차 실패의 근원인
+#  허수 카운트가 제어에 들어오는 경로 자체가 끊겨 있다. 그래서 ★GPS 속도를 못 읽으면
+#  아예 체결하지 않는다★(엔코더 폴백으로는 절대 제동하지 않는다).
+#
+#  ★절대 세우지 않는다 — A보드 재가속 함정 때문이다★ [kasa_0804_A.ino 분석]
+#  정지한 차에 목표를 주면 PWM 권한이 이렇게 된다(kp=0.4, ki=0.03, iTerm 클램프 ±40,
+#  I_ACCUM_ERR_MAX=4, PWM_MAX=170):
+#      목표 1펄스 err=1 → PWM 60 → (26.7s 뒤) 100      적분 누적 O
+#      목표 2펄스 err=2 → PWM 71 → (13.3s 뒤) 111      적분 누적 O
+#      목표 3펄스 err=3 → PWM 81 → ( 8.9s 뒤) 121      적분 누적 O
+#      목표 4펄스 err=4 → PWM 92 → ★영원히 92★        ★적분 동결★
+#  마지막 줄이 함정이다 — 적분 조건이 `abs(err) < I_ACCUM_ERR_MAX(4)` 라서 err 가
+#  정확히 4 면 거짓이 되어 ★적분이 자라지 않는다★. PWM_MAX 의 54% 에 묶인다.
+#  BRAKING.md 부록 A 의 '4펄스를 12.4초 받고 엔코더 0' 이 이것과 정확히 맞는다.
+#  → 그래서 이 제동은 ★목표를 2펄스 이상으로 유지하고 일찍 푼다★. 해제 시점 속도가
+#    1.8 m/s 근처면 A보드가 보는 useSpeed 가 2 로 LAUNCH_ENTRY_SPEED_MAX(1)를 넘어
+#    ★기동 블랭킹에 아예 들어가지 않는다★ = 허수 카운트도, 재가속 함정도 없다.
+CORNER_BRAKE_ENABLE   = True   # 런치/파라미터로 끌 수 있다(corner_brake_enable)
+A_COAST_MS2           = 0.41   # [m/s²] 실측 코스트 (todo 3-2)
+A_BRAKE1_MS2          = 0.88   # [m/s²] 실측 1단 — ★보수적 하한, 위 ★ 참고★
+#  ★체결 시점 : just-in-time (사용자 결정)★ 1단으로 딱 맞출 수 있는 최후 지점에
+#  안전계수를 얹은 거리에서 물어 평균속도를 지킨다. 계수를 키우면 일찍 물어 안전하고
+#  느려진다. a1 자체가 이미 보수적이라(위) 1.2 로 둔다.
+#      4펄스→2펄스 : 순수 5.33m × 1.2 + margin 1.5 = ★7.89m 앞에서 체결★ (스캔창의 56%)
+#      3펄스→2펄스 : 순수 2.22m × 1.2 + margin 1.5 = ★4.16m 앞에서 체결★ (스캔창의 30%)
+#  ★1.2 는 우연히 '행정 램프 손실'과 거의 같다 — 그래서 그대로 둔다★
+#  리니어가 1단 행정을 다 내는 데 ≈0.54s 가 걸리고 그 동안 제동력은 0 에서 선형으로
+#  올라온다. 폐루프 시뮬에서 물린 구간의 ★평균★ 감속도는 정상값의 83% 로 나왔다
+#  (a1=0.88 인데 로그상 0.73). 1/1.2 = 0.83 이므로 이 계수가 그 손실을 정확히 내고 있다.
+#  → ★계수를 1.0 으로 내리면 램프 손실이 그대로 부족분이 된다★. 내리지 말 것.
+CORNER_BRAKE_LATE_K   = 1.20
+CORNER_BRAKE_MIN_MS   = 1.30   # [m/s] 이 밑에서는 애초에 안 건다 — ★세울 위험★
+#  ★최소 물림 시간 — 짧은 체결은 효과가 없으면서 리니어만 왕복시킨다★
+#  리니어는 1단까지 ★290카운트★(raw 310→600) 를 움직여야 하고 그게 ≈0.54s 다.
+#  0.2초만 물면 행정의 40% 도 못 가서 ★제동력이 거의 안 나온다★ — 그런데 기구는
+#  왕복한다(리니어에 가장 나쁜 동작이다: arduino.py BRAKE_RELEASE_HOLD_S 주석의
+#  '0.10초 주기로 2↔0 을 50회' 사건이 그 이유로 막힌 것이다).
+#  arduino 의 해제유예도 0.5s 라, 그보다 짧게 요청해도 실제로는 0.5s 물린다 —
+#  ★요청과 실제가 어긋나는 것보다 처음부터 0.5s 를 약속하는 편이 낫다.★
+CORNER_BRAKE_MIN_HOLD_S = 0.5
+#  ★체결 문턱은 위 두 값에서 파생된다 (별도 상수를 두지 않는다)★
+#      문턱 = 해제선행(0.71) + a1(0.88) × 최소물림(0.5) = ★1.15 m/s ≈ 1.3펄스★
+#  이보다 작게 줄일 일이면 아예 물지 않는다. 두 가지를 동시에 보장한다:
+#    ① 물면 최소 0.5s 는 유지된다 = 행정을 끝까지 낸다(위 ★)
+#    ② ★최소물림 때문에 목표 밑으로 내려가는 일이 없다★ — 실제 a1 이 예상보다 세도
+#       0.5s 에 줄어드는 양이 문턱보다 작으면 목표 밑으로 못 내려간다.
+#       ★보장 한계는 a1 ≤ 문턱/최소물림 = 1.15/0.5 = 2.30 m/s²★ 이고, 실측 1단은
+#       0.62~1.05 다(2단이 2.2~3.8). 1단이 2.3 에 닿는다는 것은 1단이 2단과 같아진다는
+#       뜻이라 행정(raw 600 vs 850)상 성립하지 않는다 → 실질적으로 안전하다.
+#       ※ 게다가 위 '행정 램프'가 여유를 더 준다 — 물린 첫 0.5s 는 힘이 올라오는
+#         중이라 실제 감속량이 a1×0.5 가 아니라 그 23% 수준이다(폐루프 시뮬 확인).
+#       이 두 값을 따로 정하면 이 보장이 조용히 깨지므로 ★파생으로 묶어 둔다★.
+#  ⚠️ 그 대가로 ★4→3펄스 같은 1펄스 감속(Δv 0.88)에는 걸리지 않는다★. 종전과 같은
+#     코스트 감속만 남는다 — 다만 그 구간은 어차피 짧은 체결로는 제동력이 안 나와서
+#     실효가 없었다. 1펄스 감속까지 잡으려면 리니어 행정을 더 빨리 내는 것(B보드
+#     BRAKE_PWM·기구)이 선행 조건이고, ROS 쪽 상수로 해결할 문제가 아니다.
+#  ★해제는 예측 선행이다★ 0단을 지령한 뒤에도 차는 한동안 계속 줄어든다. 세 구간을
+#  각각 다른 감속도로 세어야 한다 — 리니어가 빠지는 동안은 제동력이 ★점점 준다★:
+#
+#    ① 이미 지나간 지연 (아직 제동 100%)            a=0.88
+#         GPS 속도창(0.4초 창의 중심)  0.20 s
+#         arduino TX + 시리얼          0.05 s
+#         소계 0.25 s → Δv = 0.88 × 0.25 = 0.22 m/s
+#    ② 리니어 후퇴 (제동력이 a1 → a0 로 선형 감소)   a≈(0.88+0.41)/2 = 0.65
+#         ★B보드 실측 상수로 환산★ 1단 raw 600 → 0단 raw ≈310 = 290카운트.
+#         2단(850→310 = 540카운트)이 BRAKE_HOME_MS(1000ms)에 겨우 들어간다는
+#         것이 BRAKING.md 부록 A 의 가설이므로 속도를 0.54카운트/ms 로 보면
+#         290카운트 ≈ 0.54 s → Δv = 0.65 × 0.54 = 0.35 m/s
+#    ③ A보드 토크 복구까지 코스트                    a=0.41
+#         PWM_SLEW_MAX 4/cycle @50Hz 로 0 → FF(2펄스)=70 → 0.35 s
+#         → Δv = 0.41 × 0.35 = 0.14 m/s
+#    ─────────────────────────────────────────────────────────────
+#    ★합계 0.71 m/s★ → 2펄스 목표(1.77)면 ★2.48 m/s 에서 해제★
+#
+#  세 항의 감속도가 서로 달라 단순 곱으로 안 나오므로 ★합산 결과를 상수 하나로★ 둔다.
+#  로그로 튜닝할 때도 이 값 하나만 만지면 된다(해제 후 최저속도를 보고 조정).
+#  ⚠️ 일찍 푸는 쪽으로 틀리는 것이 ★언제나 안전하다★ — 목표보다 위에서 끝나면 남은
+#     차이는 코스트가 마무리하고 재가속이 일어나지 않는다. 늦게 풀면 목표 밑으로
+#     내려가 재가속이 필요해지고, 그것이 위 'A보드 재가속 함정' 으로 들어가는 길이다.
+#     그래서 이 값은 ★크게 틀리는 쪽이 안전하다★ — 의심되면 키운다.
+CORNER_BRAKE_RELEASE_LEAD_MS = 0.71   # [m/s] 목표보다 이만큼 위에서 해제한다
+#  ★1단을 쓰는 것이 부록 A 의 '페달이 덜 빠진 채 멈춤' 위험도 함께 줄인다★
+#  0단 복귀는 위치를 안 보고 고정 1000ms REV 다. 2단은 540카운트를 그 시간에 넣어야 해
+#  marginal 하지만, 1단은 290카운트라 ★1.9배 여유★ 가 있다. 코너 제동을 2단으로 하면
+#  그 위험을 매 코너마다 감수하는 셈이 된다 — 1단 전용으로 둔 또 하나의 이유다.
+#  ★강제 해제 — 3차 실패(11.7초 정체)를 구조적으로 막는 마지막 방벽★
+#  a1=0.88 기준 4펄스→2펄스가 2.01s 다. 구동차단이면 더 짧다. 이 시간을 넘겼다는 것은
+#  제동이 안 듣거나 속도를 잘못 읽고 있다는 뜻이므로 ★일단 풀고 사람에게 알린다★.
+CORNER_BRAKE_MAX_S     = 2.5
+CORNER_BRAKE_LOCKOUT_S = 1.5   # [s] 해제 후 이 시간 + '새 코너' 조건까지 재체결 금지
+CORNER_BRAKE_NEW_GATE_M = 2.0  # [m] 게이트 거리가 이만큼 다시 멀어지면 '새 코너'로 본다
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ★★ 종점 순차감속 — 5m 리니어 2단 → 4km/h 에서 풀고 1펄스 크립 (2026-08-12) ★★
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★앞선 두 번의 실패와 무엇이 다른가★
@@ -443,7 +582,10 @@ CORNER_MIN_PULSE        = 2
 #        붙박여 있다가 ZUPT 가 걸리자 0.00 으로 툭 떨어졌다.
 #  speed.py 헤더가 적어 둔 그대로다 — 지속 감속은 자세로 오인해 스스로 지우고,
 #  믿을 수 있는 것은 '서 있는가'뿐이다. 그래서 measured_kmh() 는 ★GPS 변위 속도★ 를
-#  1순위로 쓴다(_update_gps_speed). /speed 는 GPS 가 끊겼을 때의 대체값으로 내려갔다.
+#  1순위로 쓴다. /speed 는 GPS 가 끊겼을 때의 대체값으로 내려갔다.
+#  ※ [2026-08-18] 그 GPS 변위 속도를 ★계산하는 곳★ 만 gps.py 로 옮겼다(배열 [8]번).
+#    정의는 그대로다 — 원시 5Hz fix 3점 0.4초 창의 양끝점 변위. 이유는 상수
+#    'GPS 변위 속도' 절에 적었다.
 GOAL_BRAKE_M     = 5.0    # [m] 종점까지 이 안이면 리니어 2단 (런치 goal_brake_m)
 GOAL_CREEP_KMH   = 4.0    # [km/h] 이 밑이면 리니어 해제 + 크립 (런치 goal_creep_kmh)
 GOAL_CREEP_PULSE = 1      # 크립 목표펄스 — 저속 보정이 이 값을 유지시킨다
@@ -451,6 +593,11 @@ GOAL_BRAKE_MAX_S = 3.0    # [s] 속도를 못 읽어도 이만큼 물렸으면 �
 #   ※ 마지막 줄이 없으면 GPS 도 /speed 도 없을 때 리니어를 문 채로 굳는다 — 차는
 #     서 있고 도착 판정은 영영 서지 않는다. 크립으로 넘어가는 쪽이 언제나 안전하다.
 GOAL_PHASE_NONE, GOAL_PHASE_BRAKE, GOAL_PHASE_CREEP = 0, 1, 2
+
+#  코너 1단 선행제동 상태 — ★한 방향으로만 간다★ NONE → BRAKING → LOCKOUT → (새 코너) NONE
+#  되돌아가지 않으므로 코너 부근에서 거리·속도가 흔들려도 리니어가 채터링하지 않는다
+#  (종점 순차감속의 GOAL_PHASE 와 같은 이유·같은 구조).
+CB_NONE, CB_BRAKING, CB_LOCKOUT = 0, 1, 2
 
 # ── 크립 재출발 킥 [2026-08-12] ─────────────────────────────────────────────────
 #  ★왜 필요한가★ 16:44 주행에서 크립이 종점 2.49m 앞에서 ★67초간 굳었다★. 저속
@@ -492,19 +639,21 @@ MODE_SETTLE_S     = 0.7      # 스위치 엣지 직후 이만큼은 굴리지 �
 # ── GPS/IMU 융합 ──
 FUSE_GAIN          = 0.05    # GPS 코스헤딩으로 끌어당기는 비율(상보필터)
 FUSE_MIN_STEP_M    = 0.30    # 이만큼 움직였을 때만 GPS 코스헤딩을 신뢰한다
-GPS_TIMEOUT_S      = 2.0     # 이 시간 넘게 /fix 가 없으면 정지
+GPS_TIMEOUT_S      = 2.0     # 원시 fix 가 이 시간 넘게 없으면 정지
+#   ★[2026-08-18] '원시 fix 의 나이' 로 잰다★ gps.py 가 IMU 로 메운 표본이 20Hz 로
+#   계속 도착하므로, '배열이 마지막으로 도착한 시각'으로 재면 두절을 영영 못 잡는다.
+#   그래서 gps.py 가 실어 보내는 raw_age_s([6])를 그대로 써서 fix_time 을 역산한다
+#   (cb_gps_fused). DR 로 메운 시간이 두절 판정을 늦추지 않는다.
+GPS_FUSED_STALE_S  = 0.5     # /gps_fused 자체가 이보다 오래되면 gps 노드가 죽은 것으로 본다
 
-# ── GPS 변위 속도 [2026-08-12] ★속도의 1순위 출처★ ──────────────────────────────
-#   5Hz fix 두 점 사이의 ★직선거리★ 를 시간으로 나눈다. 구간마다 잘라 더하지 않는
-#   이유는 RTK 지터(±2cm)가 매 구간 양수로 더해져 정지 중에도 속도가 뜨기 때문이다.
-#   양 끝점만 쓰면 지터가 상쇄된다. 0.4초 창에서 곡선을 직선으로 보는 오차는 이 차의
-#   최소회전반경(2.0m)·속도에서 1% 미만이라 무시할 수 있다.
-#   ★지연★ 창의 절반(약 0.2초)만큼 늦는다. 20Hz 제어에는 늦지만, 이 값을 쓰는 곳은
-#   종점 감속 임계와 저속 보정뿐이고 둘 다 0.3초 단위로 판단하는 로직이다.
-GPS_SPEED_WIN     = 3        # 표본 수(5Hz 3점 = 0.4초 창)
-GPS_SPEED_FRESH_S = 0.6      # 마지막 갱신이 이보다 오래되면 못 믿는다
-GPS_SPEED_MAX_DT  = 1.0      # 창이 이보다 벌어지면 두절로 보고 버린다
-RTK_FIXED_STATUS   = 2       # NavSatFix.status.status (nmea_navsat_driver: GGA q4 → 2)
+# ── GPS 변위 속도 ★[2026-08-18] 계산을 gps.py 로 옮겼다★ ─────────────────────────
+#   종전에는 이 노드가 /fix 를 직접 받아 원시 5Hz fix 3점(0.4초 창)으로 계산했다.
+#   ★이 계산은 원시 fix 위에서만 뜻이 있다★ — 지금 이 노드가 받는 /gps_fused 는
+#   20Hz 이고 DR 로 메운 표본이 섞여 있어서, 같은 3점 창을 쓰면 창이 0.1초로 줄고
+#   DR 톱니가 속도로 읽힌다. 그래서 ★원시 fix 를 보는 gps.py 가 계산해서 배열 [8]
+#   번에 실어 보내고★, 이 노드는 그 값을 받아 쓴다(gps_kmh). 창 크기·지터 상쇄의
+#   근거는 gps.py 의 GPS_SPEED_* 절에 그대로 옮겨 두었다.
+#   ★수치·의미는 하나도 바뀌지 않았다★ 같은 원시 fix, 같은 0.4초 창, 같은 양끝점 식이다.
 
 # ── 브레이크 ──
 #   ★[2026-08-11] BRAKE_TRIGGER_DIFF / BRAKE_RELEASE_DIFF 를 삭제했다★
@@ -512,6 +661,11 @@ RTK_FIXED_STATUS   = 2       # NavSatFix.status.status (nmea_navsat_driver: GGA 
 #   '리니어 브레이크' 절에 세 번의 실패 기록과 함께 이유를 적었다. 지금 리니어를
 #   쓰는 곳은 DRIVE_DONE 하나뿐이고, 거기서는 조건 없이 2단을 문다.
 BRAKE_FULL         = 2
+#  ★[2026-08-18] 1단을 ROS 쪽에서도 이름으로 부른다★ B보드 펌웨어에는 처음부터
+#  BRAKE_SOFT=1(raw 600)이 있었지만 이 노드는 쓰지 않아 상수가 없었다. 코너 선행제동이
+#  1단 전용이라 여기서도 이름을 준다 — 숫자 1 을 코드에 흘리면 '2단의 절반' 같은
+#  잘못된 인상을 준다(세기는 PWM 이 아니라 ★행정 위치★ 로 정해진다: 600 vs 850).
+BRAKE_SOFT         = 1
 BRAKE_NONE         = 0
 #  ★[2026-08-14] 자기 브레이크 재확인 주기★ /brake_level 발행자가 둘이 됐다(이 노드 +
 #  traffic_light). 남이 낸 0 에 내 제동이 풀리지 않도록, 물고 있는 동안만 이 주기로
@@ -726,6 +880,12 @@ class DrivingNode(Node):
         # ── 종점 순차감속 [2026-08-12] ── 상단 GOAL_* 절 참고
         self.declare_parameter('goal_brake_m', GOAL_BRAKE_M)
         self.declare_parameter('goal_creep_kmh', GOAL_CREEP_KMH)
+        # ── 코너 1단 선행제동 [2026-08-18] ── 상단 '코너 1단 선행제동' 절 참고
+        #   ★실차 첫 확인은 false 로 시작할 수 있게 열어 둔다★ 끄면 종전 거동
+        #   (목표펄스만 낮추고 코스트로 줄임) 그대로다.
+        #     ros2 param set /driving_node corner_brake_enable false
+        self.declare_parameter('corner_brake_enable', CORNER_BRAKE_ENABLE)
+        self.declare_parameter('corner_brake_late_k', CORNER_BRAKE_LATE_K)
 
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
         # ★파라미터도 MAX_PULSE_LIMIT 로 자른다 [2026-08-11]★ send() 에서만 자르면
@@ -747,6 +907,10 @@ class DrivingNode(Node):
         self.goal_brake_m = max(0.0, float(self.get_parameter('goal_brake_m').value))
         self.goal_creep_kmh = max(0.0,
                                   float(self.get_parameter('goal_creep_kmh').value))
+        self.cb_enable = bool(self.get_parameter('corner_brake_enable').value)
+        #   계수를 1.0 밑으로는 못 내린다 — '1단으로 딱 맞출 수 있는 최후 지점'보다
+        #   늦게 물면 코너 진입속도가 목표를 넘는 것이 ★계산으로 이미 확정★ 이다.
+        self.cb_late_k = max(1.0, float(self.get_parameter('corner_brake_late_k').value))
         self.road_max = STEER_MAX_DEG / self.plant_gain
 
         # ── 속도 대역 (구 white 의 max_speed_ms / min_speed_ms 와 같은 역할) ──
@@ -767,9 +931,18 @@ class DrivingNode(Node):
         # ── 센서 상태 ──
         self.lat0 = self.lon0 = None      # 로컬 평면 원점(첫 fix)
         self.x = self.y = 0.0
-        self.fix_ok = False               # RTK 품질 만족
-        self.fix_time = 0.0
+        self.fix_ok = False               # 품질 게이트 통과 (gps.py 의 pos_ok)
+        self.fix_time = 0.0               # ★마지막 원시 fix★ 의 시각(두절 판정 기준)
         self._last_fuse_pt = None         # 코스헤딩 계산용 직전 점
+        # ── GPS 품질 [2026-08-18 gps.py 신설] ★계측·표시 전용★ ──────────────────
+        #   추종 계산은 이 값들을 읽지 않는다. 제어에 들어가는 것은 fix_ok 하나이고,
+        #   그 판정은 gps.py 의 min_quality 가 한다. 여기 있는 것은 '왜 그렇게
+        #   판정됐나'를 로그·record 로 되짚기 위한 사본이다.
+        self.gps_quality = Q_NONE
+        self.gps_sigma_m = float('nan')
+        self.gps_dr_dist = 0.0            # 이 표본에서 IMU 가 메운 거리 [m]
+        self._fused_time = 0.0            # /gps_fused 자체가 마지막으로 도착한 시각
+        self._gps_q_logged = None         # 품질 변화 이벤트 중복 방지
 
         self.heading = None               # [deg] 확정 전에는 None
         self.gyro_z = 0.0                 # [rad/s] CCW +
@@ -786,7 +959,8 @@ class DrivingNode(Node):
         self.speed_kmh = None
         self.speed_time = 0.0
         # ── GPS 변위 속도 (속도의 1순위 출처) ──
-        self._gps_trail = []              # [(t, x, y)] 최근 GPS_SPEED_WIN 표본
+        #   ★[2026-08-18] 계산은 gps.py 가 하고 여기는 받은 값만 들고 있다★
+        #   (배열 [8]번. 왜 옮겼는지는 상수 'GPS 변위 속도' 절에 적었다)
         self._gps_kmh = None
         self._gps_kmh_t = 0.0
         # ── 저속 펄스 보정 상태 ──
@@ -823,6 +997,13 @@ class DrivingNode(Node):
         self._goal_kick_until = 0.0   # 킥을 이 시각까지 유지한다
         self._goal_kicks = 0          # 이번 크립에서 시도한 킥 횟수
         self._goal_kick_done = False  # 킥을 포기했다(구동 끊음)
+        # ── 코너 1단 선행제동 [2026-08-18] ── 상단 '코너 1단 선행제동' 절에 근거
+        self._cb_state = CB_NONE
+        self._cb_t = 0.0              # 체결 시각(강제 해제 타이머)
+        self._cb_release_t = 0.0      # 해제 시각(LOCKOUT 타이머)
+        self._cb_lock_gate = 0.0      # 해제 시점의 게이트 거리('새 코너' 판정 기준)
+        self._cb_v0 = 0.0             # 체결 시 속도 [m/s] (사후 감속도 산출용)
+        self._cb_count = 0            # 이번 주행에서 체결한 횟수(로그·진단)
 
         # ── 진단 계측 (/drive_diag) ★제어 판단에 절대 쓰지 않는다★ ──
         #   여기 있는 값이 제어로 새어 들어가면 '계측을 위해 거동이 바뀌는' 상태가
@@ -836,6 +1017,7 @@ class DrivingNode(Node):
         self._diag_ref = 0.0               # 저속 보정 전 REF [펄스]
         self._diag_out = 0.0               # 실제 발행한 펄스
         self._diag_meas = None             # 보정이 믿은 실측 펄스(/speed 또는 엔코더)
+        self._diag_cb_v_corner = float('nan')   # [2026-08-18] 코너 제동이 겨눈 목표속도
 
         # ── CTE 적분항 (Ki 단독) ──
         self._cte_i = 0.0                  # [m·s] 적분값
@@ -862,7 +1044,12 @@ class DrivingNode(Node):
         self.pub_diag  = self.create_publisher(Float64MultiArray, '/drive_diag', 10)
 
         # ── 구독 ──
-        self.create_subscription(NavSatFix, '/fix',          self.cb_fix,     10)
+        #   ★[2026-08-18] /fix 대신 /gps_fused★ — 원시 GPS 는 gps.py 가 받아서
+        #   품질 판정 + IMU 공백 메움을 한 뒤 20Hz 로 내보낸다. gps.py 가 안 떠 있으면
+        #   이 배열이 오지 않아 GPS 두절로 판단해 차가 서 있는다(안전한 실패).
+        #   그 상태를 조용히 두지 않도록 loop() 에서 한 번 크게 경고한다.
+        self.create_subscription(Float64MultiArray, GPS_FUSED_TOPIC,
+                                 self.cb_gps_fused, 10)
         self.create_subscription(Imu,       '/imu',          self.cb_imu,     10)
         self.create_subscription(Int32,     '/encoder',      self.cb_encoder, 10)
         # 신호등 노드의 브레이크 요구 — 내 요청과 max 로 합쳐서 낸다(cb_tl_brake_req)
@@ -880,43 +1067,103 @@ class DrivingNode(Node):
     # ══════════════════════════════════════════════════════════════════════════
     #  수신
     # ══════════════════════════════════════════════════════════════════════════
-    def cb_fix(self, msg: NavSatFix):
-        if math.isnan(msg.latitude) or math.isnan(msg.longitude):
-            return
-        if self.lat0 is None:
-            self.lat0, self.lon0 = msg.latitude, msg.longitude
-        self.x, self.y = latlon_to_xy(msg.latitude, msg.longitude,
-                                      self.lat0, self.lon0)
-        self.fix_ok = (not self.require_rtk) or (msg.status.status >= RTK_FIXED_STATUS)
-        self.fix_time = time.time()
+    def cb_gps_fused(self, msg: Float64MultiArray):
+        """gps.py 의 후처리 좌표. ★배열 규약은 gps.py 헤더가 소유한다★
+        [2026-08-18] 종전 cb_fix(/fix 직접 구독)를 대체한다.
 
-        self._update_gps_speed(self.fix_time)
+        ★들어오는 표본은 두 종류다★ 원시 fix 를 그대로 담은 것(is_raw=1)과 그 사이를
+        IMU 로 메운 것(is_raw=0). ★위치는 둘 다 쓰고, 추정기에는 원시만 먹인다★:
 
-        if self.state in (S_MAP_HEADING, S_DRIVE_HEADING) and self.fix_ok:
-            self.head_est.add(self.x, self.y)
-        self._fuse_gps_course()
+          · 위치(x, y)            : 둘 다 — 이게 이 노드를 만든 이유다. 종전에는 fix
+            사이 3틱이 같은 좌표를 재사용해 4.42m/s 에서 최대 0.88m 낡은 좌표로
+            조향을 계산했다. 20Hz 로 메운 좌표를 쓰면 그 낡음이 사라진다.
+          · 헤딩 추정기(head_est) : ★원시만★ — 1~5m 기선의 직선회귀로 σ 를 내는데,
+            DR 표본은 서로 상관된 점들이라 n 만 늘려 σ 를 실제보다 좋게 보이게 만든다
+            (HeadingEstimator.solve 의 sigma 는 n 이 커지면 낙관적으로 나온다).
+          · 코스 융합(_fuse_gps_course) : ★원시만★ — 0.30m 변위의 방위로 헤딩을
+            당기는 로직이라, DR 톱니(메웠다가 다음 fix 에서 되돌아오는 움직임)가
+            섞이면 있지도 않은 방위 변화를 헤딩에 주입한다. 원시만 먹이면 이 함수의
+            거동은 ★종전과 완전히 동일하다★(거리 게이트라 주기와 무관).
 
-    def _update_gps_speed(self, now):
-        """5Hz fix 변위로 속도를 만든다. ★상수 GPS_SPEED_* 절에 근거가 있다★
-
-        ★fix_ok(RTK Fixed)를 따지지 않는다★ 이 값은 '얼마나 빠른가'만 답하면 되고,
-        Float 로 떨어져도 변위의 크기는 여전히 쓸 만하다. 반대로 Fixed 를 요구하면
-        RTK 가 흔들리는 순간 종점 감속이 임계를 못 넘어 굳는다 — 그쪽이 더 위험하다.
+        ★fix_time 은 배열 도착 시각이 아니라 '원시 fix 의 시각'이다★ 상수
+        GPS_TIMEOUT_S 절 참고 — DR 로 메운 시간이 두절 판정을 늦추면 안 된다.
         """
-        self._gps_trail.append((now, self.x, self.y))
-        if len(self._gps_trail) > GPS_SPEED_WIN:
-            del self._gps_trail[0]
-        if len(self._gps_trail) < 2:
+        d = msg.data
+        if len(d) < GPS_FUSED_FIELDS:
+            self.throttle_event(f"⚠️ /gps_fused 길이 {len(d)} — gps.py 규약 불일치")
             return
-        t0, x0, y0 = self._gps_trail[0]
-        t1, x1, y1 = self._gps_trail[-1]
-        dt = t1 - t0
-        if dt <= 0.0 or dt > GPS_SPEED_MAX_DT:
-            # 두절 뒤 첫 표본 — 낡은 점과 이어 붙이면 엉뚱한 속도가 나온다
-            self._gps_trail = [self._gps_trail[-1]]
+        lat, lon = float(d[0]), float(d[1])
+        if not (math.isfinite(lat) and math.isfinite(lon)):
             return
-        self._gps_kmh = 3.6 * math.hypot(x1 - x0, y1 - y0) / dt
-        self._gps_kmh_t = now
+
+        now = time.time()
+        quality  = int(d[2])
+        sigma    = float(d[3])
+        pos_ok   = d[4] > 0.5
+        is_raw   = d[5] > 0.5
+        raw_age  = float(d[6])
+        dr_dist  = float(d[7])
+        gps_kmh  = float(d[8])
+
+        if self.lat0 is None:
+            self.lat0, self.lon0 = lat, lon
+        self.x, self.y = latlon_to_xy(lat, lon, self.lat0, self.lon0)
+
+        # ★require_rtk 의 판정 주체가 gps.py 로 옮겨졌다★ 종전 `status >= 2` 는
+        #   이름과 달리 'Float 이상'이었고(gps.py 헤더 ①절), 그 문턱은 gps.py 의
+        #   min_quality 파라미터가 기본값 Q_FLOAT 로 ★그대로 이어받았다★.
+        #   여기서 require_rtk=False 면 품질을 아예 묻지 않는 것도 종전과 같다.
+        self.fix_ok = (not self.require_rtk) or pos_ok
+        self.fix_time = now - max(0.0, raw_age)
+        self._fused_time = now
+
+        self.gps_quality = quality
+        self.gps_sigma_m = sigma
+        self.gps_dr_dist = dr_dist
+        if math.isfinite(gps_kmh):
+            self._gps_kmh = gps_kmh
+            self._gps_kmh_t = now
+
+        if is_raw:
+            if self.state in (S_MAP_HEADING, S_DRIVE_HEADING) and self.fix_ok:
+                self.head_est.add(self.x, self.y)
+            self._fuse_gps_course()
+
+        self._warn_quality_change(quality)
+
+    def _warn_quality_change(self, quality):
+        """품질이 바뀌면 ★주행 이벤트로도★ 한 번 알린다.
+
+        gps.py 도 자기 로그를 남기지만, 이 노드의 /drive_event 는 prompt 화면과
+        음성으로 나가는 통로다. Fixed(2cm) 에서 Float(수 m) 로 떨어진 것은 사람이
+        즉시 알아야 하는 사건인데 종전에는 어디에도 드러나지 않았다.
+        """
+        if quality == self._gps_q_logged:
+            return
+        prev = self._gps_q_logged
+        self._gps_q_logged = quality
+        if prev is None:
+            return                      # 첫 표본 — '변화'가 아니다
+        arrow = "↘ 저하" if quality < prev else "↗ 회복"
+        self.event(f"📶 GPS 품질 {arrow} : {Q_LABEL.get(prev, '?')} → "
+                   f"{Q_LABEL.get(quality, '?')} (σ={self.gps_sigma_m:.2f}m)")
+
+    def _announce_gps_quality(self):
+        """주행 시작 시점의 GPS 품질을 한 줄 남긴다. [2026-08-18]
+
+        ★막지는 않는다★ Fixed 가 아니어도 출발은 시킨다 — 품질 문턱은 gps.py 의
+        min_quality 한 곳이 소유하고, 그걸 여기서 또 판정하면 게이트가 두 곳이 된다
+        (이 파일이 E-STOP·시작 트리거에서 반복해 경계하는 그 문제다).
+        여기서 하는 일은 ★기록★ 이다: 사후에 '이 주행이 몇 cm 짜리 좌표로 출발했나'를
+        로그 첫 줄만 보고 알 수 있게 한다. |CTE| 가 나쁜 주행을 볼 때 제어를 의심할
+        것인지 좌표를 의심할 것인지가 이 한 줄에서 갈린다.
+        """
+        if self.gps_quality >= Q_FIXED:
+            self.event(f"📶 출발 GPS : {Q_LABEL.get(Q_FIXED)} σ={self.gps_sigma_m:.3f}m")
+        else:
+            self.event(f"⚠️ 출발 GPS : {Q_LABEL.get(self.gps_quality, '?')} "
+                       f"σ={self.gps_sigma_m:.2f}m — RTK Fixed 가 아니다. "
+                       f"추종오차가 좌표오차에 묻힐 수 있다")
 
     def cb_imu(self, msg: Imu):
         now = time.time()
@@ -1031,6 +1278,7 @@ class DrivingNode(Node):
                 self.event("⚠️ 주행 시작 실패 — 경로가 선택되지 않았다")
             else:
                 self.enter(S_DRIVE_HEADING, f"▶ 주행 시작(prompt) [{self.route_name}]")
+                self._announce_gps_quality()
             return
         self.select_route(cmd)
 
@@ -1194,6 +1442,14 @@ class DrivingNode(Node):
         self._goal_kick_until = 0.0
         self._goal_kicks = 0
         self._goal_kick_done = False
+        # ★코너 1단 제동도 함께 지운다 [2026-08-18]★ 같은 이유다 — 제동 중이나 잠금
+        #   중에 상태가 바뀌면(도착·이탈·E-STOP·수동전환) 그 상태를 들고 나가면 안 된다.
+        #   ★여기서 set_brake 를 부르지 않는다★ 아래 '브레이크' 절이 DRIVE_DONE 이면
+        #   2단, 아니면 0단을 무조건 내므로 리니어 처리는 그쪽 한 곳이 소유한다.
+        self._cb_state = CB_NONE
+        self._cb_t = 0.0
+        self._cb_release_t = 0.0
+        self._cb_lock_gate = 0.0
         if msg:
             self.event(msg)
 
@@ -1271,9 +1527,36 @@ class DrivingNode(Node):
             return
 
         # GPS 두절 — 위치를 모르면 어떤 판단도 신뢰할 수 없다
-        if time.time() - self.fix_time > GPS_TIMEOUT_S:
+        #   ★fix_time 은 '원시 fix 의 시각'이다★ gps.py 가 IMU 로 메운 표본이 계속
+        #   와도 이 타이머는 흐른다(cb_gps_fused · 상수 GPS_TIMEOUT_S 절 참고).
+        now = time.time()
+        if now - self.fix_time > GPS_TIMEOUT_S:
             self.send(0, 0.0, control=True)
-            self.throttle_event("⚠️ GPS 두절 — 정지 유지")
+            # ★세 사건을 구별해서 말한다★ 증상은 셋 다 '정지'로 같은데 손 볼 곳이
+            #   전혀 다르다. 구별하지 않으면 gps 노드가 죽은 것을 모르고 안테나와
+            #   하늘을 붙잡고 헤매게 된다.
+            if self._fused_time <= 0.0:
+                self.throttle_event(
+                    f"⚠️ {GPS_FUSED_TOPIC} ★한 번도 수신 못함★ — gps 노드가 떠 있는지 "
+                    f"확인(ros2 run white1 gps). 정지 유지")
+            elif now - self._fused_time > GPS_FUSED_STALE_S:
+                # ★기본 파라미터에서는 이쪽이 정상적인 GPS 두절 경로다★
+                #   gps.py 는 원시 fix 가 dr_max_s(1.0s) 넘게 없으면 발행을 멈추므로,
+                #   fix_time 이 GPS_TIMEOUT_S(2.0s) 를 넘길 무렵엔 배열도 이미 1초쯤
+                #   끊겨 있다. 즉 '두절'과 'gps 노드 사망'이 여기서 합쳐진다 —
+                #   구별이 필요하면 `ros2 topic echo /gps_quality` 로 본다 — gps.py 는
+                #   /gps_fused 를 멈춘 뒤에도 그 토픽은 5초 주기로 계속 낸다
+                #   (그쪽 QUALITY_LOG_PERIOD_S). 아무것도 안 나오면 노드가 죽은 것이다.
+                self.throttle_event(
+                    f"⚠️ GPS 두절 — 원시 fix {now - self.fix_time:.1f}s 없음 "
+                    f"({GPS_FUSED_TOPIC} 도 {now - self._fused_time:.1f}s 끊김). "
+                    f"안 끊겼는데 이 메시지가 나오면 gps 노드 사망을 의심할 것. 정지 유지")
+            else:
+                # 배열은 오는데 원시 fix 만 낡았다 — dr_max_s 를 GPS_TIMEOUT_S 가깝게
+                #   올렸을 때만 도달한다(기본값에서는 위 분기가 먼저 잡는다).
+                self.throttle_event(
+                    f"⚠️ GPS 두절 — 원시 fix {now - self.fix_time:.1f}s 없음 "
+                    f"(gps 노드는 살아 있다 — DR 로 메우는 중). 정지 유지")
             return
 
         if self.state == S_MAP_HEADING:
@@ -1442,13 +1725,22 @@ class DrivingNode(Node):
         lfd, lfd_win_only, lfd_speed = self.lookahead_m(d2goal, near_win, near_peak)
 
         # ── 판단 2. 목표속도 = 곡률 선행제동 ──
-        pulse = self.corner_speed(near_win, near_peak, far_win, far_dist,
-                                  far_peak, far_peak_dist, lfd_win_only, lfd_speed)
+        pulse, gate_dist, gate_v_corner = self.corner_speed(
+            near_win, near_peak, far_win, far_dist,
+            far_peak, far_peak_dist, lfd_win_only, lfd_speed)
 
         # ── 판단 3. 종점 순차감속 ★곡률보다 뒤에서 덮는다★ [2026-08-12] ──
         #   종점 앞에서는 곡률이 무엇을 요구하든 이쪽이 이긴다. 조향은 그대로 계산해
         #   내보낸다 — 제동 중에도 크립 중에도 차는 여전히 종점을 향해 굴러간다.
         pulse = self.goal_approach(s_left, d2goal, pulse)
+
+        # ── 판단 4. 코너 1단 선행제동 [2026-08-18] ──
+        #   ★반드시 goal_approach 뒤에 둔다★ 그쪽이 이번 틱에 종점 제동을 물었다면
+        #   _goal_phase 가 이미 NONE 이 아니므로 corner_brake 가 스스로 손을 뗀다.
+        #   앞에 두면 한 틱 동안 둘이 같은 리니어를 서로 다른 단계로 요구한다.
+        #   ★돌려받는 펄스는 '코너 목표 위로 올라가지 않게' 캡이 걸린 값이다★
+        #   (그 캡이 없으면 제동으로 줄인 속도를 REF 가 되돌린다 — 그쪽 docstring)
+        pulse = self.corner_brake(pulse, gate_dist, gate_v_corner)
 
         # ── 제어 : 순수추종(도로휠각) + CTE 적분 → 전달계 보정 → pot 지령 ──
         road = self.pure_pursuit_steer(lfd)
@@ -1583,8 +1875,14 @@ class DrivingNode(Node):
 
     def corner_speed(self, near_win, near_peak, far_win, far_dist,
                      far_peak, far_peak_dist, lfd_win_only, lfd_speed):
-        """곡률 선행제동 → 목표 주행펄스.
+        """곡률 선행제동 → ★(목표 주행펄스, 게이트거리, 코너 목표속도)★
         [2026-08-11 구 white/driving.py '판단 2. 목표 속도' 이식 — 상수까지 동일]
+
+        ★[2026-08-18] 반환값이 3개로 늘었다★ 뒤의 둘은 corner_brake() 가 쓴다.
+        인스턴스 변수로 흘리지 않고 명시적으로 돌려주는 이유는, 이 두 값이 '진단'이
+        아니라 ★제어 중간값★ 이기 때문이다 — 어느 틱의 어느 계산에서 나온 값인지가
+        호출 순서로 드러나야 한다. 다가오는 코너가 없으면 (inf, None) 이고, 그때
+        corner_brake 는 아무것도 하지 않는다(제동할 대상이 없다).
 
         (a) 근거리 곡률 비례 감속 : 지금 코너에 맞는 속도
         (b) 원거리 제동거리 게이팅 : ★다가오는 코너에 딱 필요한 만큼만 미리 감속★
@@ -1610,6 +1908,7 @@ class DrivingNode(Node):
         gate_dist = far_dist
         if far_peak_dist != float('inf') and far_peak > far_win + 1.0:
             gate_dist = min(gate_dist, far_peak_dist)   # 급피크가 더 가까우면 그쪽 기준
+        gate_v_corner = None            # [2026-08-18] corner_brake 에 넘길 목표속도
         if gate_dist != float('inf') and far_for_gate > near_win + 1.0:
             v_corner = demand_to_speed(far_for_gate)
             if far_peak > 2.5:
@@ -1623,6 +1922,11 @@ class DrivingNode(Node):
             v_brake = math.sqrt(max(0.0, v_corner * v_corner
                                     + 2.0 * BRAKE_GATE_DECEL * brake_d))
             v_target = min(v_target, v_brake)
+            # ★[2026-08-18] 리니어 1단 제동의 판정 기준은 이 v_corner 다★
+            #   여기까지 내려온 v_corner 는 곡률(far_for_gate)과 ω_n 결속을 모두 통과한
+            #   '코너에서 실제로 내야 하는 속도'다. corner_brake 는 이 값과 gate_dist
+            #   ★둘만★ 으로 체결을 판정한다(실측속도는 해제에만 쓴다 — 되먹임 금지).
+            gate_v_corner = v_corner
 
         # (b2) ω_n 결속 — 곡률캡이 속도표 LFD 보다 짧게 눌렀을 때만
         if lfd_win_only < lfd_speed - 0.05:
@@ -1636,8 +1940,168 @@ class DrivingNode(Node):
         # ★하한이 CORNER_MIN_PULSE(2)★ 인 이유는 그 상수 주석에 있다 — 1펄스로
         #   내려가면 이 차는 코너에서 아예 못 움직여 그 자리에 선다(실측).
         pulse = int(v_target / MS_PER_PULSE + 0.5)
-        return max(min(CORNER_MIN_PULSE, self.drive_pulse),
-                   min(self.drive_pulse, pulse))
+        pulse = max(min(CORNER_MIN_PULSE, self.drive_pulse),
+                    min(self.drive_pulse, pulse))
+        return pulse, gate_dist, gate_v_corner
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  코너 1단 선행제동 [2026-08-18]
+    # ══════════════════════════════════════════════════════════════════════════
+    def corner_brake(self, pulse, gate_dist, v_corner):
+        """다가오는 코너를 위해 ★리니어 1단★ 을 물었다 풀었다 하고, 목표펄스를
+        코너 목표 위로 못 올라가게 막는다. → 돌려주는 값이 이번 틱의 목표펄스다.
+        [2026-08-18 신설 — 근거·검산·실측값은 상단 '코너 1단 선행제동' 절에 전부 있다]
+
+        ★제동 중에는 목표펄스를 0 으로 덮지 않는다★ arduino 가 브레이크>0 이면 A보드
+        REF 를 어차피 0 으로 덮으므로(compose (4)) 우리가 0 을 보낼 이유가 없고, 보내면
+        해제 순간 A보드가 0→목표로 두 번 전이한다. 그대로 두면 ★해제 즉시 한 번★ 이다.
+        (그래서 low_speed_trim 은 반드시 우회해야 한다 — 그쪽 주석 참고)
+
+        ★그런데 '위로 못 올라가게' 막는 것은 반드시 필요하다 — 폐루프 시뮬로 잡았다★
+        막지 않으면 ★제동으로 줄인 속도를 REF 가 그 자리에서 되돌린다★. 이유는
+        BRAKE_GATE_DECEL(2.0)이 2단에서만 참인 낙관값이라(BRAKING.md 3절) 코너 앞
+        4m 에서도 REF 가 여전히 3~4펄스를 요구하기 때문이다. 실제로 4→2펄스 급코너
+        폐루프에서:
+              제동 없음      : 코너 진입 3.79펄스 (목표 2, ★초과 +1.79★)
+              제동 O, 캡 없음 : 2.93펄스 — 2.76펄스까지 줄여 놓고 해제 직후 되올라갔다
+              제동 O, 캡 O   : ★2.06펄스★ (초과 +0.06)
+        그래서 ★이 코너를 위해 제동을 결정한 순간부터 REF 상한을 v_corner 로 둔다★.
+        낮추는 방향뿐이고(min), 코너가 스캔창을 벗어나면(v_corner=None) 곧바로 풀린다.
+        이것은 corner_speed 의 게이트를 '실제 감속도로' 계산했을 때 나올 값과 같은
+        것이므로 새 정책이 아니라 ★낙관값 보정★ 이다.
+
+        ★소유권은 하나만★ 종점 접근제동·신호등이 리니어를 잡고 있으면 손대지 않는다.
+        해제할 때도 ★내가 아직 1단을 들고 있을 때만★ 0 을 낸다 — 남이 2단으로
+        올려놓은 것을 내가 푸는 일이 없어야 한다(keep_brake 주석과 같은 문제의식).
+        """
+        now = time.time()
+        v_now = self.gps_ms()
+        # 진단 : 제동 중에는 '겨누고 있는 목표', 아니면 NaN(제동과 무관한 구간)
+        self._diag_cb_v_corner = (float(v_corner) if v_corner is not None
+                                  else float('nan'))
+
+        # ── 전제조건 : 하나라도 깨지면 체결하지 않고, 물고 있었으면 즉시 푼다 ──────
+        #   ★gps_ms() 를 요구한다 = 엔코더 폴백으로는 절대 제동하지 않는다★
+        #   파일 헤더 3차 실패의 근원이 엔코더 허수 카운트였다. measured_kmh() 는
+        #   GPS 가 없으면 /speed·엔코더로 내려가므로 여기서는 쓰지 않는다.
+        ok = (self.cb_enable
+              and self.state == S_DRIVE_RUN
+              and self._goal_phase == GOAL_PHASE_NONE   # 종점이 소유권을 가졌으면 손 뗀다
+              and self.tl_brake_req() == 0              # 신호등이 소유권을 가졌으면 손 뗀다
+              and not self.estop
+              and v_now is not None)
+
+        if self._cb_state == CB_BRAKING:
+            self._cb_hold(now, v_now, ok, v_corner, gate_dist)
+            return self._cb_cap(pulse, v_corner)
+        if self._cb_state == CB_LOCKOUT:
+            # 잠금 해제 조건 두 개를 ★모두★ 만족해야 한다: 시간 + '새 코너'.
+            #   시간만 두면 같은 코너를 두 번 물 수 있고(채터), 거리만 두면 게이트가
+            #   튀는 순간 바로 다시 물린다. 둘을 겹치면 실질적으로 코너당 1회다.
+            if now - self._cb_release_t < CORNER_BRAKE_LOCKOUT_S:
+                return self._cb_cap(pulse, v_corner)
+            far_again = (gate_dist == float('inf')
+                         or gate_dist > self._cb_lock_gate + CORNER_BRAKE_NEW_GATE_M)
+            if not far_again:
+                return self._cb_cap(pulse, v_corner)
+            self._cb_state = CB_NONE
+
+        # ── 체결 판정 : ★경로 기하만 본다★ (실측속도는 '지금 얼마나 빠른가'에만) ──
+        if not ok or v_corner is None or gate_dist == float('inf'):
+            return pulse
+        if v_now < CORNER_BRAKE_MIN_MS:
+            return pulse                 # 저속에서는 안 건다 — 세울 위험이 더 크다
+        # ★줄일 양이 최소 물림으로 낼 수 있는 양보다 작으면 물지 않는다★
+        #   문턱의 근거는 상수 CORNER_BRAKE_MIN_HOLD_S 절(파생식 + 두 가지 보장).
+        if (v_now - v_corner < CORNER_BRAKE_RELEASE_LEAD_MS
+                + A_BRAKE1_MS2 * CORNER_BRAKE_MIN_HOLD_S):
+            return pulse
+
+        # 1단으로 딱 맞출 수 있는 최후 지점 + 안전계수. just-in-time 이라 평균속도를
+        #   지키고, 보수성은 A_BRAKE1_MS2(0.88 = 구동 살아있는 실측 하한)에 들어 있다.
+        d_need = (v_now * v_now - v_corner * v_corner) / (2.0 * A_BRAKE1_MS2)
+        d_avail = gate_dist - BRAKE_GATE_MARGIN
+        if d_avail > d_need * self.cb_late_k:
+            return pulse                 # 아직 이르다 — 코스트로 더 굴러도 된다
+
+        self._cb_state = CB_BRAKING
+        self._cb_t = now
+        self._cb_v0 = v_now
+        self._cb_count += 1
+        self.set_brake(BRAKE_SOFT)
+        self.event(f"🅑 코너 1단 제동 #{self._cb_count} — {v_now/MS_PER_PULSE:.1f}"
+                   f"→{v_corner/MS_PER_PULSE:.1f}펄스, 코너 {gate_dist:.1f}m 앞 "
+                   f"(필요 {d_need:.1f}m / 남은 {d_avail:.1f}m)")
+        return self._cb_cap(pulse, v_corner)
+
+    def _cb_cap(self, pulse, v_corner):
+        """제동을 결정한 코너에 대해 ★REF 가 코너 목표 위로 못 올라가게★ 막는다.
+        낮추는 방향뿐이다(min). 근거는 corner_brake docstring 의 폐루프 수치.
+        v_corner 가 없으면(코너가 스캔창을 벗어남) 캡도 사라진다 — 지날 코너가 없는데
+        속도를 묶어 둘 이유가 없고, 그러면 코너 탈출 후 재가속이 늦어진다.
+        """
+        if v_corner is None:
+            return pulse
+        cap = int(v_corner / MS_PER_PULSE + 0.5)
+        cap = max(min(CORNER_MIN_PULSE, self.drive_pulse), cap)
+        return min(pulse, cap)
+
+    def _cb_hold(self, now, v_now, ok, v_corner, gate_dist):
+        """제동 유지 중 — 풀 때가 됐는지만 본다. 셋 중 하나면 푼다.
+
+        ★해제 판정에만 실측속도를 쓴다★ 체결은 기하로 했다(corner_brake). 이 비대칭이
+        '실측 되먹임 정책'과 이 로직을 가르는 지점이다 — 실측이 물게 만들 수는 없고,
+        풀게 만들 수만 있다. 실측이 이상해도 결과는 항상 ★푸는 쪽★ 이다(② ③ 모두).
+        """
+        held = now - self._cb_t
+
+        # ① 전제조건 붕괴(속도 미수신·상태 변화·남이 소유권을 가져감) → 즉시
+        if not ok:
+            self._cb_release(now, gate_dist,
+                             f"전제조건 해제(held {held:.1f}s)", warn=True)
+            return
+        # ② 강제 해제 — ★굳지 않게★ (파일 헤더 3차 실패의 11.7초 정체 방어)
+        if held >= CORNER_BRAKE_MAX_S:
+            self._cb_release(
+                now, gate_dist,
+                f"★{CORNER_BRAKE_MAX_S:.1f}초 초과 강제해제★ "
+                f"{self._cb_v0/MS_PER_PULSE:.1f}→{v_now/MS_PER_PULSE:.1f}펄스 "
+                f"(실측 감속도 {max(0.0, self._cb_v0 - v_now)/max(held, 1e-3):.2f} m/s²) "
+                f"— 제동이 안 듣거나 속도를 잘못 읽고 있다", warn=True)
+            return
+        # ★최소 물림 — 행정을 끝까지 내기 전에는 풀지 않는다★ (상수 절 참고)
+        #   ①②보다 뒤에 둔다: 전제조건 붕괴와 강제해제는 이 시간을 기다리지 않는다.
+        #   arduino 도 0.5s 는 안 풀어 주므로 여기서 먼저 푸는 것은 의미가 없다.
+        if held < CORNER_BRAKE_MIN_HOLD_S:
+            return
+        # ③ 정상 해제 — ★예측 선행★ 지금 풀어야 목표에 맞게 착지한다
+        #   v_corner 가 사라졌으면(코너가 스캔창을 벗어남) 코너 하한을 목표로 본다 —
+        #   그 경우 남은 제동 이유가 없으니 곧바로 풀리는 것이 맞다.
+        target = (v_corner if v_corner is not None
+                  else CORNER_MIN_PULSE * MS_PER_PULSE)
+        if v_now <= target + CORNER_BRAKE_RELEASE_LEAD_MS:
+            a_meas = max(0.0, self._cb_v0 - v_now) / max(held, 1e-3)
+            self._cb_release(
+                now, gate_dist,
+                f"{v_now/MS_PER_PULSE:.1f}펄스 도달 — 해제 "
+                f"(목표 {target/MS_PER_PULSE:.1f}펄스 + 선행 "
+                f"{CORNER_BRAKE_RELEASE_LEAD_MS/MS_PER_PULSE:.1f}펄스, "
+                f"{held:.1f}s, ★실측 a1={a_meas:.2f} m/s²★)")
+
+    def _cb_release(self, now, gate_dist, why, warn=False):
+        """1단을 풀고 잠금으로 넘어간다.
+        ★내가 아직 1단을 들고 있을 때만 0 을 낸다★ 그 사이 종점·신호등이 2단으로
+        올려놓았다면 그건 그쪽 소유이고, 여기서 0 을 내면 남의 정지를 푸는 셈이 된다.
+        """
+        if self.brake_now == BRAKE_SOFT:
+            self.set_brake(BRAKE_NONE)
+        self._cb_state = CB_LOCKOUT
+        self._cb_release_t = now
+        # ★잠금 기준은 '풀던 순간의 게이트 거리'★ 이보다 CORNER_BRAKE_NEW_GATE_M 이상
+        #   멀어졌을 때만 새 코너로 인정한다. inf(코너 없음)면 0 으로 둔다 — 다음에
+        #   어떤 코너가 잡히든 그것은 새 코너다.
+        self._cb_lock_gate = 0.0 if gate_dist == float('inf') else gate_dist
+        self.event(("⚠️ 코너 1단 " if warn else "🅑 코너 1단 ") + why)
 
     def apply_cte_integral(self, road_deg, cte):
         """순수추종이 낸 도로휠각에 ★CTE 적분항만★ 더한다 (Ki 단독, P·D 없음).
@@ -1996,8 +2460,9 @@ class DrivingNode(Node):
         크립에서 한쪽은 '빠르다' 다른 쪽은 '느리다'로 판단해 서로를 되돌린다.)
 
         ★우선순위 [2026-08-12 실차 로그로 재배치]★
-          1) GPS 변위 (_update_gps_speed) — 5Hz 이고 0.2초 늦지만 ★크기가 맞는★
-             유일한 값이다.
+          1) GPS 변위 — 5Hz 이고 0.2초 늦지만 ★크기가 맞는★ 유일한 값이다.
+             [2026-08-18] 계산 위치만 gps.py 로 옮겼고(배열 [8]번) 값의 정의는
+             그대로다 — 여전히 ★원시 5Hz fix★ 3점 0.4초 창의 양끝점 변위다.
           2) /speed (IMU 적분) — GPS 두절 대비. 16:40 주행에서 실측 7.44km/h 를
              4.10 으로, 16:44 주행에서는 감속 2.4초 내내 3.9 로 굳은 채 보고했다.
              speed.py 헤더가 스스로 밝힌 한계이므로 여기서는 2순위로만 쓴다.
@@ -2016,10 +2481,28 @@ class DrivingNode(Node):
             return self.enc_pulse * KMH_PER_PULSE
         return None
 
+    def gps_ms(self):
+        """GPS 변위 속도 [m/s]. 갱신이 끊겼으면 None. [2026-08-18]
+
+        ★코너 1단 제동은 이것만 쓴다 — measured_kmh() 를 쓰지 않는다★
+        measured_kmh 는 GPS 가 없으면 /speed(IMU 적분) → 엔코더로 내려간다. 그 둘은
+        제동 판정에 쓸 수 없다:
+          · /speed 는 ★지속 감속을 자세로 오인해 스스로 지운다★ — 제동 중이 정확히
+            그 상황이다(2026-08-12 실차: 감속 2.4초 내내 3.9km/h 로 굳어 있었다).
+          · 엔코더는 제동 중 REF=0 이라 A보드 기동 블랭킹 허수가 섞인다 — 파일 헤더
+            3차 실패에서 ★자기가 만든 노이즈와 싸운★ 바로 그 신호다.
+        그래서 GPS 가 없으면 ★제동을 아예 하지 않는다★(전제조건에서 걸러진다).
+        """
+        v = self.gps_kmh()
+        return None if v is None else v / 3.6
+
     def gps_kmh(self):
-        """GPS 변위 속도 [km/h]. 갱신이 끊겼으면 None."""
+        """GPS 변위 속도 [km/h]. 갱신이 끊겼으면 None.
+        [2026-08-18] 값은 gps.py 가 배열 [8]번으로 실어 보낸 것이다. gps.py 도
+        자기 쪽에서 신선도를 보고 낡으면 NaN 을 내지만, ★배열 자체가 끊기는 경우★
+        (gps 노드 사망)는 그쪽이 알려 줄 수 없으므로 여기서 한 번 더 본다."""
         if self._gps_kmh is None \
-                or time.time() - self._gps_kmh_t > GPS_SPEED_FRESH_S:
+                or time.time() - self._gps_kmh_t > GPS_FUSED_STALE_S:
             return None
         return self._gps_kmh
 
@@ -2039,8 +2522,14 @@ class DrivingNode(Node):
         # ★종점 크립의 킥은 보정을 태우지 않는다 [2026-08-12]★ 킥은 '정지 상태를
         #   떼어내는 힘'을 정해 놓고 넣는 것이라, 실측 0 을 본 보정이 그 위에 또 얹히면
         #   종점 2m 앞에서 낼 속도가 아니게 된다(ref 4 + 실측 0 → out 6).
+        # ★코너 1단 제동 중에도 태우지 않는다 [2026-08-18]★ ★같은 함정이고 더 나쁘다★
+        #   제동 중에는 arduino 가 A보드 REF 를 0 으로 덮으므로(compose (4)) 차가
+        #   실제로 줄어든다 → 보정은 'REF 2 인데 실측 0' 을 보고 +2 를 얹어 out 4 를
+        #   낸다. 그 4 는 제동이 풀리는 순간 그대로 나가서 ★제동해서 줄인 속도를 그
+        #   자리에서 되돌린다★ — 감속의 목적을 정확히 무효화한다.
         if self.state != S_DRIVE_RUN or not (1 <= ref <= REF_TRIM_REF_MAX) \
-                or now < self._goal_kick_until:
+                or now < self._goal_kick_until \
+                or self._cb_state == CB_BRAKING:
             self._trim = 0
             self._trim_ref = ref
             return ref
@@ -2224,6 +2713,20 @@ class DrivingNode(Node):
             #   '제동 구간'과 '그냥 느린 구간'을 구별할 수 없다 — brake_latched 는
             #   DRIVE_DONE 의 2단과 접근제동의 2단이 같은 1.0 으로 찍힌다.
             float(self._goal_phase),                  # goal_phase
+            # ── [2026-08-18] 코너 1단 선행제동 검증용 3종 ──
+            #   ★이 셋이 없으면 로그로 이 기능을 판정할 수 없다★ brake_level 만으로는
+            #   '리니어가 1단이었다'는 결과만 남고, 그것이 코너 제동인지 남이 낸
+            #   것인지도, 무엇을 목표로 물었는지도 알 수 없다.
+            #   읽는 법 : cb_state 1 인 구간의 gps_kmh 기울기 = ★a1 실측(구동차단)★.
+            #     ⚠️ ★그 값은 정상 a1 보다 낮게 나온다★ — 앞 0.54초는 리니어 행정이
+            #     올라오는 중이라 제동력이 0 부터 커진다. 시뮬에서 정상값의 83% 였다.
+            #     ★기울기는 물린 뒤 0.6초 이후 구간에서 재라★ 그것이 정상 a1 이고,
+            #     그 값으로 A_BRAKE1_MS2(현재 0.88 = 구동 살아있는 하한)를 갱신한다.
+            #     cb_state 가 1→2 로 바뀐 행의 gps_kmh 가 cb_v_corner 보다 크게
+            #     낮으면 해제가 늦은 것 → CORNER_BRAKE_RELEASE_LEAD_MS 를 키운다.
+            float(self._cb_state),                    # cb_state 0없음/1제동/2잠금
+            float(self._cb_v0),                       # cb_v0_ms  체결 시 속도
+            float(self._diag_cb_v_corner),            # cb_v_corner_ms  그때의 목표속도
         ]
         self.pub_diag.publish(diag)
 

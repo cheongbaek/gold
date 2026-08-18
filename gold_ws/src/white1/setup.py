@@ -29,12 +29,18 @@ setup(
     entry_points={
         'console_scripts': [
             # ── 센서 드라이버 ──
-            #   GPS(nmea_serial_driver)는 외부 패키지라 여기 없고 one_launch.py 가 띄운다.
+            #   GPS 수신기 드라이버(nmea_serial_driver)는 외부 패키지라 여기 없고
+            #   one_launch.py 가 띄운다. 아래 gps 는 그 /fix 를 ★후처리★ 하는 노드다.
             'iahrs   = white1.iahrs:main',      # 6축 IMU → /imu (순수 드라이버)
             'speed   = white1.speed:main',      # /imu 적분 → /speed [km/h]
+            # ★[2026-08-18] gps 신설★ /fix + /imu → /gps_fused
+            #   ① RTK Fixed / Float 판정(status.status 로는 구별 불가 — 그쪽 헤더 ①절)
+            #   ② 5Hz fix 사이 공백을 IMU 로 메워 20Hz 가상좌표
+            #   ★매핑은 이 노드를 거치지 않는다★ mapping 은 /fix 원값을 직접 받는다.
+            'gps     = white1.gps:main',
             # ── 주행 ──
-            #   ★driving 이 GPS·IMU 융합 + 상태기계 + 추종을 전부 맡는다★
-            #   구 white 의 gps_imu 노드는 없다.
+            #   ★driving 이 헤딩·상태기계·추종을 맡는다★ 구 white 의 gps_imu 노드는 없고,
+            #   위치는 [2026-08-18] 부터 gps 노드가 만든다.
             'driving = white1.driving:main',
             'mapping = white1.mapping:main',    # /fix 만 보고 경로 수집
             'prompt  = white1.prompt:main',     # CLI (경로 선택·상태 표시)
