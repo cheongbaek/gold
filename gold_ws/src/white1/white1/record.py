@@ -189,8 +189,9 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #      head_init_deg, head_sigma, head_resid, head_dist,
     #      ref_pulse, out_pulse, meas_pulse,        ← [2026-08-12] 저속 보정 3종
     #      cte_integral, cte_i_term_deg,            ← [2026-08-12] CTE 적분항 2종
-    #      goal_phase,                              ← [2026-08-12] 종점 순차감속 단계
-    #      cb_state, cb_v0_ms, cb_v_corner_ms]      ← [2026-08-18] 코너 1단 선행제동 3종
+    #      goal_phase,                              ← [2026-08-12] 종점 접근 단계
+    #      cb_state, cb_v0_ms, cb_v_corner_ms,      ← [2026-08-18] 코너 1단 선행제동 3종
+    #      goal_need_m]                             ← [2026-08-19] 종점 접근 필요 제동거리
     TopicSpec('/drive_diag', Float64MultiArray,
               ('cte_m', 'heading_err_deg', 'target_idx', 'target_dist_m',
                'goal_dist_m', 'gps_course_deg', 'fuse_corr_deg', 'gyro_z_dps',
@@ -198,14 +199,19 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                'head_resid_m', 'head_dist_m',
                'ref_pulse', 'out_pulse', 'meas_pulse',
                'cte_integral', 'cte_i_term_deg', 'goal_phase',
-               'cb_state', 'cb_v0_ms', 'cb_v_corner_ms'),
-              _array(22),
+               'cb_state', 'cb_v0_ms', 'cb_v_corner_ms', 'goal_need_m'),
+              _array(23),
               note='★cte_m 이 핵심★ 경로이탈 +왼쪽/−오른쪽. 나머지는 헤딩 융합 '
                    '건전성과 출발 헤딩 품질. ref/out/meas 는 저속 펄스 보정 검증용 — '
                    'out≠ref 인 구간이 보정이 걸린 구간이다. cte_i_term_deg 는 '
                    'CTE 적분이 조향에 더한 도로휠각(pot 기준 ×1.75). goal_phase 는 '
-                   '종점 순차감속 0없음/1접근제동/2크립 — brake_latched 만으로는 '
-                   'DRIVE_DONE 의 2단과 접근제동의 2단이 구별되지 않는다. '
+                   '종점 접근 ★단계 0없음/1 1단제동/2크립/3 2단백스톱★ [2026-08-19 개편] — '
+                   'brake_latched(=DRIVE_DONE 의 2단)만으로는 도착 정지와 접근제동이 '
+                   '구별되지 않는다. ★goal_need_m 은 그때 필요했던 제동거리★ — '
+                   'goal_dist_m 이 이 값을 아래로 가르는 행이 체결 지점이고, '
+                   'goal_phase=1 구간의 gps_kmh 기울기가 ★1단 실측 감속도★ 다'
+                   '(물린 뒤 0.6초 이후에서 재라). 그 값으로 런치 goal_brake1_ms2'
+                   '(현재 0.47)를 갱신한다. ★goal_phase 3 이 보이면 1단이 안 듣는 것★. '
                    '★cb_state(0없음/1제동/2잠금) 는 코너 1단 선행제동★ — '
                    'cb_state=1 구간의 gps_kmh 기울기가 ★a1 실측(구동차단)★ 이고 '
                    '그 값으로 driving.py 의 A_BRAKE1_MS2(현재 0.88 = 구동이 살아 '

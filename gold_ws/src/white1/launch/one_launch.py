@@ -161,18 +161,36 @@ def generate_launch_description():
                         '순수추종이 못 지우는 정상상태 측방편향(실측 +0.13~0.27m)을 '
                         '천천히 지우는 용도다. 0 이면 적분항을 끈다. 기여는 '
                         'driving.py 의 CTE_I_MAX_DEG(2.5°)로 한 번 더 잘린다'),
-        # ── 종점 순차감속 [2026-08-12] ── driving.py 상단 'GOAL_*' 절 참고
+        # ── 종점 접근 [2026-08-12 도입 → 2026-08-19 개편] ── driving.py '종점 접근' 절
         DeclareLaunchArgument(
-            'goal_brake_m', default_value='5.0',
-            description='종점까지 이 거리 안에 들면 리니어 2단을 물고 목표펄스를 0 으로 '
-                        '내린다. ★0 으로 주면 이 단계 자체가 꺼진다★(도착 시에만 '
-                        '리니어를 무는 종전 거동). 남은 호길이와 직선거리가 둘 다 이 '
-                        '안일 때만 걸린다 — 순환 코스 출발점 오작동 방지'),
+            'goal_brake_m', default_value='20.0',
+            description='★종점 감시 창[m]★ (2026-08-19 로 뜻이 바뀌었다 — 종전에는 '
+                        '"이 거리에서 2단을 문다"였고 5.0 이었다). 지금은 이 창 안에서 '
+                        '★속도로 계산한 지점★ 에 리니어 1단을 문다 — 4펄스면 15.8m 가 '
+                        '필요하므로 5.0 으로는 좁다. ★0 으로 주면 이 단계 자체가 '
+                        '꺼진다★(도착 시에만 리니어를 무는 종전 거동). 5.0 을 주면 '
+                        '사실상 2026-08-12 의 거동(5m 에서 2단 백스톱)으로 돌아간다. '
+                        '남은 호길이와 직선거리가 둘 다 이 안일 때만 걸린다 — 순환 '
+                        '코스 출발점 오작동 방지'),
+        DeclareLaunchArgument(
+            'goal_brake1_ms2', default_value='1.30',
+            description='★종점 1단 제동의 가정 감속도 [m/s²]★ 체결 지점이 이 값으로 '
+                        '정해진다(작을수록 일찍 문다). 기본 1.30 은 2026-08-19 실차의 '
+                        '구동차단 1단 실측이다. ⚠️ 올리면 늦게 물어 종점을 지나칠 수 '
+                        '있고, 내리면 일찍 서서 크립 구간만 길어진다 — ★모르면 내리는 '
+                        '쪽★. 로그의 goal_phase=1 구간 gps_kmh 기울기가 실측값이다'),
+        DeclareLaunchArgument(
+            'goal_brake2_backstop', default_value='true',
+            description='1단으로는 못 세운다고 계산되면 ★리니어 2단으로 올린다★. '
+                        '이것이 종점 통과를 막는 마지막 방벽이다(2026-08-12 의 5m 2단 '
+                        '접근제동이 필요할 때만 되살아나는 것과 같다). ★끄지 말 것★ — '
+                        '끄면 1단이 안 들을 때 차가 종점을 그대로 지나간다'),
         DeclareLaunchArgument(
             'goal_creep_kmh', default_value='4.0',
-            description='접근제동 중 IMU 속도가 이 밑으로 내려오면 리니어를 풀고 '
-                        '1펄스 크립으로 종점까지 간다. ★/speed 는 절대속도를 과소평가할 '
-                        '수 있다★(speed.py 헤더) — 해제가 이르면 낮춘다'),
+            description='접근제동 중 GPS 속도가 이 밑으로 내려오고 종점이 1.2m 넘게 '
+                        '남았으면 리니어를 풀고 1펄스 크립으로 마저 간다 — ★정지한 차를 '
+                        '다시 떼어내는 것이 제일 어렵기 때문에★ 구르는 채로 넘긴다. '
+                        '완전히 선 경우에는 크립 재출발 킥이 떼어낸다'),
         DeclareLaunchArgument(
             'wp_reach_m', default_value='0.9',
             description='마지막 WP 도착 허용반경[m]. ★[2026-08-11] 0.2 → 0.9★ — '
@@ -325,6 +343,8 @@ def generate_launch_description():
             'cte_ki':        LaunchConfiguration('cte_ki'),
             'goal_brake_m':   LaunchConfiguration('goal_brake_m'),
             'goal_creep_kmh': LaunchConfiguration('goal_creep_kmh'),
+            'goal_brake1_ms2': LaunchConfiguration('goal_brake1_ms2'),
+            'goal_brake2_backstop': LaunchConfiguration('goal_brake2_backstop'),
             'wp_reach_m':    LaunchConfiguration('wp_reach_m'),
             'require_rtk':   LaunchConfiguration('require_rtk'),
         }],
