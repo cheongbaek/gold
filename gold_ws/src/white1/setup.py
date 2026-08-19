@@ -14,6 +14,10 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'),
             sorted(set(glob('launch/*.launch.py')) | set(glob('launch/*.py')))),
+        # ★[2026-08-19] 카메라 캘리브레이션 — camera_model.py 가 share 에서 읽는다★
+        #   어안 왜곡보정 계수의 단일 소유자다. 재캘리브하면 이 yaml 만 바꾼다.
+        (os.path.join('share', package_name, 'calibration'),
+            glob('calibration/*.yaml')),
         # ★[2026-08-14] 음성 안내 음원 — nxde/sound 에서 옮겨 왔다★
         #   .gitignore 가 *.mp3 를 막으므로 새로 clone 하면 이 폴더는 비어 있다
         #   (glob 이 빈 목록이 되어 설치도 조용히 건너뛴다). sound 노드는 '음원 없음'

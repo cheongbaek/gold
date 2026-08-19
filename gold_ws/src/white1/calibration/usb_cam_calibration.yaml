@@ -1,0 +1,46 @@
+# usb_cam 카메라 캘리브레이션 — ★white1 의 정본★  [2026-08-19]
+#
+# 누가 읽는가 : white1/camera_model.py (CameraModel.from_node)
+#               → traffic_light 를 비롯한 ★모든 카메라 인지 노드★ 가 이 값으로
+#                 어안 왜곡을 편다. 앞으로 붙일 차선 인지도 같은 파일을 읽는다.
+#
+# 어디서 왔나 : gold_ws/src/white/calibration/usb_cam_calibration.yaml 을 그대로
+#               옮겨 왔다(구 white_cam_ws 시절 체스보드 캘리브 결과).
+#               ⚠️ ★같은 기종·같은 해상도(1920x1080)를 전제로 한 값이다★ 렌즈를
+#               바꾸거나 카메라를 교체했으면 아래 절차로 다시 재야 한다.
+#
+# ★다시 재는 법★
+#   ros2 run camera_calibration cameracalibrator \
+#       --size 8x6 --square 0.025 image:=/image_raw camera:=/usb_cam
+#   → CALIBRATE → SAVE 하면 /tmp/calibrationdata.tar.gz 안에 ost.yaml 이 나온다.
+#     그 camera_matrix / distortion_coefficients 를 ★이 파일에만★ 옮겨 적는다.
+#     코드는 건드릴 것이 없다 — 그러라고 파일로 뺐다.
+#
+# ⚠️ 값을 바꾸면 BEV 도 같이 틀어진다. camera_model 의 bev_src_pts 는 ★보정된 화면★
+#    좌표라서, 보정 계수가 달라지면 사다리꼴을 다시 잡아야 한다(STOPLINE_TEST.md 단계 2).
+image_width: 1920
+image_height: 1080
+camera_name: narrow_stereo
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1000.62614,   0.     , 1004.75976,
+           0.     , 1017.20308, 510.89816,
+           0.     ,   0.     ,   1.     ]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.273754, 0.048840, 0.004572, -0.005810, 0.000000]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1., 0., 0.,
+         0., 1., 0.,
+         0., 0., 1.]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [636.98474,   0.     , 974.00961 ,   0.     ,
+           0.     , 929.22341, 510.45792,   0.     ,
+           0.     ,   0.     ,   1.     ,   0.     ]

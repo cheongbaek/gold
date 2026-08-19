@@ -9,11 +9,24 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
     args, actions = camera_launch.build(cam_dev, cam_format, NODE_ENV, RESPAWN_DELAY)
 
 띄우는 것 (use_camera 로 함께 켜고 끈다):
-    usb_cam       V4L2 → /image_raw
+    usb_cam       V4L2 → /image_raw   ★원본 그대로다(보정하지 않는다 — 아래 절)★
     usb_cam_ctrl  기동 2초 뒤 v4l2-ctl 로 노출·게인 등을 ★장치 범위로 클램프해★ 재적용
-    traffic_light /image_raw → 빨간불이면 /brake_level=2 (white1/traffic_light.py)
-                  ★[2026-08-14] 정지선을 보면 그 앞에서 선다★ 정지선이 안 보이면
-                  종전대로 그 자리에서 선다 (sl_enable · sl_trigger_y_frac)
+    traffic_light /image_raw → 빨간불이면 /brake_level (white1/traffic_light.py)
+                  ★[2026-08-19] 정지선이 보이면 2단계로 선다★ 1단 예비제동으로 줄이다
+                  정지선 앞에서 2단 확정 정지 (sl_brake1_px · sl_brake2_px).
+                  정지선이 안 보이면 종전대로 그 자리에서 즉시 2단.
+
+────────────────────────────────────────────────────────────────────────────────
+ ★카메라 기하는 camera_params() 한 벌로 나간다 [2026-08-19]★
+────────────────────────────────────────────────────────────────────────────────
+어안 왜곡보정 계수와 BEV 사다리꼴은 white1/camera_model.py 가 소유하고, 그 파라미터를
+★여기서 한 벌 만들어 카메라 인지 노드 전부에 먹인다★(지금은 traffic_light 하나뿐이고,
+차선 인지가 붙으면 같은 dict 를 그대로 넘긴다). 그래서 '카메라 노드를 띄우면 보정이
+기본으로 적용된다'가 런치 한 곳에서 성립한다.
+
+⚠️ ★/image_raw 자체는 보정하지 않는다★ usb_cam 에 camera_info_url 을 주지 않고,
+   보정은 인지 노드가 프레임을 받은 뒤에 한다. 원본 녹화(nxde video)가 '카메라가 실제로
+   준 그림'을 봐야 하기 때문이다 — 녹화된 mp4 에 어안이 남아 있는 것이 ★정상★ 이다.
 
 ⚠️ ★카메라를 안 꽂은 채 use_camera:=true 로 띄우면 usb_cam 이 respawn 루프를 돈다★
    그 로그가 다른 노드 로그를 덮는다. 카메라를 쓸 일이 없는 날은 use_camera:=false.
@@ -69,17 +82,43 @@ def declare_args(cam_dev):
                         '리니어가 왕복한다. 1.0 이면 히스테리시스 없음'),
         DeclareLaunchArgument(
             'sl_enable', default_value='true',
-            description='★정지선 앞 정지★ 켜면 빨간불이 확정돼도 정지선이 보이는 동안은 '
-                        '트리거 행에 닿을 때까지 브레이크를 참는다. 정지선을 못 보면 '
-                        '종전대로 즉시 정지한다 — 즉 인지가 안 되는 날은 이 인자가 '
-                        '아무 일도 하지 않는다. false 면 정지선 추론 자체를 안 돌린다'),
+            description='★정지선 앞 2단계 정지★ 켜면 빨간불이 확정돼도 정지선이 보이는 '
+                        '동안은 1단 예비제동으로 줄이다가 정지선 앞에서 2단으로 선다. '
+                        '정지선을 못 보면 종전대로 즉시 2단 — 즉 인지가 안 되는 날은 이 '
+                        '인자가 아무 일도 하지 않는다. false 면 정지선 추론 자체를 안 돌린다'),
         DeclareLaunchArgument(
-            'sl_trigger_y_frac', default_value='0.75',
-            description='★정지선 트리거 행★ 정지선 마스크의 최하단이 화면 높이의 이 '
-                        '비율보다 아래로 오면 정지. ⚠️ 근거 없는 기본값이다 — 2단 '
-                        '정지거리(4펄스 1.6~2.8m, BRAKING.md)를 감안해 "정지선이 '
-                        '2.5~3m 앞"인 지점의 HUD 값으로 정한다(todo.txt 9항). '
-                        '차체가 화면 하단을 가리므로 그보다 위여야 한다'),
+            'sl_brake1_px', default_value='240.0',
+            description='★1단 예비제동 문턱★ BEV 에서 정지선→앞범퍼 거리가 이 픽셀 이하가 '
+                        '되면 리니어 1단으로 부드럽게 줄이기 시작한다. ⚠️ 근거 없는 '
+                        '기본값이다 — 1단 감속도 1.30 m/s²(BRAKING.md 4절)로 4펄스에서 '
+                        '약 4.8m 이니, 그 거리의 HUD px 값으로 잡는다(STOPLINE_TEST 단계 2). '
+                        '크게 잡으면 멀리서부터 기어가다 정지선 전에 멈춰 선다'),
+        DeclareLaunchArgument(
+            'sl_brake2_px', default_value='60.0',
+            description='★2단 확정 정지 문턱★ 같은 거리가 이 픽셀 이하면 2단으로 세운다. '
+                        '2단 정지거리가 4펄스에서 1.6~2.8m(BRAKING.md)이므로 그만큼 여유를 '
+                        '두고 잡는다. ★반드시 sl_brake1_px 보다 작아야 한다★. '
+                        '⚠️ 값에 ★소수점을 붙여야 한다★(60 이 아니라 60.0) — 런치 인자는 '
+                        '문자열을 그대로 형변환하므로 정수로 주면 노드 선언 타입(double)과 '
+                        '어긋나 기동에 실패한다(tl_conf 등 기존 인자와 같은 성질이다)'),
+        DeclareLaunchArgument(
+            'cam_undistort', default_value='true',
+            description='★어안 왜곡보정★ 카메라 인지 노드가 프레임을 받은 뒤 보정한다. '
+                        '계수는 white1/calibration/usb_cam_calibration.yaml. ⚠️ 끄면 BEV '
+                        '거리(정지선 판정)를 믿을 수 없다 — 어안이 남은 그림에 원근변환을 '
+                        '걸면 직선이 휜 채로 펴진다. /image_raw 원본은 어느 쪽이든 그대로다'),
+        DeclareLaunchArgument(
+            'bev_src_pts',
+            default_value='[750.0, 560.0, 1170.0, 560.0, 1920.0, 1080.0, 0.0, 1080.0]',
+            description='★BEV 사다리꼴★ 보정된 화면에서 노면 직사각형에 해당하는 네 점 '
+                        '(좌상,우상,우하,좌하). ⚠️ 기본값은 구 white 마운트에서 유도한 '
+                        '것이라 ★이 차에서 다시 잡아야 한다★ — 화면에 노란 사다리꼴로 '
+                        '그려지니 노면에 맞춰 눈으로 맞춘다(STOPLINE_TEST 단계 2)'),
+        DeclareLaunchArgument(
+            'bev_bumper_y_px', default_value='480.0',
+            description='★앞범퍼가 BEV 의 몇 번째 행인가 = 거리 0 의 기준★ 기본값은 BEV '
+                        '최하단(=사다리꼴 밑변). 범퍼가 그보다 앞(차 쪽)이면 480 보다 큰 '
+                        '값을 준다. 이 값이 틀리면 두 문턱이 통째로 어긋난다'),
         DeclareLaunchArgument(
             'sl_conf', default_value='0.30',
             description='정지선 seg 신뢰도 임계. 구 white 의 lane_conf 와 같은 값'),
@@ -110,6 +149,25 @@ def declare_args(cam_dev):
     ]
 
 
+def camera_params():
+    """★카메라 기하 파라미터 한 벌★ — 카메라 인지 노드는 전부 이것을 받는다.
+
+    선언(이름·기본값)의 주인은 white1/camera_model.py 이고, 여기서는 런치 인자로
+    덮어쓸 수 있게 이어 준다. 차선 인지 노드가 붙으면 ★같은 dict 를 그대로★ 넘긴다 —
+    그래야 두 노드가 같은 그림을 본다(둘이 다른 사다리꼴을 쓰면 차선과 정지선의 거리가
+    서로 다른 자로 재진다).
+
+    ⚠️ 여기 없는 것(bev_w·bev_h·bev_px_to_m)은 camera_model 의 기본값을 그대로 쓴다.
+       런치 인자로 노출하지 않은 이유는 ★자주 바꿀 값이 아니고★, 바꾸면 두 문턱
+       (sl_brake*_px)의 뜻이 같이 달라지기 때문이다. 필요하면 -p 로 직접 준다.
+    """
+    return {
+        'cam_undistort':    LaunchConfiguration('cam_undistort'),
+        'bev_src_pts':      LaunchConfiguration('bev_src_pts'),
+        'bev_bumper_y_px':  LaunchConfiguration('bev_bumper_y_px'),
+    }
+
+
 def actions(package_name, cam_format, node_env, respawn_delay):
     """usb_cam · v4l2 보정 · traffic_light 세 액션. 전부 use_camera 로 묶인다."""
     use_camera   = LaunchConfiguration('use_camera')
@@ -117,8 +175,10 @@ def actions(package_name, cam_format, node_env, respawn_delay):
     cam_exposure = LaunchConfiguration('cam_exposure')
 
     # ── usb_cam → /image_raw ──
-    #   ★camera_info_url 을 주지 않는다★ traffic_light 는 왜곡보정을 쓰지 않는다.
-    #   쓰지도 않을 캘리브 파일을 들이면 '맞는지 아무도 모르는 값'이 하나 늘 뿐이다.
+    #   ★camera_info_url 을 주지 않는다 [2026-08-19 근거 갱신]★ 왜곡보정을 안 해서가
+    #   아니라(이제 한다), ★/image_raw 를 원본으로 남겨야 하기 때문★ 이다. 보정은 인지
+    #   노드가 camera_model 로 직접 하고, 녹화(nxde video)는 원본을 그대로 적는다.
+    #   계수의 정본은 white1/calibration/usb_cam_calibration.yaml 이다.
     usb_cam = Node(
         package='usb_cam',
         executable='usb_cam_node_exe',
@@ -215,13 +275,16 @@ def actions(package_name, cam_format, node_env, respawn_delay):
             'tl_red_stop_min_height': LaunchConfiguration('tl_red_stop_min_height'),
             'tl_near_release_ratio':  LaunchConfiguration('tl_near_release_ratio'),
             'sl_enable':              LaunchConfiguration('sl_enable'),
-            'sl_trigger_y_frac':      LaunchConfiguration('sl_trigger_y_frac'),
+            'sl_brake1_px':           LaunchConfiguration('sl_brake1_px'),
+            'sl_brake2_px':           LaunchConfiguration('sl_brake2_px'),
             'sl_conf':                LaunchConfiguration('sl_conf'),
             'sl_gate_red_s':          LaunchConfiguration('sl_gate_red_s'),
             'show_window':            LaunchConfiguration('tl_show_window'),
             'window_width':           LaunchConfiguration('tl_window_width'),
             'stop_latch':             LaunchConfiguration('tl_stop_latch'),
             'publish_cmd_vel':        LaunchConfiguration('tl_publish_cmd_vel'),
+            # ★카메라 기하는 한 벌로 받는다★ 차선 인지가 붙으면 같은 dict 를 넘긴다.
+            **camera_params(),
         }],
         condition=IfCondition(use_camera),
     )

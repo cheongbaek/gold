@@ -264,16 +264,23 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                    '임계(tl_red_stop_min_height, 기본 25)와 비교해서 읽는다'),
     TopicSpec('/tl/red_far', Bool, ('tl_red_far',), _scalar,
               note='이번 프레임이 RED_FAR 인가 = 빨갛지만 아직 멀다고 본 것'),
-    #   ★정지선 두 열 [2026-08-14]★ 위 세 열이 '왜 섰나'라면 이 둘은 ★'어디서 섰나'★ 다.
+    #   ★정지선 세 열 [2026-08-14 → 2026-08-19 sl_px 추가]★ 위 세 열이 '왜 섰나'라면
+    #   이 셋은 ★'어디서 섰나'★ 다.
     #       tl_state=RED + sl_wait=True  → 빨간불은 확정, 정지선을 기다리는 중(안 섰다)
-    #       brake_level 2 로 넘어간 행의 sl_y → ★그 순간 정지선이 화면 어디였나★
-    #         = 실제 정지 지점. 트리거 행(sl_trigger_y_frac)을 정하는 근거가 이 값이다.
-    #       sl_y=-1 인 채 brake_level 2 → 정지선을 못 보고 그 자리에서 선 것(종전 동작)
+    #       brake_level 1 로 넘어간 행의 sl_px → ★1단 예비제동을 건 지점★
+    #       brake_level 2 로 넘어간 행의 sl_px → ★2단을 건 지점★ = 실제 정지 지점
+    #         두 문턱(sl_brake1_px·sl_brake2_px)을 정하는 근거가 이 값이다.
+    #       sl_px=-1 인 채 brake_level 2 → 정지선을 못 보고 그 자리에서 선 것(종전 동작)
+    TopicSpec('/tl/stop_line_px', Float32, ('sl_px',), _scalar,
+              note='★판정값★ BEV 에서 정지선→앞범퍼 픽셀 거리. −1 = 미검출 / '
+                   '0 = 범퍼선 도달(또는 지나침). 값이 작을수록 가깝다 — '
+                   'sl_brake1_px(1단)·sl_brake2_px(2단)와 비교해서 읽는다'),
     TopicSpec('/tl/stop_line_y', Float32, ('sl_y',), _scalar,
               note='정지선 마스크 최하단 y ÷ 프레임 높이(0~1). −1 = 미검출. '
-                   '값이 클수록 가깝다 — 트리거 행과 비교해서 읽는다'),
+                   '★판정에는 안 쓴다★ [2026-08-19] — 원근이 남아 거리에 비례하지 '
+                   '않는다. 영상과 대조할 때 쓰는 참고값이다'),
     TopicSpec('/tl/stop_line_wait', Bool, ('sl_wait',), _scalar,
-              note='RED 확정인데 정지선이 아직 멀어 브레이크를 참고 있는 구간'),
+              note='RED 확정인데 정지선이 아직 멀어 아무 단계도 안 건 구간'),
 
     # ── 원시 센서 ──
     TopicSpec('/fix', NavSatFix,

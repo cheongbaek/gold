@@ -28,43 +28,63 @@ traffic_light.py ― 신호등 인지·정지 [white1]
   white1 에는 그 발행자도 소비자도 없다.
 
 ════════════════════════════════════════════════════════════════════════════════
- ★정지선 앞 정지 (stop line) [2026-08-14 추가]★
+ ★정지선 앞 2단계 정지 [2026-08-14 도입 → 2026-08-19 개편]★
 ════════════════════════════════════════════════════════════════════════════════
  종전에는 ★RED 확정이면 그 자리에서★ 섰다 — 근접도 게이트(박스 크기)가 '얼마나
  가까운가'의 유일한 근거였기 때문이다. 그런데 그 값은 신호등 크기·렌즈·설치 높이에
  따라 흔들리는 ★간접 지표★ 다. 정지선은 '여기가 정지 지점'이라고 노면이 직접 말해
  주는 것이므로, 그것이 보이면 그쪽을 따른다.
 
- ★규칙 — 정지선은 정지를 앞당기지 않는다. 미룰 뿐이다★
-   RED 확정 조건(_red_confirmed)은 ★종전 그대로★ 다. 그 위에 관문을 하나 더 둔다:
+ ★[2026-08-19] 정지선이 보이면 두 단계로 선다 (지시사항)★
+   종전 판은 '참았다가(무개입) 트리거 행에서 2단' 이었다. 즉 감속 프로파일이
+   ★코스트 → 급정지★ 둘뿐이라, 밖에서 보면 정지선 앞에서 한 번 급하게 서는 거동이
+   된다(2단은 실측 2.2~3.8 m/s² — BRAKING.md). 종점 접근제동이 2026-08-19 에 같은
+   이유로 1단+거리계산으로 바뀌었고, 신호등도 같은 태도로 맞춘다.
 
      RED 확정
-       ├ 정지선을 못 봤다                  → 즉시 2단   ★종전 동작 그대로★
-       ├ 정지선이 트리거 행 아래로 들어왔다 → 2단        ★정지선 앞 정지★
-       ├ 정지선이 보이는데 아직 멀다        → ★참는다(대기)★
-       └ 봤다가 놓쳤다                      → 즉시 2단   (이미 선 위다)
+       ├ 정지선을 못 봤다                → 즉시 2단        ★종전 동작 그대로★
+       ├ 정지선이 보이는데 아직 멀다      → 무개입(대기)
+       ├ 정지선까지 ≤ sl_brake1_px        → ★1단 예비제동★ (부드럽게 줄인다)
+       ├ 정지선까지 ≤ sl_brake2_px        → ★2단 확정 정지★ (정지선 앞에 세운다)
+       └ 봤다가 놓쳤다                    → 즉시 2단        (이미 선 위다)
 
    즉 ★정지선이 안 보이면 이 절은 통째로 없는 것과 같다★(지시사항). 인지가 안 되는
-   날에도 종전 동작으로 조용히 되돌아간다 — 이 기능의 실패 모드를 '기존 동작'으로
-   묶어 둔 것이다.
+   날에도 종전 동작(RED 확정 → 즉시 2단)으로 조용히 되돌아간다 — 이 기능의 실패
+   모드를 '기존 동작'으로 묶어 둔 것이다.
 
- ★대기에는 두 개의 상한이 있다★ 오검출된 정지선이 브레이크를 무한정 미루면 그것이
- 곧 '빨간불에 안 서는' 사고다. 그래서 참는 동안에도 두 가지가 감시한다:
-   · sl_wait_max_s   RED 확정 시각으로부터 이만큼 지나면 정지선을 무시하고 선다
+ ★단계는 올라가기만 한다★ RED 를 잡고 있는 동안 0 → 1 → 2 로만 간다. 2단을 물었다가
+   정지선이 흔들린다고 1단으로 내리는 일은 없다. 리니어는 물리적으로 왕복하는 장치라
+   그 왕복이 제일 나쁘다(아래 '정지 래치' 절의 flip-flop 실측과 같은 문제다).
+   0 으로 돌아가는 길은 ★해제 경로 하나뿐★ 이다 — 빨간불이 사라지거나 허락이 없어질 때.
+
+ ★대기·1단에는 두 개의 상한이 있다★ 오검출된 정지선이 2단을 무한정 미루면 그것이
+ 곧 '빨간불에 안 서는' 사고다. 그래서 두 가지가 감시한다:
+   · sl_wait_max_s   RED 확정 시각으로부터 이만큼 지나면 정지선을 무시하고 2단
    · sl_override_gate_ratio  근접도가 게이트의 이 배를 넘으면(=신호등이 코앞이면)
                              정지선을 기다리지 않는다 — 물리적 상한이라 시간보다 낫다
+   ★sl_wait_max_s 는 이 개편에서 5 → 8초로 늘렸다★ 종전의 '참는 동안'은 무개입
+   코스트였지만 지금은 ★이미 1단으로 감속 중★ 이라, 상한을 늘려도 위험이 늘지 않는다.
+   그리고 이 상한이 ★1단으로 감속하다 정지선 앞에서 멈춰 버린 경우★ 도 함께 받는다 —
+   1단이 걸리면 arduino 가 구동펄스를 0 으로 덮으므로(아래 '왜 /brake_level 하나가
+   정지의 본체인가') 차는 스스로 정지선까지 기어가지 못한다. 그대로 두면 2단 문턱에
+   영영 못 닿으므로, 8초가 지나면 ★2단으로 올려 정지를 확정한다★(지시사항).
 
- ★왜 미터가 아니라 픽셀 행인가★
-   구 white 는 마스크를 IPM(BEV)로 옮겨 최하단 y 를 미터로 바꿔 /stop_line_dist 를
-   냈다(perception.py 1422-1434). 그 환산은 여기서 그대로 못 쓴다:
-     ① 그 캘리브(ipm_src_pts·bev_calib_real_distance_m)는 ★구 차량 마운트 값★ 이다.
-     ② 구 perception 은 ★왜곡보정을 켜고★ 돌렸는데 white1 은 쓰지 않는다. 이 카메라는
-        어안에 가까워서 미보정 IPM 은 의미 있는 미터가 나오지 않는다(직선이 휜다).
-   마운트가 고정이면 ★화면의 한 행 = 지면의 한 거리★ 이므로, 마스크 최하단 y 를
-   프레임 높이로 나눈 비율(0~1)을 그대로 근접도로 쓴다. 해상도가 바뀌어도 뜻이
-   유지되고, HUD 에 트리거 행을 그려 두면 ★눈으로 튜닝★ 할 수 있다(근접도 게이트를
-   박스 높이 px 로 잡는 것과 같은 태도다). 미터가 필요해지면 그때 IPM 을 캘리브해서
-   이 값 옆에 얹으면 된다 — 판정 경로는 건드리지 않는다.
+ ★왜 화면의 행이 아니라 BEV 픽셀 거리인가 [2026-08-19 교체]★
+   종전에는 마스크 최하단 y 를 프레임 높이로 나눈 비율(sl_trigger_y_frac)로 판정했다.
+   그것으로는 ★문턱을 두 개 둘 수 없다★ — 원본 화면의 행 간격은 거리에 비례하지
+   않아서(원근) '1단 문턱과 2단 문턱이 몇 m 떨어져 있나'를 말할 수 없기 때문이다.
+   BEV(IPM)로 펴면 ★한 픽셀이 어디서나 같은 거리★ 라 문턱을 여럿 두어도 뜻이 산다.
+   그래서 판정값은 ★BEV 에서 정지선 최근접점 → 앞범퍼까지의 픽셀 거리★ 하나다.
+
+   ⚠️ ★종전 판이 BEV 를 안 쓴 이유는 해소됐다★ 그때는 (a) IPM 캘리브가 구 차량
+     마운트 값이고 (b) 왜곡보정이 파이프라인에 없어서 미보정 IPM 이 의미가 없다는
+     것이 근거였다. (b)는 white1/camera_model.py 가 들어오면서 없어졌고(모든 카메라
+     인지 노드가 기본으로 보정된 그림을 본다), (a)는 남아 있다 —
+     ★bev_src_pts·bev_bumper_y_px·sl_brake1_px·sl_brake2_px 는 실측값이다★
+     (STOPLINE_TEST.md 단계 2). 기본값은 출발점일 뿐이고, HUD 에 사다리꼴·범퍼선·
+     두 문턱선을 그려 두었으니 ★눈으로 맞춘다★.
+   미터가 필요하면 bev_px_to_m 을 재서 넣는다 — HUD·로그에만 붙고 ★판정 경로는
+   픽셀 그대로다★(캘리브 하나가 틀려도 판정이 흔들리지 않게 하려는 것이다).
 
  ★왜 빨간 박스가 보일 때만 추론하는가★
    정지선 seg 는 신호등 detect 와 ★같은 프레임★ 에 한 번 더 도는 두 번째 추론이다.
@@ -79,14 +99,34 @@ traffic_light.py ― 신호등 인지·정지 [white1]
    tl_near_metric 이 0 이 되면 ★카메라를 5~8° 위로 틸트★ 하는 것이 정답이다.
 
 ════════════════════════════════════════════════════════════════════════════════
+ ★어안 왜곡보정 — 이 노드가 소유하지 않는다 [2026-08-19]★
+════════════════════════════════════════════════════════════════════════════════
+ 보정 계수·BEV 사다리꼴의 주인은 ★white1/camera_model.py★ 다. 이 노드가 하는 일은
+ 프레임을 받자마자 cam.undistort() 를 한 번 부르는 것뿐이고, 그 뒤로는 신호등 detect·
+ 정지선 seg·HUD 가 전부 ★보정된 그림★ 을 본다. 앞으로 붙일 차선 인지도 같은 모듈을
+ 부르면 같은 그림을 보게 된다 — 그러라고 밖으로 뺐다(그쪽 파일 헤더 참고).
+
+ ★/image_raw 는 원본 그대로다★ 보정을 토픽 쪽에서 하지 않는 이유는 nxde/video.py 의
+ 원본 녹화가 '카메라가 실제로 준 그림'이어야 하기 때문이다(지시사항). 그래서 녹화된
+ mp4 에는 어안이 남아 있는 것이 ★정상★ 이다.
+
+ ⚠️ ★보정을 켜면 화면 스케일이 조금 달라진다★ alpha=0 이라 유효 영역만 잘라 원래
+   크기로 늘리므로, 같은 신호등이 몇 % 커 보인다. 근접도 게이트
+   (tl_red_stop_min_height=25px)와 tl_roi 는 그만큼 ★재실측 대상★ 이다(todo 8항).
+
+════════════════════════════════════════════════════════════════════════════════
  발행 / 구독
 ════════════════════════════════════════════════════════════════════════════════
 발행:
-  /brake_level  std_msgs/Int32       ★리니어 2단 — 정지의 본체다(아래 참고)★
-  /cmd_vel_raw  geometry_msgs/Twist  ★기본으로는 내지 않는다★ (publish_cmd_vel:=true 일 때만)
+  /brake_level  std_msgs/Int32       ★리니어 1단(예비)·2단(정지) — 정지의 본체다(아래 참고)★
+  /cmd_vel_raw  geometry_msgs/Twist  ★기본으로는 내지 않는다★ (publish_cmd_vel:=true 일 때만,
+                                     그때도 ★2단에서만★ 낸다 — 1단 중에는 조향을 안 뺏는다)
   /tl/state     std_msgs/String      RED / RED_FAR / GREEN / UNKNOWN (기록·디버그·master 표시)
+  /tl/stop_line_px   std_msgs/Float32  ★판정값★ BEV 에서 정지선→앞범퍼 픽셀 거리
+                                       −1 = 미검출 / 0 = 범퍼선 도달(또는 지나침)
   /tl/stop_line_y    std_msgs/Float32  정지선 최하단 y(프레임 높이 비율). −1 = 미검출
-  /tl/stop_line_wait std_msgs/Bool     지금 정지선 때문에 브레이크를 참고 있는가
+                                       ★판정에는 안 쓴다★ — 기록·HUD 용(sl_check.py 가 읽는다)
+  /tl/stop_line_wait std_msgs/Bool     지금 정지선 때문에 브레이크를 참고 있는가(아직 0단)
 구독:
   /image_raw    sensor_msgs/Image    usb_cam
   /drive_state  std_msgs/String      ← driving.py (DRIVE_DONE 이면 브레이크 소유권 양보)
@@ -104,6 +144,14 @@ traffic_light.py ― 신호등 인지·정지 [white1]
   /brake_level=2 를 내는 것만으로 ★리니어 2단 체결 + 인휠 구동 차단★ 이 동시에
   성립한다. 그 줄의 주석이 말하는 "주행 중에 브레이크를 요청하는 다른 발행자"가
   바로 이 노드다(구 white 에서는 camera_judgment 였다).
+
+  ★1단(예비제동)도 같은 줄에 걸린다 [2026-08-19]★ 조건이 `brake > 0` 이므로 1단에서도
+  구동이 끊긴다. 그래서 1단 예비제동은 '리니어 1/3 행정 + 구동 차단' 이고, 실측
+  감속도는 ★1.30 m/s²(체결 뒤 0.55초는 행정 램프라 0)★ 이다(BRAKING.md 4절 —
+  구동을 끊고 잰 값이다). 2단(2.2~3.8)의 절반 이하라 '부드럽게 줄인다'가 성립한다.
+  ⚠️ 뒤집어 말하면 ★1단을 물고 있는 동안 차는 스스로 기어가지 못한다★ — 정지선
+  앞에서 멈춰 버리면 그대로 서 있는다. 그 경우를 sl_wait_max_s 가 받아 2단으로
+  올린다(위 '정지선 앞 2단계 정지' 절).
 
  ★왜 /cmd_vel_raw 를 내지 않는가 [white1 에서 기본값을 뒤집었다]★
   펄스는 위에서 이미 0 이 되므로 이 토픽이 실제로 할 일은 ★조향각 0(일직선)★ 뿐인데,
@@ -185,6 +233,11 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32, Int32, String
 from cv_bridge import CvBridge
 from ultralytics import YOLO
+
+# ★카메라 기하(어안 왜곡보정·BEV)의 단일 소유자★ [2026-08-19]
+#   보정 계수도 사다리꼴도 이 파일에는 없다 — 차선 인지가 붙을 때 같은 값을 쓰게
+#   하려고 밖으로 뺐다(그쪽 헤더 참고). 여기서는 undistort() 와 nearest_dist_px() 만 쓴다.
+from white1 import camera_model
 
 # HSV 가 YOLO 라벨을 ★위험한 방향(RED→GREEN)★ 으로 뒤집는 것을 허용하는 conf 상한.
 # 이보다 자신 있는 박스는 색 몇 픽셀로 뒤집지 않는다. (perception.py 와 같은 값)
@@ -311,15 +364,23 @@ class TrafficLight(Node):
         # 느린 기계로 옮겨 fps 가 떨어지면 2 로 올린다 — 그때도 sl_hold_s(0.2s) 안에
         # 3 프레임은 들어오므로 확정이 무너지지 않는다.
         self.declare_parameter('sl_interval', 1)
-        # ★트리거 행 — 이 기능의 유일한 핵심 숫자다★ 정지선 마스크의 최하단(=가장
-        # 가까운 점)이 프레임 높이의 이 비율보다 아래로 내려오면 '정지선 앞에 왔다'.
-        # ⚠️ ★근거 없는 기본값이다★ 실측으로 정한다(todo.txt 9항):
-        #    2단 정지거리가 4펄스에서 1.6~2.8m(BRAKING.md)이므로 '정지선이 2.5~3m
-        #    앞'인 지점에 차를 세워 두고 HUD 의 sl 값을 읽어 그 값으로 잡는다.
-        #    ⚠️ 상한도 있다 — 차체(앞바퀴·프레임)가 화면 하단을 가리므로 그보다
-        #      아래에 두면 정지선이 그 행에 닿기 전에 사라져 영영 트리거되지 않는다.
-        #      (그 경우에도 '봤다가 놓쳤다 → 즉시 정지' 경로가 받아 준다)
-        self.declare_parameter('sl_trigger_y_frac', 0.75)
+        # ★두 개의 문턱 — 이 기능의 핵심 숫자다 [2026-08-19]★
+        #   판정값은 ★BEV 에서 정지선 최근접점 → 앞범퍼까지의 픽셀 거리★ 하나다
+        #   (camera_model.nearest_dist_px). 그 값이
+        #     sl_brake1_px 이하 → 1단 예비제동   (부드럽게 줄이기 시작한다)
+        #     sl_brake2_px 이하 → 2단 확정 정지  (정지선 앞에 세운다)
+        #   이므로 반드시 sl_brake1_px > sl_brake2_px 다(생성자에서 강제한다).
+        # ⚠️ ★근거 없는 기본값이다★ bev_src_pts 와 짝으로 실측한다(STOPLINE_TEST.md
+        #    단계 2). 잡는 순서는 '2단 먼저, 1단 나중':
+        #      · sl_brake2_px : 2단 정지거리가 4펄스에서 1.6~2.8m(BRAKING.md)이므로
+        #        정지선 앞 여유를 그만큼 두고 잡는다. 차를 세워 두고 HUD 의 px 를 읽는다.
+        #      · sl_brake1_px : 1단은 1.30 m/s²(+체결 0.55초 램프)라 4펄스(3.54m/s)에서
+        #        약 4.8m 다(BRAKING.md 4절 표). 그 거리의 px 값으로 잡는다.
+        #    너무 크게 잡으면 멀리서부터 1단으로 기어가다 정지선 전에 멈춰 서고
+        #    (구동이 끊기므로 재출발 못 한다 → sl_wait_max_s 가 2단으로 받는다),
+        #    너무 작게 잡으면 예비제동이 늦어 결국 2단이 다 감당하게 된다.
+        self.declare_parameter('sl_brake1_px', 240.0)
+        self.declare_parameter('sl_brake2_px',  60.0)
         # 노면 잡티·차선 조각을 정지선으로 읽지 않기 위한 관문. 정지선은 ★가로로 긴★
         # 물체다 — 폭이 화면의 이 비율보다 좁으면 버린다.
         self.declare_parameter('sl_min_width_frac', 0.12)
@@ -328,9 +389,13 @@ class TrafficLight(Node):
         self.declare_parameter('sl_hold_s',  0.2)
         # 이보다 오래된 관측은 '없다'로 본다 = ★놓쳤다 → 즉시 정지★ 로 넘어가는 문턱.
         self.declare_parameter('sl_stale_s', 0.5)
-        # ★대기 상한 ①★ RED 확정 시각으로부터 이만큼 지나면 정지선을 무시하고 선다.
-        #   오검출된 먼 정지선이 브레이크를 무한정 미루는 것을 막는 마지막 방어선이다.
-        self.declare_parameter('sl_wait_max_s', 5.0)
+        # ★대기 상한 ①★ RED 확정 시각으로부터 이만큼 지나면 정지선을 무시하고 2단.
+        #   오검출된 먼 정지선이 2단을 무한정 미루는 것을 막는 마지막 방어선이고,
+        #   ★1단으로 감속하다 정지선 앞에서 멈춰 버린 경우★ 도 여기서 받는다
+        #   (1단이면 구동펄스가 0 이라 스스로 기어가지 못한다 — 파일 헤더 참고).
+        #   ★[2026-08-19] 5 → 8초★ 종전의 '참는 동안'은 무개입 코스트였지만 이제는
+        #   1단으로 이미 감속 중이라, 늘려도 위험이 늘지 않는다.
+        self.declare_parameter('sl_wait_max_s', 8.0)
         # ★대기 상한 ②★ 근접도(_near_metric)가 게이트의 이 배를 넘으면 = 신호등이
         #   코앞이면 정지선을 기다리지 않는다. 시간보다 나은 물리적 상한이다.
         self.declare_parameter('sl_override_gate_ratio', 1.6)
@@ -339,6 +404,9 @@ class TrafficLight(Node):
 
         # ── 정지 동작 ──────────────────────────────────────────────────────
         self.declare_parameter('brake_level',         2)     # 0 놓음 / 1 약 / 2 풀
+        # ★예비제동 단계 [2026-08-19]★ 정지선까지 sl_brake1_px 안으로 들어왔을 때
+        #   무는 단계다. 0 으로 두면 예비제동을 끄는 것과 같다(= 종전처럼 참았다가 2단).
+        self.declare_parameter('brake_level_pre',     1)
         self.declare_parameter('brake_release_level', 0)
         # ★[2026-08-14] publish_cmd_vel 은 true 로 둔다(지시)★ 정지 중 펄스 0·조향 0 을
         #   함께 낸다. 캐시를 덮는 부작용은 남지만, master 도 driving 도 자기 명령을
@@ -361,6 +429,16 @@ class TrafficLight(Node):
         #  줄여서 띄운다(비율 유지). 0 이면 원본 크기. 판정은 원본 해상도로 하므로
         #  이 값을 줄여도 인지 성능에는 영향이 없다 — 보이는 크기만 달라진다.
         self.declare_parameter('window_width', 640)
+        #  ★BEV 썸네일 [2026-08-19]★ 디버그 화면 우하단에 BEV 를 겹쳐 그린다. 두 문턱
+        #  (sl_brake1_px·sl_brake2_px)과 범퍼선이 거기 있어서, ★이 그림 없이는 숫자를
+        #  잡을 수 없다★. 창을 따로 띄우지 않는 이유는 _draw 주석의 HighGUI 문제다.
+        self.declare_parameter('show_bev', True)
+
+        # ── 카메라 기하 (어안 왜곡보정·BEV) ─────────────────────────────────
+        #  ★파라미터 이름·기본값의 주인은 camera_model.py 다★ 차선 인지가 붙어도
+        #  같은 이름을 쓰게 하려고 선언을 그쪽에 두었다(camera_launch.camera_params()
+        #  한 벌을 두 노드에 그대로 먹일 수 있다).
+        camera_model.declare_params(self)
 
         g = lambda k: self.get_parameter(k).value
         self.image_topic = str(g('image_topic'))
@@ -398,7 +476,16 @@ class TrafficLight(Node):
         self.sl_conf    = float(g('sl_conf'))
         self.sl_imgsz   = int(g('sl_imgsz'))
         self.sl_interval = max(1, int(g('sl_interval')))
-        self.sl_trigger_y_frac = min(1.0, max(0.0, float(g('sl_trigger_y_frac'))))
+        # ★두 문턱은 반드시 1단 > 2단★ 뒤집힌 값을 주면 '멀리서 2단, 가까이서 1단'이
+        #   되어 판정이 통째로 뒤집힌다. 조용히 고치지 말고 경고를 남기고 바로잡는다.
+        self.sl_brake1_px = max(0.0, float(g('sl_brake1_px')))
+        self.sl_brake2_px = max(0.0, float(g('sl_brake2_px')))
+        if self.sl_brake1_px < self.sl_brake2_px:
+            self.get_logger().warn(
+                f"sl_brake1_px({self.sl_brake1_px:.0f}) < sl_brake2_px"
+                f"({self.sl_brake2_px:.0f}) — 1단 문턱이 2단보다 가깝다. "
+                "1단 문턱을 2단과 같게 맞춘다(= 예비제동 없이 바로 2단)")
+            self.sl_brake1_px = self.sl_brake2_px
         self.sl_min_width_frac = float(g('sl_min_width_frac'))
         self.sl_min_area_frac  = float(g('sl_min_area_frac'))
         self.sl_hold_s   = max(0.0, float(g('sl_hold_s')))
@@ -407,6 +494,7 @@ class TrafficLight(Node):
         self.sl_override_gate_ratio = max(1.0, float(g('sl_override_gate_ratio')))
         self.sl_gate_red_s = max(0.0, float(g('sl_gate_red_s')))
         self.brake_level         = max(0, min(2, int(g('brake_level'))))
+        self.brake_level_pre     = max(0, min(2, int(g('brake_level_pre'))))
         self.brake_release_level = max(0, min(2, int(g('brake_release_level'))))
         self.publish_cmd_vel  = bool(g('publish_cmd_vel'))
         self.stop_cmd_hz      = max(1.0, float(g('stop_cmd_hz')))
@@ -415,6 +503,11 @@ class TrafficLight(Node):
         self.show_window = bool(g('show_window'))
         self.draw_roi    = bool(g('draw_roi'))
         self.window_width = max(0, int(g('window_width')))
+        self.show_bev    = bool(g('show_bev')) and self.show_window
+        # ── 카메라 기하 — 보정·BEV 의 소유자(camera_model.py) ──────────────
+        #   ★파라미터를 다 읽은 뒤에 만든다★ 로드 실패는 여기서 경고로 끝나고
+        #   (fail-open) 보정만 꺼진다 — 노드는 종전대로 돈다.
+        self.cam = camera_model.CameraModel.from_node(self)
         # 창 표시는 ★메인 스레드★ 가 한다(show_pending) — _draw 주석에 근거.
         self._show_lock = threading.Lock()
         self._show_frame = None
@@ -428,7 +521,10 @@ class TrafficLight(Node):
         self.red_last_seen  = None    # 마지막으로 RED(근접) 를 본 시각 = 해제 판정 근거
         self.green_since    = None
         self.green_last_seen = None
-        self.stopping   = False       # 지금 이 노드가 차를 세우고 있는가
+        # ★[2026-08-19] bool → 단계(0/1/2)★ 정지선이 보이면 1단 예비제동을 거쳐
+        #   2단으로 간다. 이 값은 ★해제 경로에서만 0 으로 돌아간다★(단조 증가 규약).
+        self.stop_level = 0
+        self.stop_why   = ''          # 지금 단계를 고른 근거(로그·HUD 용)
         self._brake_t   = 0.0         # 브레이크를 마지막으로 발행한 시각(재확인용)
         # 우리가 마지막으로 ★발행한★ 브레이크 단계. None = 한 번도 건 적 없다.
         #   → 이 값이 None 이면 0단도 내지 않는다(남의 브레이크를 풀지 않기 위해).
@@ -448,12 +544,15 @@ class TrafficLight(Node):
         self.fps_t         = time.monotonic()
 
         # ── 정지선 상태 ────────────────────────────────────────────────────
+        #   ★판정값은 sl_px 하나다★ sl_y 는 기록·HUD 용으로만 남는다(파일 헤더).
+        self.sl_px      = -1.0        # BEV 에서 정지선 최근접점 → 앞범퍼 [px]. −1 = 미검출
         self.sl_y       = -1.0        # 마지막 관측(최하단 y / 프레임 높이). −1 = 미검출
         self.sl_seen_t  = 0.0         # 마지막으로 정지선을 본 시각 = 신선도의 근거
         self.sl_since   = None        # 연속 목격 스트릭의 시작 시각(확정 판정용)
         self.sl_engaged = False       # 이번 접근에서 정지선을 ★확정한 적★ 이 있는가
-        self.sl_wait    = False       # 지금 정지선 때문에 브레이크를 참고 있는가
-        self.sl_poly    = None        # HUD 용 마스크 폴리곤(원본 좌표)
+        self.sl_wait    = False       # 지금 정지선 때문에 브레이크를 참고 있는가(아직 0단)
+        self.sl_poly    = None        # HUD 용 마스크 폴리곤(보정된 원본 좌표)
+        self.sl_poly_bev = None       # 같은 폴리곤의 BEV 좌표(HUD 용)
         self.sl_frames  = 0           # sl_interval 카운터
         self.red_seen_t = 0.0         # 마지막으로 ★빨간 박스★ 를 본 시각(추론 게이팅)
         self.red_conf_t = None        # RED 확정이 시작된 시각(대기 상한의 기준점)
@@ -493,6 +592,9 @@ class TrafficLight(Node):
         #   (=정지선을 기다리는 중)를 CSV 로 남겨야 사후에 정지 지점을 판정할 수 있다.
         self.pub_sl_y    = self.create_publisher(Float32, '/tl/stop_line_y',    qos)
         self.pub_sl_wait = self.create_publisher(Bool,    '/tl/stop_line_wait', qos)
+        # ★[2026-08-19] 판정에 실제로 쓰는 값★ 위 두 개와 달리 이것이 문턱과 비교되는
+        #   숫자다. CSV 에 남아야 '왜 여기서 1단을 물었나'를 사후에 따질 수 있다.
+        self.pub_sl_px   = self.create_publisher(Float32, '/tl/stop_line_px',   qos)
 
         # ★콜백 그룹을 둘로 나눈다 [2026-08-14]★ 영상(추론·그리기)과 제어(브레이크
         #   유지·해제, 요구 발행)를 다른 그룹에 두고 MultiThreadedExecutor 로 돌린다.
@@ -533,13 +635,17 @@ class TrafficLight(Node):
             + f" | latch={'ON(GREEN 까지)' if self.stop_latch else 'OFF(빨간불 동안만)'} "
             + ("허락=/tl_enable(master 체크박스) 또는 /tl_permit(driving DRIVE_RUN)"
                if self.require_permission else "허락=★없음(벤치 모드)★")
-            + (f"\n   🛑 정지선: 트리거 행 y≥{self.sl_trigger_y_frac:.2f}(화면 비율) "
+            + (f"\n   🛑 정지선: ★BEV 픽셀 거리★ {self.brake_level_pre}단 ≤"
+               f"{self.sl_brake1_px:.0f}px{self.cam.m_txt(self.sl_brake1_px)} → "
+               f"{self.brake_level}단 ≤{self.sl_brake2_px:.0f}px"
+               f"{self.cam.m_txt(self.sl_brake2_px)} | "
                f"conf={self.sl_conf} interval={self.sl_interval} "
                f"확정 {self.sl_hold_s}s / 신선도 {self.sl_stale_s}s | 대기 상한 "
                f"{self.sl_wait_max_s:.1f}s 또는 근접도 ×{self.sl_override_gate_ratio:.1f} "
-               f"| ★정지선을 못 보면 종전대로 즉시 정지★"
+               f"| ★정지선을 못 보면 종전대로 즉시 {self.brake_level}단★"
                if (self.sl_enable and self.sl_model is not None)
-               else "\n   🛑 정지선: ★꺼져 있다★ — RED 확정이면 그 자리에서 선다(종전 동작)"))
+               else "\n   🛑 정지선: ★꺼져 있다★ — RED 확정이면 그 자리에서 선다(종전 동작)")
+            + "\n   " + self.cam.describe())
 
     def _load_model(self, weights):
         """가중치를 읽고 라벨 표를 세운다. 실패해도 노드는 살아 있는다(fail-open).
@@ -762,31 +868,36 @@ class TrafficLight(Node):
     #  인지 — 정지선 (perception.py 의 stop-line 절 이식)
     # ══════════════════════════════════════════════════════════════════════════
     def _detect_stop_line(self, frame):
-        """정지선 마스크의 ★최하단 y(프레임 높이 비율)★ 를 돌려준다. 없으면 −1.
+        """정지선을 찾아 ★BEV 에서 앞범퍼까지의 픽셀 거리★ 를 돌려준다.
 
-        구 white(perception.py 1422-1434)는 같은 마스크를 IPM 으로 옮겨 최하단 y 를
-        미터로 바꿨다. 여기서는 ★원본 화면의 행★ 을 그대로 쓴다 — 그 이유는 파일
-        헤더의 '왜 미터가 아니라 픽셀 행인가' 절에 있다(요약: 그 캘리브는 구 차량
-        것이고, 이 카메라는 왜곡보정 없이 IPM 을 걸 수 없다).
+        돌려주는 것 : (dist_px, y_frac, poly, poly_bev) — 못 찾았으면 (None, −1, None, None)
+          · dist_px  ★판정값★ camera_model 이 계산한다. 음수면 이미 선을 지났다.
+          · y_frac   원본 화면 최하단 y / 높이. ★기록·HUD 전용★ (파일 헤더 참고)
+          · poly     보정된 원본 좌표의 마스크 폴리곤 (HUD)
+          · poly_bev 같은 폴리곤의 BEV 좌표 (HUD)
 
-        ★최하단을 쓰는 것은 구 white 와 같다★ 마스크에서 가장 아래 = 차에 가장 가까운
-        점이다. 여러 개가 잡히면 그 중 ★가장 가까운 것★ 을 고른다.
+        ★가장 가까운 것을 고르는 기준이 BEV 로 바뀌었다 [2026-08-19]★ 종전에는 원본
+        화면의 최하단 y 로 골랐다. 어안이 남은 그림에서는 화면 아래에 있다고 더 가까운
+        것이 아니라서(가장자리가 아래로 휜다) 순서가 뒤집힐 수 있었다. 보정+BEV 를
+        거친 지금은 ★거리로 직접 비교★ 한다.
+
         ROI 를 두지 않고 프레임 전체로 추론한다 — 이 모델은 전체 화면(lane_roi 기본값
         0,0,1920,1080)으로 학습·운용된 것이라, 잘라 넣으면 종횡비가 달라져 인지가
         나빠진다. 잡티는 아래 폭·면적 관문이 거른다.
         """
+        none = (None, -1.0, None, None)
         try:
             res = self.sl_model.predict(source=frame, conf=self.sl_conf,
                                         imgsz=self.sl_imgsz, device=self.device,
                                         verbose=False)[0]
         except Exception as e:
             self.get_logger().error(f"YOLO stop-line error: {e}", throttle_duration_sec=5.0)
-            return -1.0, None
+            return none
         if res.masks is None or res.boxes is None:
-            return -1.0, None
+            return none
 
         h, w = frame.shape[:2]
-        best_y, best_poly = -1.0, None
+        best = none
         for i, pts in enumerate(res.masks.xy):
             if i >= len(res.boxes):
                 break
@@ -805,10 +916,13 @@ class TrafficLight(Node):
                 continue
             if (abs(cv2.contourArea(pts)) / float(w * h)) < self.sl_min_area_frac:
                 continue
-            y = float(ys.max()) / float(h)
-            if y > best_y:
-                best_y, best_poly = y, pts
-        return best_y, best_poly
+            dist, poly_bev = self.cam.nearest_dist_px(pts)
+            if dist is None:
+                # 폴리곤이 통째로 소실선 너머다 = BEV 좌표가 무의미하다. 버린다.
+                continue
+            if best[0] is None or dist < best[0]:
+                best = (dist, float(ys.max()) / float(h), pts, poly_bev)
+        return best
 
     def _sl_should_run(self, now):
         """지금 정지선 추론을 돌릴 이유가 있는가 — ★평상시에는 없다★.
@@ -837,19 +951,23 @@ class TrafficLight(Node):
         if self.sl_frames % self.sl_interval != 0:
             return
 
-        y, poly = self._detect_stop_line(frame)
-        if y >= 0.0:
+        dist, y, poly, poly_bev = self._detect_stop_line(frame)
+        if dist is not None:
             if self.sl_since is None:
                 self.sl_since = now
             self.sl_seen_t = now
+            self.sl_px = dist
             self.sl_y = y
             self.sl_poly = poly
+            self.sl_poly_bev = poly_bev
         elif (now - self.sl_seen_t) > self.sl_stale_s:
             # 신선도가 끊긴 뒤에야 지운다 — 몇 프레임 놓친 것과 '지나쳐서 사라진 것'을
-            # 여기서 구별하지 않는다. 구별은 _stop_line_holdoff 가 한다.
+            # 여기서 구별하지 않는다. 구별은 _stop_plan 이 한다.
             self.sl_since = None
+            self.sl_px = -1.0
             self.sl_y = -1.0
             self.sl_poly = None
+            self.sl_poly_bev = None
 
     def cb_image(self, msg: Image):
         if self.model is None:
@@ -859,6 +977,13 @@ class TrafficLight(Node):
         except Exception as e:
             self.get_logger().error(f"cv_bridge error: {e}", throttle_duration_sec=5.0)
             return
+
+        # ★어안 왜곡보정 — 여기 한 줄이 전부다 [2026-08-19]★ 이 아래로는 신호등
+        #   detect·정지선 seg·HUD 가 전부 ★보정된 그림★ 을 본다. 계수와 절차의 주인은
+        #   camera_model.py 이고, 보정이 꺼져 있거나 캘리브를 못 읽었으면 원본이
+        #   그대로 돌아온다(fail-open). /image_raw 자체는 건드리지 않는다 — 원본
+        #   녹화(nxde video)가 카메라가 준 그림을 봐야 하기 때문이다(파일 헤더).
+        frame = self.cam.undistort(frame)
 
         self.frame_count += 1
         run = (self.frame_count % self.tl_interval == 0)
@@ -924,22 +1049,22 @@ class TrafficLight(Node):
                         (x1 + xmin, max(0, y1 + ymin - 12)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
         # ── 정지선 ──
-        #   ★트리거 행은 항상 그린다★ 이 선이 곧 '차가 어디서 밟는가'이고, 실측
-        #   튜닝(todo.txt 9항)은 이 선을 눈으로 보면서 하는 것이다. 정지선을 잡고
-        #   있으면 마스크와 최하단 점을 함께 그려 둘을 나란히 볼 수 있게 한다.
+        #   ★BEV 사다리꼴은 항상 그린다★ 이것이 곧 '거리를 어디서 재는가' 이고,
+        #   실측 튜닝(STOPLINE_TEST.md 단계 2)은 이 사각형을 노면에 맞추는 일이다.
+        #   정지선을 잡고 있으면 마스크와 최근접점을 함께 그려 나란히 볼 수 있게 한다.
         sl_fresh = self._sl_present(time.time())
         if self.sl_enable and self.sl_model is not None:
-            ty = int(self.sl_trigger_y_frac * dbg.shape[0])
-            at_line = sl_fresh and self.sl_y >= self.sl_trigger_y_frac
-            tcol = (0, 165, 255) if at_line else (255, 0, 255)
-            cv2.line(dbg, (0, ty), (dbg.shape[1], ty), tcol, 2)
-            cv2.putText(dbg, "STOP LINE TRIG", (20, max(18, ty - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, tcol, 2)
+            cv2.polylines(dbg, [self.cam.src_pts.astype(np.int32)], True, (0, 200, 255), 2)
+            cv2.putText(dbg, "BEV", (int(self.cam.src_pts[0, 0]),
+                                     max(18, int(self.cam.src_pts[0, 1]) - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
             if self.sl_poly is not None and sl_fresh:
                 cv2.polylines(dbg, [self.sl_poly.astype(np.int32)], True, (255, 0, 255), 2)
                 bi = int(np.argmax(self.sl_poly[:, 1]))
                 cv2.circle(dbg, (int(self.sl_poly[bi, 0]), int(self.sl_poly[bi, 1])),
                            8, (255, 0, 255), -1)
+        if self.show_bev:
+            self._draw_bev(dbg, sl_fresh)
 
         # HUD 는 ROI 밖(하단)에 그린다 — 좌상단은 tl_roi 한복판이라 글자가 램프를 덮는다.
         hud_y = dbg.shape[0] - 15
@@ -957,13 +1082,19 @@ class TrafficLight(Node):
         # 줄에서 비교할 수 있어야 '왜 아직 안 섰나'가 화면만 보고 판정된다.
         sl_txt = ''
         if self.sl_enable and self.sl_model is not None:
-            sl_txt = ("  sl %.2f/%.2f" % (self.sl_y, self.sl_trigger_y_frac)
-                      if (sl_fresh and self.sl_y >= 0.0)
-                      else "  sl --/%.2f" % self.sl_trigger_y_frac)
+            cur = f"{self.sl_px:.0f}" if (sl_fresh and self.sl_px > -900.0) else '--'
+            sl_txt = (f"  sl {cur}px B1:{self.sl_brake1_px:.0f} "
+                      f"B2:{self.sl_brake2_px:.0f}")
             if self.sl_wait:
                 sl_txt += " WAIT"
+        # ★지금 몇 단인지를 그대로 찍는다★ 1단(PRE)과 2단(STOP)을 화면에서 구별할 수
+        #   없으면 '왜 아직 안 섰나'와 '왜 벌써 물었나'를 가릴 수 없다.
+        lvl_txt = ('' if not self.stopping
+                   else f"  ★{self.stop_level}단 "
+                        f"{'PRE' if self.stop_level < self.brake_level else 'STOP'}"
+                        f"[{self.stop_why}]")
         cv2.putText(dbg, f"STATE: {state}  raw:{self.last_raw}  drop:{self.last_red_drop}  "
-                         f"{thr}{sl_txt}  {'STOPPING' if self.stopping else ''}",
+                         f"{thr}{sl_txt}{lvl_txt}",
                     (20, hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, res_color, 2)
         # ★여기서 imshow 를 부르지 않는다 [2026-08-14]★ 이 함수는 영상 콜백(워커
         #   스레드)에서 돈다. OpenCV HighGUI(GTK)는 ★스레드 안전하지 않고★, 워커
@@ -980,6 +1111,51 @@ class TrafficLight(Node):
                              interpolation=cv2.INTER_AREA)
         with self._show_lock:
             self._show_frame = dbg
+
+    def _draw_bev(self, dbg, sl_fresh):
+        """디버그 화면 ★우하단에 BEV 를 겹쳐 그린다★ [2026-08-19]
+
+        ★이 그림 없이는 두 문턱을 잡을 수 없다★ sl_brake1_px·sl_brake2_px 는 BEV
+        픽셀이라 원본 화면만 봐서는 어디쯤인지 알 수 없다. 여기에 범퍼선과 두 문턱선을
+        그려 두면, 정지선 폴리곤이 어느 선을 넘는 순간 몇 단이 물리는지가 눈에 보인다.
+
+        창을 따로 띄우지 않고 합성하는 이유는 _draw 끝의 HighGUI 주석과 같다 —
+        창이 늘면 메인 스레드에서 관리할 것이 늘고, 워커 스레드가 손대면 두절된다.
+        """
+        bev = self.cam.to_bev(dbg)
+        h, w = bev.shape[:2]
+
+        def row(dist_px):
+            """범퍼로부터 dist_px 떨어진 지점의 BEV 행."""
+            return int(round(self.cam.bumper_y - dist_px))
+
+        # 범퍼선(초록) = 거리 0 의 기준. 화면 밖이면(범퍼가 BEV 아래) 그리지 않는다.
+        for y, col, txt in ((row(0.0), (0, 255, 0), 'BUMPER'),
+                            (row(self.sl_brake2_px), (0, 0, 255),
+                             f"B2 {self.sl_brake2_px:.0f}"),
+                            (row(self.sl_brake1_px), (0, 200, 255),
+                             f"B1 {self.sl_brake1_px:.0f}")):
+            if 0 <= y < h:
+                cv2.line(bev, (0, y), (w, y), col, 2)
+                cv2.putText(bev, txt, (6, max(14, y - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
+
+        if self.sl_poly_bev is not None and sl_fresh:
+            pts = np.asarray(self.sl_poly_bev, dtype=np.int32)
+            cv2.polylines(bev, [pts], True, (255, 0, 255), 2)
+            bi = int(np.argmax(pts[:, 1]))
+            cv2.circle(bev, (int(pts[bi, 0]), int(pts[bi, 1])), 6, (255, 0, 255), -1)
+            cv2.putText(bev, f"{self._sl_px_txt()}", (6, h - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+
+        # 우하단에 붙인다. 원본이 BEV 보다 작을 리는 없지만(1920x1080 vs 640x480)
+        # 해상도를 낮춰 돌리는 경우까지 생각해 들어갈 자리가 없으면 그냥 건너뛴다.
+        H, W = dbg.shape[:2]
+        if H <= h or W <= w:
+            return
+        x0, y0 = W - w - 10, H - h - 10
+        dbg[y0:y0 + h, x0:x0 + w] = bev
+        cv2.rectangle(dbg, (x0, y0), (x0 + w, y0 + h), (0, 200, 255), 2)
 
     def show_pending(self):
         """★메인 스레드에서만 부른다★ 마지막으로 그려 둔 프레임을 창에 띄운다."""
@@ -1093,51 +1269,69 @@ class TrafficLight(Node):
         return (self.sl_since is not None and self._sl_present(now)
                 and (now - self.sl_since) >= self.sl_hold_s)
 
-    def _stop_line_holdoff(self, now):
-        """RED 는 확정됐다 — ★정지선 때문에 조금 더 참아야 하는가★.
+    def _stop_plan(self, now):
+        """RED 는 확정됐다 — ★지금 몇 단을 물어야 하는가★. (level, 근거) 를 돌려준다.
 
-        참(True)이면 이번 틱에는 브레이크를 걸지 않는다. 판정표는 파일 헤더에 있고,
-        여기서 중요한 것은 ★모든 애매한 경우가 '정지' 쪽으로 떨어진다★ 는 것이다:
+        판정표는 파일 헤더에 있고, 여기서 중요한 것은 ★모든 애매한 경우가 '2단' 으로
+        떨어진다★ 는 것이다:
 
-          · 정지선을 못 봤다        → False(즉시 정지)  ← 종전 동작 그대로
-          · 봤다가 놓쳤다           → False(즉시 정지)  ← 이미 선 위에 있다는 뜻
-          · 아직 확정 전(스침)      → False(즉시 정지)
-          · 확정 + 트리거 행 도달   → False(정지)       ← ★정지선 앞 정지★
-          · 확정 + 아직 멀다        → True(대기)        ← 유일하게 참는 경우
+          · 정지선 기능이 꺼졌다/모델 없음  → 2단   ← 종전 동작 그대로
+          · 정지선을 못 봤다                → 2단   ← 종전 동작 그대로
+          · 봤다가 놓쳤다                   → 2단   ← 이미 선 위에 있다는 뜻
+          · 아직 확정 전(스침)              → 2단
+          · 확정 + ≤ sl_brake2_px           → 2단   ← ★정지선 앞 정지★
+          · 확정 + ≤ sl_brake1_px           → 1단   ← ★예비제동★
+          · 확정 + 아직 멀다                → 0단   ← 유일하게 참는 경우
 
-        그 '유일하게 참는 경우'에도 상한이 둘 있다. 오검출된 먼 정지선이 브레이크를
-        무한정 미루는 것은 ★빨간불에 안 서는 것★ 과 같기 때문이다:
+        그 '참는 경우'와 '1단으로 줄이는 경우'에는 상한이 둘 있다. 오검출된 먼 정지선이
+        2단을 무한정 미루는 것은 ★빨간불에 안 서는 것★ 과 같기 때문이다:
           ① sl_wait_max_s          RED 확정 이후 흐른 시간
           ② sl_override_gate_ratio 근접도가 게이트의 이 배 = 신호등이 코앞이다
         ②가 ①보다 낫다 — 시간은 속도에 따라 거리가 달라지지만, 근접도는 '얼마나
         가까운가' 자체이기 때문이다. 둘 다 둔 것은 신호등이 흔들려도 상한이 남게
         하려는 것이다.
+        ★①은 '1단으로 가다 멈춰 버린 경우'도 함께 받는다★ 1단이면 구동펄스가 0 이라
+        차가 스스로 정지선까지 못 간다 — 그대로 두면 2단 문턱에 영영 못 닿으므로
+        시간이 차면 2단으로 올려 정지를 확정한다(지시사항).
         """
+        full = self.brake_level
         if not self.sl_enable or self.sl_model is None:
-            return False
+            return full, '정지선 없음'
         if self.red_conf_t is None:
             self.red_conf_t = now          # 대기 상한 ①의 기준점
         if (now - self.red_conf_t) >= self.sl_wait_max_s:
-            if self.sl_wait:
+            if self.stop_level < full:
                 self.get_logger().warn(
                     f"🚦 정지선 대기 상한 {self.sl_wait_max_s:.1f}초 초과 — "
-                    f"정지선을 무시하고 선다 (sl={self.sl_y:.2f})")
-            return False
+                    f"정지선을 무시하고 {full}단으로 선다 (sl={self._sl_px_txt()})")
+            return full, '대기 상한'
         gate = self._near_gate() * self.sl_override_gate_ratio
         if self._near_metric(self.last_boxes) >= gate:
-            if self.sl_wait:
+            if self.stop_level < full:
                 self.get_logger().warn(
                     "🚦 신호등이 코앞이다(근접도 ≥ 게이트×"
                     f"{self.sl_override_gate_ratio:.1f}) — 정지선을 기다리지 않는다")
-            return False
+            return full, '신호등 코앞'
         if not self._sl_present(now):
             if self.sl_engaged:
-                self.get_logger().info("🛑 정지선을 놓쳤다 — 이미 선 위다, 즉시 정지")
-            return False
+                self.get_logger().info(f"🛑 정지선을 놓쳤다 — 이미 선 위다, 즉시 {full}단")
+                return full, '정지선 놓침'
+            return full, '정지선 없음'
         if not self._sl_confirmed(now):
-            return False
+            # 스친 마스크 하나로 정지를 미루지 않는다 — 확정 전에는 종전 동작이다.
+            return full, '정지선 미확정'
         self.sl_engaged = True
-        return self.sl_y < self.sl_trigger_y_frac
+        if self.sl_px <= self.sl_brake2_px:
+            return full, '정지선 앞'
+        if self.sl_px <= self.sl_brake1_px:
+            return self.brake_level_pre, '예비제동'
+        return 0, '대기'
+
+    def _sl_px_txt(self):
+        """로그·HUD 에 쓰는 정지선 거리 문자열. 미검출이면 '--'."""
+        if self.sl_px < 0.0:
+            return '--'
+        return f"{self.sl_px:.0f}px{self.cam.m_txt(self.sl_px)}"
 
     # ══════════════════════════════════════════════════════════════════════════
     #  작동 — 정지 지령
@@ -1184,7 +1378,7 @@ class TrafficLight(Node):
                     "신호등 정지 해제 — 개입 허락이 없다"
                     f"(tl_enable={self.tl_enable} tl_permit={self.tl_permit} "
                     f"drive_state={self.drive_state or '없음'})")
-            self._set_stopping(False)
+            self._set_stop_level(0, '허락 없음')
             self._apply_brake(self.brake_release_level)
             # ★요구도 반드시 0 으로 내린다★ 여기서 그냥 return 하면 /tl_brake_req 가
             #   끊길 뿐이라, master 는 낡음 판정(TL_REQ_STALE_S)까지 ★마지막 2단을 계속
@@ -1194,64 +1388,79 @@ class TrafficLight(Node):
             self._publish_sl(now)
             return
 
-        if not self.stopping:
+        # ══════════════════════════════════════════════════════════════════════
+        #  ① 해제 판정이 먼저다 — ★무는 것과 놓는 것은 서로 배타적이다★
+        #     _red_confirmed 는 'tl_state 가 지금 RED', _red_gone 은 '1초간 RED 를 못 봄'
+        #     이라 동시에 참이 될 수 없다. 그래서 순서가 판정을 바꾸지 않는다.
+        #     ★[2026-08-19] 이 블록을 앞으로 뺐다★ 종전에는 elif 사슬이라 '물고 있는
+        #     동안'에만 해제를 봤는데, 1단 예비제동이 생기면서 '물고 있으면서도 계속
+        #     계획해야 하는' 구간이 생겼다. 사슬을 그대로 두면 1단 중에 빨간불이
+        #     사라져도 영영 못 놓는다.
+        # ══════════════════════════════════════════════════════════════════════
+        if self.stopping:
+            if self.stop_latch:
+                # 래치 ON(선택) — 초록불을 확정해야 놓는다. 근접하면 신호등이 ROI 를
+                # 벗어나 UNKNOWN 이 되는 것이 정상이라, RED 가 안 보인다고 풀면 차가
+                # 굴러간다.
+                if self._green_confirmed(now):
+                    self.get_logger().info("🟢 초록불 확정 — 리니어 해제, 주행 재개")
+                    self._set_stop_level(0, '초록불')
+            elif self._red_gone(now):
+                self._release_on_red_gone(now)
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  ② 이번 틱의 단계를 계획한다 — ★2단을 물기 전까지는 매 틱 다시 본다★
+        #     1단으로 예비제동 중이면 정지선이 다가오는 것을 계속 봐야 2단으로 올릴 수
+        #     있다. 2단에 도달하면 더 볼 것이 없으므로 계획을 멈춘다(위 해제만 남는다).
+        # ══════════════════════════════════════════════════════════════════════
+        if self.stop_level < self.brake_level:
             if self._red_confirmed(now):
-                if self._stop_line_holdoff(now):
-                    # ★유일하게 참는 경우★ 빨간불은 확정됐지만 정지선이 아직 멀다.
-                    #   참는 동안 이 노드는 아무것도 내지 않는다 — /tl_brake_req 는
-                    #   아래에서 0 으로 나가고, 차는 원래 명령의 주인이 몰던 대로 간다.
-                    self.sl_wait = True
-                    self.get_logger().info(
-                        f"🚦⏸ 빨간불 확정 — 정지선 대기 중 "
-                        f"(sl {self.sl_y:.2f} → {self.sl_trigger_y_frac:.2f}, "
-                        f"{now - self.red_conf_t:.1f}s/{self.sl_wait_max_s:.1f}s)",
-                        throttle_duration_sec=1.0)
+                level, why = self._stop_plan(now)
+                if level <= 0:
+                    # ★참는 경우★ 빨간불은 확정됐지만 정지선이 아직 멀다. 참는 동안
+                    #   이 노드는 아무것도 내지 않는다 — /tl_brake_req 는 아래에서 0 으로
+                    #   나가고, 차는 원래 명령의 주인이 몰던 대로 간다.
+                    #   ★이미 1단을 물고 있으면 '대기'가 아니다★ 단조 증가 규약 때문에
+                    #   단계를 내리지 않으므로 그대로 1단으로 간다. 그때 sl_wait 를
+                    #   True 로 내면 CSV 판정(4-2 '대기 중 brake>0 은 0행')이 거짓으로
+                    #   불합격이 된다 — 기록의 뜻이 흐려지는 쪽이 더 나쁘다.
+                    self.sl_wait = (self.stop_level == 0)
+                    if self.sl_wait:
+                        self.get_logger().info(
+                            f"🚦⏸ 빨간불 확정 — 정지선 대기 중 "
+                            f"(sl {self._sl_px_txt()} → {self.sl_brake1_px:.0f}px, "
+                            f"{now - self.red_conf_t:.1f}s/{self.sl_wait_max_s:.1f}s)",
+                            throttle_duration_sec=1.0)
                 else:
                     self.sl_wait = False
-                    self._set_stopping(True)
-            else:
+                    self._set_stop_level(level, why)
+            elif not self.stopping:
                 # RED 확정이 아니면 대기의 근거 자체가 없다 — 기준점과 래치를 지운다.
                 # (지우지 않으면 다음 교차로의 대기 상한이 이미 소진된 채로 시작한다)
+                #   ★물고 있는 동안에는 지우지 않는다★ 1단으로 물고 있는데 RED 가 한
+                #   프레임 흔들렸다고 상한 기준점을 초기화하면, 상한이 영영 안 차서
+                #   '정지선 앞에 멈춰 선 채 2단으로 못 올라가는' 구간이 생긴다.
                 self._reset_stop_line_wait()
-        elif self.stop_latch:
-            # 래치 ON(선택) — 초록불을 확정해야 놓는다. 근접하면 신호등이 ROI 를 벗어나
-            # UNKNOWN 이 되는 것이 정상이라, RED 가 안 보인다고 풀면 차가 굴러간다.
-            if self._green_confirmed(now):
-                self.get_logger().info("🟢 초록불 확정 — 리니어 해제, 주행 재개")
-                self._set_stopping(False)
-        elif self._red_gone(now):
-            # ★기본 동작 [2026-08-14 지시]★ 빨간불을 보는 동안만 잡는다 —
-            #   RED 스트릭이 끊기거나(끊김 유예 tl_gap_grace_s 초과) GREEN 이 확정되면
-            #   곧바로 놓는다. 놓는 순간 하는 일은 /brake_level=0 하나뿐이고,
-            #   그 다음은 원래 명령의 주인(driving 20Hz / arduino 캐시의 master 레버)이
-            #   알아서 이어간다 — 이 노드는 펄스를 기억하지도 복원하지도 않는다.
-            # ★[2026-08-14] 해제 조건에서 '초록불 확정' 을 뺐다 — 이것이 왕복의 정체다★
-            #   로스백(manual-20260814_151206) 에서 브레이크가 ★0.10초 주기로 2↔0★ 을
-            #   50번 반복했다. mode·board·estop 은 전부 정상이었다.
-            #   원인 : 해제 조건이 (RED 1초 미감지) ★또는★ (GREEN 확정) 이었다.
-            #   RED 와 GREEN 이 프레임마다 번갈아 잡히면(가로형 4구에서 적색등과
-            #   좌회전 녹색등이 함께 보이거나, 모델이 두 클래스를 오갈 때) ★두 스트릭이
-            #   동시에 살아 있어★ 매 틱 '물어라(RED 확정)' 와 '놓아라(GREEN 확정)' 가
-            #   같이 참이 된다 → 틱 주기로 flip-flop.
-            #   ★이제 해제 근거는 하나뿐이다 — 빨간불을 red_release_hold_s 동안 못 봄★
-            #   초록불이 보인다는 것은 곧 빨간불이 없다는 뜻이므로, 그 1초가 지나면
-            #   어차피 풀린다. 판정 근거를 하나로 줄이면 왕복이 구조적으로 불가능해진다.
-            self.get_logger().info(
-                f"⚪ 빨간불 {self.red_release_hold_s:.1f}초 미감지 — 리니어 해제"
-                + ("  (초록불 확정 상태)" if self._green_confirmed(now) else ""))
-            self._set_stopping(False)
 
+        # ══════════════════════════════════════════════════════════════════════
+        #  ③ 발행 — 이번 틱에 정한 단계를 그대로 낸다
+        # ══════════════════════════════════════════════════════════════════════
         # 브레이크 요청은 매 틱 같은 값을 내도 안전하다(_apply_brake 가 변화분만 발행).
-        # /cmd_vel_raw 는 ★정지 중에만★ 낸다 — 풀리는 즉시 토픽의 주인을 driving 에게
-        # 돌려주기 위해서다(파일 헤더의 발행자 충돌 설명 참고).
         # ★내 '요구'를 따로 알린다★ master 가 이것을 자기 레버값과 max 로 합쳐서
         #   /brake_level 을 내므로, 두 발행자가 같은 값을 내게 되어 다툼이 사라진다.
-        self.pub_req.publish(Int32(data=self.brake_level if self.stopping else 0))
+        #   ★[2026-08-19] 고정 2단이 아니라 지금 단계를 낸다★ 1단 예비제동도 그대로
+        #   흘러간다 — 소비자(master·driving)는 max 합산이라 손댈 것이 없다.
+        self.pub_req.publish(Int32(data=int(self.stop_level)))
         self._publish_sl(now)
 
         if self.stopping:
-            self._apply_brake(self.brake_level)
-            if self.publish_cmd_vel:
+            self._apply_brake(self.stop_level)
+            # /cmd_vel_raw 는 ★2단에서만★ 낸다 — 풀리는 즉시 토픽의 주인을 driving 에게
+            # 돌려주기 위해서다(파일 헤더의 발행자 충돌 설명 참고).
+            # ★[2026-08-19] 1단(예비제동) 중에는 내지 않는다★ 그때 차는 아직 굴러가는
+            #   중이고 조향은 driving 의 몫이다. 여기서 조향 0 을 내면 정지선까지 가는
+            #   동안 차가 제 코스를 못 따라간다.
+            if self.publish_cmd_vel and self.stop_level >= self.brake_level:
                 # ★펄스 0 · 조향 0★ — 펄스는 arduino 가 브레이크 때문에 어차피 0 으로
                 #   덮지만, 여기서도 명시적으로 0 을 내야 브레이크를 푸는 순간
                 #   직전 주행값이 되살아나지 않는다. 조향 0 은 정지 중 바퀴를 일직선
@@ -1263,6 +1472,31 @@ class TrafficLight(Node):
         else:
             self._apply_brake(self.brake_release_level)
 
+    def _release_on_red_gone(self, now):
+        """★기본 동작 [2026-08-14 지시]★ 빨간불을 보는 동안만 잡는다.
+
+        RED 스트릭이 끊기면(해제 유예 red_release_hold_s 초과) 곧바로 놓는다. 놓는
+        순간 하는 일은 /brake_level=0 하나뿐이고, 그 다음은 원래 명령의 주인
+        (driving 20Hz / arduino 캐시의 master 레버)이 알아서 이어간다 — 이 노드는
+        펄스를 기억하지도 복원하지도 않는다.
+
+        ★[2026-08-14] 해제 조건에서 '초록불 확정' 을 뺐다 — 이것이 왕복의 정체다★
+          로스백(manual-20260814_151206) 에서 브레이크가 ★0.10초 주기로 2↔0★ 을
+          50번 반복했다. mode·board·estop 은 전부 정상이었다.
+          원인 : 해제 조건이 (RED 1초 미감지) ★또는★ (GREEN 확정) 이었다.
+          RED 와 GREEN 이 프레임마다 번갈아 잡히면(가로형 4구에서 적색등과 좌회전
+          녹색등이 함께 보이거나, 모델이 두 클래스를 오갈 때) ★두 스트릭이 동시에
+          살아 있어★ 매 틱 '물어라(RED 확정)' 와 '놓아라(GREEN 확정)' 가 같이 참이
+          된다 → 틱 주기로 flip-flop.
+          ★이제 해제 근거는 하나뿐이다 — 빨간불을 red_release_hold_s 동안 못 봄★
+          초록불이 보인다는 것은 곧 빨간불이 없다는 뜻이므로, 그 1초가 지나면 어차피
+          풀린다. 판정 근거를 하나로 줄이면 왕복이 구조적으로 불가능해진다.
+        """
+        self.get_logger().info(
+            f"⚪ 빨간불 {self.red_release_hold_s:.1f}초 미감지 — 리니어 해제"
+            + ("  (초록불 확정 상태)" if self._green_confirmed(now) else ""))
+        self._set_stop_level(0, '빨간불 사라짐')
+
     def _reset_stop_line_wait(self):
         """대기 상태를 이번 접근분까지 통째로 지운다(다음 교차로를 위해)."""
         self.sl_wait    = False
@@ -1270,30 +1504,54 @@ class TrafficLight(Node):
         self.red_conf_t = None
 
     def _publish_sl(self, now):
-        """정지선 진단 두 개. ★제어에는 쓰지 않는다★ — record 가 CSV 로 받아 적어
-        '왜 여기서 섰나 / RED 인데 왜 아직 안 섰나'를 사후에 판정하게 한다."""
+        """정지선 진단 세 개. ★sl_px 만 판정에 쓰인다★ — record 가 CSV 로 받아 적어
+        '왜 여기서 1단을 물었나 / RED 인데 왜 아직 안 섰나'를 사후에 판정하게 한다."""
+        fresh = self._sl_present(now)
+        # ★−1 = 미검출★ 이라는 뜻을 하나로 유지하려고 ★0 밑으로는 내보내지 않는다★.
+        #   정지선이 범퍼를 지나면 실제 값은 음수가 되는데(이미 선 위다), 그것을 그대로
+        #   내면 −1 이 '미검출'인지 '1px 지났다'인지 알 수 없게 된다. 판정에는 부호가
+        #   살아 있는 원값(self.sl_px)을 쓰므로 제어는 영향받지 않는다.
+        self.pub_sl_px.publish(Float32(
+            data=float(max(0.0, self.sl_px) if fresh else -1.0)))
         self.pub_sl_y.publish(Float32(
-            data=float(self.sl_y if self._sl_present(now) else -1.0)))
+            data=float(self.sl_y if fresh else -1.0)))
         self.pub_sl_wait.publish(Bool(data=bool(self.sl_wait)))
 
-    def _set_stopping(self, on):
-        """정지 상태 플래그. 실제 발행은 tick() 과 _apply_brake() 가 한다."""
-        if on == self.stopping:
+    @property
+    def stopping(self):
+        """이 노드가 지금 브레이크를 물고 있는가(1단이든 2단이든).
+
+        ★[2026-08-19] bool 상태를 단계로 바꾸면서 남긴 이름이다★ 해제 경로·로그·
+        _sl_should_run 이 '물고 있는가'만 물어보므로 그쪽은 안 고쳐도 되게 했다.
+        '몇 단인가'가 필요한 곳만 stop_level 을 직접 본다.
+        """
+        return self.stop_level > 0
+
+    def _set_stop_level(self, level, why=''):
+        """정지 단계를 정한다. 실제 발행은 tick() 과 _apply_brake() 가 한다.
+
+        ★단조 증가★ RED 를 잡고 있는 동안에는 올라가기만 한다(파일 헤더의 규약).
+        0 으로 내리는 것은 ★해제★ 를 뜻하고, 그 길은 호출자 셋뿐이다 —
+        허락 상실 · 빨간불 사라짐 · (래치 ON 이면) 초록불 확정.
+        """
+        level = max(0, min(2, int(level)))
+        if level > 0 and level < self.stop_level:
+            return                      # 내리는 요청은 무시한다(왕복 금지)
+        if level == self.stop_level:
             return
-        self.stopping = on
-        if on:
-            # ★어느 근거로 섰는지 로그에 남긴다★ 정지 지점이 이상할 때 '정지선을
-            #   보고 선 것인지, 못 봐서 그 자리에서 선 것인지'가 첫 번째 질문이다.
-            at_line = (self._sl_present(time.time())
-                       and self.sl_y >= self.sl_trigger_y_frac)
-            why = ("정지선 앞" if at_line
-                   else "정지선 놓침" if self.sl_engaged
-                   else "정지선 없음")
-            self.get_logger().warn(
-                f"🚦🛑 빨간불 확정 — 정지 [{why}] (리니어 {self.brake_level}단"
-                + (" + /cmd_vel_raw 0/0)" if self.publish_cmd_vel else ")"))
-        else:
+        prev, self.stop_level = self.stop_level, level
+        self.stop_why = why
+        if level <= 0:
             self._reset_stop_line_wait()
+            return
+        # ★어느 근거로 몇 단을 물었는지 로그에 남긴다★ 정지 지점이 이상할 때
+        #   '정지선을 보고 선 것인지, 못 봐서 그 자리에서 선 것인지'가 첫 질문이다.
+        head = ("🚦🟡 빨간불 확정 — 예비제동" if level < self.brake_level
+                else "🚦🛑 빨간불 확정 — 정지")
+        self.get_logger().warn(
+            f"{head} [{why}] (리니어 {prev}단 → {level}단, 정지선 {self._sl_px_txt()})"
+            + (" + /cmd_vel_raw 0/0"
+               if (self.publish_cmd_vel and level >= self.brake_level) else ""))
 
     def _apply_brake(self, level):
         """리니어 단계를 요청한다 — ★값이 바뀔 때만★ 발행한다.
@@ -1351,10 +1609,12 @@ class TrafficLight(Node):
                    if self.stopping else "  ※ 신호등 개입은 하지 않는다"),
                 throttle_duration_sec=5.0)
         if self.stopping:
+            head = ("🟡 신호등 예비제동 중" if self.stop_level < self.brake_level
+                    else "🛑 신호등 정지 유지 중")
             self.get_logger().info(
-                f"🛑 신호등 정지 유지 중 | tl={self.tl_state} raw={self.last_raw} "
-                f"drop={self.last_red_drop} fps={self.fps:.1f}"
-                + (f" sl={self.sl_y:.2f}" if self._sl_present(now) else " sl=없음"),
+                f"{head} [{self.stop_why}] {self.stop_level}단 | tl={self.tl_state} "
+                f"raw={self.last_raw} drop={self.last_red_drop} fps={self.fps:.1f}"
+                + (f" sl={self._sl_px_txt()}" if self._sl_present(now) else " sl=없음"),
                 throttle_duration_sec=2.0)
 
     def shutdown_release(self):

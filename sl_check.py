@@ -4,15 +4,20 @@
 ════════════════════════════════════════════════════════════════════════════════
     python3 sl_check.py                 ← 파일 선택창이 뜬다
     python3 sl_check.py 주행기록.csv     ← 창 없이 바로
-    python3 sl_check.py 기록.csv --trig 0.72   ← 트리거 값을 알려주면 4-3 을 정확히 본다
+    python3 sl_check.py 기록.csv --b1 240 --b2 60   ← 두 문턱을 주면 4-3·4-4 를 정확히 본다
 
   record.py 가 남긴 ★접근 주행 1회★ CSV 를 읽어, STOPLINE_TEST.md 단계 4 의 판정
-  기준(4-1 ~ 4-8)을 그대로 계산한다. 사람이 CSV 를 눈으로 훑으며 판정하지 않게 하는
-  것이 목적이다 — 그 판정은 '언제 참았고 언제 밟았나'라 눈으로는 놓치기 쉽다.
+  기준(4-1 ~ 4-11)을 그대로 계산한다. 사람이 CSV 를 눈으로 훑으며 판정하지 않게 하는
+  것이 목적이다 — 그 판정은 '언제 참았고 언제 물었나'라 눈으로는 놓치기 쉽다.
+
+  ★[2026-08-19] 2단계 제동으로 바뀌었다★ 판정값이 sl_y(화면 행 비율) 에서
+  ★sl_px(BEV 픽셀 거리)★ 로 바뀌었고, 브레이크가 0 → 1(예비제동) → 2(확정 정지)로
+  두 번 물린다. 그래서 이 스크립트도 ★두 체결 시점을 따로★ 본다.
+  ⚠️ sl_px 는 ★가까울수록 작다★ — sl_y 와 방향이 반대다.
 
   tl_tune.py 와 짝이다:
       tl_tune.py  → 신호등 근접도 임계(tl_red_stop_min_height) 를 정한다
-      sl_check.py → 정지선 트리거(sl_trigger_y_frac) 로 달린 결과를 판정한다
+      sl_check.py → 두 문턱(sl_brake1_px·sl_brake2_px) 으로 달린 결과를 판정한다
 
   ★판정하지 않는 것★ 실제 정지 위치(정지선 앞 몇 m 인가)는 자로 재야 한다 — CSV 에
   정지선의 절대 위치가 없기 때문이다. 대신 ★대기 중 이동거리★ 를 GPS 로 뽑아 준다.
@@ -31,8 +36,9 @@ PKG_ROOTS = (os.path.join(HERE, 'gold_ws', 'src', 'white1'),
 
 # 판정 기준 — STOPLINE_TEST.md 단계 4 의 표와 같은 값이다.
 WAIT_MIN_S     = 0.3     # 4-1 대기 구간이 이보다 짧으면 '정지선을 못 봤다'
-TRIG_TOL       = 0.03    # 4-3 체결 시 sl_y 가 트리거에서 이만큼 안에 들면 정상
-WAIT_MAX_S     = 5.0     # 4-8 traffic_light 의 sl_wait_max_s 기본값
+PX_TOL         = 10.0    # 4-3·4-4 체결 시 sl_px 가 문턱에서 이만큼 안에 들면 정상
+WAIT_MAX_S     = 8.0     # 4-11 traffic_light 의 sl_wait_max_s 기본값
+STAGE_GAP_S    = (0.5, 3.0)   # 4-5 1단 → 2단 사이의 정상 시간대
 RED_TO_BRAKE_S = (0.3, 0.8)   # 5-1 정지선이 없을 때의 정상 반응 시간대
 
 
@@ -78,16 +84,19 @@ def read_rows(path):
     if not rows:
         print('빈 파일이다.')
         sys.exit(1)
-    for c in ('sl_y', 'sl_wait'):
+    for c in ('sl_px', 'sl_wait'):
         if c not in rows[0]:
-            print(f"'{c}' 열이 없다 — 정지선 열이 추가되기 전(2026-08-14 이전) 기록이다.\n"
+            why = ("sl_y 로 판정하던 옛 기록(2026-08-19 이전)이다"
+                   if 'sl_y' in rows[0] else
+                   "정지선 열이 추가되기 전(2026-08-14 이전) 기록이다")
+            print(f"'{c}' 열이 없다 — {why}.\n"
                   f"   colcon build 를 다시 하고 새로 기록할 것.")
             sys.exit(1)
     return rows
 
 
 def build(rows):
-    """(t, 누적주행거리, tl_state, near, sl_y, sl_wait, brake) 로 정리한다."""
+    """(t, 누적주행거리, tl_state, near, sl_px, sl_y, sl_wait, brake) 로 정리한다."""
     out, lat0, prev, dist = [], None, None, 0.0
     for r in rows:
         lat, lon = fnum(r, 'fix_lat'), fnum(r, 'fix_lon')
@@ -104,7 +113,8 @@ def build(rows):
             's':     dist,
             'state': (r.get('tl_state') or '').strip(),
             'near':  fnum(r, 'tl_near_metric'),
-            'sl':    fnum(r, 'sl_y'),
+            'sl':    fnum(r, 'sl_px'),      # ★판정값★ 가까울수록 작다
+            'sl_y':  fnum(r, 'sl_y'),       # 참고(영상 대조용)
             'wait':  fbool(r, 'sl_wait'),
             'brake': fnum(r, 'brake_level'),
         })
@@ -131,11 +141,18 @@ def verdict(ok, msg_ok, msg_ng):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    trig = None
-    for i, a in enumerate(sys.argv):
-        if a == '--trig' and i + 1 < len(sys.argv):
-            trig = float(sys.argv[i + 1])
+    argv = sys.argv[1:]
+    args, b1, b2, skip = [], None, None, False
+    for i, a in enumerate(argv):
+        if skip:
+            skip = False
+            continue
+        if a == '--b1' and i + 1 < len(argv):
+            b1, skip = float(argv[i + 1]), True
+        elif a == '--b2' and i + 1 < len(argv):
+            b2, skip = float(argv[i + 1]), True
+        elif not a.startswith('--'):
+            args.append(a)
 
     path = args[0] if args else pick_file()
     if not path:
@@ -153,8 +170,10 @@ def main():
             '★종전 경로★ — 정지선이 한 번도 안 잡혔다. 회귀 시험(단계 5-1) 기준으로 본다')
     print(f"   판정 모드 : {mode}")
 
-    # ── 브레이크 체결 시점 (0/빈값 → 2) ──────────────────────────────────────
-    engages, releases, prev_b = [], [], None
+    # ── 브레이크 체결 시점 ───────────────────────────────────────────────────
+    #   ★[2026-08-19] 두 단계를 따로 본다★ 0→1 은 예비제동, →2 는 확정 정지다.
+    #   downs 는 ★단계가 내려간 지점★ — 단조 증가 규약이 깨진 곳이라 그 자체가 버그다.
+    engages, pre_i, full_i, releases, downs, prev_b = [], [], [], [], [], None
     for i, p in enumerate(trk):
         b = p['brake']
         if b is None:
@@ -162,8 +181,12 @@ def main():
         if prev_b is not None:
             if prev_b == 0 and b > 0:
                 engages.append(i)
+            if b > prev_b:
+                (pre_i if b == 1 else full_i).append(i)
             elif prev_b > 0 and b == 0:
                 releases.append(i)
+            elif 0 < b < prev_b:
+                downs.append(i)
         prev_b = b
 
     # ── 대기 구간 ────────────────────────────────────────────────────────────
@@ -194,50 +217,77 @@ def main():
     print("     " + verdict(bad == 0, "대기 구간이 깨끗하다",
                             "대기 중에 브레이크가 물렸다 — 다른 발행자(driving?)를 볼 것"))
 
-    # 4-3 체결 시각의 sl_y
-    print(f"\n 4-3 브레이크 체결   : {len(engages)}회")
-    for i in engages:
-        p = trk[i]
-        sl = p['sl']
-        # 체결 직전에 대기하고 있었는가 = 정지선 경로로 밟은 것인가
-        was_wait = any(a <= i <= b + 15 for a, b in wsp)
-        tag = ''
-        if sl is None or sl < 0:
-            tag = '정지선 없음/놓침'
-        elif trig is not None:
-            tag = ('정지선 앞' if sl >= trig - TRIG_TOL
-                   else f'★트리거({trig:.2f})에 못 미친 채 물렸다★')
-        else:
-            tag = '정지선 앞(트리거 미지정 — --trig 로 주면 정밀 판정)'
-        print(f"     t={p['t']:7.2f}s  sl_y={'--' if sl is None or sl < 0 else f'{sl:.3f}'}"
-              f"  tl={p['state']:<8} near={p['near'] if p['near'] is not None else '--'}"
-              f"  {'[대기 후]' if was_wait else '[대기 없음]'}  {tag}")
+    # 4-3·4-4 각 단계 체결 시각의 sl_px
+    def show(idxs, label, thr, num):
+        print(f"\n {num} {label:<12}: {len(idxs)}회"
+              + (f"  (문턱 {thr:.0f}px)" if thr is not None else "  (문턱 미지정)"))
+        for i in idxs:
+            p = trk[i]
+            sl = p['sl']
+            # 체결 직전에 대기하고 있었는가 = 정지선 경로로 물은 것인가
+            was_wait = any(a <= i <= b + 15 for a, b in wsp)
+            if sl is None or sl < 0:
+                tag = '정지선 없음/놓침'
+            elif thr is None:
+                tag = f'정지선 보임(문턱 미지정 — --b{num[-1]} 로 주면 정밀 판정)'
+            elif abs(sl - thr) <= PX_TOL:
+                tag = '★문턱에서 물었다 — 정상★'
+            elif sl > thr:
+                tag = f'★문턱({thr:.0f}px)보다 멀리서 물렸다★ (상한·코앞 경로?)'
+            else:
+                tag = f'★문턱({thr:.0f}px)을 지나쳐 물렸다★ (인지 끊김?)'
+            print(f"     t={p['t']:7.2f}s  sl={'--' if sl is None or sl < 0 else f'{sl:6.1f}px'}"
+                  f"  tl={p['state']:<8} near={p['near'] if p['near'] is not None else '--'}"
+                  f"  {'[대기 후]' if was_wait else '[대기 없음]'}  {tag}")
+        if not idxs:
+            print("     — 없음")
+
+    show(pre_i,  '1단 예비제동', b1, '4-3')
+    show(full_i, '2단 확정 정지', b2, '4-4')
     if not engages:
-        print("     ✗ 브레이크가 한 번도 안 물렸다 — 이 기록으로는 판정할 수 없다")
+        print("\n     ✗ 브레이크가 한 번도 안 물렸다 — 이 기록으로는 판정할 수 없다")
 
-    # 4-6 채터링 — 한 번의 접근에서 두 번 이상 물렸으면 리니어가 왕복한 것이다
-    print(f"\n 4-6 브레이크 왕복   : 체결 {len(engages)}회 / 해제 {len(releases)}회")
-    print("     " + verdict(len(engages) <= 1,
-                            "왕복 없음",
-                            f"★{len(engages)}번 물렸다 — 리니어 왕복이다(8항 회귀 확인)★"))
+    # 4-5 1단 → 2단 사이 시간
+    if pre_i and full_i:
+        gap = trk[full_i[0]]['t'] - trk[pre_i[0]]['t']
+        print(f"\n 4-5 1단 → 2단 간격  : {gap:.2f}초")
+        print("     " + verdict(
+            STAGE_GAP_S[0] <= gap <= STAGE_GAP_S[1],
+            f"정상 범위 {STAGE_GAP_S} 안이다 — 예비제동이 제 몫을 했다",
+            (f"★{STAGE_GAP_S} 범위 밖★ — 짧으면 sl_brake1_px 가 2단 문턱에 너무 가깝고,"
+             " 길면 너무 멀리서 물어 1단으로 기어간 것이다")))
+    elif full_i and not pre_i:
+        print("\n 4-5 1단 → 2단 간격  : ★1단을 거치지 않고 바로 2단★")
+        print("     " + ("(정지선을 못 본 종전 경로다 — 정상)" if not saw_sl else
+                         "✗ 정지선은 보였는데 예비제동이 없었다 — sl_brake1_px 가 "
+                         "2단 문턱에 붙어 있거나(↑) 상한·코앞 경로로 물린 것이다"))
 
-    # 4-7 정지 유지 중 near_metric
+    # 4-6 단조 증가 — 단계가 내려갔으면 규약이 깨진 것이다
+    print(f"\n 4-6 브레이크 왕복   : 체결 {len(engages)}회 / 해제 {len(releases)}회"
+          f" / ★단계 하락 {len(downs)}회★")
+    print("     " + verdict(len(engages) <= 1 and not downs,
+                            "왕복 없음, 단계가 한 방향으로만 갔다",
+                            f"★체결 {len(engages)}회·하락 {len(downs)}회 — 리니어 왕복이다"
+                            "(8항 회귀 확인)★"))
+
+    # 4-10 정지 유지 중 near_metric
     zero_near = 0
     if engages:
         i0 = engages[0]
         held = [p for p in trk[i0:] if (p['brake'] or 0) > 0]
         zero_near = sum(1 for p in held if p['near'] is not None and p['near'] <= 0.0)
-        print(f"\n 4-7 정지 유지 중 near=0 : {zero_near}행 / {len(held)}행")
+        print(f"\n 4-10 정지 유지 중 near=0 : {zero_near}행 / {len(held)}행")
         print("     " + verdict(
             zero_near == 0, "등기구가 계속 보였다",
             "정지 중 신호등이 화면에서 사라졌다 → ★카메라를 5~8° 위로 틸트★"
             " (해제 유예 뒤 차가 굴러간다)"))
 
-    # 4-8 대기 상한
-    print(f"\n 4-8 대기 상한(5초)  : 최장 {wait_max:.2f}초")
+    # 4-11 대기 상한
+    print(f"\n 4-11 대기 상한({WAIT_MAX_S:.0f}초) : 최장 {wait_max:.2f}초")
     print("     " + verdict(
         wait_max < WAIT_MAX_S - 0.2, "상한에 닿지 않았다",
-        "★상한에 닿았다★ — 트리거가 도달 불가능하거나 정지선 오검출이다"))
+        "★상한에 닿았다★ — sl_brake2_px 가 도달 불가능하거나(1단으로 멈춰 섰다) "
+        "정지선 오검출이다"))
 
     # ── 대기 구간의 물리적 크기 ──────────────────────────────────────────────
     if wsp:
@@ -250,8 +300,8 @@ def main():
         print("\n" + "─" * 74)
         print(f" 최장 대기 구간 : t={trk[a]['t']:.2f} → {trk[b]['t']:.2f}s ({dt:.2f}초)")
         print(f"   그동안 이동거리 = ★{d:.2f} m★   평균속도 {d / dt if dt > 0 else 0:.2f} m/s")
-        print(f"   정지선 sl_y : {sl0 if sl0 is None else f'{sl0:.3f}'}"
-              f" → {sl1 if sl1 is None else f'{sl1:.3f}'}  (가까워질수록 커진다)")
+        print(f"   정지선 sl : {sl0 if sl0 is None else f'{sl0:.1f}px'}"
+              f" → {sl1 if sl1 is None else f'{sl1:.1f}px'}  (가까워질수록 작아진다)")
         print(f"   ※ 이 거리만큼 ★정지선 앞으로 더 갔다★ — 종전 코드였다면 여기서 섰다")
 
     # ── 정지선 인지 품질 ─────────────────────────────────────────────────────
@@ -261,8 +311,8 @@ def main():
     print(f" 정지선 인지 : 검출 {len(seen)}행 / 빨간불 구간 {len(red)}행"
           + (f"  ({100.0 * len(seen) / len(red):.0f}%)" if red else ""))
     if seen:
-        print(f"   sl_y 범위 {min(p['sl'] for p in seen):.3f} ~ "
-              f"{max(p['sl'] for p in seen):.3f}")
+        print(f"   sl 범위 {min(p['sl'] for p in seen):.1f} ~ "
+              f"{max(p['sl'] for p in seen):.1f} px  (작을수록 가깝다)")
         gaps = []
         prev_t = None
         for p in seen:
@@ -300,8 +350,10 @@ def main():
                 print("     (정지선 경로로 물렸으므로 이 시간은 5-1 기준과 비교하지 않는다)")
 
     print("\n" + "═" * 74)
-    print(" 자로 재야 하는 것 : 실제 정지 위치(범퍼 → 정지선) = ______ m  [4-5]")
-    print(" 눈으로 볼 것     : 노드 로그의 정지 사유 [정지선 앞/놓침/없음]  [4-4]")
+    print(" 자로 재야 하는 것 : 실제 정지 위치(범퍼 → 정지선) = ______ m  [4-8]")
+    print(" 눈으로 볼 것     : 노드 로그의 사유 [예비제동 / 정지선 앞 / 놓침 / 없음]  [4-7]")
+    if b1 is None or b2 is None:
+        print(" ※ --b1 <sl_brake1_px> --b2 <sl_brake2_px> 를 주면 4-3·4-4 를 정밀 판정한다")
     print("═" * 74)
 
 
