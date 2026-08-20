@@ -173,7 +173,18 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     TopicSpec('/drive_pulse_cmd', Int32, ('drive_pulse_cmd',), _scalar,
               note='A보드로 실제 送出된 펄스'),
     TopicSpec('/brake_level', Int32, ('brake_level',), _scalar,
-              note='리니어 브레이크 0/1/2'),
+              note='리니어 브레이크 0/1/2 — ★요청한 단계★ (실제 위치는 brake_pot)'),
+    # ★[2026-08-21] 요청(brake_level)과 실측(brake_pot)을 나란히 둔다★
+    #   종전에는 제동에 관해 남는 것이 '몇 단을 요청했나' 하나뿐이라, 리니어가 실제로
+    #   그만큼 갔는지도 사람이 발로 더 밟았는지도 로그로는 알 수 없었다. 두 열을
+    #   같이 놓으면 그 셋이 구별된다:
+    #       brake_level 2 + brake_pot 850 → 시킨 대로 갔다
+    #       brake_level 2 + brake_pot 620 → ★행정이 덜 나왔다★ (기구·전원 의심)
+    #       brake_level 0 + brake_pot 700 → ★사람이 발로 밟았다★ (수동조종 구간)
+    #   기준값은 B보드 상수다 — 1단 600 / 2단 850 / 제동등 점등 400.
+    TopicSpec('/brake_pot', Int32, ('brake_pot',), _scalar,
+              note='B보드 A5 리니어 가변저항 raw 0~1023 — 브레이크 페달 ★실제 위치★. '
+                   '1단 목표 600 / 2단 850 / 400 이상이면 제동등 점등(D11)'),
 
     # ── 차량 상태 ──
     #   /ego_state 는 driving 이 만든다: [x, y, heading, enc_pulse, wp_idx, wp_total, fix_ok]

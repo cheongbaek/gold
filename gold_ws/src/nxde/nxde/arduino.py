@@ -4,7 +4,15 @@
 #   kasa_ws/src/nxde/nxde/arduino.py 에서 통신 로직만 가져와, 토픽 계약을 white 패키지
 #   규약으로 바꾼 것이다. **kasa_ws 쪽은 수정하지 않았다** — 저쪽은 /in·/out String
 #   프로토콜을 그대로 쓰고, 이쪽은 white 의 Twist/Bool/Int32 토픽을 직접 주고받는다.
-#   아두이노 펌웨어(kasa_0730_A.ino / kasa_0804_B.ino)도 무수정 전제다.
+#   아두이노 펌웨어(kasa_0730_A.ino / ★kasa_0821_B.ino★)도 무수정 전제다.
+#
+#   ★[2026-08-21] B보드 출력이 3필드가 되었다★ "P,<조향각>,<A5원본>,<모드>".
+#     parse_b 는 ★이 양식 하나만 받는다★ — 구형(0813 이하, "P,<조향각>,<모드>")과의
+#     호환을 일부러 두지 않았다. 두 세대를 다 받으려면 필드 개수로 갈라야 하는데
+#     (3토큰의 셋째는 모드, 4토큰의 셋째는 A5 로 자리가 겹친다) 그 분기는 보드 하나를
+#     쓰는 차에서 값을 못한다. ★펌웨어를 바꾸면 이 함수도 함께 바꾼다★ 가 규약이다.
+#     구형을 꽂으면 이 줄이 통째로 버려져 조향각·모드가 얼어붙는다 — 그 증상이
+#     보이면 제일 먼저 여기를 의심할 것.
 #
 # ★ 역할 ★
 #   ROS → 보드 :  /cmd_vel_raw (Twist)    linear.x = 주행 목표펄스 0~15
@@ -15,6 +23,13 @@
 #                 /steer_angle_measured (Int32) B보드 실측 조향각 (− 좌 / + 우, 그대로 중계)
 #                 /vehicle_mode (Bool)          B보드 D5 : True = 자율 / False = 수동조종
 #                 /throttle_pedal (Int32)       A보드 A0 쓰로틀 페달 raw 0~1023
+#                 /brake_pot (Int32)            ★B보드 A5 리니어 가변저항 raw 0~1023★
+#                                               [2026-08-21 / kasa_0821_B.ino] 브레이크
+#                                               페달의 ★실제 위치★ 다. 단계(0/1/2)가 아니라
+#                                               값 자체라서, '리니어가 시킨 대로 갔는가'와
+#                                               '사람이 발로 밟았는가'를 구별할 수 있다
+#                                               (수동조종에서는 후자만 움직인다).
+#                                               ※ 400 이상이면 B보드가 제동등(D11)을 켠다.
 #                 /drive_pulse_cmd (Int32)      ★A보드로 실제 보낸 주행 목표펄스★
 #                                               자율=계획값 / 수동조종=페달 환산값
 #                                               → mapping 노드의 수집 라벨(①)로 쓰인다
@@ -441,6 +456,8 @@ class Arduino(Node):
         self.pulse_r = 0
         self.angle_board = 0       # B보드 실측 조향각 (− 좌 / + 우 = ROS 규약과 동일)
         self.throttle_raw = 0
+        # ★[2026-08-21] B보드 A5 리니어 가변저항 raw★ 브레이크 페달의 실제 위치.
+        self.brake_pot = 0
         # B보드 D5 주행모드. ★페일세이프로 수동(False)에서 시작한다★ — 첫 텔레메트리를
         # 받기 전에 '자율'로 오인해 자동 명령이 나가는 것보다 수동으로 보는 편이 안전하다.
         self.switch_mode = False   # ← B보드 D5 원값 (물리 스위치가 말하는 것)
@@ -505,6 +522,7 @@ class Arduino(Node):
         self.pub_steer_angle = self.create_publisher(Int32, '/steer_angle_measured', 10)
         self.pub_mode = self.create_publisher(Bool, '/vehicle_mode', 10)
         self.pub_throttle = self.create_publisher(Int32, '/throttle_pedal', 10)
+        self.pub_brake_pot = self.create_publisher(Int32, '/brake_pot', 10)
         # ★ A보드로 실제 보낸 주행 목표펄스 ★ 자율=계획값 / 수동조종=페달 환산값.
         #   수동조종 수집(mapping)의 라벨 ①이 이 값이다 — 환산 규칙(throttle_raw_min/max,
         #   manual_pulse_max)이 이 노드에만 있으므로, 여기서 발행해야 소비측이 규칙을
@@ -980,25 +998,29 @@ class Arduino(Node):
             pass
 
     def parse_b(self, text):
-        """"P,<조향각>,<모드>" (kasa_0804_B.ino). 조향각 부호는 ★− 좌 / + 우★ 로
-           ROS 규약과 같다(그대로 발행한다).
-           STOP/형식오류 시 마지막 값 유지. 모드 필드가 없는 구버전(2필드)도 받아준다."""
+        """"P,<조향각>,<A5원본>,<모드>" (kasa_0821_B.ino). 조향각 부호는 ★− 좌 / + 우★
+           로 ROS 규약과 같다(그대로 발행한다). STOP/형식오류 시 마지막 값 유지.
+
+        ★지금 펌웨어 양식 하나만 받는다 [2026-08-21]★ 구버전 호환 분기를 두지
+        않았다 — 보드는 한 대이고, 펌웨어를 바꾸면 이 함수도 같이 바꾸는 것이
+        규약이다. 필드 수가 다른 줄은 통째로 버려지므로, 구형을 꽂으면 조향각·모드가
+        마지막 값에 얼어붙는다(경고는 남지 않는다). 그 증상이면 여기부터 볼 것.
+        """
         if not text.startswith('P,'):
             return
         fields = text.split(',')
-        if len(fields) not in (2, 3):
+        if len(fields) != 4:
             return
         try:
             self.angle_board = int(fields[1])
-            if len(fields) == 3:
-                # ★값 규약: 1 = 자율주행 / 0 = 수동조종★
-                new_mode = bool(int(fields[2]))
-                if new_mode != self.switch_mode:
-                    self.switch_mode = new_mode
-                    self.get_logger().info(
-                        f"[주행모드 전환] {'자율주행' if new_mode else '수동조종'} (B보드 D5)")
+            self.brake_pot = int(fields[2])
+            new_mode = bool(int(fields[3]))       # ★1 = 자율주행 / 0 = 수동조종★
         except ValueError:
-            pass
+            return
+        if new_mode != self.switch_mode:
+            self.switch_mode = new_mode
+            self.get_logger().info(
+                f"[주행모드 전환] {'자율주행' if new_mode else '수동조종'} (B보드 D5)")
 
     def update_estop(self):
         """A·B 중 한쪽이라도 최신 줄이 STOP 이면 e-stop (OR 판정). 전환 시점만 로그."""
@@ -1029,6 +1051,8 @@ class Arduino(Node):
 
         self.pub_mode.publish(Bool(data=bool(self.auto_mode)))
         self.pub_throttle.publish(Int32(data=int(self.throttle_raw)))
+        # ★[2026-08-21] B보드 A5 원본 (kasa_0821_B.ino)★
+        self.pub_brake_pot.publish(Int32(data=int(self.brake_pot)))
         self.pub_estop.publish(Bool(data=bool(self.estop_active)))
 
     def publish_status(self):

@@ -53,13 +53,30 @@ driving.py ― kasa 자율주행 [white1 / GPS+IMU 최소 추종판]
  ★용어 — '정지'는 여러 가지이고 E-STOP 은 그중 하나뿐이다 [2026-08-14]★
 ════════════════════════════════════════════════════════════════════════════════
   ★E-STOP 이라는 말은 D12(NC) 하드웨어 정지에만 쓴다★ A·B 보드가 각자 D12 개방을
-  500ms 확인해 스스로 멈추고(kasa_0804_A.ino:98 · kasa_0813_B.ino:92), 리니어 2단
+  500ms 확인해 스스로 멈추고(kasa_0804_A.ino:98 · kasa_0821_B.ino), 리니어 2단
   체결과 0단 복귀까지 B보드가 직접 한다. ROS 는 그 사실을 /estop 으로 ★보고받을
-  뿐★ 이다 — 정지 자체는 이미 하드웨어가 했으므로 이 노드가 할 일은 ①진행 중인
-  자율주행을 취소해 메뉴로 돌려보내고 ②물려 있는 동안 자율주행 재진입을 막는
-  것뿐이다(cb_estop · cb_drive_cmd 의 DRIVE_START 가드, [2026-08-14]).
-  ★매핑은 E-STOP 중에도 시작할 수 있다★ 사람이 페달로 모는 절차인데 그 페달이
-  하드웨어로 끊겨 있으니 차가 구르지 않고, 따라서 경로가 오염되지도 않는다.
+  뿐★ 이다 — 정지 자체는 이미 하드웨어가 했다.
+
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║ ★★ [2026-08-21] E-STOP 은 '취소'가 아니라 ★일시정지★ 다 ★★                ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+  종전([2026-08-14])에는 E-STOP 이 걸리면 진행 중이던 자율주행을 ★버리고★ IDLE 로
+  돌아갔고, 다시 달리려면 사람이 메뉴에서 처음부터 다시 걸어야 했다. 지금은:
+      · DRIVE_HEADING / DRIVE_RUN 에서 걸리면 ★상태와 WP 인덱스를 그대로 들고★
+        제자리에 선다(loop 의 일시정지 게이트). 헤딩도 경로도 버리지 않는다.
+      · 해제되면 ESTOP_RESUME_GRACE_S 뒤에 ★그 자리에서 이어서 재개★ 한다.
+      · 시작 전이라면(IDLE) 시작 자체가 막히고, 화면(prompt)이 '해제하라'고 안내한
+        뒤 해제되는 순간 출발한다 — ★스위치가 반대쪽일 때와 똑같은 대기★ 다.
+  ★매핑도 E-STOP 이 풀려야 시작한다 [2026-08-21]★ 종전에는 매핑만은 E-STOP 중에도
+  걸 수 있었는데(차가 어차피 안 구르니까), 화면의 대기 절차를 ①스위치 → ②E-STOP
+  두 단으로 통일했다. 매핑 ★도중★ 에 걸리는 것은 종전대로 아무 상태도 바꾸지
+  않는다 — 사람이 페달로 모는 절차이고 그 페달이 하드웨어로 끊겨 있을 뿐이다.
+
+  ★★ 재개가 곧 '차가 스스로 움직이기 시작하는 순간' 이라는 점을 잊지 말 것 ★★
+    그래서 해제 즉시가 아니라 ESTOP_RESUME_GRACE_S 만큼 펄스 0 으로 붙잡는다.
+    물리적 근거도 있다 — B보드는 해제 시 리니어를 0단으로 되돌리는 데 1000ms
+    (kasa_0821_B.ino BRAKE_HOME_MS)를 쓴다. 그 사이에 구동을 걸면 브레이크가 아직
+    빠지는 중인 채로 밀게 된다.
 
   나머지 정지는 전부 이 노드의 소프트웨어 판단이며 각각 이름이 따로 있다.
   ★이것들을 E-STOP 이라 부르지 말 것★ — 그렇게 부르는 순간 로그·음성·화면에서
@@ -98,10 +115,13 @@ driving.py ― kasa 자율주행 [white1 / GPS+IMU 최소 추종판]
   것을 정리한다(MAP_RUN → 저장 / DRIVE_RUN·DRIVE_DONE → 중단·해제). IDLE 에서는
   ★어떤 엣지도 아무 일을 하지 않는다★ — 시작은 위에서 말했듯 prompt 뿐이다.
 
-  E-STOP(D12) 은 ★자율주행(DRIVE_*)만★ 즉시 IDLE 로 되돌린다 [2026-08-14].
-  매핑(MAP_*)은 건드리지 않는다 — 사람이 모는 절차이고 그 사이 차는 하드웨어로
-  멈춰 있다. 정지 자체는 아두이노가 이미 하고 있으므로(A·B 보드가 자체 판정)
-  여기서 따로 정지 명령을 내지 않는다. 물려 있는 동안 DRIVE_START 는 거절된다.
+  E-STOP(D12) 은 ★상태를 바꾸지 않는다 [2026-08-21]★ DRIVE_HEADING·DRIVE_RUN
+  에서는 loop() 가 그 자리에 붙잡아 두었다가(펄스 0·조향 0) 해제되면 이어서
+  재개한다 — ★일시정지★ 다. 매핑(MAP_*)과 DRIVE_DONE 은 종전대로 건드리지
+  않는다(전자는 사람이 모는 절차이고, 후자는 이미 서는 중이라 붙잡을 것이 없다).
+  정지 자체는 아두이노가 이미 하고 있으므로(A·B 보드가 자체 판정) 여기서 따로
+  정지 명령을 내지 않는다. 물려 있는 동안 MAP_START·DRIVE_START 는 거절된다 —
+  ★시작만 막고, 진행 중인 것은 보존한다★ 가 이 절의 전부다.
 
 ════════════════════════════════════════════════════════════════════════════════
  헤딩 초기화 — 왜 앞으로 굴러야 하는가
@@ -762,6 +782,14 @@ HEAD_TARGET_SIGMA = 3.0      # [deg] 추정 오차가 이 밑이면 확정
 HEAD_SIGMA_FLOOR  = 0.02     # [m] RTK Fixed 수평 노이즈 하한 — 낙관을 막는 바닥값
 HEAD_MAX_RESID_M  = 0.15     # 직선 잔차 RMS 상한(곧게 갔는가)
 MODE_SETTLE_S     = 0.7      # 스위치 엣지 직후 이만큼은 굴리지 않는다(빠른 토글 대비)
+# ★[2026-08-21] E-STOP 해제 후 재개까지의 유예 [s]★
+#   E-STOP 이 '일시정지'가 되면서 ★해제가 곧 출발★ 이 됐다 — 사람이 차 옆에 서서
+#   스위치를 되돌리는 그 순간이다. 두 가지를 함께 산다:
+#     ① 사람이 손을 뗄 시간. ② ★리니어가 실제로 빠질 시간★ — B보드는 해제 시
+#        0단 복귀에 1000ms 를 쓴다(kasa_0821_B.ino BRAKE_HOME_MS). 그 전에 구동을
+#        걸면 브레이크를 밟은 채로 미는 꼴이고, A보드 기동 블랭킹까지 재트리거된다.
+#   그래서 MODE_SETTLE_S(0.7) 보다 길게, 리니어 복귀시간보다 넉넉하게 잡았다.
+ESTOP_RESUME_GRACE_S = 1.5
 
 # ── GPS/IMU 융합 ──
 FUSE_GAIN          = 0.05    # GPS 코스헤딩으로 끌어당기는 비율(상보필터)
@@ -1106,6 +1134,9 @@ class DrivingNode(Node):
         self._enc_buf = []                # 허수 카운트 제거용 (ENC_MEDIAN_N)
         self.auto_mode = None             # /vehicle_mode. None = 미수신
         self.estop = False
+        # ★[2026-08-21] E-STOP 해제 후 이 시각까지는 펄스 0 으로 붙잡는다★
+        #   0.0 = 유예 없음(=한 번도 일시정지한 적 없거나 이미 지났다).
+        self._estop_resume_t = 0.0
 
         # ── /speed (speed.py 의 IMU 적분 속도, km/h) ──
         #   ★[2026-08-12] 1순위에서 내려왔다★ 지금은 GPS 가 끊겼을 때의 대체값이다
@@ -1290,7 +1321,11 @@ class DrivingNode(Node):
             self._gps_kmh_t = now
 
         if is_raw:
-            if self.state in (S_MAP_HEADING, S_DRIVE_HEADING) and self.fix_ok:
+            # ★[2026-08-21] E-STOP 일시정지 중에는 표본을 넣지 않는다★ 서 있는 차의
+            #   GPS 드리프트가 직선 위가 아닌 곳에 점을 뿌리면 직진성 검사(resid)가
+            #   나빠져 헤딩 확정이 늦어진다. 멈춰 있는 동안의 점은 정보가 없다.
+            if (self.state in (S_MAP_HEADING, S_DRIVE_HEADING)
+                    and self.fix_ok and not self.estop):
                 self.head_est.add(self.x, self.y)
             self._fuse_gps_course()
 
@@ -1368,45 +1403,79 @@ class DrivingNode(Node):
         self.on_mode_edge(rising=new)
 
     def cb_estop(self, msg: Bool):
-        """E-STOP(D12) 엣지. ★[2026-08-14] E-STOP 은 더 이상 상태를 소유하지 않는다★
+        """E-STOP(D12) 엣지. ★[2026-08-21] E-STOP 은 '취소'가 아니라 ★일시정지★ 다★
 
-        예전에는 S_ESTOP 이라는 상태로 빠져 ★매핑까지 포함해 전부★ 막았고, 해제될
-        때 IDLE 로 돌아왔다. 지금은 둘로 갈랐다:
-          · 진행 중이던 ★자율주행만★ 취소하고 메뉴(IDLE)로 돌려보낸다.
-          · 그 뒤로는 '자율주행 진입 금지' ★플래그★ 로만 남는다(self.estop) —
-            게이트는 cb_drive_cmd 의 DRIVE_START 한 곳뿐이다.
+        [2026-08-14] 판에서는 자율주행을 ★버리고★ IDLE 로 돌아갔다. 실차에서는
+        그것이 매번 '메뉴로 가서 경로를 다시 고르고 헤딩을 다시 잡는' 절차가 됐다 —
+        E-STOP 은 시험 중에 자주 눌리는데, 한 번 누를 때마다 주행 한 판을 버리는
+        셈이었다. 지금은 상태도 WP 인덱스도 헤딩도 ★그대로 둔다★:
+          · DRIVE_HEADING / DRIVE_RUN : 제자리에 선다(loop 의 일시정지 게이트).
+            실제로 멈추는 것은 이미 하드웨어가 했고, 여기서는 ★재개할 때를 위해
+            과도 상태만 정리★ 한다(_estop_pause_reset).
+          · 그 밖의 상태(IDLE·MAP_*·DRIVE_DONE) : 아무것도 하지 않는다.
+            시작 금지 게이트는 cb_drive_cmd 의 MAP_START/DRIVE_START 두 곳이다.
 
-        ★매핑은 E-STOP 중에도 걸 수 있다★ 매핑은 사람이 페달로 모는 절차이고,
-        E-STOP 이 물린 동안에는 A보드가 구동을 끊어 차가 애초에 구르지 않는다 —
-        점이 쌓이지 않으므로 경로가 오염되지 않는다. 준비(스위치·화면·경로 이름)를
-        미리 해 두고 해제되는 순간 바로 출발할 수 있는 쪽이 실차에서 낫다.
+        ★해제 = 출발이다★ 그래서 곧바로 굴리지 않고 ESTOP_RESUME_GRACE_S 만큼
+        펄스 0 으로 붙잡는다(그 상수 주석에 근거 두 가지 — 사람 손, 리니어 복귀시간).
 
-        ★소프트웨어로 E-STOP 을 빠져나가는 구멍은 여전히 없다★ 예전 가드가 막던
-        것은 'E-STOP 상태에서 STOP 명령으로 IDLE 로 나가는 것'이었는데, 이제 그
-        상태 자체가 없고 금지 조건은 /estop 하드웨어 신호를 그대로 읽는 플래그다.
-        어떤 키 입력도 이 플래그를 못 바꾼다.
+        ★소프트웨어로 E-STOP 을 빠져나가는 구멍은 없다★ 금지 조건은 /estop 하드웨어
+        신호를 그대로 읽는 플래그이고, 어떤 키 입력도 이 플래그를 못 바꾼다.
         """
         new = bool(msg.data)
         if new == self.estop:
             return
         self.estop = new
+        driving = self.state in (S_DRIVE_HEADING, S_DRIVE_RUN)
         if new:
-            if self.state in (S_DRIVE_HEADING, S_DRIVE_RUN, S_DRIVE_DONE):
-                self.enter(S_IDLE, "🚨 E-STOP — 자율주행 취소, 메뉴로 복귀")
+            if driving:
+                self._estop_pause_reset()
+                self.event("🚨 E-STOP — 자율주행 ★일시정지★ (경로·헤딩 유지, 해제하면 재개)")
             else:
-                self.event("🚨 E-STOP — 자율주행 진입 금지(매핑은 가능)")
+                self.event("🚨 E-STOP — 새 시작만 막힌다(진행 중인 매핑·정리는 그대로)")
         else:
-            self.event("✅ E-STOP 해제 — 자율주행 가능")
+            if driving:
+                self._estop_resume_t = time.time() + ESTOP_RESUME_GRACE_S
+                self.event(f"✅ E-STOP 해제 — {ESTOP_RESUME_GRACE_S:.1f}s 뒤 그 자리에서 재개")
+            else:
+                self.event("✅ E-STOP 해제")
+
+    def _estop_pause_reset(self):
+        """일시정지에 들어갈 때 ★과도 상태만★ 지운다. 상태·WP 인덱스·헤딩은 지킨다.
+
+        지우는 집합은 enter() 가 상태 전이마다 지우는 것과 같다. 이유도 같다 —
+        종점 접근 단계와 코너 1단 제동은 '지금 v 로 굴러가고 있고 목표까지 d 가
+        남았다'는 전제 위에 서 있는데, 서 있는 동안 그 전제가 통째로 무효가 된다.
+        들고 있다가 재개하면 낡은 전제로 판단한다. 재개 뒤 거리·속도로 다시 계산하는
+        것이 옳고, 실제로 그렇게 되도록 여기서 0 으로 되돌린다.
+
+        ★리니어도 놓는다★ 물고 있던 1·2단은 그 과도 상태들이 소유하던 것이라
+        소유자가 사라지면 함께 놓는 것이 맞다. E-STOP 중에는 어차피 B보드가 2단을
+        물고 있고(arduino.py 가 그동안 ROS 의 브레이크 값을 무시한다), 해제 시
+        B보드가 스스로 0단으로 복귀한다 — 즉 여기서 놓아도 제동이 풀리지 않는다.
+        """
+        self.reset_cte_integral()
+        self._goal_phase = GOAL_PHASE_NONE
+        self._goal_brake_t = 0.0
+        self._goal_v0 = 0.0
+        self._goal_still_t = 0.0
+        self._goal_kick_until = 0.0
+        self._goal_kicks = 0
+        self._goal_kick_done = False
+        self._cb_state = CB_NONE
+        self._cb_t = 0.0
+        self._cb_release_t = 0.0
+        self._cb_lock_gate = 0.0
+        self.set_brake(BRAKE_NONE)
 
     def cb_drive_cmd(self, msg: String):
         """prompt 하달. 'STOP' = 즉시 정지+리니어 2단 / 'MAP_START'·'DRIVE_START' =
         스위치가 이미 목표 위치일 때 엣지 없이 직접 시작 / 그 외 = 경로 선택.
 
-        ★[2026-08-14] E-STOP 게이트는 DRIVE_START 한 곳뿐이다★ 예전에는 이 함수
-        전체가 E-STOP 중에 아무것도 받지 않았는데, 그러면 매핑 시작도 함께 막힌다.
-        지금은 매핑·경로선택·STOP 은 그대로 받고 ★자율주행 진입만★ 거절한다
-        (cb_estop 주석 참고). 화면(prompt)도 같은 조건으로 메뉴를 막지만,
-        ★진짜 게이트는 여기다★ — 화면은 갈아 끼울 수 있고 이 노드는 하나다.
+        ★[2026-08-21] E-STOP 게이트는 MAP_START·DRIVE_START ★둘★ 이다★ 시작하는
+        명령만 막고 경로선택·STOP 은 그대로 받는다. 진행 중인 것을 취소하지도
+        않는다 — E-STOP 은 이제 일시정지이기 때문이다(cb_estop 주석).
+        화면(prompt)이 같은 조건으로 먼저 기다려 주지만 ★진짜 게이트는 여기다★ —
+        화면은 갈아 끼울 수 있고 이 노드는 하나다.
         """
         cmd = str(msg.data).strip()
         if not cmd:
@@ -1425,6 +1494,12 @@ class DrivingNode(Node):
                 self.event(f"⚠️ 매핑 시작 실패 — 현재 상태 {self.state}(IDLE 에서만 가능)")
             elif self.auto_mode is not False:
                 self.event("⚠️ 매핑 시작 실패 — 스위치가 수동조종이어야 한다")
+            elif self.estop:
+                # ★[2026-08-21] 매핑도 E-STOP 이 풀려야 시작한다★ 종전에는 매핑만
+                #   예외였는데(차가 어차피 안 구른다), 화면의 대기 절차를 ①스위치 →
+                #   ②E-STOP 두 단으로 통일했다. 화면(prompt)이 여기까지 오기 전에
+                #   기다리므로 평소엔 걸리지 않는다 — ★진짜 게이트는 여기다★.
+                self.event("🚨 매핑 시작 실패 — E-STOP 체결 중이다(해제 후 다시)")
             else:
                 self.enter(S_MAP_HEADING, "🗺️ 매핑 시작(prompt) — 페달로 곧게 굴려 헤딩을 잡을 것")
             return
@@ -1701,10 +1776,24 @@ class DrivingNode(Node):
             self.send(0, 0.0, control=False)
             return
 
+        now = time.time()
+
+        # ★[2026-08-21] E-STOP 일시정지 게이트★ 상태를 버리지 않고 여기서 붙잡는다.
+        #   ★GPS 두절 판정보다 앞에 둔다★ 서 있는 동안 GPS 가 끊겨도 할 말은 하나뿐
+        #   (E-STOP 중)이고, 두 경고가 겹쳐 나오면 원인이 흐려진다.
+        if self.state in (S_DRIVE_HEADING, S_DRIVE_RUN):
+            if self.estop:
+                self.send(0, 0.0, control=True)
+                self.throttle_event("🚨 E-STOP 일시정지 중 — 해제하면 그 자리에서 재개한다")
+                return
+            if now < self._estop_resume_t:
+                # 해제 직후 유예. 리니어가 0단으로 빠지는 시간을 벌어 준다.
+                self.send(0, 0.0, control=True)
+                return
+
         # GPS 두절 — 위치를 모르면 어떤 판단도 신뢰할 수 없다
         #   ★fix_time 은 '원시 fix 의 시각'이다★ gps.py 가 IMU 로 메운 표본이 계속
         #   와도 이 타이머는 흐른다(cb_gps_fused · 상수 GPS_TIMEOUT_S 절 참고).
-        now = time.time()
         if now - self.fix_time > GPS_TIMEOUT_S:
             self.send(0, 0.0, control=True)
             # ★세 사건을 구별해서 말한다★ 증상은 셋 다 '정지'로 같은데 손 볼 곳이
