@@ -28,6 +28,37 @@ traffic_light.py ― 신호등 인지·정지 [white1]
   white1 에는 그 발행자도 소비자도 없다.
 
 ════════════════════════════════════════════════════════════════════════════════
+ ★디버그 창 = 계기판 [2026-08-24 전면 개편]★
+════════════════════════════════════════════════════════════════════════════════
+ 이 노드의 파라미터는 ★눈으로 보고 잡는 값★ 이다(ROI·근접도 게이트·색 임계·BEV
+ 사다리꼴·두 문턱). 그런데 창이 그것을 못 보여 주고 있었다:
+
+   · 한글이 통째로 깨졌다 — cv2.putText 는 ASCII 만 그린다. stop_why(예비제동·정지선
+     앞·대기 상한·허락 없음 …)가 `???1??? PRE[????????-1???]` 로 나왔다. 즉 ★'왜 이
+     단계인가' 를 화면에서 읽을 수 없었다★.
+   · 1920 에 그린 뒤 640 으로 줄였다 — 글자·선이 전부 실효 1/3 크기가 됐다.
+   · BEV 썸네일에 ★범퍼선(거리 0 의 기준)이 안 그려졌다★ — 경계 조건 때문에
+     기본값(bev_bumper_y_px=480 = bev_h)에서 항상 탈락했다.
+   · 개입 허락(/tl_enable·/tl_permit)이 화면에 없었다 — 체크박스를 안 켠 것이
+     '빨간불을 보는데 아무 일도 안 일어남' 으로 보였다.
+
+ 지금은 이렇게 그린다 (창 = 뷰 960 + 우측 패널 + 하단 HUD = 1248x610):
+
+   ┌────────────────────────────────┬──────────────┐
+   │ 뷰 — ROI 밖은 어둡게, 사다리꼴  │ BEV 썸네일   │  범퍼·B1·B2 선
+   │ 은 시안, 정지선은 마젠타        │ 근접 게이지  │  지금값 vs 임계
+   │ ★제동 1단=주황 / 2단=빨강 테두리│ 정지선 게이지│  지금값 vs 두 문턱
+   │  — 곁눈으로도 보인다★          │ 판정 파라미터│  정적, 한 번만 그린다
+   ├────────────────────────────────┴──────────────┤
+   │ HUD ① 상태·확정 스트릭·근접도·raw/drop·FPS·보정 │
+   │     ② 제동 단계·근거·★허락★·정지선 대기 상한    │
+   │     ③ 정지선 거리·두 문턱·범퍼행·BEV 크기       │
+   └───────────────────────────────────────────────┘
+
+ ★판정 로직은 한 줄도 안 바뀌었다★ 이 개편은 보이는 것만 바꾼다. 그리고 비용은
+ 오히려 줄었다 — ★옛 기본값 대비 3~4배 싸다★(같은 프레임 실측). 근거는 _draw 주석.
+
+════════════════════════════════════════════════════════════════════════════════
  ★정지선 앞 2단계 정지 [2026-08-14 도입 → 2026-08-19 개편]★
 ════════════════════════════════════════════════════════════════════════════════
  종전에는 ★RED 확정이면 그 자리에서★ 섰다 — 근접도 게이트(박스 크기)가 '얼마나
@@ -218,11 +249,19 @@ traffic_light.py ― 신호등 인지·정지 [white1]
   래치가 필요하면 stop_latch:=true — 그때는 GREEN 을 봐야만 놓는다.
 """
 
+import os
 import threading
 import time
 
 import cv2
 import numpy as np
+#  ★PIL 은 반드시 별명으로 받는다★ 아래에서 sensor_msgs 의 Image 를 그대로 받으므로,
+#  별명 없이 `from PIL import Image` 를 쓰면 ROS 메시지 타입이 PIL 을 덮어써
+#  ★cb_image 의 타입 힌트가 조용히 PIL 을 가리킨다★. 실제로 한 번 밟았다.
+try:
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+except ImportError:                     # fail-open — 아래 TextRenderer 주석 참고
+    PILImage = ImageDraw = ImageFont = None
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -269,6 +308,276 @@ TL_ENABLE_STALE_S = 2.0
 # 짧아야 한다 — 그래야 남이 덮어도 곧바로 되돌아온다(_apply_brake 주석 참고).
 BRAKE_KEEPALIVE_S = 0.25
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  창에 글자를 그리는 도구 — ★한글 HUD★ [2026-08-24]
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 필요한가★ cv2.putText 는 ASCII 만 그린다. 종전 HUD 는 stop_why(전부 한글)를
+#  `???1??? PRE[????????-1???]` 로 찍고 있었다 — 즉 이 창의 존재 이유인 ★'왜 이
+#  단계인가' 를 화면에서 읽을 수 없었다★. 그래서 한글이 필요한 글자는 PIL 로 그린다.
+#
+#  ★새 의존성이 아니다★ ultralytics 가 pillow>=7.1.2 를 요구하므로, YOLO 를 돌리는
+#  곳에는 이미 깔려 있다. 그래도 없을 때를 대비해 ★fail-open★ 이다 — 폰트를 못 찾으면
+#  경고 한 줄 남기고 cv2.putText 로 물러난다(한글은 다시 물음표가 되지만 창은 뜨고
+#  숫자는 읽히고 차는 그대로 선다). camera_model 이 캘리브를 못 읽을 때와 같은 태도다.
+#
+#  ★비용을 어떻게 0 으로 만드는가★ PIL 로 스트립(960x70) 하나를 그리는 데 3ms 다.
+#  30fps 에서 매 프레임 내면 10% 예산이므로 세 층으로 캐시한다:
+#    ① 폰트   ImageFont.truetype 은 크기마다 한 번만
+#    ② 글자폭 getlength 는 (글자, 크기) 마다 한 번만 — 열 배치에 매 프레임 쓴다
+#    ③ 스트립 ★문자열·색·위치가 하나도 안 바뀌면 지난 그림을 그대로 돌려준다★
+#  ③ 이 핵심이다. HUD 의 숫자는 초당 10회쯤 바뀌므로 대부분의 프레임은 ③에서 끝난다.
+#
+#  ★고정폭 폰트를 쓴다★ NanumGothicCoding 은 ASCII 폭이 정확히 크기의 절반이고 한글은
+#  두 칸이다. 그래서 HUD 를 '몇 번째 칸' 으로 적을 수 있고, 줄이 달라도 열이 맞는다 —
+#  계기판은 열이 맞아야 눈이 값을 따라간다.
+
+#  ★한글 폰트 후보 — 앞에서부터 처음 있는 것을 쓴다★
+#  NanumGothicCoding 이 1순위인 이유는 ★고정폭★ 이기 때문이다(위 주석). 없으면
+#  Noto CJK → NanumGothic 으로 내려가는데, 그때는 열이 조금 어긋난다(읽기는 된다).
+FONT_CANDIDATES = (
+    '/usr/share/fonts/truetype/nanum/NanumGothicCoding.ttf',
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+    '/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf',
+)
+
+#  ── 색 (BGR) ─────────────────────────────────────────────────────────────
+#  신호등 창이 쓰는 색은 ★화면의 의미와 1:1★ 이다. 여기가 그 정본이다.
+C_BG     = (26, 26, 28)        # 패널 바닥
+C_HUD    = (15, 15, 17)        # 하단 HUD 띠 바닥
+C_TXT    = (228, 228, 232)     # 보통 글자
+C_DIM    = (138, 138, 144)     # 참고값 글자
+C_FRAME  = (92, 92, 96)        # 패널 테두리
+C_RED    = (60, 60, 255)       # RED · 2단
+C_GREEN  = (80, 220, 90)       # GREEN · 범퍼선 · 허락 있음
+C_AMBER  = (0, 180, 255)       # 1단 예비제동 · B1 · 경고
+C_CYAN   = (235, 225, 70)      # BEV 사다리꼴
+C_MAGENTA = (255, 0, 255)      # 정지선
+C_GRAY   = (150, 150, 150)     # UNKNOWN 박스
+
+
+class TextRenderer:
+    """한글 스트립 렌더러. ★상태는 캐시뿐이다★ (그림을 기억하지 않는다).
+
+        tr = TextRenderer(log=node.get_logger())
+        strip = tr.strip(w, h, [(x, y, '제동 1단', C_RED, 15, True)], C_HUD)
+
+    items 의 한 원소 = (x, y, 글자, BGR색, 크기, 굵게). y 는 ★글자 상단★ 이다
+    (cv2.putText 의 baseline 과 다르다 — 줄 배치를 위에서부터 세는 것이 편하다).
+    """
+
+    def __init__(self, log=None, font_path=''):
+        self._log = log
+        self.path = ''
+        if PILImage is None:
+            self._warn("Pillow 가 없다 — HUD 한글이 물음표로 나온다(그 외는 정상)")
+        else:
+            cands = ((font_path,) if font_path else ()) + FONT_CANDIDATES
+            self.path = next((p for p in cands if p and os.path.exists(p)), '')
+            if not self.path:
+                self._warn("한글 폰트를 못 찾았다 — HUD 한글이 물음표로 나온다. "
+                           "`sudo apt install fonts-nanum-coding` 로 해결된다")
+        self.ok = bool(self.path)
+        self._font, self._width, self._cell, self._patch = {}, {}, {}, {}
+
+    def _warn(self, msg):
+        if self._log is not None:
+            self._log.warn(f"🖋 {msg}")
+
+    # ── 폰트·치수 ────────────────────────────────────────────────────────
+    def font(self, size, bold=False):
+        key = (size, bold)
+        if key not in self._font:
+            path = self.path
+            if bold:
+                # 같은 계열의 Bold 가 옆에 있으면 그것을 쓴다(없으면 보통 굵기).
+                alt = path.replace('Coding.ttf', 'CodingBold.ttf').replace(
+                    'Gothic.ttf', 'GothicBold.ttf').replace('Regular', 'Bold')
+                if alt != path and os.path.exists(alt):
+                    path = alt
+            self._font[key] = ImageFont.truetype(path, size)
+        return self._font[key]
+
+    def width(self, txt, size, bold=False):
+        """글자 폭[px]. ★매 프레임 열 배치에 쓰므로 캐시한다★.
+
+        ⚠️ 폰트가 없을 때도 ★실제로 재야 한다★ — 글자 수 × 상수로 어림하면 물러난
+           경로에서 열 계산이 틀려 ★두 칸이 겹쳐 찍힌다★(실제로 그렇게 나왔다).
+           cv2 로 그릴 것이므로 cv2 의 자로 잰다.
+        """
+        key = (txt, size, bold)
+        if key not in self._width:
+            self._width[key] = (
+                float(self.font(size, bold).getlength(txt)) if self.ok
+                else float(cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX,
+                                           size / 32.0, 1)[0][0]))
+        return self._width[key]
+
+    def cell(self, size):
+        """한 칸(=ASCII 한 글자) 폭. HUD 의 열 좌표 단위다."""
+        if size not in self._cell:
+            self._cell[size] = self.width('A', size) if self.ok else size * 0.55
+        return self._cell[size]
+
+    def line_h(self, size):
+        """줄 높이 — 크기에 여백을 더한 값. 줄 간격의 정본이다."""
+        return size + 6
+
+    # ── 그리기 ──────────────────────────────────────────────────────────
+    def strip(self, w, h, items, bg):
+        """단색 바닥 위에 글자만 있는 스트립을 새로 그려 돌려준다."""
+        img = np.full((h, w, 3), bg, np.uint8)
+        self.onto(img, items)
+        return img
+
+    def onto(self, img, items):
+        """이미 있는 그림 위에 글자를 얹는다(PIL 변환 1회로 몰아 그린다).
+
+        ⚠️ img 는 ★연속 배열★ 이어야 한다(PILImage.fromarray 의 전제다). 그래서
+           캔버스 슬라이스에 직접 쓰지 않고, strip() 으로 새 배열에 그린 뒤 blit 한다.
+        """
+        if not items:
+            return img
+        if not self.ok:
+            # fail-open — 한글은 물음표가 되지만 숫자·영문은 그대로 읽힌다.
+            for x, y, txt, col, size, _bold in items:
+                cv2.putText(img, txt, (int(x), int(y) + size - 2),
+                            cv2.FONT_HERSHEY_SIMPLEX, size / 32.0, col, 1, cv2.LINE_AA)
+            return img
+        pim = PILImage.fromarray(img)
+        draw = ImageDraw.Draw(pim)
+        for x, y, txt, col, size, bold in items:
+            draw.text((x, y), txt, font=self.font(size, bold),
+                      fill=(col[2], col[1], col[0]))          # BGR → RGB
+        # np.asarray 는 PIL 버퍼를 감싸기만 하므로, 원본 img 로 되돌려 복사한다.
+        img[:] = np.asarray(pim)
+        return img
+
+    def patch(self, txt, col, size=12, bold=False, bg=C_BG):
+        """짧은 ★고정 라벨★ — 한 번 그려 두고 blit 한다(패널 라벨용)."""
+        key = (txt, col, size, bold, bg)
+        if key not in self._patch:
+            w = int(self.width(txt, size, bold)) + 5
+            self._patch[key] = self.strip(w, size + 6, [(2, 1, txt, col, size, bold)], bg)
+        return self._patch[key]
+
+
+class StripCache:
+    """스트립 하나를 ★내용이 바뀔 때만★ 다시 그린다.
+
+    HUD 는 대부분의 프레임에서 글자가 그대로다(FPS 를 정수로 찍는 이유이기도 하다).
+    key 가 같으면 지난 그림을 그대로 돌려주므로 PIL 이 아예 돌지 않는다.
+    """
+
+    def __init__(self, tr):
+        self.tr = tr
+        self._key = None
+        self._img = None
+
+    def get(self, w, h, items, bg):
+        key = (w, h, bg, tuple((round(i[0]), round(i[1]), i[2], i[3], i[4], i[5])
+                               for i in items))
+        if key != self._key:
+            self._key = key
+            self._img = self.tr.strip(w, h, items, bg)
+        return self._img
+
+
+class CanvasPool:
+    """표시용 캔버스를 ★두 장 만들어 돌려 쓴다★.
+
+    ★왜 매 프레임 만들지 않는가★ np.full + np.vstack 으로 1248x610 캔버스를 매
+    프레임 새로 만들면 그것만 3.6ms 다(실측). 그리기 전체 예산보다 크다.
+
+    ★왜 한 장이 아니라 두 장인가★ 그리는 것은 워커 스레드고 imshow 는 메인
+    스레드다(traffic_light.main 의 규약). 한 장만 돌려 쓰면 메인이 창에 올리는 사이
+    워커가 같은 버퍼를 덮어써 ★화면이 찢어진다★. 두 장이면 다음 덮어쓰기가 두
+    프레임 뒤(30fps 에서 66ms)라 겹치지 않는다.
+    """
+
+    def __init__(self):
+        self._key = None
+        self._buf = []
+        self._i = 0
+
+    def get(self, w, h, bg=C_BG):
+        if self._key != (w, h, bg):
+            self._key = (w, h, bg)
+            self._buf = [np.full((h, w, 3), bg, np.uint8) for _ in range(2)]
+            self._i = 0
+        self._i ^= 1
+        return self._buf[self._i]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  작은 그리기 도구 — 전부 ASCII 전용(cv2)이라 비용이 사실상 0 이다
+# ══════════════════════════════════════════════════════════════════════════════
+def atxt(img, x, y, txt, col, scale=0.4, thick=1):
+    """ASCII 글자. y 는 baseline (cv2.putText 그대로)."""
+    cv2.putText(img, txt, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX,
+                scale, col, thick, cv2.LINE_AA)
+
+
+def chip(img, x, y, txt, col, scale=0.36):
+    """★배경칩을 깐 라벨★ — 밝은 하늘·노면 위에서도 읽히게 하는 유일한 방법이다.
+
+    y 는 칩의 ★위쪽★ 이다. 돌려주는 것은 칩의 높이(다음 줄을 쌓을 때 쓴다).
+    """
+    (tw, th), bl = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
+    h = th + bl + 4
+    x, y = int(x), int(y)
+    cv2.rectangle(img, (x, y), (x + tw + 6, y + h), col, -1)
+    atxt(img, x + 3, y + th + 2, txt, (255, 255, 255), scale)
+    return h
+
+
+def gauge(img, x, y, w, h, frac, col, ticks=()):
+    """★지금값을 문턱과 나란히 보여주는 막대★ 숫자보다 눈이 빠르다.
+
+    frac  = 0.0~1.0 로 정규화된 지금값 (범위를 넘으면 꽉 찬다)
+    ticks = ((위치 0~1, BGR), …) 문턱 눈금. 막대가 눈금을 넘으면 그 문턱을 넘은 것이다.
+    """
+    x, y, w, h = int(x), int(y), int(w), int(h)
+    cv2.rectangle(img, (x, y), (x + w, y + h), (60, 60, 64), -1)
+    fw = int(round(w * min(1.0, max(0.0, frac))))
+    if fw > 0:
+        cv2.rectangle(img, (x, y), (x + fw, y + h), col, -1)
+    for tf, tc in ticks:
+        tx = x + int(round(w * min(1.0, max(0.0, tf))))
+        cv2.line(img, (tx, y - 3), (tx, y + h + 3), tc, 2)
+    cv2.rectangle(img, (x, y), (x + w, y + h), (105, 105, 110), 1)
+
+
+def blit(dst, patch, x, y):
+    """patch 를 dst 의 (x, y) 에 붙인다. ★화면 밖은 잘라 낸다★ (예외를 내지 않는다)."""
+    x, y = int(x), int(y)
+    ph, pw = patch.shape[:2]
+    H, W = dst.shape[:2]
+    if x >= W or y >= H:
+        return
+    w, h = min(pw, W - x), min(ph, H - y)
+    if w > 0 and h > 0:
+        dst[y:y + h, x:x + w] = patch[:h, :w]
+
+
+def dim_outside(view, rect, factor):
+    """rect(사각형) ★바깥만★ 어둡게 한다 — 선 하나 없이 ROI 를 말하는 방법이다.
+
+    ★사각형 슬라이스 네 장만 만진다★ 불리언 마스크(view[mask==0] = …)로 쓰면 같은
+    일에 4배가 든다(팬시 인덱싱이 배열을 두 번 훑는다).
+    """
+    if factor >= 1.0:
+        return
+    h, w = view.shape[:2]
+    x0, y0, x1, y1 = (max(0, min(w, rect[0])), max(0, min(h, rect[1])),
+                      max(0, min(w, rect[2])), max(0, min(h, rect[3])))
+    for a, b, c, d in ((0, y0, 0, w), (y1, h, 0, w),
+                       (y0, y1, 0, x0), (y0, y1, x1, w)):
+        if b > a and d > c:
+            band = view[a:b, c:d]
+            cv2.addWeighted(band, factor, band, 0.0, 0.0, dst=band)
 
 class TrafficLight(Node):
     def __init__(self):
@@ -425,14 +734,34 @@ class TrafficLight(Node):
         #  터미널(ssh)에서는 cv2 가 창을 못 열므로 show_window:=false 로 끈다.
         self.declare_parameter('show_window', True)
         self.declare_parameter('draw_roi',    True)
-        #  ★창 가로폭 [2026-08-14]★ 원본(1920)을 그대로 띄우면 화면을 덮는다. 이 폭으로
-        #  줄여서 띄운다(비율 유지). 0 이면 원본 크기. 판정은 원본 해상도로 하므로
-        #  이 값을 줄여도 인지 성능에는 영향이 없다 — 보이는 크기만 달라진다.
-        self.declare_parameter('window_width', 640)
-        #  ★BEV 썸네일 [2026-08-19]★ 디버그 화면 우하단에 BEV 를 겹쳐 그린다. 두 문턱
+        #  ★뷰 가로폭 [2026-08-14 도입 · 2026-08-24 뜻이 바뀜]★ 원본(1920)을 그대로
+        #  띄우면 화면을 덮는다. 이 폭으로 줄여서 띄운다(비율 유지). 0 이면 원본 크기.
+        #  판정은 원본 해상도로 하므로 이 값은 ★보이는 크기만★ 바꾼다.
+        #  ⚠️ ★이제 이 값은 '창 폭' 이 아니라 '카메라 뷰 폭' 이다★ 우측 패널과 하단
+        #    HUD 가 밖에 붙으므로 창은 이보다 크다(960 → 창 1248x610).
+        #  ★기본값을 640 → 960 으로 올렸다 [2026-08-24]★ 두 가지 이유다:
+        #    ① 960 은 1920 의 ★정확히 절반★ 이라 INTER_AREA 리사이즈가 0.28ms 인데,
+        #       640(임의 배율)은 같은 보간으로 2.50ms 다 — 줄일수록 비싸진다(실측).
+        #    ② 640 이면 HUD 글자를 그만큼 작게 잡아야 해서 판독성이 다시 나빠진다.
+        self.declare_parameter('window_width', 960)
+        #  ★BEV 패널 [2026-08-19 도입 · 2026-08-24 겹치기→패널]★ 두 문턱
         #  (sl_brake1_px·sl_brake2_px)과 범퍼선이 거기 있어서, ★이 그림 없이는 숫자를
         #  잡을 수 없다★. 창을 따로 띄우지 않는 이유는 _draw 주석의 HighGUI 문제다.
+        #  ⚠️ ★그림 위에 겹치지 않고 오른쪽에 패널로 붙는다★ 종전에는 우하단에 겹쳐
+        #    그려서 ★정지선이 실제로 보이는 노면★ 을 가렸고, 축소를 함께 받아 문턱
+        #    라벨이 실효 0.17 크기가 됐다. 패널에는 게이지와 파라미터 요약도 같이 든다.
         self.declare_parameter('show_bev', True)
+        #  ★ROI 밖을 얼마나 어둡게 볼지 [2026-08-24]★ 종전에는 노란 사각형이었는데
+        #  BEV 사다리꼴도 거의 같은 노란색이라 둘이 구별되지 않았다. 밖을 어둡게 하면
+        #  색을 하나 쓰지 않고 ROI 를 말할 수 있다. 1.0 = 안 어둡게(테두리만).
+        #  ⚠️ ★너무 낮추지 말 것★ 정지선은 ROI 밖(노면)에 있다 — 0.3 쯤으로 내리면
+        #    정지선 마스크가 맞는지 눈으로 못 본다. 0.6 이 둘을 다 얻는 값이다.
+        self.declare_parameter('roi_dim', 0.6)
+        #  ★HUD 한글 폰트 [2026-08-24]★ 빈 문자열이면 FONT_CANDIDATES 를 순서대로
+        #  찾는다(1순위 NanumGothicCoding — ★고정폭★ 이라 HUD 열이 맞는다).
+        #  못 찾으면 경고 한 줄 남기고 cv2.putText 로 물러난다 — 한글만 물음표가 되고
+        #  창·숫자·정지 동작은 그대로다(fail-open).
+        self.declare_parameter('hud_font', '')
 
         # ── 카메라 기하 (어안 왜곡보정·BEV) ─────────────────────────────────
         #  ★파라미터 이름·기본값의 주인은 camera_model.py 다★ 차선 인지가 붙어도
@@ -504,6 +833,7 @@ class TrafficLight(Node):
         self.draw_roi    = bool(g('draw_roi'))
         self.window_width = max(0, int(g('window_width')))
         self.show_bev    = bool(g('show_bev')) and self.show_window
+        self.roi_dim     = min(1.0, max(0.0, float(g('roi_dim'))))
         # ── 카메라 기하 — 보정·BEV 의 소유자(camera_model.py) ──────────────
         #   ★파라미터를 다 읽은 뒤에 만든다★ 로드 실패는 여기서 경고로 끝나고
         #   (fail-open) 보정만 꺼진다 — 노드는 종전대로 돈다.
@@ -512,6 +842,15 @@ class TrafficLight(Node):
         self._show_lock = threading.Lock()
         self._show_frame = None
         self._window_ready = False
+        # ── 그리기 도구 [2026-08-24] ────────────────────────────────────────
+        #   ★전부 캐시다★ 매 프레임 새로 만드는 것이 하나도 없어야 8ms → 2.4ms 가 된다.
+        self.tr = TextRenderer(log=self.get_logger() if self.show_window else None,
+                               font_path=str(g('hud_font')))
+        self._pool = CanvasPool()          # 표시 캔버스 두 장(더블버퍼)
+        self._hud_strip = StripCache(self.tr)   # 하단 HUD — 글자가 바뀔 때만 다시 그린다
+        self._par_strip = None             # 패널의 파라미터 요약 — 정적이라 한 번만
+        self._bev_m = None                 # 썸네일 크기로 바로 펴는 호모그래피
+        self._bev_m_key = None
 
         # ── 상태 ───────────────────────────────────────────────────────────
         self.tl_state   = 'UNKNOWN'   # 마지막 프레임 판정
@@ -839,14 +1178,22 @@ class TrafficLight(Node):
             return max(b.get('area_frac', 0.0) for b in red)
         return float(max(b.get('box_h', 0) for b in red))
 
+    def _near_gate_base(self):
+        """★히스테리시스를 뺀 원래 임계★ 게이지의 자를 여기에 맞춘다.
+
+        _near_gate 는 물고 있는 동안 낮아지므로, 그것으로 게이지 범위를 잡으면
+        무는 순간 막대가 튄다 — 눈금만 움직여야 하고 자는 고정이어야 한다.
+        """
+        return (self.tl_red_stop_min_area_frac if self.tl_red_stop_min_area_frac > 0.0
+                else float(self.tl_red_stop_min_height))
+
     def _near_gate(self):
         """지금 '가깝다'로 인정할 임계 — ★물고 있는 동안은 낮춘다★(히스테리시스).
 
         단위는 _near_metric 과 같다(면적비 또는 박스높이 px). 화면 HUD 에도 이 값을
         그대로 찍으므로, 임계가 낮아진 구간을 눈으로 확인할 수 있다.
         """
-        base = (self.tl_red_stop_min_area_frac if self.tl_red_stop_min_area_frac > 0.0
-                else float(self.tl_red_stop_min_height))
+        base = self._near_gate_base()
         return base * self.tl_near_release_ratio if self.stopping else base
 
     def _resolve_tl_state(self, boxes):
@@ -1034,131 +1381,315 @@ class TrafficLight(Node):
         if self.show_window:
             self._draw(frame, boxes, state, (xmin, ymin, xmax, ymax))
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  표시 — ★계기판을 그린다★ [2026-08-24 전면 개편]
+    # ══════════════════════════════════════════════════════════════════════════
+    #  ★원칙 하나 — 먼저 표시 크기로 줄이고, 그 좌표계에서 그린다★
+    #    종전에는 1920x1080 에 오버레이를 그린 뒤 표시 직전에 창 폭으로 축소했다.
+    #    그래서 글자·선이 전부 ★실효 1/3 크기★ 가 됐다(fontScale 0.8 → 0.27, BEV 안의
+    #    문턱 라벨은 0.17). 튜닝에 쓰라고 찍어 둔 숫자를 읽을 수 없으면 없는 것과 같다.
+    #    지금은 프레임을 먼저 줄이고 박스·ROI·사다리꼴·정지선을 그 좌표계에서 그린다 —
+    #    글자가 창 크기에 맞고, 큰 그림에 그리는 비용도 없어진다.
+    #
+    #  ★글자는 그림 위에 얹지 않는다★
+    #    HUD 는 하단 검은 띠, BEV·게이지·파라미터는 우측 패널로 뺐다. 밝은 노면 위의
+    #    회색 글자를 읽으려고 애쓰는 일이 없어지고, 글자가 정지선을 가리지도 않는다.
+    #
+    #  ★한글을 그린다 (white1/py)★
+    #    cv2.putText 는 ASCII 만 그린다. 종전 HUD 는 stop_why(전부 한글)를
+    #    `???1??? PRE[????????-1???]` 로 찍고 있었다 — 즉 ★'왜 이 단계인가' 를 화면에서
+    #    읽을 수 없었다★. 이제 PIL 로 그리고, 폰트가 없으면 조용히 물러난다(fail-open).
+    #
+    #  ★비용은 오히려 줄었다 (같은 프레임 실측)★
+    #      종전  window_width=640  7.96 ms   ← 기본값. 1920→640 리사이즈만 2.50ms
+    #      종전  window_width=960  5.61 ms
+    #      지금  HUD 문자열 그대로 2.38 ms   ← 대부분의 프레임
+    #      지금  HUD 매 프레임 갱신 7.55 ms  ← 최악의 경우가 종전 기본값과 같다
+    #    캔버스를 매 프레임 새로 만들지 않는 것(CanvasPool)만으로 3.6ms 가 없어졌다.
+
+    #  하단 HUD 의 글자 크기·줄 수. 열 좌표는 이 크기의 '칸' 단위로 적는다.
+    HUD_SIZE  = 14
+    HUD_LINES = 3
+    #  우측 패널이 뷰 폭에서 차지하는 비율. BEV 썸네일(4:3)이 이 폭을 채운다.
+    PANEL_RATIO = 0.30
+
     def _draw(self, frame, boxes, state, roi):
-        xmin, ymin, xmax, ymax = roi
-        dbg = frame.copy()
+        now = time.time()
+        sl_live = self.sl_enable and self.sl_model is not None
+        sl_fresh = self._sl_present(now)
+
+        # ── 뷰 — ★먼저 줄인다★ ──────────────────────────────────────────
+        h0, w0 = frame.shape[:2]
+        vw = w0 if self.window_width <= 0 else min(self.window_width, w0)
+        sc = vw / float(w0)
+        vh = int(round(h0 * sc))
+        pw = int(round(vw * self.PANEL_RATIO)) if (self.show_bev and sl_live) else 0
+        hh = self.HUD_LINES * self.tr.line_h(self.HUD_SIZE) + 10
+        canvas = self._pool.get(vw + pw, vh + hh)
+        view = canvas[0:vh, 0:vw]
+        #  ★정확히 절반일 때만 INTER_AREA★ 1920→960 은 0.28ms 인데 1920→640 은 같은
+        #  보간으로 2.50ms 다(임의 배율은 일반 경로로 떨어진다). 그때는 LINEAR 를 쓴다.
+        cv2.resize(frame, (vw, vh), dst=view,
+                   interpolation=(cv2.INTER_AREA if abs(sc - 0.5) < 1e-6
+                                  else cv2.INTER_LINEAR))
+
+        # ── ROI — ★선이 아니라 밖을 어둡게★ ────────────────────────────
+        #   종전에는 노란 사각형이었는데, BEV 사다리꼴도 거의 같은 노란색이라 둘이
+        #   구별되지 않았다. 밖을 어둡게 하면 색을 하나 쓰지 않고 ROI 를 말할 수 있다.
+        #   ⚠️ 너무 어둡게 하면 안 된다 — ★정지선은 ROI 밖(노면)에 있다★.
+        rect = tuple(int(round(v * sc)) for v in roi)
         if self.draw_roi:
-            cv2.rectangle(dbg, (xmin, ymin), (xmax, ymax), (0, 255, 255), 2)
+            dim_outside(view, rect, self.roi_dim)
+            cv2.rectangle(view, (rect[0], rect[1]),
+                          (max(0, rect[2] - 1), max(0, rect[3] - 1)), (120, 120, 124), 1)
+
+        # ── BEV 사다리꼴·정지선 ────────────────────────────────────────
+        #   사다리꼴은 항상 그린다 — 이것이 곧 '거리를 어디서 재는가' 이고, 실측 튜닝
+        #   (STOPLINE_TEST.md 단계 2)은 이 도형을 노면에 맞추는 일이다.
+        if sl_live:
+            cv2.polylines(view, [(self.cam.src_pts * sc).astype(np.int32)], True,
+                          C_CYAN, 1)
+            atxt(view, self.cam.src_pts[0, 0] * sc + 4,
+                     self.cam.src_pts[0, 1] * sc + 13, 'BEV', C_CYAN, 0.38)
+            if self.sl_poly is not None and sl_fresh:
+                poly = (self.sl_poly * sc).astype(np.int32)
+                cv2.polylines(view, [poly], True, C_MAGENTA, 2)
+                bi = int(np.argmax(poly[:, 1]))
+                cv2.circle(view, (int(poly[bi, 0]), int(poly[bi, 1])), 4,
+                           C_MAGENTA, -1)
+
+        # ── 박스 ───────────────────────────────────────────────────────
         for it in boxes:
             x1, y1, x2, y2 = it['box']
-            color = ((0, 0, 255) if it['label'] == 'RED'
-                     else (0, 255, 0) if it['label'] == 'GREEN' else (150, 150, 150))
-            cv2.rectangle(dbg, (x1 + xmin, y1 + ymin), (x2 + xmin, y2 + ymin), color, 2)
-            cv2.putText(dbg, f"{it['label']} {it['conf']:.2f} "
-                             f"{100.0 * it.get('area_frac', 0.0):.3f}%",
-                        (x1 + xmin, max(0, y1 + ymin - 12)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        # ── 정지선 ──
-        #   ★BEV 사다리꼴은 항상 그린다★ 이것이 곧 '거리를 어디서 재는가' 이고,
-        #   실측 튜닝(STOPLINE_TEST.md 단계 2)은 이 사각형을 노면에 맞추는 일이다.
-        #   정지선을 잡고 있으면 마스크와 최근접점을 함께 그려 나란히 볼 수 있게 한다.
-        sl_fresh = self._sl_present(time.time())
-        if self.sl_enable and self.sl_model is not None:
-            cv2.polylines(dbg, [self.cam.src_pts.astype(np.int32)], True, (0, 200, 255), 2)
-            cv2.putText(dbg, "BEV", (int(self.cam.src_pts[0, 0]),
-                                     max(18, int(self.cam.src_pts[0, 1]) - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
-            if self.sl_poly is not None and sl_fresh:
-                cv2.polylines(dbg, [self.sl_poly.astype(np.int32)], True, (255, 0, 255), 2)
-                bi = int(np.argmax(self.sl_poly[:, 1]))
-                cv2.circle(dbg, (int(self.sl_poly[bi, 0]), int(self.sl_poly[bi, 1])),
-                           8, (255, 0, 255), -1)
-        if self.show_bev:
-            self._draw_bev(dbg, sl_fresh)
+            bx1, by1 = int(round((x1 + roi[0]) * sc)), int(round((y1 + roi[1]) * sc))
+            bx2, by2 = int(round((x2 + roi[0]) * sc)), int(round((y2 + roi[1]) * sc))
+            col = (C_RED if it['label'] == 'RED'
+                   else C_GREEN if it['label'] == 'GREEN' else C_GRAY)
+            cv2.rectangle(view, (bx1, by1), (bx2, by2), col, 2)
+            # ★배경칩★ 이 없으면 밝은 하늘·벽 위에서 라벨을 읽을 수 없다.
+            chip(view, bx1, (by1 - 16) if by1 > 17 else by2,
+                     f"{it['label']} {it['conf']:.2f} "
+                     f"{100.0 * it.get('area_frac', 0.0):.2f}%", col)
 
-        # HUD 는 ROI 밖(하단)에 그린다 — 좌상단은 tl_roi 한복판이라 글자가 램프를 덮는다.
-        hud_y = dbg.shape[0] - 15
-        res_color = ((0, 0, 255) if 'RED' in state
-                     else (0, 255, 0) if state == 'GREEN' else (150, 150, 150))
-        # ★임계와 '지금 값'을 나란히 찍는다★ 3·4단계(임계 실측 튜닝)의 계기판이다.
-        #   물고 있는 동안에는 임계가 tl_near_release_ratio 만큼 낮아진 값으로 보인다.
-        gate, near = self._near_gate(), self._near_metric(boxes)
-        thr = (f"area {100.0 * near:.3f}/{100.0 * gate:.3f}%"
-               if self.tl_red_stop_min_area_frac > 0.0
-               else f"h {near:.0f}/{gate:.0f}px")
-        cv2.putText(dbg, f"FPS: {self.fps:.1f}", (20, hud_y - 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        # 정지선은 '지금값/트리거' 를 근접도와 같은 형식으로 붙인다 — 두 게이트를 한
-        # 줄에서 비교할 수 있어야 '왜 아직 안 섰나'가 화면만 보고 판정된다.
-        sl_txt = ''
-        if self.sl_enable and self.sl_model is not None:
-            cur = f"{self.sl_px:.0f}" if (sl_fresh and self.sl_px > -900.0) else '--'
-            sl_txt = (f"  sl {cur}px B1:{self.sl_brake1_px:.0f} "
-                      f"B2:{self.sl_brake2_px:.0f}")
-            if self.sl_wait:
-                sl_txt += " WAIT"
-        # ★지금 몇 단인지를 그대로 찍는다★ 1단(PRE)과 2단(STOP)을 화면에서 구별할 수
-        #   없으면 '왜 아직 안 섰나'와 '왜 벌써 물었나'를 가릴 수 없다.
-        lvl_txt = ('' if not self.stopping
-                   else f"  ★{self.stop_level}단 "
-                        f"{'PRE' if self.stop_level < self.brake_level else 'STOP'}"
-                        f"[{self.stop_why}]")
-        cv2.putText(dbg, f"STATE: {state}  raw:{self.last_raw}  drop:{self.last_red_drop}  "
-                         f"{thr}{sl_txt}{lvl_txt}",
-                    (20, hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, res_color, 2)
+        # ── 제동 단계를 테두리로 ───────────────────────────────────────
+        #   ★곁눈으로도 보여야 한다★ 실차에서 창을 뚫어지게 보고 있을 수는 없다.
+        if self.stopping:
+            if self.stop_level >= self.brake_level:
+                cv2.rectangle(view, (0, 0), (vw - 1, vh - 1), C_RED, 6)
+            else:
+                cv2.rectangle(view, (0, 0), (vw - 1, vh - 1), C_AMBER, 4)
+
+        if pw:
+            self._draw_panel(canvas, frame, vw, vh, pw, sl_fresh)
+        self._draw_hud(canvas, vw + pw, vh, hh, state, boxes, now, sl_live, sl_fresh)
+
         # ★여기서 imshow 를 부르지 않는다 [2026-08-14]★ 이 함수는 영상 콜백(워커
         #   스레드)에서 돈다. OpenCV HighGUI(GTK)는 ★스레드 안전하지 않고★, 워커
         #   스레드에서 imshow/waitKey 를 부르면 그 스레드가 GTK 안에서 멎는다 —
         #   그러면 영상 콜백이 다시 돌지 못해 ★'/image_raw 두절'★ 이 된다(실측:
         #   단일 스레드 판은 멀쩡, MultiThreadedExecutor 로 바꾼 판은 0.9초 만에 두절).
-        #   그래서 그린 프레임만 넘겨 두고, 실제 표시는 ★메인 스레드★ 가 한다(main).
-        #   ※ 표시용으로 미리 줄여서 넘긴다 — 원본 1920x1080 을 그대로 띄우면 창이
-        #     화면을 덮고, 복사·렌더 비용도 그만큼 크다(구 white 는 WINDOW_NORMAL 로
-        #     띄웠는데, 우리는 아예 작게 만들어 넘긴다).
-        if self.window_width > 0 and dbg.shape[1] > self.window_width:
-            s = self.window_width / float(dbg.shape[1])
-            dbg = cv2.resize(dbg, (self.window_width, int(round(dbg.shape[0] * s))),
-                             interpolation=cv2.INTER_AREA)
+        #   그래서 그린 캔버스만 넘겨 두고, 실제 표시는 ★메인 스레드★ 가 한다(main).
         with self._show_lock:
-            self._show_frame = dbg
+            self._show_frame = canvas
 
-    def _draw_bev(self, dbg, sl_fresh):
-        """디버그 화면 ★우하단에 BEV 를 겹쳐 그린다★ [2026-08-19]
+    def _draw_panel(self, canvas, frame, vw, vh, pw, sl_fresh):
+        """우측 패널 — ★BEV 썸네일 + 게이지 두 개 + 파라미터 요약★ [2026-08-24]
 
-        ★이 그림 없이는 두 문턱을 잡을 수 없다★ sl_brake1_px·sl_brake2_px 는 BEV
-        픽셀이라 원본 화면만 봐서는 어디쯤인지 알 수 없다. 여기에 범퍼선과 두 문턱선을
-        그려 두면, 정지선 폴리곤이 어느 선을 넘는 순간 몇 단이 물리는지가 눈에 보인다.
+        ★썸네일 없이는 두 문턱을 잡을 수 없다★ sl_brake1_px·sl_brake2_px 는 BEV
+        픽셀이라 원본 화면만 봐서는 어디쯤인지 알 수 없다. 범퍼선과 두 문턱선을 그려
+        두면 정지선 폴리곤이 어느 선을 넘는 순간 몇 단이 물리는지가 눈에 보인다.
 
-        창을 따로 띄우지 않고 합성하는 이유는 _draw 끝의 HighGUI 주석과 같다 —
-        창이 늘면 메인 스레드에서 관리할 것이 늘고, 워커 스레드가 손대면 두절된다.
+        종전에는 이것을 ★그림 위에 겹쳐★ 그렸다. 그래서 (a) 창의 가로 1/3·세로 44%
+        를 덮으며 정지선이 실제로 보이는 우하단 노면을 가렸고, (b) 축소를 함께 받아
+        문턱 라벨이 실효 0.17 크기가 됐다. 패널로 빼면 둘 다 없어진다.
         """
-        bev = self.cam.to_bev(dbg)
-        h, w = bev.shape[:2]
+        px, tw = vw, pw - 12
+        th = int(round(tw * self.cam.bev_h / float(self.cam.bev_w)))
+        thumb = canvas[6:6 + th, px + 6:px + 6 + tw]
+        # ★깨끗한 원본에서 썸네일 크기로 바로 편다★ 두 가지를 함께 고친다:
+        #   ① 종전에는 ★오버레이가 다 그려진 dbg★ 를 펴서, 썸네일 안에 사다리꼴·정지선이
+        #      한 번 더 warp 되어 들어왔다(선이 두 겹으로 보이던 것).
+        #   ② 종전에는 640x480 을 뜬 뒤 축소를 함께 받았다. 결과 크기로 바로 펴면
+        #      워프 비용이 결과 화소 수에 비례해 줄어든다(1.6ms → 0.9ms).
+        if self._bev_m_key != (tw, th):
+            self._bev_m_key = (tw, th)
+            self._bev_m = self.cam.bev_matrix(tw, th)
+        cv2.warpPerspective(frame, self._bev_m, (tw, th), dst=thumb)
 
-        def row(dist_px):
-            """범퍼로부터 dist_px 떨어진 지점의 BEV 행."""
-            return int(round(self.cam.bumper_y - dist_px))
-
-        # 범퍼선(초록) = 거리 0 의 기준. 화면 밖이면(범퍼가 BEV 아래) 그리지 않는다.
-        for y, col, txt in ((row(0.0), (0, 255, 0), 'BUMPER'),
-                            (row(self.sl_brake2_px), (0, 0, 255),
-                             f"B2 {self.sl_brake2_px:.0f}"),
-                            (row(self.sl_brake1_px), (0, 200, 255),
-                             f"B1 {self.sl_brake1_px:.0f}")):
-            if 0 <= y < h:
-                cv2.line(bev, (0, y), (w, y), col, 2)
-                cv2.putText(bev, txt, (6, max(14, y - 6)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
-
+        k = tw / float(self.cam.bev_w)
+        for dist, col, lab in ((0.0, C_GREEN, 'BUMPER'),
+                               (self.sl_brake2_px, C_RED,
+                                f"B2 {self.sl_brake2_px:.0f}"),
+                               (self.sl_brake1_px, C_AMBER,
+                                f"B1 {self.sl_brake1_px:.0f}")):
+            y = int(round((self.cam.bumper_y - dist) * k))
+            if not (-4 <= y <= th + 4):
+                continue
+            # ★클램프한다★ 종전 조건(0 <= y < th)에서는 기본값 bev_bumper_y_px=480 이
+            #   bev_h=480 과 같아 ★거리 0 의 기준선이 절대 안 그려졌다★. 그 선을 보고
+            #   범퍼행을 맞추는 절차인데(STOPLINE_TEST 단계 2) 선이 없었던 것이다.
+            y = max(0, min(th - 1, y))
+            cv2.line(thumb, (0, y), (tw, y), col, 1)
+            # BUMPER 라벨만 오른쪽으로 — 범퍼선과 B2 선은 붙어 있기 마련이다.
+            #   폭은 ★재서★ 정한다(글자 수 × 상수로 어림하면 오른쪽으로 삐져나간다).
+            lw = cv2.getTextSize(lab, cv2.FONT_HERSHEY_SIMPLEX, 0.33, 1)[0][0]
+            atxt(thumb, (tw - lw - 4) if dist == 0.0 else 3,
+                 max(10, y - 3), lab, col, 0.33)
         if self.sl_poly_bev is not None and sl_fresh:
-            pts = np.asarray(self.sl_poly_bev, dtype=np.int32)
-            cv2.polylines(bev, [pts], True, (255, 0, 255), 2)
+            pts = (np.asarray(self.sl_poly_bev) * k).astype(np.int32)
+            cv2.polylines(thumb, [pts], True, C_MAGENTA, 2)
             bi = int(np.argmax(pts[:, 1]))
-            cv2.circle(bev, (int(pts[bi, 0]), int(pts[bi, 1])), 6, (255, 0, 255), -1)
-            cv2.putText(bev, f"{self._sl_px_txt()}", (6, h - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+            cv2.circle(thumb, (int(pts[bi, 0]), int(pts[bi, 1])), 3, C_MAGENTA, -1)
+        cv2.rectangle(canvas, (px + 6, 6), (px + 6 + tw, 6 + th), C_FRAME, 1)
+        cv2.line(canvas, (px, 0), (px, vh), C_FRAME, 1)
 
-        # 우하단에 붙인다. 원본이 BEV 보다 작을 리는 없지만(1920x1080 vs 640x480)
-        # 해상도를 낮춰 돌리는 경우까지 생각해 들어갈 자리가 없으면 그냥 건너뛴다.
-        H, W = dbg.shape[:2]
-        if H <= h or W <= w:
-            return
-        x0, y0 = W - w - 10, H - h - 10
-        dbg[y0:y0 + h, x0:x0 + w] = bev
-        cv2.rectangle(dbg, (x0, y0), (x0 + w, y0 + h), (0, 200, 255), 2)
+        # ── 게이지 — ★지금값을 문턱과 나란히★ ─────────────────────────
+        yy = 6 + th + 12
+        cv2.rectangle(canvas, (px + 1, yy - 4), (px + pw, yy + 80), C_BG, -1)
+        gate, near = self._near_gate(), self._near_metric(self.last_boxes)
+        base = max(1e-6, self._near_gate_base())
+        span = base * 1.5                      # 게이지 오른쪽 끝 = 임계의 1.5배
+        blit(canvas, self.tr.patch('근접', C_DIM, 12), px + 7, yy)
+        atxt(canvas, px + 48, yy + 12,
+                 (f"{100.0 * near:.2f}/{100.0 * gate:.2f}%"
+                  if self.tl_red_stop_min_area_frac > 0.0 else f"{near:.0f}/{gate:.0f}px"),
+                 C_RED if near >= gate else C_TXT, 0.40)
+        gauge(canvas, px + 8, yy + 20, pw - 22, 8, near / span,
+                  C_RED if near >= gate else (108, 108, 114),
+                  ((gate / span, (255, 255, 255)),))
+
+        yy += 40
+        rng = max(1.0, self.sl_brake1_px * 1.6)   # 왼쪽 = 멀다, 오른쪽 = 범퍼
+        cur = self.sl_px if (sl_fresh and self.sl_px > -900.0) else -1.0
+        blit(canvas, self.tr.patch('정지선', C_DIM, 12), px + 7, yy)
+        atxt(canvas, px + 62, yy + 12, (f"{cur:.0f}px" if cur >= 0 else '--'),
+                 C_MAGENTA if cur >= 0 else C_DIM, 0.40)
+        gauge(canvas, px + 8, yy + 20, pw - 22, 8,
+                  0.0 if cur < 0 else 1.0 - cur / rng, C_MAGENTA,
+                  ((1.0 - self.sl_brake1_px / rng, C_AMBER),
+                   (1.0 - self.sl_brake2_px / rng, C_RED)))
+
+        # ── 파라미터 요약 — ★정적이라 한 번만 그린다★ ────────────────
+        #   '이 창이 지금 어떤 값으로 판정하나' 가 화면에 남아 있어야 튜닝 중에
+        #   터미널을 왕복하지 않는다. 비용은 처음 한 프레임뿐이다.
+        yy += 44
+        avail = max(1, vh - yy)
+        if self._par_strip is None or self._par_strip.shape[0] != avail:
+            sp = self.cam.src_pts
+            gate_txt = (f"gate {100.0 * self.tl_red_stop_min_area_frac:.2f}%"
+                        if self.tl_red_stop_min_area_frac > 0.0
+                        else f"gate {self.tl_red_stop_min_height}px")
+            rows = [
+                (8, 2, '판정 파라미터', C_TXT, 12, True),
+                (8, 22, f"conf {self.tl_conf:.2f}  imgsz {self.tl_imgsz}"
+                        f"  x{self.tl_interval}", C_DIM, 12, False),
+                (8, 40, f"hold {self.tl_hold_s:.2f}s  grace {self.tl_gap_grace_s:.2f}s",
+                 C_DIM, 12, False),
+                (8, 58, f"{gate_txt}  release x{self.tl_near_release_ratio:.2f}",
+                 C_DIM, 12, False),
+                (8, 76, f"놓기유예 {self.red_release_hold_s:.2f}s"
+                        f"{'  래치' if self.stop_latch else ''}", C_DIM, 12, False),
+                (8, 100, f"sl conf {self.sl_conf:.2f}  hold {self.sl_hold_s:.2f}s",
+                 C_DIM, 12, False),
+                (8, 118, f"대기상한 {self.sl_wait_max_s:.1f}s"
+                         f"  코앞 x{self.sl_override_gate_ratio:.1f}",
+                 C_DIM, 12, False),
+                (8, 142, f"BEV {sp[0, 0]:.0f},{sp[0, 1]:.0f} {sp[1, 0]:.0f},{sp[1, 1]:.0f}",
+                 C_DIM, 12, False),
+                (8, 160, f"    {sp[2, 0]:.0f},{sp[2, 1]:.0f} {sp[3, 0]:.0f},{sp[3, 1]:.0f}",
+                 C_DIM, 12, False),
+            ]
+            # ★자리가 없으면 아래쪽 줄을 버린다★ 좁은 창(window_width 640)에서는 패널
+            #   높이가 모자라는데, 그냥 그리면 마지막 줄이 글자 중간에서 잘려 더 나쁘다.
+            self._par_strip = self.tr.strip(
+                pw, avail, [r for r in rows if r[1] + r[4] + 2 <= avail], C_BG)
+        blit(canvas, self._par_strip, px + 1, yy)
+
+    def _permit_txt(self, now):
+        """지금 개입 허락이 어디서 오는가 — HUD 한 줄로 쓸 짧은 말.
+
+        ★이것이 화면에 없어서 제일 헤맸다★ 허락이 없으면 stopping 이 false 라
+        종전 HUD 는 단계 표시조차 빈 문자열이었다. 화면만 보면 '빨간불을 보는데
+        아무 일도 안 일어난다' 로 보인다 — 원인은 체크박스가 꺼진 것뿐인데.
+        """
+        if not self.require_permission:
+            return '항상'
+        if self.tl_enable and (now - self.tl_enable_t) <= TL_ENABLE_STALE_S:
+            return '체크박스'
+        if self.tl_permit and (now - self.tl_permit_t) <= TL_ENABLE_STALE_S:
+            return f"주행({self.drive_state or '?'})"
+        return ''
+
+    def _draw_hud(self, canvas, cw, vh, hh, state, boxes, now, sl_live, sl_fresh):
+        """하단 HUD 3줄. ★열은 고정폭 '칸' 으로 적는다★ — 줄이 달라도 열이 맞는다.
+
+        한 줄의 원소 = (칸, 글자, 색[, 굵게]). 앞 원소와 겹치려 하면 밀어 낸다
+        (겹쳐 찍혀 못 읽는 것보다 열이 조금 어긋나는 편이 낫다).
+        """
+        sz, cell = self.HUD_SIZE, self.tr.cell(self.HUD_SIZE)
+        scol = (C_RED if 'RED' in state
+                else C_GREEN if state == 'GREEN' else C_DIM)
+        # RED 확정까지 얼마나 찼는가 — 종전에는 이 진행이 화면에 전혀 없었다.
+        held = 0.0 if self.red_since is None else max(0.0, now - self.red_since)
+        permit = self._permit_txt(now)
+        lvl = self.stop_level if self.stopping else 0
+        lvl_txt = (f"제동 {lvl}단 "
+                   + ('STOP' if lvl >= self.brake_level else 'PRE')) if lvl else '제동 없음'
+        lvl_col = (C_RED if lvl >= self.brake_level
+                   else C_AMBER if lvl else C_DIM)
+        gate, near = self._near_gate(), self._near_metric(boxes)
+        near_txt = (f"근접 {100.0 * near:.2f}/{100.0 * gate:.2f}%"
+                    if self.tl_red_stop_min_area_frac > 0.0
+                    else f"근접 {near:.0f}/{gate:.0f}px")
+        cur = self.sl_px if (sl_fresh and self.sl_px > -900.0) else -1.0
+        if not sl_live:
+            sl_txt, sl_col = '정지선 OFF', C_DIM
+        elif cur < 0:
+            sl_txt, sl_col = '정지선 미검출', C_DIM
+        else:
+            sl_txt = (f"정지선 {cur:.0f}px{self.cam.m_txt(cur)}"
+                      + (' 확정' if self._sl_confirmed(now) else ''))
+            sl_col = C_MAGENTA
+        waited = (0.0 if self.red_conf_t is None else max(0.0, now - self.red_conf_t))
+
+        lines = [
+            [(0, state, scol, True),
+             (12, f"확정 {held:.2f}/{self.tl_hold_s:.2f}s", C_TXT),
+             (32, near_txt, C_RED if near >= gate else C_TXT),
+             (54, f"raw {self.last_raw} drop {self.last_red_drop}", C_DIM),
+             (72, f"FPS {self.fps:.0f}", C_DIM),
+             (84, f"보정 {'ON' if self.cam.enabled else 'OFF'}",
+              C_DIM if self.cam.enabled else C_AMBER)],
+            [(0, lvl_txt, lvl_col, True),
+             (14, (f"- {self.stop_why}" if (self.stop_why and permit) else ''), C_TXT),
+             (34, f"허락 {permit or '없음'}",
+              C_GREEN if permit else C_RED),
+             (56, (f"대기 {waited:.1f}/{self.sl_wait_max_s:.1f}s"
+                   if (self.sl_wait and sl_live) else ''), C_AMBER)],
+            [(0, sl_txt, sl_col),
+             (26, (f"B1 {self.sl_brake1_px:.0f}  B2 {self.sl_brake2_px:.0f}"
+                   if sl_live else ''), C_DIM),
+             (44, (f"범퍼행 {self.cam.bumper_y:.0f}"
+                   f"  BEV {self.cam.bev_w}x{self.cam.bev_h}" if sl_live else ''),
+              C_DIM),
+             (72, ('★래치' if (self.stop_latch and self.stopping) else ''), C_AMBER)],
+        ]
+        items = []
+        for li, segs in enumerate(lines):
+            y, xend = 5 + li * self.tr.line_h(sz), 0.0
+            for seg in segs:
+                col_cell, txt, col = seg[0], seg[1], seg[2]
+                if not txt:
+                    continue
+                bold = len(seg) > 3 and seg[3]
+                size = sz + (3 if bold else 0)
+                x = max(col_cell * cell, xend)
+                items.append((x, y - (2 if bold else 0), txt, col, size, bold))
+                xend = x + self.tr.width(txt, size, bold) + 2 * cell
+        blit(canvas, self._hud_strip.get(cw, hh, items, C_HUD), 0, vh)
 
     def show_pending(self):
-        """★메인 스레드에서만 부른다★ 마지막으로 그려 둔 프레임을 창에 띄운다."""
+        """★메인 스레드에서만 부른다★ 마지막으로 그려 둔 캔버스를 창에 띄운다."""
         if not self.show_window:
             return
         with self._show_lock:
@@ -1166,8 +1697,8 @@ class TrafficLight(Node):
         if frame is None:
             return
         if not self._window_ready:
-            # 구 white/perception.py 와 같은 방식 — 크기를 사람이 바꿀 수 있게 두고,
-            # 처음 크기만 정해 준다(WINDOW_AUTOSIZE 면 원본 크기로 고정되어 거대해진다).
+            # 크기를 사람이 바꿀 수 있게 두고, 처음 크기만 정해 준다
+            # (WINDOW_AUTOSIZE 면 원본 크기로 고정되어 창을 못 줄인다).
             cv2.namedWindow('Traffic Light', cv2.WINDOW_NORMAL)
             cv2.resizeWindow('Traffic Light', frame.shape[1], frame.shape[0])
             self._window_ready = True

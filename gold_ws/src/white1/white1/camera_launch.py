@@ -12,6 +12,9 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
     usb_cam       V4L2 → /image_raw   ★원본 그대로다(보정하지 않는다 — 아래 절)★
     usb_cam_ctrl  기동 2초 뒤 v4l2-ctl 로 노출·게인 등을 ★장치 범위로 클램프해★ 재적용
     traffic_light /image_raw → 빨간불이면 /brake_level (white1/traffic_light.py)
+                  ★[2026-08-24] 인지 결과 창이 계기판이 됐다★ 한글 HUD 3줄 + 우측
+                  BEV·게이지 패널. tl_window_width 는 이제 '창 폭' 이 아니라
+                  ★카메라 뷰 폭★ 이다(자세한 것은 traffic_light.py 헤더).
                   ★[2026-08-19] 정지선이 보이면 2단계로 선다★ 1단 예비제동으로 줄이다
                   정지선 앞에서 2단 확정 정지 (sl_brake1_px · sl_brake2_px).
                   정지선이 안 보이면 종전대로 그 자리에서 즉시 2단.
@@ -27,6 +30,11 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
 ⚠️ ★/image_raw 자체는 보정하지 않는다★ usb_cam 에 camera_info_url 을 주지 않고,
    보정은 인지 노드가 프레임을 받은 뒤에 한다. 원본 녹화(nxde video)가 '카메라가 실제로
    준 그림'을 봐야 하기 때문이다 — 녹화된 mp4 에 어안이 남아 있는 것이 ★정상★ 이다.
+
+⚠️ ★[2026-08-24] ROI·색 임계·BEV 사다리꼴처럼 눈으로 맞추는 값은 cam_testbed 소관★
+   이 워크스페이스는 그 결과(캘리브 yaml·bev_src_pts·두 문턱 등)를 받아 아래 기본값에
+   반영하고 실차에서 검증하는 쪽이다(STOPLINE_TEST.md 참고). 처음부터 이 차에서
+   눈으로 잡는 절차가 아니다.
 
 ⚠️ ★카메라를 안 꽂은 채 use_camera:=true 로 띄우면 usb_cam 이 respawn 루프를 돈다★
    그 로그가 다른 노드 로그를 덮는다. 카메라를 쓸 일이 없는 날은 use_camera:=false.
@@ -92,7 +100,9 @@ def declare_args(cam_dev):
                         '되면 리니어 1단으로 부드럽게 줄이기 시작한다. ⚠️ 근거 없는 '
                         '기본값이다 — 1단 감속도 1.30 m/s²(BRAKING.md 4절)로 4펄스에서 '
                         '약 4.8m 이니, 그 거리의 HUD px 값으로 잡는다(STOPLINE_TEST 단계 2). '
-                        '크게 잡으면 멀리서부터 기어가다 정지선 전에 멈춰 선다'),
+                        '크게 잡으면 멀리서부터 기어가다 정지선 전에 멈춰 선다. '
+                        '★[2026-08-24] 실측은 cam_testbed에서 하고, 여기 기본값은 '
+                        '그 결과로 갱신한다★'),
         DeclareLaunchArgument(
             'sl_brake2_px', default_value='60.0',
             description='★2단 확정 정지 문턱★ 같은 거리가 이 픽셀 이하면 2단으로 세운다. '
@@ -113,7 +123,9 @@ def declare_args(cam_dev):
             description='★BEV 사다리꼴★ 보정된 화면에서 노면 직사각형에 해당하는 네 점 '
                         '(좌상,우상,우하,좌하). ⚠️ 기본값은 구 white 마운트에서 유도한 '
                         '것이라 ★이 차에서 다시 잡아야 한다★ — 화면에 노란 사다리꼴로 '
-                        '그려지니 노면에 맞춰 눈으로 맞춘다(STOPLINE_TEST 단계 2)'),
+                        '그려지니 노면에 맞춰 눈으로 맞춘다(STOPLINE_TEST 단계 2). '
+                        '★[2026-08-24] 이 실측은 cam_testbed에서 하고, 여기 기본값은 '
+                        '그 결과를 받아 갱신한다★'),
         DeclareLaunchArgument(
             'bev_bumper_y_px', default_value='480.0',
             description='★앞범퍼가 BEV 의 몇 번째 행인가 = 거리 0 의 기준★ 기본값은 BEV '
@@ -132,10 +144,15 @@ def declare_args(cam_dev):
             description='인지 결과 창(OpenCV)을 띄울지. ★기본 true★ — ROI·근접도·색 '
                         '임계는 눈으로 봐야 잡는다. 화면 없는 터미널(ssh)이면 false'),
         DeclareLaunchArgument(
-            'tl_window_width', default_value='640',
-            description='인지 결과 창의 가로폭[px]. 원본(1920)을 그대로 띄우면 화면을 '
-                        '덮는다. 판정은 원본 해상도로 하므로 이 값은 ★보이는 크기만★ '
-                        '바꾼다. 0 이면 원본 크기'),
+            'tl_window_width', default_value='960',
+            description='인지 결과 창의 ★카메라 뷰★ 가로폭[px]. 창은 이보다 크다 — '
+                        '오른쪽에 BEV·게이지 패널이, 아래에 HUD 3줄이 붙는다'
+                        '(960 → 창 1248x610). 판정은 원본 해상도로 하므로 이 값은 '
+                        '★보이는 크기만★ 바꾼다. 0 이면 원본 크기. ⚠️ ★960 이 기본인 '
+                        '이유★ 1920 의 정확히 절반이라 리사이즈가 0.28ms 인데, 640 같은 '
+                        '임의 배율은 같은 보간으로 2.50ms 다(실측). 그리고 640 이면 HUD '
+                        '글자를 그만큼 작게 잡아야 해서 판독성이 다시 나빠진다. '
+                        '패널을 끄려면 -p show_bev:=false, ROI 어둡기는 -p roi_dim:=1.0'),
         DeclareLaunchArgument(
             'tl_stop_latch', default_value='false',
             description='★기본 false★ = 빨간불을 보는 동안만 잡는다(사라지거나 초록불이면 '

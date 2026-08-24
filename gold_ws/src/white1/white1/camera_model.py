@@ -42,6 +42,14 @@ usb_cam 에 camera_info_url 을 주고 image_proc 로 /image_rect 를 만드는 
 캘리브 파일이 없거나(패키지를 안 깔았다·경로 오타) 맵 생성이 실패하면 ★경고 한 줄을
 남기고 보정을 끈 채 원본을 그대로 흘린다★. 그러면 신호등 판정은 종전 그대로 돌고,
 BEV 거리만 '신뢰 못함'이 된다. 카메라 기하 때문에 차가 못 서는 일은 없어야 한다.
+
+────────────────────────────────────────────────────────────────────────────────
+ ★캘리브 계수의 출처 [2026-08-24]★
+────────────────────────────────────────────────────────────────────────────────
+usb_cam_calibration.yaml 의 왜곡보정 계수와 bev_src_pts 등 BEV 사다리꼴 값은 이제
+★cam_testbed(외부 카메라 테스트 벤치)★ 에서 뽑는다. 이 파일은 그 결과 yaml 을
+share/white1/calibration/ 에 놓고 읽는 소비자일 뿐이다 — 계수 자체를 이 워크스페이스
+안에서 눈으로 다시 잡지 않는다.
 """
 
 import os
@@ -255,6 +263,33 @@ class CameraModel:
         1ms 안팎이지만 매 프레임 낼 이유가 없으므로 창을 띄울 때만 부른다.
         """
         return cv2.warpPerspective(frame, self.M_bev, (self.bev_w, self.bev_h))
+
+    def bev_matrix(self, out_w, out_h, src_scale=1.0):
+        """★썸네일 크기로 바로 펴기 위한 호모그래피★ [2026-08-24]
+
+            M = S_out · M_bev · S_in⁻¹
+
+        돌려주는 것을 warpPerspective 에 그대로 넣으면 ★한 번의 워프★ 로
+        (out_w, out_h) 짜리 BEV 가 나온다. 인자 둘의 뜻:
+          out_w/out_h  결과 크기. bev_w×bev_h 를 뜬 뒤 줄이면 ★4배 비싸다★
+                       (워프 비용은 결과 화소 수에 비례한다).
+          src_scale    넣어 줄 frame 이 ★원본의 몇 배로 줄어 있는가★. 창 표시용으로
+                       이미 절반으로 줄인 그림에서 뜨면 0.5 다. 그러면 원본에서
+                       뜨는 것보다 싸고(캐시 지역성) ★오버레이가 섞이지 않은 그림★
+                       을 쓸 수 있다 — 종전에는 박스·사다리꼴이 그려진 그림을 펴서
+                       썸네일 안에 선이 한 번 더 warp 되어 들어왔다.
+
+        ⚠️ ★거리 판정에는 쓰지 않는다★ 판정은 poly_to_bev 가 원본 좌표로 한다.
+           이것은 그림 전용이고, 여기서 정확도를 잃어도 판정은 흔들리지 않는다.
+        """
+        s_out = np.float64([[float(out_w) / self.bev_w, 0.0, 0.0],
+                            [0.0, float(out_h) / self.bev_h, 0.0],
+                            [0.0, 0.0, 1.0]])
+        m = s_out @ self.M_bev
+        if src_scale != 1.0:
+            inv = 1.0 / float(src_scale)
+            m = m @ np.float64([[inv, 0.0, 0.0], [0.0, inv, 0.0], [0.0, 0.0, 1.0]])
+        return m.astype(np.float32)
 
     def poly_to_bev(self, pts):
         """폴리곤(보정된 원본 좌표) → BEV 좌표. ★소실선 너머의 점은 버린다★
