@@ -119,7 +119,46 @@ def generate_launch_description():
                         '★0 을 권한다★ — 정지 시 리니어는 driving 이 직접 지시한다'),
         DeclareLaunchArgument(
             'manual_pulse_max', default_value='15',
-            description='수동조종에서 페달 최대치가 대응할 펄스'),
+            description='수동조종에서 페달 최대치가 대응할 펄스. '
+                        '★[2026-08-25] 이 값은 더 이상 차를 굴리지 않는다★ — '
+                        '/drive_pulse_cmd 라벨(mapping 수집 라벨 ①)을 종전 0~15 '
+                        '스케일로 유지하는 용도만 남았다. 실제 속도는 아래 '
+                        'manual_pwm_max 가 정한다 — 속도를 낮추려고 이 값을 '
+                        '건드리면 ★라벨만 줄고 차는 그대로 나간다★'),
+
+        # ── ★[2026-08-25] 수동조종 페달 = A보드 직접 PWM★ ──
+        #   arduino.py 가 페달 개도량을 manual_pwm_min~max 에 비례 대응시켜
+        #   A보드의 직접 PWM 경로("<pwm>,<pwm>")로 내려보낸다. 종전에는 목표펄스
+        #   (0~15)를 보내 보드의 PID 가 맞추게 했는데, 그 사이에 PID·기동
+        #   블랭킹·코스트가 끼어 '밟은 만큼 나가지' 않았다(arduino.py (2) 분기).
+        #
+        #   ★프로토콜 전 구간 16~255 를 쓴다★ 이 런치의 수동조종은 매핑 절차
+        #   (사람이 페달로 곧게 굴려 초기 헤딩을 잡는 것)에 쓰이는데, 거기서
+        #   속도를 소프트웨어가 잘라 둘 이유가 없다 — 사람이 밟는 만큼이 맞다.
+        #
+        #   ★이 스택에 AEB 가 없는 것은 의도된 것이다★ (2026-08-25 확인)
+        #     lidar one_launch.py 와 달리 수동조종 중 전방을 보는 것이 없다
+        #     (신호등 카메라는 자율주행 분기에서만 일한다). 그쪽은 AEB 시험용
+        #     런치고, 이쪽은 자율주행 스택이다 — 수동조종은 매핑 절차를 위해
+        #     지나가는 상태이지 이 런치가 시험하려는 대상이 아니다.
+        #     → 수동조종에서 차를 세우는 것은 ★사람의 발뿐★ 이고, PWM 255 는
+        #       '사람이 낼 수 있는 최고속' 이라는 뜻 그대로다.
+        #     매핑처럼 천천히 굴려야 하는 절차에서는 낮춰 두는 편이 편하다
+        #     (예: manual_pwm_max:=90 ≈ 4펄스 ≈ 12.7 km/h — drive_pulse 와 같은 속도).
+        DeclareLaunchArgument(
+            'manual_pwm_min', default_value='16',
+            description='페달을 살짝 밟았을 때의 PWM. ★16 = A보드 프로토콜 하한★ '
+                        '(그 아래는 펌웨어가 펄스로 읽어버린다). 순수 비례라 페달 '
+                        '초반 1/3 쯤은 유격이 된다 — 바퀴가 실제로 도는 지점이 '
+                        'PWM 60 부근이기 때문이다. 그 유격이 거슬리면 60 으로 올려라'),
+        DeclareLaunchArgument(
+            'manual_pwm_max', default_value='255',
+            description='★페달을 끝까지 밟았을 때의 PWM = 수동조종 최고속★ '
+                        '기본 255 = A보드 프로토콜 상한(전개). 직접 PWM 은 펌웨어의 '
+                        '무보호 경로라 펄스모드 상한(PWM_MAX=170)도 무시한다. '
+                        'FF 표 대략치: 60≈1펄스 / 70≈2 / 90≈4 / 150≈16펄스(51km/h). '
+                        '※ 이 스택에 AEB 가 없는 것은 의도된 것이다 — 수동조종에서 '
+                        '세우는 것은 사람 발뿐이다(위 주석)'),
 
         # ── 주행 튜닝 (driving.py 상단 상수의 런치 override) ──
         DeclareLaunchArgument(
@@ -243,6 +282,9 @@ def generate_launch_description():
             'steer_invert':     LaunchConfiguration('steer_invert'),
             'stop_brake_level': LaunchConfiguration('stop_brake_level'),
             'manual_pulse_max': LaunchConfiguration('manual_pulse_max'),
+            # ★[2026-08-25] 수동조종 페달 → A보드 직접 PWM★ (위 인자 선언의 주석)
+            'manual_pwm_min':   LaunchConfiguration('manual_pwm_min'),
+            'manual_pwm_max':   LaunchConfiguration('manual_pwm_max'),
             'exclude_ports':    exclude_for_arduino,
         }],
         condition=IfCondition(use_arduino),

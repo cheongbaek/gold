@@ -31,6 +31,17 @@ sound.py ― 음성 안내 [nxde]
   driving_1     /drive_event 에 '경로이탈' 이 뜰 때      (이탈로 종료)
   estop         /estop 이 True 로 올라간 순간 ★한 번★   [2026-08-21 : 반복 → 1회]
   estop_re      /estop 이 False 로 떨어진 직후 — ★단, prompt 가 대기 중이면 내지 않는다★
+  estop         ★/aeb_stop 이 True 인 동안 ★반복재생★★   [2026-08-25 신설]
+  estop_re      /aeb_stop 이 False 로 떨어진 순간 — ★대기 여부를 보지 않는다★
+
+  ★[2026-08-25] /aeb_stop 은 /estop 과 음원이 같고 재생 방식이 다르다★
+    · /estop (하드웨어 스위치) = 1회. 사람이 손으로 걸었으므로 걸린 것을 안다.
+      게다가 일시정지가 정상 절차라 몇 초씩 이어진다(2026-08-21 절 참고).
+    · /aeb_stop (라이다 AEB)  = ★해제될 때까지 반복★. 이쪽은 사람이 걸지 않았고
+      ★사람이 페달을 밟고 있는 중에★ 차가 스스로 선 것이다. 왜 안 나가는지를
+      계속 말해 줘야 한다 — 앞을 비우면 그 순간 멎는다(그것이 곧 해제 신호다).
+    · 해제음(estop_re)은 /aeb_stop 쪽에서는 ★prompt 대기 여부를 보지 않는다★.
+      이 시험 런치에는 prompt 가 없고, 뒤따라 나올 시작 안내도 없다.
 
   ★prompt_1·mapping·driving·estop_x 는 prompt 쪽에서 낸다★ 넷 다 '사람이 화면에서
   무엇을 눌렀고 무엇을 기다리는 중인가'라서 토픽에 나타나지 않기 때문이다(대기
@@ -111,6 +122,13 @@ EVENT_DEVIATED = '경로이탈'
 #     마지막 사용처가 사라졌다). Player 는 prompt 도 함께 쓰는 범용 클래스라
 #     기능은 남겨 둔다.
 LOOP_GAP_S = 0.35
+
+# ★/aeb_stop 신선도 [s]★ [2026-08-25] 이 시간 넘게 안 오면 '해제'로 본다.
+#   판단 노드(lidar manual_aeb_node)는 20Hz 로 상태를 계속 낸다. 그 노드가 죽으면
+#   arduino 도 같은 판단으로 리니어를 푸는데(그쪽 aeb_stale_s), 여기서 안 풀면
+#   ★차는 굴러가는데 경고음만 영원히 반복된다★. 두 곳의 정책을 같게 둔다.
+#   ※ 그때 해제음은 내지 않는다 — '장애물이 없어졌다'가 아니라 '모른다' 이므로.
+AEB_STALE_S = 1.0
 
 # ★/prompt_wait 신선도 [s]★ 이 시간 넘게 안 오면 '대기 아님'으로 본다.
 #   prompt 는 자기 루프(0.4s)마다 값을 다시 보낸다 — 그보다 넉넉히 잡되, 화면이
@@ -289,12 +307,20 @@ class SoundNode(Node):
         #   사정이고, 이 노드가 알아야 하는 것은 '지금 시작 안내가 뒤따르는가'뿐이다.
         self.prompt_wait = ''
         self.prompt_wait_t = 0.0     # ★마지막으로 '대기 중'을 본 시각★ (cb_wait 참고)
+        # ★[2026-08-25] 라이다 AEB★ /estop 과 음원은 같고 재생 방식이 다르다(헤더).
+        self.aeb = None
+        self.aeb_t = 0.0             # 마지막 수신 시각 (신선도 감시용)
 
         self.create_subscription(String, '/drive_state',  self.cb_state,  10)
         self.create_subscription(String, '/drive_event',  self.cb_event,  10)
         self.create_subscription(Bool,   '/estop',        self.cb_estop,  10)
         self.create_subscription(String, '/board_status', self.cb_boards, 10)
         self.create_subscription(String, '/prompt_wait',  self.cb_wait,   10)
+        # ★[2026-08-25] 라이다 AEB 비상정지★ 발행자는 lidar 의 manual_aeb_node 다.
+        #   그 노드가 없는 스택(white1 등)에서는 이 구독이 아무 일도 하지 않는다.
+        self.create_subscription(Bool,   '/aeb_stop',     self.cb_aeb,    10)
+        # 반복재생을 붙잡고 있는 동안 발행자가 죽는 경우를 감시한다(AEB_STALE_S).
+        self.create_timer(0.25, self.check_aeb_stale)
 
         self.get_logger().info(
             f"🔈 음성 안내 {'준비' if enabled else '꺼짐(enable:=false)'} — {self.player.dir}")
@@ -362,6 +388,41 @@ class SoundNode(Node):
                 # 해제가 곧 시작이다 — prompt_2/prompt_4 가 바로 뒤따르므로 비워 둔다.
                 return
             self.player.play(SND_ESTOP_CLEAR)
+
+    def cb_aeb(self, msg: Bool):
+        """/aeb_stop — 라이다 AEB. ★해제될 때까지 반복재생★ [2026-08-25]
+
+        엣지가 아니라 상태를 받는다(발행자가 20Hz 로 계속 낸다). 첫 수신이 True 면
+        그때 울리는 것이 맞다 — /estop 과 같은 태도다(지금 서 있는 것이 사실이다).
+
+        ★반복재생을 고른 이유★ 사람이 페달을 밟고 있는데 차가 스스로 선 상황이다.
+        왜 안 나가는지 계속 말해 줘야 하고, 앞을 비우면 그 순간 멎는 것이 곧
+        '풀렸다'는 신호가 된다. (하드웨어 /estop 은 사람이 직접 걸었으므로 1회다)
+        """
+        new = bool(msg.data)
+        self.aeb_t = time.time()
+        old, self.aeb = self.aeb, new
+        if new and not old:
+            self.player.loop(SND_ESTOP)
+        elif old and not new:
+            self.player.stop_loop()
+            self.player.play(SND_ESTOP_CLEAR)
+
+    def check_aeb_stale(self):
+        """발행자가 죽었는데 경고음만 남는 것을 막는다 — 상수 AEB_STALE_S 참고.
+
+        ★해제음은 내지 않는다★ 장애물이 없어진 것이 아니라 '알 수 없게 된' 것이다.
+        arduino 도 같은 판단으로 리니어를 푸는데(aeb_stale_s), 소리만 남으면
+        '왜 계속 우나' 가 되고 실제 상태와도 어긋난다."""
+        if not self.aeb:
+            return
+        if (time.time() - self.aeb_t) <= AEB_STALE_S:
+            return
+        self.aeb = False
+        self.player.stop_loop()
+        self.get_logger().warn(
+            f"/aeb_stop 이 {AEB_STALE_S:.1f}초 넘게 끊겼다 — 경고음을 멈춘다"
+            f"(해제음은 내지 않는다). 판단 노드가 살아 있는지 확인할 것")
 
     def cb_boards(self, msg: String):
         """"A:1,B:1,ESTOP:0,MODE:1" — 둘 다 1 이 되는 순간이 '연결 완료'다."""
