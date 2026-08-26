@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>lidar</name>
+  <version>0.1.0</version>
+  <description>
+    금색차 kasa 용 라이다 인지·주행 패키지.
+    catkin_ws/src/e_stop (1/5카용) 를 이식했다 — 가상범퍼 AEB(cone_lidar_node),
+    라바콘 코리도 헤딩홀드(drive_lidar_node), GPS 일자 매핑·추종(drive_gps_node).
+    액추에이터 계약(펄스·pot 지령·부호·리니어 제동)은 include/lidar/kasa_units.hpp
+    하나가 소유한다. 자세한 것은 README.md.
+  </description>
+  <maintainer email="vk1124x@gmail.com">cheongbaek</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>ament_index_cpp</depend>
+
+  <depend>libpcl-all-dev</depend>
+  <depend>pcl_conversions</depend>
+
+  <!-- 실행 의존 : 액추에이터(nxde arduino)와 센서(white1). 이 패키지는 두
+       패키지의 ★토픽 계약★ 에 의존한다 — 코드를 링크하지는 않는다.
+         nxde   : /cmd_vel_raw · /control_state · /brake_level 수신,
+                  /encoder · /vehicle_mode · /estop 발행
+         white1 : /gps_fused(drive_gps_node) · /imu · gps_data 폴더 -->
+  <exec_depend>nxde</exec_depend>
+  <exec_depend>white1</exec_depend>
+  <!-- 라이다 드라이버. gold_ws/src/ouster-ros/ 에 함께 있다(2026-08-25 이관).
+       ★0.13.x 로 고정★ — 0.14 부터 FW 2.4 미만 센서 연결을 거부하는데 이 센서는
+       FW 2.3.0 이다. src/ouster-ros/OUSTER_OS1_32_SETUP.md 참고. -->
+  <exec_depend>ouster_ros</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
