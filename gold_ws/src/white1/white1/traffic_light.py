@@ -4,7 +4,7 @@
 traffic_light.py ― 신호등 인지·정지 [white1]
 ════════════════════════════════════════════════════════════════════════════════
 하는 일은 하나뿐이다 — ★카메라로 신호등을 보고, 빨간불이 확정되면 차를 세운다★.
-그리고 ★빨간불이 1초 이상 안 보이거나 초록불이 확정되면 놓는다★ (white806 판과
+그리고 ★빨간불이 0.5초 이상 안 보이거나 초록불이 확정되면 놓는다★ (white806 판과
 다른 점 — 아래 '정지 래치' 절).
 
 두 곳에서 쓴다. 어느 쪽이든 이 노드가 하는 일은 /brake_level 하나뿐이다:
@@ -226,18 +226,25 @@ traffic_light.py ― 신호등 인지·정지 [white1]
   정상이고 → 그 순간 UNKNOWN → 해제 → 차가 다시 굴러간다.
   ★white1 은 '빨간불을 보는 동안만 잡는다'를 택했다★ (지시사항):
       RED 확정(tl_hold_s 0.4s)      → 2단  ★즉시★
-      RED 를 red_release_hold_s(1.0s) 동안 못 봄, 또는 GREEN 확정 → 0단
-  ★[2026-08-14] 놓는 쪽에만 1초 유예를 뒀다 — 실차에서 리니어가 들락날락했다★
+      RED 를 red_release_hold_s(0.5s) 동안 못 봄, 또는 GREEN 확정 → 0단
+  ★[2026-08-14] 놓는 쪽에만 유예를 뒀다 — 실차에서 리니어가 들락날락했다★
+  ※ [2026-08-24 정정] 이 절은 그 유예를 오래도록 '1초' 로 적어 왔는데 ★선언된
+    기본값은 0.5초다★(아래 declare_parameter). 글이 아니라 값이 맞다 — 실제 거동은
+    0.5초로 돌았다. 값을 올리려면 파라미터로 올리고 이 글도 같이 고칠 것.
   종전에는 스트릭이 끊기는 순간(0.3s) 바로 놓았다. 인지가 한두 번 흔들리면
       RED 확정 → 0.3초 놓침 → 해제 → 다시 0.4초 연속 → 체결 …
   이 1초 주기로 반복된다. ★리니어는 물리적으로 왕복하는 장치라 이 왕복이 제일 나쁘다★
   (B보드 1회 구동 최대 1초). 무는 쪽은 그대로 두어 반응이 늦어지지 않게 했다.
-  ★소비자 쪽에도 같은 유예가 한 겹 더 있다★ master·driving 이 /tl_brake_req 를 받아
-  자기 값과 max 로 합치는데, 요구가 0 이 되어도 1초는 유지한다(TL_REQ_RELEASE_HOLD_S)
-  — 토픽이 잠깐 밀리는 경우까지 함께 막는다.
+  ⚠️ ★[2026-08-24 정정] 소비자 쪽에는 이제 그 유예가 없다★ 종전에 이 자리에는
+  "master·driving 이 /tl_brake_req 를 자기 값과 max 로 합치고, 요구가 0 이 되어도
+  1초는 유지한다(TL_REQ_RELEASE_HOLD_S)" 라고 적혀 있었다. 그런데 실제 값은
+  ★driving.py 의 TL_REQ_RELEASE_HOLD_S = 0.0 ('해제 유예 없음 — 따라만 간다')★ 이다.
+  즉 ★해제 유예는 이 노드의 red_release_hold_s 한 겹뿐★ 이고, 토픽이 잠깐 밀리는
+  경우를 받아 주는 두 번째 겹은 없다. 그것이 필요하다고 판단되면 저쪽 상수를 올릴 것
+  — 이 글을 되돌리지 말고.
     · tl_gap_grace_s(0.3s) 는 그대로다 — 그것은 '연속 목격 스트릭'의 유예이고,
       해제 유예(위)와는 다른 값이다.
-    · ⚠️ 신호등이 시야를 완전히 벗어나면 1초 뒤 차는 다시 굴러간다.
+    · ⚠️ 신호등이 시야를 완전히 벗어나면 0.5초 뒤 차는 다시 굴러간다.
       ★[2026-08-14 정정] 그러니 근접도 게이트에는 상한이 있다 — 크게 잡으면 안 된다★
       게이트를 키울수록 ★가까이 가서★ 물고 ★가까이 서므로★, 어느 선을 넘으면 서 있는
       동안 등기구가 화면 위로 벗어나 그대로 굴러간다. 카메라 틸트 0°·등기구 5m·
@@ -593,20 +600,52 @@ class TrafficLight(Node):
         #   그 기계에서 다시 export 할 것.
         self.declare_parameter('tl_weights', TL_WEIGHTS)
         self.declare_parameter('tl_conf',      0.35)
-        self.declare_parameter('tl_imgsz',     640)
+        # ★[2026-08-24] 640 → 960★ ROI 종횡비가 작은 신호등을 통째로 뭉갠다.
+        #   ultralytics 는 ROI 를 ★긴 변 기준★ 으로 imgsz 에 레터박스한다. tl_roi 가
+        #   1920x600 이므로 640 이면 배율이 640/1920 = 0.333 이고, 화면에서 240x80px
+        #   인 신호등이 추론 텐서에서는 ★80x27px★ 이 된다 — 검출기가 볼 수 없는 크기다.
+        #
+        #   night_a 영상에 목업(240x80 @ 880,140)을 합성해 65프레임을 실측한 값:
+        #     imgsz  추론시 목업   RED 검출률(conf≥0.35)   conf 중앙   1프레임 추론
+        #       640     80x27            9.2%              0.133        5.0 ms
+        #      ★960★   120x40          100.0%             0.832        7.2 ms
+        #      1280    160x53          100.0%             0.831        8.6 ms
+        #   → ★2.2 ms 로 9.2% → 100%★ 다. 30fps 예산(33.3ms)에 여유가 충분하고
+        #     화각을 하나도 안 버리므로 tl_roi 를 좁히는 것보다 이쪽이 낫다.
+        #
+        #   ⚠️ 이것은 목업만의 문제가 아니다 — ★멀리 있는 진짜 신호등에 똑같이 걸린다★.
+        #      tl_hold_s(연속 RED 0.4s)를 못 채우면 신호등에서 아예 안 서기 때문에,
+        #      검출률이 낮으면 그 앞단이 아무리 맞아도 정지가 성립하지 않는다.
+        #   ⚠️ tl_roi 를 바꾸면 이 값도 다시 봐야 한다(배율 = imgsz / ROI 긴 변).
+        self.declare_parameter('tl_imgsz',     960)
         # 몇 프레임에 한 번 추론할 것인가. ★1 을 유지할 것★ — 2 로 올리면 판정 기회가
         # 절반이 되어 tl_hold_s(연속 RED)를 채우지 못하고 신호등에서 안 선다.
         self.declare_parameter('tl_interval',  1)
-        # 신호등 탐색 ROI(원본 픽셀). 기본은 1920x1080 카메라의 위쪽 절반.
+        # 신호등 탐색 ROI(원본 픽셀). 기본은 1920x1080 카메라의 위쪽 600행.
+        # ★[2026-08-24] 540 → 600★ cam_testbed 캘리브 한 벌에 맞췄다(tl_roi 0~600 /
+        # 노면 ROI 600~1080 으로 화면을 위아래로 나눈 값이다).
         # 프레임이 더 작으면 _clamp_roi 가 알아서 프레임 크기로 잘라 준다.
         self.declare_parameter('tl_roi_xmin',  0)
         self.declare_parameter('tl_roi_ymin',  0)
         self.declare_parameter('tl_roi_xmax',  1920)
-        self.declare_parameter('tl_roi_ymax',  540)
+        self.declare_parameter('tl_roi_ymax',  600)
         self.declare_parameter('tl_min_area',  20)
         # 상한은 사실상 해제 상태다 — 근접하면 박스가 커지는데 상한에 걸리면
         # ★정지해야 할 바로 그 순간 신호등이 UNKNOWN 으로 사라진다★.
         self.declare_parameter('tl_max_area',  1000000)
+        # ★야간 오검출 방어 [2026-08-25]★ 박스 높이가 ROI 높이의 이 비율을 넘으면
+        #   버린다. 신호등이 ★한 번도 안 나오는★ 야간 도로에서 ROI 를 통째로 덮는
+        #   박스가 conf 0.36~0.88 로 나온다(cam_testbed 실측 26개: 높이 510~592px =
+        #   ROI(600)의 85~99%). 그게 RED 로 읽히면 근접도 게이트를 그대로 넘겨
+        #   ★신호등이 없는데 「코앞이다」로 급정지★ 한다.
+        #     · 면적(tl_max_area)으로 자르지 않는 이유 — 실제 신호등 최대(추정
+        #       13.5만px²)와 오검출 최소(26만px²)가 1.9배밖에 안 벌어진다. 잘못
+        #       자르면 ★빨간불에 안 서는★ 쪽으로 고장 나므로 여유가 그만큼 필요하다.
+        #     · 높이는 3.4배 벌어진다 — 이 노드가 '정지'로 치는 박스는 25~40px
+        #       (tl_red_stop_min_height)이고, 가장 가까울 때도 100px 대다. 게다가
+        #       코앞에서는 등기구가 화면 위로 벗어나 ★오히려 잘린다★(파일 헤더).
+        #   0 이면 끈다. ROI 높이 기준이라 ROI 를 바꿔도 뜻이 유지된다.
+        self.declare_parameter('tl_max_height_frac', 0.5)
         self.declare_parameter('tl_min_aspect', 0.2)
         # 가로형 4구 신호등은 bw/bh ≈ 3.5~4.5 이고, ROI 상단에 잘리면 더 커진다.
         self.declare_parameter('tl_max_aspect', 6.0)
@@ -679,17 +718,31 @@ class TrafficLight(Node):
         #     sl_brake1_px 이하 → 1단 예비제동   (부드럽게 줄이기 시작한다)
         #     sl_brake2_px 이하 → 2단 확정 정지  (정지선 앞에 세운다)
         #   이므로 반드시 sl_brake1_px > sl_brake2_px 다(생성자에서 강제한다).
-        # ⚠️ ★근거 없는 기본값이다★ bev_src_pts 와 짝으로 실측한다(STOPLINE_TEST.md
-        #    단계 2). 잡는 순서는 '2단 먼저, 1단 나중':
-        #      · sl_brake2_px : 2단 정지거리가 4펄스에서 1.6~2.8m(BRAKING.md)이므로
-        #        정지선 앞 여유를 그만큼 두고 잡는다. 차를 세워 두고 HUD 의 px 를 읽는다.
-        #      · sl_brake1_px : 1단은 1.30 m/s²(+체결 0.55초 램프)라 4펄스(3.54m/s)에서
-        #        약 4.8m 다(BRAKING.md 4절 표). 그 거리의 px 값으로 잡는다.
-        #    너무 크게 잡으면 멀리서부터 1단으로 기어가다 정지선 전에 멈춰 서고
-        #    (구동이 끊기므로 재출발 못 한다 → sl_wait_max_s 가 2단으로 받는다),
-        #    너무 작게 잡으면 예비제동이 늦어 결국 2단이 다 감당하게 된다.
-        self.declare_parameter('sl_brake1_px', 240.0)
-        self.declare_parameter('sl_brake2_px',  60.0)
+        # ★[2026-08-25 실측] 240/60 → 470/300★ 종전 값은 근거 없는 기본값이었고,
+        #   ★둘 다 물리적으로 도달 불가★ 였다. bev_bumper_y_px 를 645 로 실측하면서
+        #   sl_px 의 도달 범위 자체가 달라졌다(camera_model.py 의 그 주석 참고):
+        #     · BEV 밑변이 sl_px=165 → ★sl_px 는 165 밑으로 못 내려간다★ (60 은 불가)
+        #     · 차체(앞 롤바·앞바퀴)가 BEV 행 400 아래를 가려 마스크가 두 동강 난다
+        #       → ★검출 실효 하한 sl_px ≈ 285★ (240 도 사실상 불가)
+        #   night_a 를 imgsz=960 으로 다시 돌려 실측한 검출 구간이 그대로 이것이다:
+        #       sl_px 580 → 285 (범퍼 앞 5.3 m → 2.2 m) 에서만 정지선이 보인다
+        #
+        #   ── 정한 근거 (접근속도 실측 1.92 m/s) ────────────────────────────
+        #     · 1단 정지거리 = 1.92×0.55(램프) + 1.92²/2.6 = ★2.47 m★
+        #     · 2단 정지거리 = 1.92²/(2×2.2~3.8) = 0.48~0.84 m   (BRAKING.md 4절)
+        #     · sl_brake1_px=470 → 범퍼 앞 ★4.03 m★  2.47 m 에 1.5 m 여유
+        #     · sl_brake2_px=300 → 범퍼 앞 ★2.34 m★  검출 하한(2.2 m) 직전에 문다
+        #
+        #   ⚠️ ★이 카메라 마운트로는 정지선 앞 1.5~2 m 에 서는 것이 한계다★ 2.2 m 보다
+        #      가까워지면 차체가 정지선을 가려 아무것도 안 보이므로, 그 전에 2단을
+        #      확정할 수밖에 없다. 더 붙여 세우고 싶으면 문턱이 아니라 ★카메라를 올리거나
+        #      아래로 틸트★ 해야 한다 — 가림 경계가 내려가면 하한이 같이 내려간다.
+        #   ⚠️ 300 을 더 낮추면 검출이 먼저 끊겨 '정지선 놓침' 경로로 떨어진다. 그 경로는
+        #      sl_stale_s(0.5초)를 기다리므로 ★1.92 m/s 에서 0.96 m 를 더 간다★ —
+        #      늦게 서려다 오히려 정지선을 밟는다.
+        #   ★사다리꼴이나 bev_bumper_y_px 를 바꾸면 이 두 값도 같이 무효다★
+        self.declare_parameter('sl_brake1_px', 470.0)
+        self.declare_parameter('sl_brake2_px', 300.0)
         # 노면 잡티·차선 조각을 정지선으로 읽지 않기 위한 관문. 정지선은 ★가로로 긴★
         # 물체다 — 폭이 화면의 이 비율보다 좁으면 버린다.
         self.declare_parameter('sl_min_width_frac', 0.12)
@@ -763,6 +816,26 @@ class TrafficLight(Node):
         #  창·숫자·정지 동작은 그대로다(fail-open).
         self.declare_parameter('hud_font', '')
 
+        # ══════════════════════════════════════════════════════════════════
+        #  ★시험용 신호등 주입 [2026-08-25] — 실차에서는 반드시 0 이어야 한다★
+        # ══════════════════════════════════════════════════════════════════
+        #  0 보다 크면 ★그 높이(px)의 빨간 박스를 봤다고 친다★. YOLO 결과를
+        #  통째로 대신하므로 이 값이 켜져 있는 동안 신호등 인지는 ★시험되지 않는다★.
+        #
+        #  ★왜 필요한가★ 정지선 절(節)은 빨간 박스를 본 적이 있어야만 돈다
+        #  (_sl_should_run). 그런데 신호등이 안 찍힌 영상으로 정지선을 시험하려면
+        #  그 게이트를 열 방법이 있어야 한다. 종전에는 화면에 신호등 그림을 합성해서
+        #  풀었는데, ★박스 높이가 거리의 대리값★ 인 이 노드에서는 그 방법이 성립하지
+        #  않는다 — 합성 그림이 검출되려면 480px 폭이 필요했고 그때 박스 높이가
+        #  152~166px 로 나와서, 시험 대상인 tl_red_stop_min_height(25) 를 목업에 맞춰
+        #  옮겨야 했다. ★시험 대상 상수를 옮기면 그 시험은 그 상수를 검증하지 않는다.★
+        #  여기서 높이를 직접 주면 그 모순이 없어진다: 15 = RED_FAR, 40 = RED.
+        #
+        #  ★백도어 방어★ 켜져 있으면 기동 배너와 status_tick 이 계속 경고를 찍는다.
+        #  cam_testbed 의 계약이 그 로그를 log_events 로 잡아 실차 시나리오에서
+        #  `max: 0` 으로 막는다 — 켠 채 실차에 나가면 시험이 불합격한다.
+        self.declare_parameter('tl_fake_box_h', 0.0)
+
         # ── 카메라 기하 (어안 왜곡보정·BEV) ─────────────────────────────────
         #  ★파라미터 이름·기본값의 주인은 camera_model.py 다★ 차선 인지가 붙어도
         #  같은 이름을 쓰게 하려고 선언을 그쪽에 두었다(camera_launch.camera_params()
@@ -779,6 +852,9 @@ class TrafficLight(Node):
                        int(g('tl_roi_xmax')), int(g('tl_roi_ymax')))
         self.tl_min_area   = int(g('tl_min_area'))
         self.tl_max_area   = int(g('tl_max_area'))
+        self.tl_max_h_frac = max(0.0, float(g('tl_max_height_frac')))
+        #  시험용 주입. /tl/fake_box_h 가 오면 그쪽이 이긴다(런 중에 바꾸기 위해서다).
+        self.fake_box_h = max(0.0, float(g('tl_fake_box_h')))
         self.tl_min_aspect = float(g('tl_min_aspect'))
         self.tl_max_aspect = float(g('tl_max_aspect'))
         self.tl_red_stop_min_height    = int(g('tl_red_stop_min_height'))
@@ -952,6 +1028,10 @@ class TrafficLight(Node):
                                  callback_group=self.cg_ctrl)
         self.create_subscription(Bool, '/tl_permit', self.cb_tl_permit, qos,
                                  callback_group=self.cg_ctrl)
+        # ★시험용 주입★ 파라미터를 런 도중에 바꾸기 위한 통로다(위 tl_fake_box_h 주석).
+        #   실차에서는 아무도 발행하지 않으므로 구독만 있어도 거동이 안 바뀐다.
+        self.create_subscription(Float32, '/tl/fake_box_h', self.cb_fake_box_h, qos,
+                                 callback_group=self.cg_ctrl)
 
         # 정지 지령 타이머 — ★영상 콜백이 아니라 여기서 낸다★ 추론이 늦어져
         # 프레임이 띄엄띄엄 들어와도 정지 지령의 주기는 흔들리면 안 된다.
@@ -984,7 +1064,11 @@ class TrafficLight(Node):
                f"| ★정지선을 못 보면 종전대로 즉시 {self.brake_level}단★"
                if (self.sl_enable and self.sl_model is not None)
                else "\n   🛑 정지선: ★꺼져 있다★ — RED 확정이면 그 자리에서 선다(종전 동작)")
-            + "\n   " + self.cam.describe())
+            + "\n   " + self.cam.describe()
+            #  ★주입 모드★ 계약의 log_events 가 이 줄을 잡아 실차 시나리오에서 막는다.
+            + (f"\n   🧪 ★신호등 주입 모드★ 박스높이 {self.fake_box_h:.0f}px 를 봤다고 "
+               f"친다 — ★신호등 인지는 시험되지 않는다★ (실차 금지)"
+               if self.fake_box_h > 0.0 else ""))
 
     def _load_model(self, weights):
         """가중치를 읽고 라벨 표를 세운다. 실패해도 노드는 살아 있는다(fail-open).
@@ -1123,6 +1207,8 @@ class TrafficLight(Node):
         self.last_red_drop = 0
         if result is None or result.boxes is None or len(result.boxes) == 0:
             return out
+        # ROI 를 통째로 덮는 박스를 거르는 자 — ROI 높이 기준이라 ROI 를 바꿔도 산다.
+        max_bh = (roi_img.shape[0] * self.tl_max_h_frac) if self.tl_max_h_frac > 0 else 0
         for b in result.boxes:
             conf   = float(b.conf[0].item()) if hasattr(b, 'conf') else 0.0
             cls_id = int(b.cls[0].item())    if hasattr(b, 'cls')  else -1
@@ -1135,6 +1221,7 @@ class TrafficLight(Node):
             aspect = bw / float(bh)
             if area   < self.tl_min_area   or area   > self.tl_max_area:   continue
             if aspect < self.tl_min_aspect or aspect > self.tl_max_aspect: continue
+            if max_bh and bh > max_bh:                                     continue
 
             label = self.TL_LABEL.get(cls_id, str(cls_id))
             hsv_red = hsv_green = 0
@@ -1356,6 +1443,14 @@ class TrafficLight(Node):
                     self.last_red_drop = 0
             else:
                 boxes = self.last_boxes
+
+        # ★시험용 주입★ 여기서 YOLO 결과를 ★통째로★ 갈아 끼운다(위 tl_fake_box_h).
+        #   검출 뒤에 두는 이유 — 앞에 두면 추론 시간이 빠져 지연 통계가 실제와
+        #   달라진다. 시험이 재는 것은 '이 프레임을 처리하는 데 얼마 걸리나' 이므로
+        #   추론은 그대로 돌리고 결론만 바꾼다.
+        if self.fake_box_h > 0.0:
+            boxes = [self._fake_red_box(self.fake_box_h, w * h)]
+            self.last_boxes = boxes
 
         state = self._resolve_tl_state(boxes)
         self.pub_state.publish(String(data=state))
@@ -1882,6 +1977,29 @@ class TrafficLight(Node):
         self.tl_permit   = bool(msg.data)
         self.tl_permit_t = time.time()
 
+    def cb_fake_box_h(self, msg: Float32):
+        """★시험용★ 빨간 박스 높이를 바깥에서 준다. 0 이면 주입을 끈다."""
+        new = max(0.0, float(msg.data))
+        if (new > 0.0) != (self.fake_box_h > 0.0):
+            self.get_logger().warn(
+                f"🧪 신호등 주입 {'ON' if new > 0.0 else 'OFF'} "
+                f"(박스높이 {new:.0f}px) — ★인지는 시험되지 않는다★")
+        self.fake_box_h = new
+
+    def _fake_red_box(self, bh, frame_area):
+        """주입용 빨간 박스 한 개 — _all_tl_boxes 가 내는 것과 ★같은 모양★ 이어야 한다.
+
+        가로형 4구 신호등의 종횡비(≈4)를 써서 폭을 정한다. 좌표는 HUD 표시용이라
+        판정에 안 쓰이지만, 없는 값을 두면 그리는 쪽에서 터진다.
+        """
+        bh = max(1, int(round(bh)))
+        bw = max(1, bh * 4)
+        x1, y1 = 40, 20
+        return {'label': 'RED', 'conf': 1.0, 'box': (x1, y1, x1 + bw, y1 + bh),
+                'box_h': bh,
+                'area_frac': (bw * bh) / float(frame_area) if frame_area else 0.0,
+                'hsv_red': 9999, 'hsv_green': 0}
+
     def _permitted(self, now):
         """지금 이 차에 손을 대도 되는가 (안전 규약 ②) — 둘 중 하나면 된다.
 
@@ -1921,7 +2039,8 @@ class TrafficLight(Node):
 
         # ══════════════════════════════════════════════════════════════════════
         #  ① 해제 판정이 먼저다 — ★무는 것과 놓는 것은 서로 배타적이다★
-        #     _red_confirmed 는 'tl_state 가 지금 RED', _red_gone 은 '1초간 RED 를 못 봄'
+        #     _red_confirmed 는 'tl_state 가 지금 RED', _red_gone 은 'red_release_hold_s
+        #     (0.5초) 동안 RED 를 못 봄'
         #     이라 동시에 참이 될 수 없다. 그래서 순서가 판정을 바꾸지 않는다.
         #     ★[2026-08-19] 이 블록을 앞으로 뺐다★ 종전에는 elif 사슬이라 '물고 있는
         #     동안'에만 해제를 봤는데, 1단 예비제동이 생기면서 '물고 있으면서도 계속
@@ -2014,14 +2133,15 @@ class TrafficLight(Node):
         ★[2026-08-14] 해제 조건에서 '초록불 확정' 을 뺐다 — 이것이 왕복의 정체다★
           로스백(manual-20260814_151206) 에서 브레이크가 ★0.10초 주기로 2↔0★ 을
           50번 반복했다. mode·board·estop 은 전부 정상이었다.
-          원인 : 해제 조건이 (RED 1초 미감지) ★또는★ (GREEN 확정) 이었다.
+          원인 : 해제 조건이 (RED 를 red_release_hold_s 동안 미감지) ★또는★
+                 (GREEN 확정) 이었다.
           RED 와 GREEN 이 프레임마다 번갈아 잡히면(가로형 4구에서 적색등과 좌회전
           녹색등이 함께 보이거나, 모델이 두 클래스를 오갈 때) ★두 스트릭이 동시에
           살아 있어★ 매 틱 '물어라(RED 확정)' 와 '놓아라(GREEN 확정)' 가 같이 참이
           된다 → 틱 주기로 flip-flop.
           ★이제 해제 근거는 하나뿐이다 — 빨간불을 red_release_hold_s 동안 못 봄★
-          초록불이 보인다는 것은 곧 빨간불이 없다는 뜻이므로, 그 1초가 지나면 어차피
-          풀린다. 판정 근거를 하나로 줄이면 왕복이 구조적으로 불가능해진다.
+          초록불이 보인다는 것은 곧 빨간불이 없다는 뜻이므로, 그 유예(0.5초)가 지나면
+          어차피 풀린다. 판정 근거를 하나로 줄이면 왕복이 구조적으로 불가능해진다.
         """
         self.get_logger().info(
             f"⚪ 빨간불 {self.red_release_hold_s:.1f}초 미감지 — 리니어 해제"
@@ -2126,6 +2246,11 @@ class TrafficLight(Node):
 
     def status_tick(self):
         now = time.time()
+        #  ★주입이 켜져 있으면 계속 떠든다★ 조용히 켜져 있는 것이 제일 위험하다.
+        if self.fake_box_h > 0.0:
+            self.get_logger().warn(
+                f"🧪 신호등 주입 모드 ON ({self.fake_box_h:.0f}px) — 실차 금지",
+                throttle_duration_sec=5.0)
         if self.model is None:
             self.get_logger().error("⛔ 신호등 모델이 없다 — 이 노드는 정지를 걸지 않는다",
                                     throttle_duration_sec=10.0)
