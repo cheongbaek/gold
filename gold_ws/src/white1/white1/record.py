@@ -202,7 +202,12 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #      cte_integral, cte_i_term_deg,            ← [2026-08-12] CTE 적분항 2종
     #      goal_phase,                              ← [2026-08-12] 종점 접근 단계
     #      cb_state, cb_v0_ms, cb_v_corner_ms,      ← [2026-08-18] 코너 1단 선행제동 3종
-    #      goal_need_m]                             ← [2026-08-19] 종점 접근 필요 제동거리
+    #      goal_need_m,                             ← [2026-08-19] 종점 접근 필요 제동거리
+    #      lidar_zone, rejoin]                      ← [2026-09-01] 라이다 구간 이양 2종
+    #   ★lidar_zone=1 인 구간의 out_pulse 를 믿지 말 것★ 그 구간에서 driving 은
+    #   /cmd_vel_raw 를 아예 내지 않으므로 그 열은 ★직전에 낸 값에 굳어 있다★.
+    #   실제로 나간 지령은 /cmd_vel_raw 열(아래에서 따로 받는다)에서 본다 —
+    #   그것을 낸 것은 mppi_local_planner 다.
     TopicSpec('/drive_diag', Float64MultiArray,
               ('cte_m', 'heading_err_deg', 'target_idx', 'target_dist_m',
                'goal_dist_m', 'gps_course_deg', 'fuse_corr_deg', 'gyro_z_dps',
@@ -210,7 +215,8 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                'head_resid_m', 'head_dist_m',
                'ref_pulse', 'out_pulse', 'meas_pulse',
                'cte_integral', 'cte_i_term_deg', 'goal_phase',
-               'cb_state', 'cb_v0_ms', 'cb_v_corner_ms', 'goal_need_m'),
+               'cb_state', 'cb_v0_ms', 'cb_v_corner_ms', 'goal_need_m',
+               'lidar_zone', 'rejoin'),
               _array(23),
               note='★cte_m 이 핵심★ 경로이탈 +왼쪽/−오른쪽. 나머지는 헤딩 융합 '
                    '건전성과 출발 헤딩 품질. ref/out/meas 는 저속 펄스 보정 검증용 — '

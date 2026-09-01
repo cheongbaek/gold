@@ -50,6 +50,36 @@ driving.py ― kasa 자율주행 [white1 / GPS+IMU 최소 추종판]
     있으면 "지금 뭐가 방금 시작을 시켰는지" 추적이 어려워진다.
 
 ════════════════════════════════════════════════════════════════════════════════
+ ★혼자 몰지 않는다 — 라이다 구간 이양 [2026-09-01]★
+════════════════════════════════════════════════════════════════════════════════
+  매핑 CSV 의 ★미사용 열 terrain★ 에 사람이 손으로 'L'(또는 'l')을 적어 둔 구간은
+  이 노드가 몰지 않는다. 그 구간에서는 조종권을 mppi_local_planner 노드에게 넘겨
+  라바콘을 회피하게 하고, 구간을 벗어나면 되찾아 GPS 추종으로 돌아온다.
+  ★그 밖의 값은 전부 GPS 추종이다★ (빈 칸 · '0' · 열 자체가 없음) — 그래서 예전
+  CSV 가 그대로 돌고, mapping.py 는 손대지 않았다(늘 '0' 을 쓴다).
+
+      WP  0 ────────── 320 ══════════ 480 ────────── 812
+          terrain='0'      terrain='L'     terrain='0'
+          GPS 추종         mppi 회피        GPS 추종
+      ↑ driving 발행    ↑ driving 침묵    ↑ 복귀 재수렴 → 평소
+
+  ★설계의 핵심은 '발행자를 시간축에서 배타로 만든다'는 것 하나다★ 근거와 상수는
+  아래 튜닝 상수의 '라이다 구간 이양' 절에 모여 있다. 구현은 네 함수다 —
+  begin_lidar_zone / hold_for_lidar / end_lidar_zone / _revoke_lidar.
+
+  ★차는 이양 순간에 서지 않는다★ 속도를 미리 맞춰 주지도 않는다. 넘기면 라이다가
+  원하는 속도로, 되찾으면 이 노드가 원하는 속도로 토픽이 이어지고 그 전환은 A보드
+  PID 가 흡수한다. 중간 단계를 두면 '지금 속도를 누가 정하는가'가 흐려진다.
+
+  ★두 가지가 이 기능을 조용히 망가뜨릴 수 있었다 — 둘 다 막아 뒀다★
+    ① arduino 의 cb_cmd_vel 은 ★신선도를 보지 않고★ 마지막 펄스를 래치한다. 그래서
+       내가 침묵했는데 mppi 가 안 떠 있으면 차가 직전 펄스로 계속 굴러간다.
+       → mppi 가 /lidar_active 로 생존을 신고하고, 그것이 신선할 때만 이양한다.
+    ② mppi 가 복귀하는 곳은 ★L 구간 진입 시점의 IMU 헤딩으로 그은 자기 직선★ 이고
+       이 노드의 GPS 경로가 아니다. 그대로 되받으면 첫 틱에 |CTE| > 2.0m 로
+       경로이탈 급정지가 걸린다.  → 복귀 버퍼(REJOIN_*)로 완화된 규칙에서 붙는다.
+
+════════════════════════════════════════════════════════════════════════════════
  ★용어 — '정지'는 여러 가지이고 E-STOP 은 그중 하나뿐이다 [2026-08-14]★
 ════════════════════════════════════════════════════════════════════════════════
   ★E-STOP 이라는 말은 D12(NC) 하드웨어 정지에만 쓴다★ A·B 보드가 각자 D12 개방을
@@ -899,6 +929,59 @@ CTE_WINDOW_WP = 40
 CTE_DEVIATION_M = 2.0
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  ★★ 라이다 구간 이양 (GPS 추종 ↔ MPPI 회피) — 2026-09-01 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  매핑 CSV 의 ★미사용 열 terrain★ 에 사람이 손으로 'L' 을 적어 둔 구간에서는 이
+#  노드가 조종권을 놓고, mppi_local_planner 노드가 라바콘을 회피하며 몬다. 그 외의
+#  값(빈 칸 · '0' · 열 자체가 없음)은 전부 GPS 추종이다 — ★기존 CSV 가 그대로
+#  호환된다★ (mapping.py 는 이 열에 늘 '0' 을 쓴다. 매핑 코드는 손대지 않았다).
+#
+#  ┌ 어떻게 넘기나 — ★발행자를 시간축에서 배타로 만든다★ ─────────────────────┐
+#  │ /cmd_vel_raw 는 마지막 발행자가 이기는 토픽이고, arduino 는 그 값을 ★신선도  │
+#  │ 없이 래치★ 한다(cb_cmd_vel). 그래서 둘이 동시에 내면 20Hz 로 서로를 덮고,   │
+#  │ 한쪽이 조용히 죽으면 마지막 펄스로 차가 계속 굴러간다. 겹치지 않게 하는 것이  │
+#  │ 이 설계의 전부다:                                                          │
+#  │                                                                          │
+#  │   G 구간 : driving 이 발행  ·  /lidar_permit = False → mppi ★침묵★         │
+#  │   L 구간 : driving ★침묵★   ·  /lidar_permit = True  → mppi 가 발행         │
+#  └──────────────────────────────────────────────────────────────────────────┘
+#
+#  ★양방향 계약이다★ 허락만 보내고 끝내면, mppi 가 안 떠 있을 때(use_lidar:=false
+#  로 L 구간 CSV 를 주행) 아무도 차를 몰지 않는데 차는 마지막 펄스로 달린다. 그래서
+#  mppi 는 자기가 살아 있다는 것을 /lidar_active 로 매 틱 알린다. 이 노드는 그 토픽이
+#  ★신선하지 않으면 이양하지 않는다★ (신선도가 곧 상대의 생존이다 — /tl_permit ·
+#  /aeb_stop 과 같은 규약). 구간 중에 끊기면 그 자리에서 정지 + 리니어 2단이다.
+#
+#  ★이양 순간 마지막으로 0 펄스를 한 번 낸다★ 그러고 침묵한다. mppi 가 정상이면
+#  50ms 안에 자기 값으로 덮으므로 아무 일도 없고, 비정상이면 차가 코스트로 감속하는
+#  동안(0.41 m/s²) 위 신선도 판정이 걸려 리니어를 문다.
+#
+#  ★속도를 맞춰 주지 않는다★ 이양 뒤에는 라이다가 원하는 속도(mppi 기본 2펄스)로
+#  토픽이 이어지고, 복귀 뒤에는 이 노드가 원하는 속도로 이어진다. 그 전환은
+#  A보드 PID 가 흡수한다 — 중간 단계를 두면 '누가 지금 속도를 정하는가'가 흐려진다.
+LIDAR_ZONE_CHARS = ('L', 'l')   # terrain 열이 이 값이면 라이다 구간. 그 외는 전부 GPS
+LIDAR_ZONE_COLUMN = 'terrain'   # 읽는 열 이름 (mapping.py 가 늘 '0' 을 쓰는 미사용 열)
+LIDAR_ACTIVE_TOPIC = '/lidar_active'   # mppi → 이 노드 : "나 살아 있다"
+LIDAR_PERMIT_TOPIC = '/lidar_permit'   # 이 노드 → mppi : "네가 몰아라"
+#  ★신선도 = 상대의 생존★ 이보다 낡으면 이양하지 않고, 구간 중이면 정지한다.
+#  mppi 는 20Hz 로 내므로 1.0s 는 20틱 여유다.
+LIDAR_ACTIVE_STALE_S = 1.0
+
+# ── 복귀 버퍼 (L → G) ──
+#  ★왜 필요한가★ mppi 는 회피 뒤 ★자기 기준선★ 으로 복귀한다 — L 구간 진입 시점의
+#  IMU 헤딩으로 그은 직선이지, 이 노드의 GPS 경로가 아니다. 그래서 복귀 순간의 CTE 가
+#  작다는 보장이 없고, 그대로 run_follow 에 넘기면 |CTE| > CTE_DEVIATION_M 에 걸려
+#  ★복귀하자마자 리니어 2단으로 급정지한다★. 재수렴하는 동안만 규칙을 갈아 끼운다:
+#    · 이탈 문턱을 REJOIN_CTE_ABORT_M 로 올린다 (없애지는 않는다 — 바깥 방벽은 남긴다)
+#    · 속도를 REJOIN_PULSE_MAX 로 묶는다 (큰 CTE 에서 4펄스로 붙으면 오버슈트한다)
+#    · CTE 적분을 태우지 않는다 (큰 오차에서 적분이 감기면 수렴 뒤에 반대로 튄다)
+#  조향은 평소와 같은 순수추종이다 — 목표점이 경로 위에 있으므로 그것만으로 수렴한다.
+REJOIN_PULSE_MAX   = 2       # 재수렴 중 목표펄스 상한 ≈ 6.4 km/h
+REJOIN_DONE_CTE_M  = 0.5     # |CTE| 가 이 아래로 들어오면 재수렴 종료 → 평소 규칙 복귀
+REJOIN_CTE_ABORT_M = 6.0     # 재수렴 중에도 이것을 넘으면 정지 (바깥 방벽)
+REJOIN_TIMEOUT_S   = 12.0    # 이 시간 안에 못 붙으면 정지 — 유예를 무한정 열지 않는다
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ★★ CTE 적분항 (Ki 단독) — 구 white 에서 이것만 되살렸다 (2026-08-12) ★★
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★왜 P·D 가 아니라 I 만인가★ 어제 두 로그의 CTE 통계가 '진동'이 아니라
@@ -1194,6 +1277,17 @@ class DrivingNode(Node):
         self._cb_v0 = 0.0             # 체결 시 속도 [m/s] (사후 감속도 산출용)
         self._cb_count = 0            # 이번 주행에서 체결한 횟수(로그·진단)
 
+        # ── 라이다 구간 이양 [2026-09-01] ── 상단 '라이다 구간 이양' 절에 설계
+        self.raw_zone = []            # 선택된 CSV 의 terrain 열 (raw_wps 와 같은 길이)
+        self.wp_zone = []             # 위를 로컬 좌표 WP 와 같은 인덱스로 들고 있는 것
+        self._lidar_zone = False      # 지금 라이다에게 조종권을 넘긴 상태인가
+        self._lidar_zone_t0 = 0.0     # 이양 시각 (로그·진단)
+        self._lidar_active = False    # mppi 가 마지막으로 보고한 값
+        self._lidar_active_t = 0.0    # 그 보고를 받은 시각 — ★신선도가 곧 생존이다★
+        self._rejoin = False          # L → G 복귀 재수렴 중인가
+        self._rejoin_t0 = 0.0         # 재수렴 시작 시각 (REJOIN_TIMEOUT_S 판정)
+        self._rejoin_cte0 = 0.0       # 복귀 순간의 CTE (로그 — 얼마나 벗어나 돌아왔나)
+
         # ── 진단 계측 (/drive_diag) ★제어 판단에 절대 쓰지 않는다★ ──
         #   여기 있는 값이 제어로 새어 들어가면 '계측을 위해 거동이 바뀌는' 상태가
         #   된다. 전부 쓰기 전용이고, 읽는 곳은 publish_state_topics() 하나뿐이다.
@@ -1225,6 +1319,11 @@ class DrivingNode(Node):
         # ★신호등 개입 허락★ 상수 TRAFFIC_LIGHT_ENABLE + DRIVE_RUN 일 때만 True.
         #   traffic_light 는 이것과 master 의 /tl_enable 을 OR 로 본다.
         self.pub_tl_permit = self.create_publisher(Bool, '/tl_permit',      10)
+        #  ★라이다 구간 이양★ 상단 '라이다 구간 이양' 절 참고. /tl_permit 과 같은
+        #  규약이다 — True/False 를 매 틱 계속 내므로 ★신선도가 곧 허락★ 이고, 이
+        #  노드가 죽으면 값이 끊겨 mppi 가 스스로 손을 뗀다.
+        self.pub_lidar_permit = self.create_publisher(
+            Bool, LIDAR_PERMIT_TOPIC, 10)
         self.pub_event = self.create_publisher(String, '/drive_event',      10)
         self.pub_ego   = self.create_publisher(Float64MultiArray, '/ego_state', 10)
         # ★[2026-08-08] 추종 진단 — record 전용, 제어는 이 값을 읽지 않는다★
@@ -1248,6 +1347,10 @@ class DrivingNode(Node):
         self.create_subscription(Bool,      '/vehicle_mode', self.cb_mode,    10)
         self.create_subscription(Bool,      '/estop',        self.cb_estop,   10)
         self.create_subscription(String,    '/drive_cmd',    self.cb_drive_cmd, 10)
+        #  ★mppi 의 생존 신고★ 값이 아니라 ★신선도★ 를 본다 — 이 토픽이 낡으면
+        #  라이다가 없는 것이고, 그러면 L 구간에 조종권을 넘기지 않는다.
+        self.create_subscription(Bool, LIDAR_ACTIVE_TOPIC,
+                                 self.cb_lidar_active, 10)
 
         self.create_timer(1.0 / CONTROL_HZ, self.loop)
 
@@ -1384,6 +1487,38 @@ class DrivingNode(Node):
         med = sorted(self._enc_buf)[len(self._enc_buf) // 2]
         self.enc_pulse = med * ENC_SUM_TO_PULSE
 
+    def cb_lidar_active(self, msg: Bool):
+        """mppi 의 생존 신고. ★값보다 신선도가 중요하다★
+
+        mppi 는 조종 중이면 True, 침묵 중이면 False 를 20Hz 로 계속 낸다. 즉 False 도
+        '나 살아 있다'는 신고다 — 이 노드가 보는 것은 ★마지막 수신 시각★ 이고, 그것이
+        LIDAR_ACTIVE_STALE_S 보다 낡으면 라이다가 없는 것으로 판단해 L 구간에
+        조종권을 넘기지 않는다(넘긴 뒤라면 그 자리에서 정지한다).
+
+        ★왜 이 계약이 필요한가★ arduino 의 cb_cmd_vel 은 신선도를 보지 않고 마지막
+        펄스를 래치한다. 그래서 이 노드가 침묵했는데 아무도 대신 발행하지 않으면
+        차가 ★직전 펄스로 계속 굴러간다★ — 허락을 일방적으로 내보내는 설계로는
+        그 상황을 알 방법이 없다."""
+        self._lidar_active = bool(msg.data)
+        self._lidar_active_t = time.time()
+
+    def lidar_alive(self):
+        """mppi 가 살아 있나(= /lidar_active 가 신선한가). 한 번도 못 받으면 False."""
+        return self._lidar_active_t > 0.0 \
+            and (time.time() - self._lidar_active_t) <= LIDAR_ACTIVE_STALE_S
+
+    def zone_at(self, idx):
+        """WP idx 의 구간 표시. ★'L'/'l' 만 라이다이고 그 밖은 전부 GPS★
+
+        열이 없거나 빈 칸이거나 '0' 이어도 안전한 쪽(GPS 추종)으로 떨어진다 —
+        기존 CSV 가 그대로 호환되는 이유다."""
+        if not self.wp_zone or idx < 0 or idx >= len(self.wp_zone):
+            return ''
+        return self.wp_zone[idx]
+
+    def in_lidar_zone(self, idx=None):
+        return self.zone_at(self.wp_idx if idx is None else idx) in LIDAR_ZONE_CHARS
+
     def cb_speed(self, msg: Float32):
         """speed.py 의 IMU 적분 속도 [km/h]. ★저속 펄스 보정에만 쓴다★
         (추종 기하·상태 판정에는 절대 쓰지 않는다 — speed.py 헤더의 정확도 실측 참고:
@@ -1452,6 +1587,20 @@ class DrivingNode(Node):
         소유자가 사라지면 함께 놓는 것이 맞다. E-STOP 중에는 어차피 B보드가 2단을
         물고 있고(arduino.py 가 그동안 ROS 의 브레이크 값을 무시한다), 해제 시
         B보드가 스스로 0단으로 복귀한다 — 즉 여기서 놓아도 제동이 풀리지 않는다.
+        """
+        self._clear_transients()
+
+    def _clear_transients(self):
+        """★과도 상태 + 리니어를 놓는다★ 상태·WP 인덱스·헤딩은 건드리지 않는다.
+
+        [2026-09-01] E-STOP 일시정지(_estop_pause_reset)와 라이다 구간 이양
+        (begin_lidar_zone)이 같은 집합을 지운다 — 이유도 같아서 한 곳으로 모았다.
+        둘 다 '이 노드가 잠시 차를 놓는다'는 사건이고, 종점 접근 단계와 코너 1단
+        제동은 ★내가 지금 v 로 굴러가며 목표까지 d 가 남았다★ 는 전제 위에 서 있다.
+        손을 놓는 동안 그 전제가 무효가 되므로, 들고 있다가 재개하면 낡은 전제로
+        판단한다. ★리니어도 함께 놓는다★ 그 과도 상태들이 소유하던 것이라
+        소유자가 사라지면 함께 놓는 것이 맞고, 놓지 않으면 keep_brake 가 0.25초마다
+        같은 단계를 계속 주장해 ★남(mppi·B보드)의 제동과 다투게 된다★.
         """
         self.reset_cte_integral()
         self._goal_phase = GOAL_PHASE_NONE
@@ -1531,6 +1680,7 @@ class DrivingNode(Node):
             self.event(f"❌ 경로 파일 없음: {path}")
             return
         wps = []
+        zone = []
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 for row in csv.DictReader(f):
@@ -1538,6 +1688,11 @@ class DrivingNode(Node):
                         wps.append((float(row['latitude']), float(row['longitude'])))
                     except (KeyError, ValueError, TypeError):
                         continue
+                    # ★구간 표시는 좌표가 성립한 행에서만 읽는다★ 위 append 가
+                    #   실패하면 continue 로 빠지므로 두 리스트의 인덱스가 항상
+                    #   1:1 로 맞는다 — 어긋나면 이양 지점이 조용히 밀린다.
+                    #   ★'L'/'l' 만 라이다이고 나머지는 전부 GPS★ (zone_at 참고)
+                    zone.append(str(row.get(LIDAR_ZONE_COLUMN, '') or '').strip())
         except Exception as e:
             self.event(f"❌ 경로 읽기 실패: {e}")
             return
@@ -1545,7 +1700,35 @@ class DrivingNode(Node):
             self.event(f"❌ 웨이포인트가 부족하다({len(wps)}개): {name}")
             return
         self.route_name, self.route_path, self.raw_wps = name, path, wps
+        self.raw_zone = zone
+        n_lidar = sum(1 for z in zone if z in LIDAR_ZONE_CHARS)
         self.event(f"📁 경로 선택: {name} (WP {len(wps)}개) — 스위치를 자율로 올리면 출발")
+        if n_lidar:
+            # ★몇 개인지가 아니라 몇 토막인지를 말한다★ 사람이 손으로 적은 열이라
+            #   오타 하나가 구간을 둘로 쪼개는데, 개수만 보면 그것이 안 드러난다.
+            segs = self._zone_segments(zone)
+            self.event(
+                f"🛞 라이다 구간 {len(segs)}곳 / WP {n_lidar}개 "
+                f"({', '.join(f'{i0}~{i1}' for i0, i1 in segs)}) — "
+                f"{LIDAR_ZONE_COLUMN} 열의 'L'")
+        else:
+            self.event(f"🛰️ 라이다 구간 없음 — 전 구간 GPS 추종 "
+                       f"({LIDAR_ZONE_COLUMN} 열에 'L' 이 없다)")
+
+    @staticmethod
+    def _zone_segments(zone):
+        """연속된 라이다 구간을 (시작idx, 끝idx) 목록으로 접는다 (로그용)."""
+        segs, i, n = [], 0, len(zone)
+        while i < n:
+            if zone[i] in LIDAR_ZONE_CHARS:
+                j = i
+                while j + 1 < n and zone[j + 1] in LIDAR_ZONE_CHARS:
+                    j += 1
+                segs.append((i, j))
+                i = j + 1
+            else:
+                i += 1
+        return segs
 
     def build_waypoints(self):
         """선택된 경로를 현재 원점 기준 로컬 좌표로 변환 + 곡률 프로파일 사전계산."""
@@ -1553,6 +1736,11 @@ class DrivingNode(Node):
             return False
         self.waypoints = [latlon_to_xy(la, lo, self.lat0, self.lon0)
                           for (la, lo) in self.raw_wps]
+        # ★구간 표시는 좌표 변환과 무관하다★ 인덱스만 같으면 되므로 그대로 옮긴다.
+        #   길이가 어긋나 있으면(있을 수 없지만) 짧은 쪽을 GPS 로 채워 안전측으로 둔다.
+        self.wp_zone = list(self.raw_zone[:len(self.waypoints)])
+        if len(self.wp_zone) < len(self.waypoints):
+            self.wp_zone += [''] * (len(self.waypoints) - len(self.wp_zone))
         self.wp_idx = 0
         self._lfd_lpf = self._lfd_out = LFD_MAX_M
         self._warned_infeasible = False
@@ -1691,6 +1879,14 @@ class DrivingNode(Node):
         self._cb_t = 0.0
         self._cb_release_t = 0.0
         self._cb_lock_gate = 0.0
+        # ★라이다 이양도 함께 내린다 [2026-09-01]★ 도착·이탈·정지명령·수동전환으로
+        #   상태가 바뀌면 조종권은 무조건 이 노드로 돌아온다. 내리지 않으면 도착해
+        #   선 차를 mppi 가 계속 몰 수 있다 — publish_state_topics 가 다음 틱에
+        #   허락을 False 로 내리지만, 그 한 틱을 기다릴 이유가 없다.
+        if self._lidar_zone:
+            self._lidar_zone = False
+            self.pub_lidar_permit.publish(Bool(data=False))
+        self._rejoin = False
         if msg:
             self.event(msg)
 
@@ -1783,6 +1979,7 @@ class DrivingNode(Node):
         #   (E-STOP 중)이고, 두 경고가 겹쳐 나오면 원인이 흐려진다.
         if self.state in (S_DRIVE_HEADING, S_DRIVE_RUN):
             if self.estop:
+                self._revoke_lidar("E-STOP 일시정지")
                 self.send(0, 0.0, control=True)
                 self.throttle_event("🚨 E-STOP 일시정지 중 — 해제하면 그 자리에서 재개한다")
                 return
@@ -1795,6 +1992,10 @@ class DrivingNode(Node):
         #   ★fix_time 은 '원시 fix 의 시각'이다★ gps.py 가 IMU 로 메운 표본이 계속
         #   와도 이 타이머는 흐른다(cb_gps_fused · 상수 GPS_TIMEOUT_S 절 참고).
         if now - self.fix_time > GPS_TIMEOUT_S:
+            # ★라이다 구간 중이어도 회수한다★ 위치를 모르면 언제 GPS 로 돌아올지도
+            #   모른다 — 즉 이양을 끝낼 수 없다. mppi 는 GPS 를 안 보므로 계속 몰 텐데,
+            #   그러면 경로를 벗어난 것을 아무도 알지 못한다(_revoke_lidar 참고).
+            self._revoke_lidar("GPS 두절 — 복귀 지점을 알 수 없다")
             self.send(0, 0.0, control=True)
             # ★세 사건을 구별해서 말한다★ 증상은 셋 다 '정지'로 같은데 손 볼 곳이
             #   전혀 다르다. 구별하지 않으면 gps 노드가 죽은 것을 모르고 안테나와
@@ -1946,6 +2147,124 @@ class DrivingNode(Node):
         self.event(f"📍 출발 WP {best_i}/{len(self.waypoints)} "
                    f"(최근접 {best_d:.2f}m)")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  라이다 구간 이양 [2026-09-01]  — 설계 근거는 상단 '라이다 구간 이양' 절
+    # ══════════════════════════════════════════════════════════════════════════
+    def _revoke_lidar(self, why):
+        """★조종권을 즉시 회수한다★ 이 노드가 다시 /cmd_vel_raw 를 내기 직전에 부른다.
+
+        loop() 의 E-STOP 일시정지와 GPS 두절 분기는 run_follow 에 닿기 전에 스스로
+        send(0) 을 낸다 — 그 두 곳이 L 구간 중에 발동하면 ★두 발행자가 동시에 다른
+        값을 내는 유일한 창★ 이 열린다(mppi 는 2펄스, 이쪽은 0). 그래서 발행을 재개
+        하기 전에 허락을 먼저 내린다.
+
+        회수 뒤 사정이 풀리면 run_follow 가 같은 구간을 다시 보고 begin_lidar_zone
+        으로 ★새로 이양한다★ — 그때 mppi 는 기준선을 다시 잡는다. 서 있던 동안
+        낡아진 추측항법을 들고 재개하지 않는 것이 오히려 옳다.
+        """
+        if not self._lidar_zone:
+            return
+        self._lidar_zone = False
+        self.pub_lidar_permit.publish(Bool(data=False))
+        self.event(f"🛰️ 라이다 조종권 회수 — {why}")
+
+    def begin_lidar_zone(self):
+        """G → L. 조종권을 mppi 에게 넘긴다. 넘겼으면 True.
+
+        ★넘기기 전에 상대의 생존을 확인한다★ /lidar_active 가 낡았으면 mppi 가 안 떠
+        있는 것이고(use_lidar:=false 로 L 구간 CSV 를 주행하는 경우가 그렇다), 그때
+        그냥 침묵하면 arduino 가 ★내 마지막 펄스를 래치한 채★ 차를 계속 굴린다.
+        확인이 안 되면 이양하지 않고 그 자리에서 정지 절차로 넘긴다.
+
+        ★순서가 중요하다★ ① 과도상태·리니어를 놓고 ② 0 펄스를 한 번 내고 ③ 허락을
+        올린다. ①이 없으면 keep_brake 가 계속 내 단계를 주장해 mppi 의 제동과 다투고,
+        ②가 없으면 mppi 가 첫 지령을 내기까지의 몇 틱 동안 내 마지막 펄스가 살아 있다.
+        """
+        if not self.lidar_alive():
+            self.enter(S_DRIVE_DONE,
+                       f"⛔ 라이다 구간인데 mppi 가 없다 — {LIDAR_ACTIVE_TOPIC} 가 "
+                       f"{'한 번도 오지 않았다' if self._lidar_active_t <= 0.0 else '낡았다'}. "
+                       f"정지 + 리니어 2단 (use_lidar:=true 로 다시 띄울 것)")
+            return False
+
+        self._lidar_zone = True
+        self._lidar_zone_t0 = time.time()
+        self._rejoin = False                 # 재수렴 중에 다시 L 로 들어갈 수 있다
+        self._clear_transients()             # ★리니어를 놓는다★ (그쪽 docstring)
+        self.send(0, 0.0, control=True)      # ★마지막 한 번★ — 그 뒤로는 침묵이다
+        self.pub_lidar_permit.publish(Bool(data=True))   # 한 틱 먼저 알린다
+        cte = self.signed_cte()
+        self.event(f"🛞 라이다 구간 진입 — WP {self.wp_idx}/{len(self.waypoints)} "
+                   f"에서 조종권 이양 (CTE {cte:+.2f}m). "
+                   f"이제 /cmd_vel_raw 는 mppi 가 낸다")
+        return True
+
+    def hold_for_lidar(self):
+        """L 구간. ★아무것도 발행하지 않는다★ — 그것이 이양의 실체다.
+
+        send() 를 부르지 않으므로 /cmd_vel_raw 와 /control_state 가 이 노드에서
+        나가지 않는다. 발행자가 시간축에서 배타가 되어 둘이 서로를 덮는 일이 없다.
+        여기서 하는 일은 ★지켜보는 것★ 뿐이다:
+
+          · mppi 가 살아 있나 (/lidar_active 신선도) — 끊기면 즉시 정지
+          · 경로가 L 구간 안에서 끝나나 — run_follow 의 도착 판정이 돌지 않으므로
+            여기서 따로 본다. 없으면 경로 끝에서 이양이 영원히 풀리지 않는다.
+
+        keep_brake 는 loop() 가 여전히 부르지만, begin_lidar_zone 이 리니어를 0 으로
+        놓아 두었으므로 아무것도 발행하지 않는다(_publish_brake: '0 은 재확인하지
+        않는다'). mppi 가 무는 제동을 이 노드가 풀지 않는다.
+        """
+        if not self.lidar_alive():
+            self.enter(S_DRIVE_DONE,
+                       f"⛔ 라이다 구간 중 mppi 가 끊겼다 — {LIDAR_ACTIVE_TOPIC} 가 "
+                       f"{time.time() - self._lidar_active_t:.1f}s 없음. "
+                       f"정지 + 리니어 2단")
+            return
+        # ★경로가 L 구간 안에서 끝나는 경우★ 도착 판정(run_follow)이 돌지 않으므로
+        #   진행 포인터가 마지막 WP 에 닿는 것으로 대신 본다.
+        if self.wp_idx >= len(self.waypoints) - 1:
+            self.enter(S_DRIVE_DONE,
+                       f"🎯 도착 — 라이다 구간 안에서 경로가 끝났다 "
+                       f"(WP {self.wp_idx}/{len(self.waypoints)}). 정지 + 리니어 2단")
+            return
+        self.throttle_event(
+            f"🛞 라이다 조종 중 — WP {self.wp_idx}/{len(self.waypoints)}, "
+            f"mppi {'구동' if self._lidar_active else '대기'}")
+
+    def end_lidar_zone(self):
+        """L → G. 조종권을 되찾고 ★복귀 재수렴★ 에 들어간다.
+
+        ★여기서 곧바로 평소 규칙으로 돌아가지 않는다★ mppi 가 복귀한 곳은 L 구간
+        진입 시점의 IMU 헤딩으로 그은 자기 직선이고, 이 노드의 GPS 경로가 아니다.
+        복귀 순간 CTE 가 CTE_DEVIATION_M(2.0m)을 넘어 있으면 평소 규칙으로는
+        ★조종권을 되찾은 첫 틱에 경로이탈로 급정지한다★. 상단 '복귀 버퍼' 절의
+        완화된 규칙으로 붙은 뒤에 평소로 돌아간다(run_follow 의 재수렴 종료 판정).
+
+        ★wp_idx 는 다시 잡지 않는다★ L 구간 동안에도 advance_wp_idx() 를 계속
+        불렀으므로 포인터는 이미 실제 위치를 따라와 있다. align_start_wp() 처럼
+        전역 최근접을 다시 찾으면 순환 코스에서 반대편 구간으로 건너뛸 수 있다.
+        """
+        self._lidar_zone = False
+        self._rejoin = True
+        self._rejoin_t0 = time.time()
+        cte = self.signed_cte()
+        self._rejoin_cte0 = 0.0 if math.isnan(cte) else cte
+        self.reset_cte_integral()            # 이양 구간 동안 낡은 적분을 버린다
+        #  ★리니어 0 을 한 번 강제로 낸다★ mppi 가 구간 끝에서 장애물을 보고 2단을
+        #  물고 있었으면 /brake_level 의 마지막 값이 2 인 채로 남는다. 이 노드의
+        #  brake_now 는 0 이지만 _publish_brake 는 '0 은 재확인하지 않는다'는 규칙
+        #  때문에 스스로 내지 않는다 — 그러면 ★브레이크를 물고 달리게 된다★.
+        #  mppi 쪽도 하강엣지에서 releaseBrake() 를 부르지만, 그쪽은 최소 물림 안이면
+        #  건너뛰므로 소유권을 되받는 이쪽에서 한 번 못 박는다. (주기적 재확인이
+        #  아니라 ★이양 경계에서 한 번★ 이므로 그 규칙과 충돌하지 않는다)
+        self.set_brake(BRAKE_NONE)
+        self._publish_brake(force=True)
+        self.pub_lidar_permit.publish(Bool(data=False))  # 한 틱 먼저 알린다
+        self.event(f"🛰️ GPS 추종 복귀 — WP {self.wp_idx}/{len(self.waypoints)}, "
+                   f"CTE {self._rejoin_cte0:+.2f}m "
+                   f"(라이다 {time.time() - self._lidar_zone_t0:.1f}s). "
+                   f"{REJOIN_PULSE_MAX}펄스로 재수렴")
+
     # ── 경로 추종 ──────────────────────────────────────────────────────────────
     def run_follow(self):
         if self.heading is None or not self.waypoints:
@@ -1954,16 +2273,51 @@ class DrivingNode(Node):
 
         # ★진행 포인터를 먼저 옮긴다★ CTE 창(signed_cte)과 목표점 탐색 시작점이
         #   둘 다 wp_idx 기준이므로, 낡은 포인터로 판정하면 둘 다 어긋난다.
+        #   ★라이다 구간에서도 계속 옮긴다★ 그동안 차는 mppi 가 몰고 있어서 실제로
+        #   경로를 따라 나아가는데, 포인터를 세워 두면 복귀할 때 한참 뒤에 남아
+        #   탐색 창(WP_SEARCH_WINDOW 11.25m)이 실제 위치에 닿지 못한다. 이 함수는
+        #   위치 기반 최근접이라 mppi 가 횡으로 2~3m 벗어난 채 지나가도 따라 올라간다.
         self.advance_wp_idx()
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★라이다 구간 이양★ (상단 '라이다 구간 이양' 절에 설계 근거)
+        # ══════════════════════════════════════════════════════════════════════
+        if self.in_lidar_zone():
+            if not self._lidar_zone:
+                if not self.begin_lidar_zone():
+                    return          # 이양 실패 — begin 이 이미 정지시켰다
+            self.hold_for_lidar()
+            return
+        if self._lidar_zone:
+            self.end_lidar_zone()
 
         # ★경로이탈 안전정지★ 매핑 경로에서 CTE_DEVIATION_M 이상 벗어나면 조향을
         #   더 계산하지 않고 곧바로 도착과 같은 정지 절차로 넘긴다.
+        #   ★복귀 재수렴 중에는 문턱을 올린다★ 그 이유와 값은 상단 '복귀 버퍼' 절에.
+        #   없애지는 않는다 — REJOIN_CTE_ABORT_M 가 바깥 방벽으로 남는다.
         cte = self.signed_cte()
-        if not math.isnan(cte) and abs(cte) > CTE_DEVIATION_M:
+        cte_limit = REJOIN_CTE_ABORT_M if self._rejoin else CTE_DEVIATION_M
+        if not math.isnan(cte) and abs(cte) > cte_limit:
             #   ★🚨 를 쓰지 않는다★ 그 기호는 E-STOP(D12) 전용이다 — 파일 헤더 '용어'.
+            why = "복귀 재수렴 실패" if self._rejoin else "경로이탈 안전정지"
             self.enter(S_DRIVE_DONE,
-                       f"⛔ 경로이탈 안전정지 — CTE {cte:+.2f}m, 정지 + 리니어 2단")
+                       f"⛔ {why} — CTE {cte:+.2f}m (한계 {cte_limit:.1f}m), "
+                       f"정지 + 리니어 2단")
             return
+
+        # ── 복귀 재수렴 종료·시한 판정 ──
+        if self._rejoin:
+            if not math.isnan(cte) and abs(cte) <= REJOIN_DONE_CTE_M:
+                self._rejoin = False
+                self.reset_cte_integral()
+                self.event(f"✅ 경로 복귀 완료 — CTE {cte:+.2f}m "
+                           f"(복귀 시 {self._rejoin_cte0:+.2f}m, "
+                           f"{time.time() - self._rejoin_t0:.1f}s)")
+            elif time.time() - self._rejoin_t0 > REJOIN_TIMEOUT_S:
+                self.enter(S_DRIVE_DONE,
+                           f"⛔ 복귀 재수렴 시한초과 — {REJOIN_TIMEOUT_S:.0f}s 안에 "
+                           f"경로에 붙지 못했다 (CTE {cte:+.2f}m). 정지 + 리니어 2단")
+                return
 
         # ── 종점 판정 ★반경 or 통과, 둘 중 먼저 되는 쪽★ [2026-08-11] ──
         #   구 조건은 `wp_idx == 마지막 and d2goal <= 0.2` 하나뿐이었다. 5Hz GPS 로
@@ -2023,9 +2377,20 @@ class DrivingNode(Node):
         #   (그 캡이 없으면 제동으로 줄인 속도를 REF 가 되돌린다 — 그쪽 docstring)
         pulse = self.corner_brake(pulse, gate_dist, gate_v_corner)
 
+        # ── 판단 5. 복귀 재수렴 중이면 속도를 묶는다 [2026-09-01] ──
+        #   ★맨 뒤에 둔다★ 위 넷이 무엇을 요구했든 재수렴 중에는 이 상한이 이긴다.
+        #   큰 CTE 를 4펄스로 파고들면 순수추종이 경로를 가로질러 반대편으로 넘어간다.
+        if self._rejoin:
+            pulse = min(pulse, REJOIN_PULSE_MAX)
+
         # ── 제어 : 순수추종(도로휠각) + CTE 적분 → 전달계 보정 → pot 지령 ──
         road = self.pure_pursuit_steer(lfd)
-        road = self.apply_cte_integral(road, cte)
+        #   ★재수렴 중에는 적분을 태우지 않는다★ 그 항은 '편향을 천천히 지우는' 것이라
+        #   1m 단위 오차에서 감기면 수렴한 뒤에 반대로 밀어낸다. 계속 0 으로 눌러 둔다.
+        if self._rejoin:
+            self.reset_cte_integral()
+        else:
+            road = self.apply_cte_integral(road, cte)
         steer = self.steer_command(road, pulse * MS_PER_PULSE)
         self.send(pulse, steer, control=True)
 
@@ -3086,6 +3451,13 @@ class DrivingNode(Node):
         #   손을 뗀다(그쪽 TL_ENABLE_STALE_S). 그래서 False 도 계속 내보낸다.
         self.pub_tl_permit.publish(Bool(
             data=bool(TRAFFIC_LIGHT_ENABLE and self.state == S_DRIVE_RUN)))
+        # ★라이다 허락 [2026-09-01]★ /tl_permit 과 같은 규약이다 — True/False 를 매 틱
+        #   계속 내므로 ★신선도가 곧 허락★ 이고, 이 노드가 죽으면 값이 끊겨 mppi 가
+        #   스스로 손을 뗀다(그쪽 permit_stale_s). 그래서 False 도 계속 내보낸다.
+        #   ★S_DRIVE_RUN 밖에서는 무조건 False★ — 매핑 중이나 도착 뒤에 라이다가
+        #   차를 몰기 시작하면 안 된다. _lidar_zone 은 enter() 가 상태 전이마다 내린다.
+        self.pub_lidar_permit.publish(Bool(
+            data=bool(self._lidar_zone and self.state == S_DRIVE_RUN)))
         ego = Float64MultiArray()
         ego.data = [
             float(self.x), float(self.y),
@@ -3158,6 +3530,18 @@ class DrivingNode(Node):
             #     그 지점의 gps_kmh 와 최종 정지 위치를 함께 보면 goal_brake1_ms2 가
             #     맞았는지 바로 나온다 — 많이 못 미쳐 섰으면 a1 을 올린다.
             float(self._diag_goal_need),              # goal_need_m
+            # ── [2026-09-01] 라이다 구간 이양 검증용 2종 ──
+            #   ★이 둘이 없으면 로그로 이양을 판정할 수 없다★ L 구간에서는 이 노드가
+            #   /cmd_vel_raw 를 내지 않으므로 out_pulse 열이 ★내가 마지막에 낸 값에
+            #   굳어 있다★ — 그 구간을 'GPS 추종이 그 펄스를 내고 있었다'고 읽으면
+            #   완전히 틀린다. lidar_zone=1 인 구간의 속도·조향은 mppi 가 낸 것이고,
+            #   실제로 나간 값은 /cmd_vel_raw 열(record 가 따로 받는다)에서 본다.
+            #   읽는 법 : lidar_zone 1→0 인 행의 cte_m = ★얼마나 벗어나 돌아왔나★.
+            #     그 값이 REJOIN_DONE_CTE_M(0.5) 밑이면 버퍼가 거의 필요 없었던 것이고,
+            #     REJOIN_CTE_ABORT_M(6.0) 에 가까우면 L 구간 곡률이 mppi 직선 기준을
+            #     넘어선 것이다(구간을 더 짧게 끊거나 더 곧은 곳으로 옮길 것).
+            1.0 if self._lidar_zone else 0.0,         # lidar_zone
+            1.0 if self._rejoin else 0.0,             # rejoin
         ]
         self.pub_diag.publish(diag)
 

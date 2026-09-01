@@ -13,12 +13,47 @@
 
 ## 1. 작동
 
+> ### ★[2026-09-01] 기본 용도가 바뀌었다 — white1 과 한 계통이다★
+>
+> 이 노드는 이제 **혼자 쓰이지 않는다.** `white1 one_launch` 가 함께 띄우고,
+> 매핑 CSV 의 `terrain` 열이 `'L'` 인 구간에서만 조종권을 받아 몬다. 그 밖의
+> 구간에서는 **아무것도 발행하지 않는다**(침묵).
+>
+> ```
+> white1/driving ──/lidar_permit(Bool)──▶ 나      "이 구간은 네가 몰아라"
+> white1/driving ◀──/lidar_active(Bool)── 나      "나 살아 있다" (매 틱)
+> ```
+>
+> · 실차 실행은 **`ros2 launch white1 one_launch.py`** 다 (이 패키지 런치가 아니다).
+> · 설계 근거는 `white1/white1/driving.py` 헤더의 '라이다 구간 이양' 절과
+>   `white1/CHANGELOG.md` 2026-09-01 항에 있다.
+> · **`handover.require_permit: false` 로 두면 아래의 종전 '런치 = 출발' 그대로다**
+>   — 라이다 단독 시험용이다. white1 과 함께 띄울 때 이 값이 false 면 이 노드가
+>   GPS 추종 구간에서도 `/cmd_vel_raw` 를 내며 driving.py 와 20Hz 로 서로를 덮는다.
+> · 허락의 **상승엣지마다 기준선을 다시 잡는다**(`rearmReference`). 기준 방위가
+>   런치 시점(주차 위치)에 한 번만 잡히면 L 구간에서 엉뚱한 선으로 복귀한다 —
+>   CHANGELOG ③ 항이 그 사고를 막은 기록이다.
+
+---
+
+## 1-1. 단독 실행 (라이다만 시험할 때)
+
 ```
 ros2 launch mppi_local_planner one_launch.py
 ```
 
 **"주행 시작"을 누르는 절차가 없다.** 자이로 바이어스 보정(차 정지, ouster IMU
 ~100 샘플 ≈ 1초)이 끝나면 **2펄스 ≈ 6.4 km/h** 로 스스로 직진한다.
+
+> ⚠️ 이 런치는 `handover.require_permit` 을 건드리지 않는다 — `config/params.yaml`
+> 의 기본이 **true** 이므로 그냥 띄우면 **허락을 기다리며 침묵한다.** 단독으로
+> 굴리려면 명시해야 한다:
+> ```bash
+> ros2 launch mppi_local_planner one_launch.py \
+>     mppi_params_file:=/dev/null   # 또는
+> ros2 run mppi_local_planner mppi_local_planner_node --ros-args \
+>     -p handover.require_permit:=false
+> ```
 
 세우는 수단은 Ctrl-C · E-STOP · D5 수동조종 셋이다. 피할 길이 없으면 원본과
 같이 속도 0 을 내고, 금색차에서는 거기에 **리니어 2단**을 더한다(펄스 0 은
@@ -87,6 +122,8 @@ ros2 launch mppi_local_planner one_launch.py flip_lidar_xy:=false
 | 구독 | `/ouster/points` | OS1-32 포인트클라우드 |
 | 구독 | `/imu` | 외장 iAHRS 쿼터니언 헤딩 (드리프트↓). `/ouster/imu` 는 자이로만 |
 | 구독 | `/vehicle_mode` · `/estop` | D5 · E-STOP 게이트 |
+| 구독 | `/lidar_permit` | ★조종권 허락★ (white1 driving). 없거나 낡으면 **침묵** |
+| 발행 | `/lidar_active` | ★생존 신고★ 매 틱. driving 은 값이 아니라 **신선도**를 본다 |
 | 발행 | `/cmd_vel_raw` | 펄스 + pot 지령 (KasaActuator) |
 | 발행 | `/control_state` | 구동 허용 |
 | 발행 | `/brake_level` | 회피 실패 시 2단 |

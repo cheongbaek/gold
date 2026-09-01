@@ -20,9 +20,37 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
         ★DRIVE_RUN 중에만 개입한다★ 빨간불이 사라지거나 초록불이면 즉시 풀고,
         driving 이 계속 내던 목표펄스가 그대로 통해 스스로 재출발한다.
         카메라를 안 꽂았으면 use_camera:=false (usb_cam 이 respawn 루프를 돈다)
+    white1/hud          차량 상면도 HUD (구독 전용)               (use_hud)
+    ouster_ros/os_driver  OS1-32 라이다 → /ouster/points           (use_lidar)
+    mppi_local_planner  ★라바콘 회피 — CSV terrain 열이 'L' 인 구간만★ (use_lidar)
+
+════════════════════════════════════════════════════════════════════════════════
+ ★라이다 구간 이양 [2026-09-01]★
+════════════════════════════════════════════════════════════════════════════════
+    매핑 CSV 의 미사용 열 terrain 에 사람이 손으로 'L' 을 적어 둔 구간에서는
+    driving 이 조종권을 놓고 mppi_local_planner 가 라바콘을 피하며 몬다.
+    그 밖의 값(빈 칸·'0')은 전부 GPS 추종이다 — ★기존 CSV 가 그대로 돈다★.
+
+        driving ──/lidar_permit──▶ mppi        "이 구간은 네가 몰아라"
+        driving ◀──/lidar_active── mppi        "나 살아 있다" (매 틱·신선도가 생존)
+
+    설계 근거는 white1/white1/driving.py 헤더의 '라이다 구간 이양' 절에 있다.
+
+    ★라이다는 USB 가 아니라 유선 LAN 이다★ eno1 이 192.168.6.100/24 로 올라와
+    있어야 하고 센서는 192.168.6.11 이다. 안 붙으면:
+        ip -br addr show eno1  ·  ping -c2 192.168.6.11
+
+    ★라이다 없이 종전처럼 돌리려면 use_lidar:=false★ 그때 L 구간이 있는 CSV 를
+    주행하면 driving 이 그 구간에서 ★정지한다★ (아무도 몰지 않는 상태로 달리지
+    않는다 — /lidar_active 가 오지 않는 것을 보고 판단한다).
+
+    ★AEB(lidar cone_lidar_node)는 띄우지 않는다★ 회피는 mppi 가 자기 코스트맵으로
+    판단하고, 못 피하면 스스로 리니어 2단을 문다. 그 위에 가상범퍼를 겹치면
+    라바콘 사이를 지나갈 때 AEB 가 먼저 세운다.
 
 CLI 는 따로 띄운다 (별 터미널):
     ros2 run white1 prompt
+    ros2 run white1 hud         # 차량 상면도 HUD (구독 전용, 제어 안 함)
 
 ════════════════════════════════════════════════════════════════════════════════
  조작 [2026-08-11] prompt 의 1)매핑 / 2)주행 메뉴로 시작한다
@@ -38,8 +66,10 @@ CLI 는 따로 띄운다 (별 터미널):
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
+                            OpaqueFunction)
 from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -50,6 +80,82 @@ from white1 import camera_launch, paths, ports
 NODE_ENV = {'PYTHONUNBUFFERED': '1',
             'RCUTILS_LOGGING_BUFFERED_STREAM': '0'}
 RESPAWN_DELAY = 2.0
+
+
+def _lidar_actions(context, *_a, **_kw):
+    """라이다 노드 조각. ★use_lidar 가 실제로 true 일 때만 패키지를 찾는다★
+
+    OpaqueFunction 으로 감싼 이유는 하나다 — get_package_share_directory 는 런치
+    ★파싱 시점★ 에 실행되므로, 그냥 두면 lidar·mppi_local_planner 를 빌드하지 않은
+    사람이 use_lidar:=false 로도 이 런치를 띄울 수 없다. 인자가 확정된 뒤에 찾는다.
+    """
+    from ament_index_python.packages import get_package_share_directory
+
+    if LaunchConfiguration('use_lidar').perform(context).lower() \
+            not in ('true', '1', 'yes', 'on'):
+        return []
+
+    try:
+        lidar_share = get_package_share_directory('lidar')
+        mppi_share = get_package_share_directory('mppi_local_planner')
+    except Exception as exc:            # noqa: BLE001 — 파서에도 이유를 남긴다
+        raise RuntimeError(
+            "use_lidar:=true 인데 lidar / mppi_local_planner 패키지를 찾을 수 없습니다.\n"
+            "  colcon build --packages-select ouster_sensor_msgs ouster_ros \\\n"
+            "      lidar mppi_local_planner --cmake-args -DCMAKE_BUILD_TYPE=Release\n"
+            "  ★--symlink-install 을 쓰지 말 것★ (C++ 패키지 — lidar/README.md 참고)\n"
+            "  source ~/gold/gold_ws/install/setup.bash\n"
+            "라이다 없이 GPS 추종만 하려면 use_lidar:=false"
+        ) from exc
+
+    # ── OS1-32 드라이버 ── lidar/launch/ouster.launch.py 가 조각을 소유한다.
+    #   ★그쪽 런치를 그대로 include 한다★ 0.13.x 고정 이유·ouster_ns·params 규약이
+    #   전부 거기 있어서, 여기 다시 적으면 두 곳이 갈린다.
+    ouster = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(lidar_share, 'launch', 'ouster.launch.py')),
+        launch_arguments={'viz': 'false'}.items(),
+    )
+
+    # ── MPPI 회피 ──
+    #   ★lidar / mppi 의 one_launch.py 를 include 하지 않는다★ 그 둘은 각자
+    #   arduino·sound·hud 를 함께 띄운다 — 여기서 include 하면 arduino 가 두 개가
+    #   되어 같은 시리얼 포트를 다툰다. 노드만 직접 선언한다.
+    #   ★drive_gps_node·drive_lidar_node 도 띄우지 않는다★ 앞은 driving.py 와 기능이
+    #   정면으로 겹치고(lidar/README.md), 뒤는 라바콘 '사이를 지나는' 코리도 주행이라
+    #   '세워진 라바콘을 피하는' 이 용도가 아니다.
+    mppi = Node(
+        package='mppi_local_planner',
+        executable='mppi_local_planner_node',
+        name='mppi_local_planner_node',
+        output='screen',
+        additional_env=NODE_ENV,
+        parameters=[
+            os.path.join(mppi_share, 'config', 'params.yaml'),
+            {
+                # ★반드시 true★ false 면 이 노드가 GPS 추종 구간에서도 /cmd_vel_raw 를
+                #   내며 driving.py 와 20Hz 로 서로를 덮는다. 런치 인자로도 열지 않는다.
+                'handover.require_permit': True,
+                # 외장 iAHRS. /ouster/imu 는 자이로만이라 드리프트가 크다.
+                'imu_topic': '/imu',
+                'imu_use_orientation': True,
+                'flip_lidar_xy': LaunchConfiguration('flip_lidar_xy'),
+                'mppi.desired_speed': LaunchConfiguration('lidar_speed'),
+                'kasa.max_pulse': LaunchConfiguration('lidar_pulse'),
+                # 실차 게이트는 항상 켠다 — D5 수동조종·E-STOP 중에는 안 움직인다.
+                'kasa.require_auto_mode': True,
+                'kasa.require_estop_clear': True,
+            },
+        ],
+    )
+
+    rviz = Node(
+        package='rviz2', executable='rviz2', name='rviz2_mppi', output='screen',
+        arguments=['-d', os.path.join(mppi_share, 'config', 'mppi.rviz')],
+        condition=IfCondition(LaunchConfiguration('use_lidar_rviz')),
+    )
+
+    return [ouster, mppi, rviz]
 
 
 def generate_launch_description():
@@ -80,6 +186,7 @@ def generate_launch_description():
     use_record  = LaunchConfiguration('use_record')
     use_mapping = LaunchConfiguration('use_mapping')
     use_sound   = LaunchConfiguration('use_sound')
+    use_hud     = LaunchConfiguration('use_hud')
 
     args = [
         DeclareLaunchArgument(
@@ -97,6 +204,10 @@ def generate_launch_description():
             description='nxde 의 sound 노드(음성 안내). 뜨는 즉시 one_launch_1 이 나오고, '
                         'A·B 보드 연결·매핑/주행 시작·도착·E-stop 을 토픽으로 보고 안내한다. '
                         '구독만 하므로 제어에는 영향이 없다 — 조용히 쓰려면 false'),
+        DeclareLaunchArgument(
+            'use_hud', default_value='true',
+            description='white1 hud 계기판(상면도 + 게이지). 구독만 하므로 제어에 '
+                        '영향이 없다. DISPLAY 없는 SSH 면 false'),
         DeclareLaunchArgument(
             'gps_port', default_value=gps_dev,
             description='GPS 시리얼 경로 override (기본: udev 링크 → VID/PID 스캔)'),
@@ -119,7 +230,62 @@ def generate_launch_description():
                         '★0 을 권한다★ — 정지 시 리니어는 driving 이 직접 지시한다'),
         DeclareLaunchArgument(
             'manual_pulse_max', default_value='15',
-            description='수동조종에서 페달 최대치가 대응할 펄스'),
+            description='수동조종에서 페달 최대치가 대응할 펄스. '
+                        '★[2026-08-25] 이 값은 더 이상 차를 굴리지 않는다★ — '
+                        '/drive_pulse_cmd 라벨(mapping 수집 라벨 ①)을 종전 0~15 '
+                        '스케일로 유지하는 용도만 남았다. 실제 속도는 아래 '
+                        'manual_pwm_max 가 정한다 — 속도를 낮추려고 이 값을 '
+                        '건드리면 ★라벨만 줄고 차는 그대로 나간다★'),
+        DeclareLaunchArgument(
+            'manual_use_pwm', default_value='true',
+            description='수동조종 페달을 A보드 직접 PWM 으로 보낼지. ★true = lidar 와 동일★ '
+                        '풀 엑셀 = PWM 255. false 면 목표펄스 15 를 A보드에 보내고 '
+                        '펌웨어 PID 가 PWM_MAX=170 에 묶어 lidar 보다 현저히 느리다'),
+
+        # ── ★[2026-08-25] 수동조종 페달 = A보드 직접 PWM★ ──
+        #   arduino.py 가 페달 개도량을 manual_pwm_min~max 에 비례 대응시켜
+        #   A보드의 직접 PWM 경로("<pwm>,<pwm>")로 내려보낸다. 종전에는 목표펄스
+        #   (0~15)를 보내 보드의 PID 가 맞추게 했는데, 그 사이에 PID·기동
+        #   블랭킹·코스트가 끼어 '밟은 만큼 나가지' 않았다(arduino.py (2) 분기).
+        #
+        #   ★프로토콜 전 구간 16~255 를 쓴다★ 이 런치의 수동조종은 매핑 절차
+        #   (사람이 페달로 곧게 굴려 초기 헤딩을 잡는 것)에 쓰이는데, 거기서
+        #   속도를 소프트웨어가 잘라 둘 이유가 없다 — 사람이 밟는 만큼이 맞다.
+        #
+        #   ★이 스택에 AEB 가 없는 것은 의도된 것이다★ (2026-08-25 확인)
+        #     lidar one_launch.py 와 달리 수동조종 중 전방을 보는 것이 없다
+        #     (신호등 카메라는 자율주행 분기에서만 일한다). 그쪽은 AEB 시험용
+        #     런치고, 이쪽은 자율주행 스택이다 — 수동조종은 매핑 절차를 위해
+        #     지나가는 상태이지 이 런치가 시험하려는 대상이 아니다.
+        #     → 수동조종에서 차를 세우는 것은 ★사람의 발뿐★ 이고, PWM 255 는
+        #       '사람이 낼 수 있는 최고속' 이라는 뜻 그대로다.
+        #     매핑처럼 천천히 굴려야 하는 절차에서는 낮춰 두는 편이 편하다
+        #     (예: manual_pwm_max:=90 ≈ 4펄스 ≈ 12.7 km/h — drive_pulse 와 같은 속도).
+        DeclareLaunchArgument(
+            'manual_pwm_min', default_value='16',
+            description='페달을 살짝 밟았을 때의 PWM. ★16 = A보드 프로토콜 하한★ '
+                        '(그 아래는 펌웨어가 펄스로 읽어버린다). 순수 비례라 페달 '
+                        '초반 1/3 쯤은 유격이 된다 — 바퀴가 실제로 도는 지점이 '
+                        'PWM 60 부근이기 때문이다. 그 유격이 거슬리면 60 으로 올려라'),
+        DeclareLaunchArgument(
+            'manual_pwm_max', default_value='255',
+            description='★페달을 끝까지 밟았을 때의 PWM = 수동조종 최고속★ '
+                        '기본 255 = A보드 프로토콜 상한(전개). 직접 PWM 은 펌웨어의 '
+                        '무보호 경로라 펄스모드 상한(PWM_MAX=170)도 무시한다. '
+                        'FF 표 대략치: 60≈1펄스 / 70≈2 / 90≈4 / 150≈16펄스(51km/h). '
+                        '※ 이 스택에 AEB 가 없는 것은 의도된 것이다 — 수동조종에서 '
+                        '세우는 것은 사람 발뿐이다(위 주석)'),
+        DeclareLaunchArgument(
+            'throttle_raw_min', default_value='220',
+            description='페달을 놓은 것으로 볼 A0 최댓값. 이 이하 → 지령 0. '
+                        '실차 휴지 196~208'),
+        DeclareLaunchArgument(
+            'throttle_raw_max', default_value='950',
+            description='페달을 끝까지 밟았을 때 A0. lidar 와 동일(실측 풀 행정 ≈946)'),
+        DeclareLaunchArgument(
+            'throttle_gamma', default_value='1.4',
+            description='페달 개도 곡선. 1=선형. lidar 와 동일 — 살짝 밟으면 저속, '
+                        '끝까지 밟으면 PWM 255'),
 
         # ── 주행 튜닝 (driving.py 상단 상수의 런치 override) ──
         DeclareLaunchArgument(
@@ -243,6 +409,16 @@ def generate_launch_description():
             'steer_invert':     LaunchConfiguration('steer_invert'),
             'stop_brake_level': LaunchConfiguration('stop_brake_level'),
             'manual_pulse_max': LaunchConfiguration('manual_pulse_max'),
+            # ★[2026-08-27] 페달 = lidar 와 같은 직접 PWM★
+            #   /drive_pulse_cmd=15 는 라벨이다. 실제 구동은 /drive_pwm_cmd (풀=255).
+            #   이 네 값을 안 넘기면 A보드가 목표펄스 15(PID, PWM_MAX=170)로 가서
+            #   lidar 풀스로틀보다 현저히 느리다.
+            'manual_use_pwm':   LaunchConfiguration('manual_use_pwm'),
+            'manual_pwm_min':   LaunchConfiguration('manual_pwm_min'),
+            'manual_pwm_max':   LaunchConfiguration('manual_pwm_max'),
+            'throttle_raw_min': LaunchConfiguration('throttle_raw_min'),
+            'throttle_raw_max': LaunchConfiguration('throttle_raw_max'),
+            'throttle_gamma':   LaunchConfiguration('throttle_gamma'),
             'exclude_ports':    exclude_for_arduino,
         }],
         condition=IfCondition(use_arduino),
@@ -386,6 +562,47 @@ def generate_launch_description():
         condition=IfCondition(use_sound),
     )
 
+    # 구독 전용 계기판. respawn 없음 — 창을 닫으면 끝이고 주행은 그대로다.
+    hud = Node(
+        package=package_name,
+        executable='hud',
+        name='hud_node',
+        output='screen',
+        additional_env=NODE_ENV,
+        parameters=[{
+            'show_camera': LaunchConfiguration('use_camera'),
+            'data_dir': LaunchConfiguration('data_dir'),
+        }],
+        condition=IfCondition(use_hud),
+    )
+
+    args += [
+        # ══════════════════════════════════════════════════════════════════
+        #  라이다 구간 이양 [2026-09-01] — 위 헤더의 '라이다 구간 이양' 절
+        # ══════════════════════════════════════════════════════════════════
+        DeclareLaunchArgument(
+            'use_lidar', default_value='true',
+            description='OS1-32 드라이버 + mppi 회피 노드를 함께 띄울지. '
+                        '★라이다는 USB 가 아니라 유선 LAN 이다★ (eno1 192.168.6.100). '
+                        'false 면 종전처럼 GPS 추종만 돈다 — 그때 CSV 의 L 구간을 '
+                        '만나면 driving 이 정지한다(아무도 몰지 않는 채로 달리지 않는다)'),
+        DeclareLaunchArgument(
+            'use_lidar_rviz', default_value='false',
+            description='mppi 코스트맵·롤아웃을 RViz 로 볼지 (책상 시험용)'),
+        DeclareLaunchArgument(
+            'flip_lidar_xy', default_value='true',
+            description='라이다 xy 180° 반전. lidar cone_lidar.yaml 과 같은 값이다. '
+                        '차 앞 3m 에 사람이 서서 코스트맵 전방에 점이 생기면 맞다'),
+        DeclareLaunchArgument(
+            'lidar_speed', default_value='1.768',
+            description='L 구간 순항속도 [m/s]. 1.768 = 2펄스 ≈ 6.4 km/h. '
+                        '★정지 재출발에서 4펄스는 피한다★ (A보드 재가속 함정 — '
+                        'lidar/include/lidar/kasa_units.hpp 2절)'),
+        DeclareLaunchArgument(
+            'lidar_pulse', default_value='2',
+            description='L 구간 펄스 상한. lidar_speed 와 짝을 맞춰 둘 것'),
+    ]
+
     return LaunchDescription(args + [
         # 음성 먼저 — '런치했다'는 안내가 하드웨어 탐색보다 늦으면 의미가 없다
         sound,
@@ -400,4 +617,10 @@ def generate_launch_description():
         driving,
         mapping,
         record,
+        hud,
+        # 라이다(드라이버 + mppi 회피) — use_lidar 가 true 일 때만 실제로 만든다.
+        #   ★driving 뒤에 둔다★ mppi 는 /lidar_permit 을 기다리는 쪽이고, 그 발행자가
+        #   driving 이다. 순서가 동작을 바꾸지는 않지만(둘 다 신선도로 판단한다)
+        #   로그를 읽을 때 누가 누구를 기다리는지가 순서로 드러난다.
+        OpaqueFunction(function=_lidar_actions),
     ] + camera_launch.actions(package_name, cam_format, NODE_ENV, RESPAWN_DELAY))

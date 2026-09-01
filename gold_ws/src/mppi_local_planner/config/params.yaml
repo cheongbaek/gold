@@ -18,6 +18,22 @@ mppi_local_planner_node:
 
     imu_bias_calibration_samples: 30   # iAHRS 20Hz → ~1.5s. 잠글 때까지 정지
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  조종권 계약 [2026-09-01] — white1 driving.py 와 양방향
+    # ══════════════════════════════════════════════════════════════════════
+    #  매핑 CSV 의 terrain 열이 'L' 인 구간에서만 이 노드가 /cmd_vel_raw 를 낸다.
+    #  그 밖에는 침묵하고 GPS 추종(driving.py)이 낸다. 설계 근거는 driving.py
+    #  헤더 '라이다 구간 이양' 절과 노드 생성자의 상자에 있다.
+    #
+    #  ★require_permit: false 는 종전의 '런치 = 출발' 이다★ 라이다 단독 시험용.
+    #  white1 one_launch 로 실차를 띄울 때 이 값이 false 면 이 노드가 GPS 추종
+    #  구간에서도 발행해 driving.py 와 20Hz 로 서로를 덮는다 — 반드시 true.
+    handover:
+      permit_topic: "/lidar_permit"     # driving → 나 : "네가 몰아라"
+      active_topic: "/lidar_active"     # 나 → driving : "나 살아 있다" (매 틱)
+      require_permit: true
+      permit_stale_s: 1.0               # 허락이 이보다 낡으면 침묵 (driving 은 20Hz)
+
     # 장착 (lidar cone_lidar.yaml / drive_lidar.yaml 2026-08-25 실측)
     sensor_height_m: 1.17
     roi_agl_min: 0.20            # 지면 링을 안 먹는 하한

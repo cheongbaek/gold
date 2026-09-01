@@ -14,6 +14,7 @@
 #include <geometry_msgs/msg/twist.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
 
 #include "mppi_local_planner/ego_costmap.hpp"
@@ -97,6 +98,29 @@ public:
       std::bind(&MPPILocalPlannerNode::imuCallback, this, std::placeholders::_1),
       imu_opts);
 
+    // ════════════════════════════════════════════════════════════════════
+    //  ★조종권 계약 (white1 driving.py 와 양방향) [2026-09-01]★
+    // ════════════════════════════════════════════════════════════════════
+    //  /cmd_vel_raw 는 마지막 발행자가 이기는 토픽이고, nxde/arduino.py 의
+    //  cb_cmd_vel 은 ★신선도를 보지 않고 마지막 펄스를 래치한다★. 그래서 이 노드와
+    //  driving.py 가 동시에 내면 20Hz 로 서로를 덮는다. 겹치지 않게 하는 것이
+    //  이 계약의 전부다 — 자세한 설계는 driving.py 헤더 '라이다 구간 이양' 절.
+    //
+    //    구독 /lidar_permit : driving → 나. "이 구간은 네가 몰아라"
+    //    발행 /lidar_active : 나 → driving. "나 살아 있다" (매 틱. ★값보다 신선도★)
+    //
+    //  ★허락이 없으면 이 노드는 아무것도 발행하지 않는다★ hold() 조차 부르지
+    //  않는다 — 그 함수도 /cmd_vel_raw 에 0 을 실제로 발행하기 때문이다.
+    //  ★/lidar_permit 이 끊기면 침묵한다★ (permit_stale_s). driving 이 죽었을 때
+    //  마지막 True 를 붙들고 계속 몰지 않기 위해서다 — 신선도가 곧 허락이다.
+    permit_sub_ = create_subscription<std_msgs::msg::Bool>(
+      permit_topic_, rclcpp::QoS(10),
+      [this](const std_msgs::msg::Bool::ConstSharedPtr & m) {
+        permit_.store(m->data, std::memory_order_relaxed);
+        permit_stamp_.store(nowSeconds(), std::memory_order_relaxed);
+      });
+    active_pub_ = create_publisher<std_msgs::msg::Bool>(active_topic_, rclcpp::QoS(10));
+
     costmap_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(costmap_topic_, 1);
     path_pub_ = create_publisher<nav_msgs::msg::Path>(path_topic_, 1);
     reference_path_pub_ = create_publisher<nav_msgs::msg::Path>(reference_path_topic_, 1);
@@ -176,6 +200,15 @@ private:
     declare_parameter<std::string>("costmap_topic", "/mppi_local_planner/costmap");
     declare_parameter<std::string>("path_topic", "/mppi_local_planner/local_path");
     declare_parameter<std::string>("reference_path_topic", "/mppi_local_planner/reference_path");
+    // ── 조종권 계약 [2026-09-01] (위 생성자의 상자 참고) ──
+    declare_parameter<std::string>("handover.permit_topic", "/lidar_permit");
+    declare_parameter<std::string>("handover.active_topic", "/lidar_active");
+    //  ★false 로 두면 종전처럼 '런치 = 출발' 이다★ 라이다 단독 시험용. 실차에서
+    //  white1 one_launch 로 띄울 때는 반드시 true 여야 한다 — 아니면 이 노드가
+    //  GPS 추종 구간에서도 /cmd_vel_raw 를 내며 driving.py 와 다툰다.
+    declare_parameter<bool>("handover.require_permit", true);
+    //  허락이 이보다 낡으면 '허락 없음'. driving 은 20Hz 로 내므로 1.0s 는 20틱 여유.
+    declare_parameter<double>("handover.permit_stale_s", 1.0);
     declare_parameter<std::string>("base_frame_id", "os_sensor");
 
     // ★금색차 실측 (lidar/kasa_units.hpp · drive_lidar.yaml)★
@@ -311,6 +344,10 @@ private:
     costmap_topic_ = get_parameter("costmap_topic").as_string();
     path_topic_ = get_parameter("path_topic").as_string();
     reference_path_topic_ = get_parameter("reference_path_topic").as_string();
+    permit_topic_ = get_parameter("handover.permit_topic").as_string();
+    active_topic_ = get_parameter("handover.active_topic").as_string();
+    require_permit_ = get_parameter("handover.require_permit").as_bool();
+    permit_stale_s_ = std::max(0.0, get_parameter("handover.permit_stale_s").as_double());
     base_frame_id_ = get_parameter("base_frame_id").as_string();
 
     vehicle_params_.wheelbase = get_parameter("wheelbase").as_double();
@@ -459,6 +496,91 @@ private:
       get_parameter("reference_reset.preserve_lateral").as_bool();
   }
 
+  // Steady clock seconds — used only for permit freshness, so it must not
+  // depend on /clock or ROS time jumps.
+  static double nowSeconds()
+  {
+    return std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
+  /// 지금 이 노드가 /cmd_vel_raw 를 내도 되는가.
+  /// ★신선도가 곧 허락이다★ driving 이 죽어 토픽이 끊기면 마지막 True 를 붙들지
+  /// 않고 손을 뗀다 — 붙들면 아무도 감시하지 않는 채로 차를 계속 몬다.
+  bool permitted() const
+  {
+    if (!require_permit_) {
+      return true;                       // 라이다 단독 시험 — 종전의 '런치 = 출발'
+    }
+    if (!permit_.load(std::memory_order_relaxed)) {
+      return false;
+    }
+    const double stamp = permit_stamp_.load(std::memory_order_relaxed);
+    if (stamp <= 0.0) {
+      return false;                      // 한 번도 못 받았다
+    }
+    return permit_stale_s_ <= 0.0 || (nowSeconds() - stamp) <= permit_stale_s_;
+  }
+
+  /// 살아 있다는 신고. ★매 틱 낸다 — driving 은 값이 아니라 신선도를 본다★
+  void publishActive(bool active)
+  {
+    std_msgs::msg::Bool m;
+    m.data = active;
+    active_pub_->publish(m);
+  }
+
+  /// ★L 구간에 들어올 때마다 기준선을 다시 잡는다 [2026-09-01]★
+  ///
+  /// heading_ref_yaw_ 는 원래 ★런치 직후 자이로 보정 단계에서 딱 한 번★ 잡히고
+  /// 그 뒤로는 다시 잡히지 않는다(applyReferenceReset 은 x 만 0 으로 만들고
+  /// yaw·y 는 기본 보존이다). one_launch 로 white1 과 함께 띄우면 그 값은
+  /// ★출발 주차 위치의 방위★ 이고, 수백 미터 뒤 L 구간에서 이 노드는 그 선으로
+  /// 복귀하려 한다 — 전혀 다른 곳이다.
+  ///
+  /// odom_pose_.x/y 도 함께 0 으로 돌린다. 그 둘은 ★last_commanded_v_ 로 적분★
+  /// 되므로 침묵 구간(GPS 추종이 몰던 시간)에는 v=0 이라 제자리에 멈춰 있는데
+  /// 차는 그동안 수백 미터를 갔다. 즉 지금 값은 현실과 아무 관계가 없다.
+  ///
+  /// 래치·EMA·warm start 도 모두 지운다. 지난 L 구간의 '복도가 비었다' 판정과
+  /// 직전 제어열을 들고 새 구간을 시작하면 첫 몇 틱이 낡은 계획으로 조향한다.
+  void rearmReference()
+  {
+    //  ★혹시 남아 있는 제동을 먼저 놓는다★ 하강엣지의 releaseBrake() 는 최소
+    //  물림(BRAKE_MIN_HOLD_S) 안이면 아무 일도 하지 않고 돌아간다 — 그때 stage_ 가
+    //  0 이 아닌 채로 남으면 이 구간이 '이미 제동 중' 으로 시작해 구동을 내지 않는다.
+    //  두 L 구간 사이에는 최소 물림보다 훨씬 긴 시간이 지나므로 여기서는 반드시 풀린다.
+    actuator_->releaseBrake();
+    {
+      std::lock_guard<std::mutex> lock(odom_mutex_);
+      if (has_abs_yaw_) {
+        heading_ref_yaw_ = last_abs_yaw_;   // 지금 방위가 새 기준선이다
+      }
+      odom_pose_ = OdomPose{};              // x = y = yaw = 0
+    }
+    corridor_clear_latched_ = false;
+    corridor_cost_ema_ = 0.0;
+    corridor_cost_ema_init_ = false;
+    clear_ahead_seconds_ = 0.0;
+    blocked_ahead_seconds_ = 0.0;
+    path_return_hold_seconds_ = 0.0;
+    last_reference_reset_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    stop_latched_ = false;
+    stop_enter_count_ = 0;
+    stop_exit_count_ = 0;
+    stop_latch_t_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    steer_filt_deg_ = 0.0;
+    last_pub_steer_deg_ = 0.0;
+    last_commanded_v_.store(0.0, std::memory_order_relaxed);
+    controller_->reset();
+    RCLCPP_INFO(
+      get_logger(),
+      "🛞 조종권 인수 — 기준선 재설정 (yaw0=%.1f deg%s). "
+      "이 방위의 직선으로 복귀하며 라바콘을 피한다",
+      heading_ref_yaw_ * 180.0 / M_PI,
+      has_abs_yaw_ ? "" : " ★절대방위 미수신 — 현재 자세를 0 으로 둔다★");
+  }
+
   void publishStop(bool apply_brake)
   {
     last_commanded_v_.store(0.0, std::memory_order_relaxed);
@@ -551,6 +673,8 @@ private:
       const int n = ++gyro_bias_sample_count_;
       if (use_ori) {
         heading_ref_yaw_ = yawFromQuaternion(msg->orientation);
+        last_abs_yaw_ = heading_ref_yaw_;   // 재무장이 꺼내 쓴다 (rearmReference)
+        has_abs_yaw_ = true;
       } else {
         gyro_bias_sum_ += msg->angular_velocity.z;
       }
@@ -593,6 +717,8 @@ private:
 
     if (use_ori) {
       const double yaw_abs = yawFromQuaternion(msg->orientation);
+      last_abs_yaw_ = yaw_abs;              // 재무장이 꺼내 쓴다 (rearmReference)
+      has_abs_yaw_ = true;
       odom_pose_.yaw = wrapAngle(yaw_abs - heading_ref_yaw_);
       imu_heading_from_quat_ = true;
     } else {
@@ -781,6 +907,38 @@ private:
     const rclcpp::Time t_now = now();
     const double elapsed = (t_now - last_control_time_).seconds();
     last_control_time_ = t_now;
+
+    // ════════════════════════════════════════════════════════════════════
+    //  ★조종권 게이트 — 발행 이전에 있어야 한다★ (생성자의 상자 참고)
+    // ════════════════════════════════════════════════════════════════════
+    //  ★publishStop() 으로 빠지지 않는다★ 그 함수는 actuator_->hold() 를 부르고,
+    //  hold() 는 /cmd_vel_raw 에 linear.x=0 을 ★실제로 발행한다★. 허락이 없는
+    //  동안 그것을 내면 GPS 추종이 낸 펄스를 20Hz 로 0 으로 덮어 버린다 —
+    //  KasaActuator::ready() 를 false 로 만드는 것만으로는 침묵이 되지 않는다.
+    //  침묵은 ★아무 발행 경로도 타지 않고 그냥 빠지는 것★ 이다.
+    if (!permitted()) {
+      if (was_permitted_) {
+        //  ★내가 물고 있던 리니어를 내가 놓는다★ 놓지 않으면 /brake_level 의
+        //  마지막 값이 2단인 채로 남는다 — 그 토픽은 마지막 발행자가 이기고,
+        //  driving 쪽은 '0 은 재확인하지 않는다'는 규칙 때문에 스스로 풀어 주지
+        //  않는다. 그러면 GPS 추종이 ★브레이크를 물고 달린다★.
+        //  (driving 의 end_lidar_zone 도 0 을 한 번 강제로 내 이중으로 막는다)
+        actuator_->releaseBrake();
+        actuator_->keepBrake();
+        last_commanded_v_.store(0.0, std::memory_order_relaxed);
+        RCLCPP_INFO(
+          get_logger(),
+          "🛰️ 조종권 반환 — GPS 추종이 /cmd_vel_raw 를 다시 낸다. 이 노드는 침묵한다");
+        was_permitted_ = false;
+      }
+      publishActive(false);      // ★값은 false 지만 신선도로 생존을 알린다★
+      return;
+    }
+    if (!was_permitted_) {
+      rearmReference();          // ★L 구간마다 기준선을 다시 잡는다★ (그쪽 주석)
+      was_permitted_ = true;
+    }
+    publishActive(true);
 
     if (!costmap_->hasData()) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Waiting for LiDAR data...");
@@ -1001,12 +1159,27 @@ private:
   bool corridor_clear_latched_ = false;
   rclcpp::Time last_reference_reset_time_{0, 0, RCL_ROS_TIME};
 
+  // ── 조종권 계약 [2026-09-01] (생성자의 상자 참고) ──
+  std::string permit_topic_ = "/lidar_permit";
+  std::string active_topic_ = "/lidar_active";
+  bool require_permit_ = true;
+  double permit_stale_s_ = 1.0;
+  std::atomic<bool> permit_{false};
+  std::atomic<double> permit_stamp_{0.0};   // 마지막 수신 시각 [s] — 신선도 판정
+  bool was_permitted_ = false;              // 상승엣지(재무장) 검출용
+  //  ★절대 yaw 를 기억해 둔다★ 재무장 때 heading_ref_yaw_ 를 지금 방위로 갈아야
+  //  하는데, imuCallback 안의 지역변수로만 두면 그 값을 꺼낼 수 없다.
+  double last_abs_yaw_ = 0.0;
+  bool has_abs_yaw_ = false;
+
   // ROS interfaces
   rclcpp::CallbackGroup::SharedPtr cloud_cb_group_;
   rclcpp::CallbackGroup::SharedPtr imu_cb_group_;
   rclcpp::CallbackGroup::SharedPtr control_cb_group_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr permit_sub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr reference_path_pub_;

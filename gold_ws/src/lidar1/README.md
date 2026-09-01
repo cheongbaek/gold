@@ -260,9 +260,27 @@ ros2 bag play ~/catkin_ws/rosbag/txa1
   (`lidar/` 안에는 넣지 않았다 — 패키지 안에 패키지를 두면 colcon 이 꼬인다).
   ⚠️ 그 폴더는 **자체 `.git` 을 가진 별도 클론**이다(태그 0.13.13). gold 저장소는
   아직 서브모듈로 등록하지 않았다 — 커밋 방식은 별도 결정.
-- **white1 driving 과의 관계** — 배타로 갈지, `driving` + `cone_lidar` AEB 조합으로
-  갈지. 후자라면 `driving.py` 에 AEB 구독과 `/brake_level` 경로를 더해야 한다.
-- **`mppi_local_planner` 이식** — 아직 안 했다. 라바콘 회피(지그재그)용.
+- ~~**white1 driving 과의 관계**~~ → **결론 : 구간 이양 (2026-09-01)**.
+  배타도, AEB 조합도 아니다. 매핑 CSV 의 미사용 열 `terrain` 에 `'L'` 을 적어 둔
+  구간에서만 `driving.py` 가 조종권을 놓고 **`mppi_local_planner`** 가 몬다.
+  발행자를 시간축에서 배타로 만드는 방식이라 `/cmd_vel_raw` 경합이 없다.
+
+      driving ──/lidar_permit──▶ mppi        "이 구간은 네가 몰아라"
+      driving ◀──/lidar_active── mppi        "나 살아 있다" (매 틱)
+
+  실행은 `ros2 launch white1 one_launch.py` 하나다(`use_lidar` 기본 true).
+  설계·근거는 `white1/white1/driving.py` 헤더의 '라이다 구간 이양' 절과
+  `white1/CHANGELOG.md` 2026-09-01 항.
+
+  **이 패키지에서 그 통합이 쓰는 것은 `ouster.launch.py` 뿐이다.**
+    · `cone_lidar_node`(AEB) — ★띄우지 않는다★ 회피는 mppi 가 자기 코스트맵으로
+      판단하고 못 피하면 스스로 2단을 문다. 그 위에 가상범퍼를 겹치면 **라바콘
+      사이를 지나갈 때 AEB 가 먼저 세운다.**
+    · `drive_gps_node` — ★띄우지 않는다★ `driving.py` 와 기능이 정면으로 겹친다.
+    · `drive_lidar_node` — ★띄우지 않는다★ 라바콘 *사이를 지나는* 코리도 주행이라
+      '세워진 라바콘을 피하는' 이 용도가 아니다. 그 코스가 오면 이 노드가 맞다.
+- ~~**`mppi_local_planner` 이식**~~ → **했다**. `gold_ws/src/mppi_local_planner/`
+  (2026-08-27 이식, 2026-09-01 부터 white1 과 한 계통). 라바콘 회피(S커브)용.
 
 ## 7. 파일
 

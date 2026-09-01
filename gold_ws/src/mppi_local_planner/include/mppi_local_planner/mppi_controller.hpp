@@ -94,6 +94,15 @@ public:
   // Ego-frame trajectory from the last chosen sequence (for RViz).
   std::vector<State> getLastRolloutTrajectory() const;
 
+  // Drops the warm-started control sequence. [2026-09-01]
+  //  ★Call this whenever planning restarts after a gap★ — nominal_ is warm
+  //  started from the previous cycle, so after minutes of silence (GPS 추종이
+  //  차를 몰던 구간) it holds a steering/speed plan for a pose that no longer
+  //  exists. Without this the first cycle after a handover steers by that
+  //  stale plan; the cost function then only nudges it, so the error decays
+  //  over several cycles instead of being absent.
+  void reset();
+
   double dt() const { return params_.dt; }
 
 private:

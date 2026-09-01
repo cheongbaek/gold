@@ -32,6 +32,16 @@ void MPPIController::ensureBuffers()
   }
 }
 
+void MPPIController::reset()
+{
+  // ensureBuffers() sizes nominal_ on the next computeControl(); zeroing what
+  // is there now is enough — Control{} is v=0, delta=0.
+  for (auto & u : nominal_) {
+    u = Control{};
+  }
+  last_trajectory_.clear();
+}
+
 void MPPIController::shiftNominal(int steps)
 {
   const int T = params_.horizon_steps;
