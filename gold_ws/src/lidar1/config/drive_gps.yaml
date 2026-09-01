@@ -1,0 +1,62 @@
+# ══════════════════════════════════════════════════════════════════════════
+#  drive_gps.yaml — GPS 일자 매핑 + 스탠리 추종 (금색차 kasa)
+# ══════════════════════════════════════════════════════════════════════════
+#  ⚠️ ★white1 driving.py 와 기능이 겹친다 — 동시에 띄우지 말 것★
+#     /cmd_vel_raw 발행자가 겹친다. 실주행은 white1 을 쓰고, 이 노드는
+#     '라이다 AEB 를 GPS 주행에 물렸을 때 어떻게 되는가' 시험용이다.
+# ══════════════════════════════════════════════════════════════════════════
+drive_gps_node:
+  ros__parameters:
+    # ★/ego_state 가 아니라 /gps_fused 다★ 배열 규약이 완전히 다르다
+    #   (white1/white1/gps.py:998 이 정본 — drive_gps_node.cpp cbEgo 주석 참고)
+    ego_state_topic: /gps_fused
+    mapping_cmd_topic: /mapping_cmd
+    drive_cmd_topic: /drive_cmd
+
+    map_record_hz: 5.0
+    waypoint_spacing: 0.25
+    min_map_length: 3.0
+    max_map_rms: 0.80
+    fit_straight_on_load: true
+
+    # ── 속도 ★기본 2펄스 = 1.768 m/s = 6.4 km/h★ ─────────────────────────
+    linear_speed: 1.768
+    min_speed: 0.884           # 1펄스 — 이보다 낮은 값은 0펄스로 반올림된다
+    kasa.max_pulse: 4
+
+    # ── 제원 (실측) ──────────────────────────────────────────────────────
+    wheelbase: 1.25
+    max_angular_speed: 0.5537  # [rad] ★도로휠각★ 상한 31.7°
+    max_angular_step: 0.12
+    k_stanley: 0.7
+    stanley_psi_weight: 0.85
+
+    # ★선행거리 하한 = 2·최소회전반경 = 4.04 m★ 이보다 짧으면 조향이 포화한다.
+    #   1/5카의 1.5 는 그 문턱의 37% 였다.
+    lookahead_gain: 0.6
+    lookahead_min: 4.04
+    lookahead_max: 6.0
+
+    approach_start_dist: 8.0
+    final_stop_dist: 0.60
+    stop_at_end: true
+    cte_abort_m: 3.0
+    ego_timeout: 0.60
+
+    # ── AEB ──────────────────────────────────────────────────────────────
+    listen_to_aeb_stop_signal: true
+    aeb_confirm_frames: 2
+    aeb_use_distance_brake: true
+    aeb_brake_start_distance: 8.5
+    aeb_brake_end_distance: 1.5
+    aeb_max_decel: 5.0         # ⚠️ 이 차에 없는 감속도 — 지령 슬루일 뿐이다
+
+    # ── ★리니어 제동 (이식 신설)★ ────────────────────────────────────────
+    brake_enable: true
+    brake_margin_m: 1.0
+    brake_release_k: 1.5
+
+    kasa.require_auto_mode: true
+    kasa.require_estop_clear: true
+
+    publish_debug: true

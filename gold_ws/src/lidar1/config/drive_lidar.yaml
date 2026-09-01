@@ -1,0 +1,86 @@
+# ══════════════════════════════════════════════════════════════════════════
+#  drive_lidar.yaml — 라바콘 코리도 측량 잠금 + IMU 헤딩홀드 (금색차 kasa)
+# ══════════════════════════════════════════════════════════════════════════
+#  ⚠️ ★이 노드는 런치되는 순간 출발한다★ 시작 명령 토픽이 없다.
+#     survey_duration 초 동안 서서 콘을 모으고, 잠기면 곧바로 굴러간다.
+#     세우는 수단은 Ctrl-C · E-STOP · AEB 셋뿐이다. README '작동 방식' 절 참고.
+# ══════════════════════════════════════════════════════════════════════════
+drive_lidar_node:
+  ros__parameters:
+    lidar_topic: /ouster/points
+    imu_topic: /imu            # ★white1 iahrs★ (1/5카는 /ouster/imu 였다)
+    imu_use_orientation: true  # AHRS 쿼터니언 yaw. false 면 자이로 적분(드리프트)
+
+    # ── 장착 (2026-08-25 실측) ────────────────────────────────────────────
+    #  cone_lidar 과 같은 OS1-32. AGL 슬랩의 기준 높이는 여기가 정본.
+    sensor_height_m: 1.17
+    roi_agl_min: 0.20
+    roi_agl_max: 1.20
+    flip_lidar_xy: true        # ⚠️ 커넥터 방향 미확인 — cone_lidar.yaml 주석 참고
+
+    # ── 속도 ★기본 7펄스 = 6.188 m/s ≈ 22.3 km/h★ ────────────────────────
+    #  1펄스 0.884 m/s = 3.182 km/h. 프로토콜 상한은 15.
+    #  ★max_pulse 를 7 미만으로 두면 지령이 잘린다★ (예전 상한 4).
+    linear_speed: 6.188
+    kasa.max_pulse: 7          # 액추에이터 하드 상한 (= 순항 7펄스)
+
+    # ── 제원 (실측) ──────────────────────────────────────────────────────
+    wheelbase: 1.25            # [m] 축거 1250mm
+    max_angular_speed: 0.5537  # [rad] ★도로휠각★ 상한 31.7° (pot ±40 이 아니다)
+    max_angular_step: 0.12     # [rad/틱] 조향 슬루
+    track_width: 0.65          # ⚠️ 금색차 윤거 미실측 — 1/5카 값 그대로
+
+    k_heading: 1.8              # 정렬 단계에서만 쓴다. 순항에서는 조향 0
+    k_stanley: 0.0
+    lock_use_cte: false
+
+    # ── 헤딩 정렬 후 순항 ────────────────────────────────────────────────
+    #  잠금 직후 순항속도에서 헤딩홀드를 계속하면 IMU 잡음에 출렁인다.
+    #  1펄스로 차 코를 맞춘 다음 조향을 0에 고정하고 7펄스로 직진한다.
+    align_speed: 0.884          # 1펄스
+    align_done_deg: 2.5         # |헤딩오차| 가 이 안이면 맞음
+    align_steer_done_deg: 2.0   # 조향 지령도 이 안이어야 순항 (바퀴가 돌아 있는 채 가속 금지)
+    align_hold_s: 0.4           # 위 둘이 이 시간 유지되면 순항
+    align_timeout_s: 8.0        # 못 맞춰도 조향 0 고정하고 순항 (고속 출렁임이 더 나쁨)
+
+    # ── 측량 ─────────────────────────────────────────────────────────────
+    survey_duration: 2.5       # 기동 후 정지 관측 [s] — 이 시간이 지나면 출발한다
+    survey_timeout: 6.0
+    survey_roi_x_max: 16.0
+    survey_min_side_cones: 2
+    require_dual_side: true    # 양옆이 잡혀야 잠금. 한쪽만이면 출발하지 않는다
+
+    # ⚠️ ★코리도 폭 미검증★ 1/5카 기준(반폭 2.2 m, 밴드 1.0~4.0 m)이 그대로다.
+    #    금색차는 훨씬 넓으므로 라바콘 간격을 재서 다시 잡을 것.
+    initial_half_width: 2.2
+    lane_band_min: 1.0
+    lane_band_max: 4.0
+    fixed_half_width: true
+
+    # ── AEB ──────────────────────────────────────────────────────────────
+    listen_to_aeb_stop_signal: true
+    aeb_confirm_frames: 2
+    aeb_use_distance_brake: true
+    #  7펄스(6.19 m/s) 2단 정지거리 ≈ 10.6 m + 여유 1 m. 옛 8.5 m 는 못 선다.
+    aeb_brake_start_distance: 15.0
+    aeb_brake_end_distance: 1.5
+    # ⚠️ ★이 값은 금색차에 존재하지 않는 감속도다★ 2단 최대가 3.8 이다.
+    #    지금은 '지령을 얼마나 빨리 깎는가'만 정하고 물리와 무관하다.
+    #    실제 감속은 아래 리니어 제동이 한다.
+    aeb_max_decel: 5.0
+
+    # ── ★리니어 제동 (이식 신설)★ ────────────────────────────────────────
+    #  펄스 0 은 코스트(0.41 m/s²)일 뿐이다. 실제로 세우는 것은 리니어다.
+    #    1단 1.30 m/s² (구동차단 실측) / 2단 2.20 (실측 하한)
+    brake_enable: true
+    brake_margin_m: 1.0        # 체결 여유 — 크면 일찍 문다(안전한 방향)
+    brake_release_k: 1.5       # 해제 이력 — 필요거리의 이 배를 회복해야 푼다
+    use_encoder_speed: true    # /encoder 실측을 ★해제 판정★ 에만 쓴다
+
+    # ── 게이트 ───────────────────────────────────────────────────────────
+    #  D5 스위치가 자율이고 E-STOP 이 풀려야 지령을 낸다. false 로 끄면
+    #  "왜 안 움직이는지"가 로그에서 사라진다 — 책상 시험에서만 끌 것.
+    kasa.require_auto_mode: true
+    kasa.require_estop_clear: true
+
+    publish_debug: true

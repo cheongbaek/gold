@@ -1,0 +1,112 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 78
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+      Splitter Ratio: 0.5
+    Tree Height: 549
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Grid
+      Cell Size: 1
+      Plane Cell Count: 30
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: OusterPoints
+      Topic:
+        Value: /ouster/points
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Color Transformer: Intensity
+      Size (m): 0.02
+      Style: Points
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: LeftConeCloud
+      Topic:
+        Value: /drive_lidar_node/left_cone_cloud
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Color Transformer: FlatColor
+      Color: 30; 100; 255
+      Size (m): 0.06
+      Style: Spheres
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: RightConeCloud
+      Topic:
+        Value: /drive_lidar_node/right_cone_cloud
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Color Transformer: FlatColor
+      Color: 255; 150; 0
+      Size (m): 0.06
+      Style: Spheres
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: CorridorPath
+      Topic:
+        Value: /drive_lidar_node/corridor_path
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Color: 0; 255; 50
+      Line Width: 0.05
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: DriveDebugMarkers
+      Topic:
+        Value: /drive_lidar_node/debug_markers
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: AebDebugMarkers
+      Topic:
+        Value: /cone_lidar_node/debug_markers
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Value: true
+  Global Options:
+    Background Color: 35; 35; 40
+    Fixed Frame: os_sensor
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 25
+      Focal Point:
+        X: 5
+        Y: 0
+        Z: 0
+      Name: Current View
+      Pitch: 1.2
+      Yaw: 3.1416
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400

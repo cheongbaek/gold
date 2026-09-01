@@ -1,0 +1,75 @@
+# ══════════════════════════════════════════════════════════════════════════
+#  ouster_driver.yaml — 금색차에 달린 OS1-32 드라이버 설정
+# ══════════════════════════════════════════════════════════════════════════
+#  ouster_ros(0.13.12) 의 config/driver_params.yaml 에서 ★이 차에 해당하는
+#  것만★ 남긴 것이다. 원본에는 60여 개 파라미터가 전부 주석과 함께 들어 있으니
+#  여기 없는 항목이 필요하면 그쪽을 볼 것.
+#
+#  ★센서 정체 (catkin_ws/192.168.6-metadata.json 실측)★
+#      OS-1-32-U0  /  SN 992210000037  /  FW v2.3.0
+#      센서 저장값 1024x10 / udp_profile_lidar LEGACY
+#      ★기동 시 아래 lidar_mode 가 1024x20 으로 덮어쓴다★ (플래시는 안 건드림)
+#
+#  ★네트워크★ 라이다는 USB 가 아니라 ★유선 LAN★ 이다.
+#      센서   192.168.6.11
+#      호스트 192.168.6.100/24  (eno1, NetworkManager "유선 연결 1", manual)
+#      → 랜선만 꽂으면 된다. `ping 192.168.6.11` 로 먼저 확인할 것.
+#
+#  ★장착 (2026-08-25 지시)★  약 1.0 m AGL / 차량 좌우 가운데 / 후륜차축 바로 위
+#      이 값은 여기가 아니라 인지 노드의 sensor_height_m 이 쓴다
+#      (config/cone_lidar.yaml · drive_lidar.yaml).
+# ══════════════════════════════════════════════════════════════════════════
+ouster/os_driver:
+  ros__parameters:
+    sensor_hostname: '192.168.6.11'
+    udp_dest: ''
+    lidar_port: 0
+    imu_port: 0
+
+    # ★메타데이터 저장 위치를 못박는다★ 비워 두면 드라이버가 ★실행한 cwd★ 에
+    #   192.168.6-metadata.json 을 떨군다 — 워크스페이스 루트나 소스 트리가
+    #   실행할 때마다 더러워진다(실제로 그랬다). ~/.ros 는 ROS 산출물의 제자리다.
+    #   ※ 센서 정체 사본은 config/ouster_metadata_992210000037.json 에 있다.
+    metadata: '/home/mad2/.ros/ouster_os1_32_metadata.json'
+
+    # 빈 문자열 = 센서에 들어 있는 모드를 그대로 쓴다 (저장값은 1024x10).
+    # ★1024x20★ 수평 1024 그대로, 주기만 10→20 Hz. AEB 반응용.
+    #   persist_config=false 라 센서 플래시는 안 바뀐다 — 이 런치가 붙는 동안만.
+    #   되돌리려면 '' 또는 '1024x10'. 점만 늘리려면 2048x10 (주기는 그대로 10 Hz).
+    lidar_mode: '1024x20'
+    udp_profile_lidar: ''
+
+    # ROS 수신 시각을 쓴다. PTP·동기펄스가 없는 차라 이것이 유일하게 맞는 선택.
+    timestamp_mode: 'TIME_FROM_ROS_TIME'
+
+    # ★필요한 것만 만든다★ 원본 기본값은 IMU|PCL|SCAN|IMG|RAW|TLM 전부였다.
+    #   이 패키지가 쓰는 것은 PointCloud2(PCL) 와 Imu(IMU) 둘뿐이고, IMG/SCAN/
+    #   RAW/TLM 은 프레임마다 추가 연산·대역폭만 먹는다.
+    #   ※ RViz 로 거리·반사도 이미지를 보고 싶으면 잠깐 IMG 를 더할 것.
+    proc_mask: IMU|PCL
+
+    # xyz + intensity + ring. PCL 의 PointXYZ 로 그대로 읽힌다.
+    point_type: 'xyzir'
+
+    # sensor_data QoS(BEST_EFFORT). ★인지 노드들도 SensorDataQoS 로 구독한다★
+    #   여기를 true 로 바꾸면 QoS 가 어긋나 ★구독이 조용히 안 붙는다★.
+    use_system_default_qos: false
+
+    # 프레임 이름과 TF. 이 패키지의 인지 노드들은 TF 를 쓰지 않고 자기 안에서
+    # flip_lidar_xy 로 좌표를 돌리지만, RViz 표시에는 TF 가 있어야 한다.
+    sensor_frame: os_sensor
+    lidar_frame: os_lidar
+    imu_frame: os_imu
+    point_cloud_frame: os_lidar
+    pub_static_tf: true
+
+    organized: true
+    destagger: true
+    min_range: 0.0
+    max_range: 1000.0
+
+    # 센서 설정을 영구 저장하지 않는다(다른 워크스페이스와 다투지 않게).
+    persist_config: false
+    # 통신이 끊기면 재시도하지 않고 죽는다 — 주행 중 조용히 되살아나 옛 설정으로
+    # 도는 것보다, 죽고 런치가 다시 띄우는 쪽이 낫다.
+    attempt_reconnect: false

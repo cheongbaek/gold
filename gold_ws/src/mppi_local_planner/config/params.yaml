@@ -1,0 +1,134 @@
+# ══════════════════════════════════════════════════════════════════════════
+#  params.yaml — 금색차 kasa MPPI 로컬 회피
+# ══════════════════════════════════════════════════════════════════════════
+#  catkin_ws mppi_local_planner 의 3params.yaml(~3 km/h) 을 금색차 제원으로
+#  옮긴 것이다. 플래너(샘플·S커브·lookahead)는 원본과 같다. 바뀐 것은
+#  차체·라이다 장착·액추에이터 계약뿐이다.
+#
+#  ★기본 순항 = 2펄스 = 1.768 m/s ≈ 6.4 km/h★
+#  런치가 이 파일을 넘기므로 여기 값이 C++ 기본값을 덮어쓴다.
+# ══════════════════════════════════════════════════════════════════════════
+mppi_local_planner_node:
+  ros__parameters:
+    lidar_topic: "/ouster/points"
+    imu_topic: "/imu"            # ★외장 iAHRS★ (white1 iahrs). /ouster/imu 는 자이로만이라 드리프트가 큼
+    imu_use_orientation: true    # AHRS 쿼터니언 yaw 사용. false 면 자이로 적분
+    cmd_vel_topic: "/cmd_vel_raw"
+    control_frequency: 20.0
+
+    imu_bias_calibration_samples: 30   # iAHRS 20Hz → ~1.5s. 잠글 때까지 정지
+
+    # 장착 (lidar cone_lidar.yaml / drive_lidar.yaml 2026-08-25 실측)
+    sensor_height_m: 1.17
+    roi_agl_min: 0.20            # 지면 링을 안 먹는 하한
+    roi_agl_max: 1.50            # 사람·차체 상단. drive_lidar 1.20 보다 약간 높임
+    flip_lidar_xy: true          # lidar 와 동일. 앞뒤가 뒤집히면 false
+    brake_enable: true           # 회피 실패(stop gate) 때 리니어 2단
+
+    reference_reset:
+      enable: true
+      clear_seconds: 1.5
+      blocked_seconds: 0.5
+      check_distance: 6.0
+      check_half_width: 1.0
+      cost_threshold: 25.0
+      clear_threshold: 18.0
+      blocked_threshold: 55.0
+      cost_ema_alpha: 0.25
+      min_reset_interval: 6.0
+      return_y_threshold: 0.10
+      return_yaw_threshold: 0.08
+      return_hold_seconds: 1.5
+      soft_reset_enable: false
+      preserve_heading: true
+      preserve_lateral: true
+
+    costmap_topic: "/mppi_local_planner/costmap"
+    path_topic: "/mppi_local_planner/local_path"
+    reference_path_topic: "/mppi_local_planner/reference_path"
+    base_frame_id: "os_sensor"
+
+    # ── 제원 (실측) ──────────────────────────────────────────────────────
+    wheelbase: 1.25              # [m] 축거 1250mm
+    track_width: 1.10            # [m] 윤거 1100mm (white/kasa_units.py). lidar yaml 0.65 는 1/5 잔재
+    max_speed: 2.05              # [m/s] 플래너 하드캡. 2펄스(1.768) 위 여유
+    min_speed: 0.80              # 회피 중 1펄스(~3 km/h, 원본 3params 와 같음)를 허용
+    max_steering_angle: 0.40     # [rad] ≈23°. 원본 3params 와 동일. 0.32 는 불감대에 막혔다
+    rear_overhang: 0.30
+    front_overhang: 0.0          # 앞범퍼 ≈ 앞차축. vehicle_front_m 1.2 ≈ 축거 1.25
+    max_accel: 2.0
+    max_steering_rate: 1.20      # [rad/s] 첫 틱이 불감대(1.4°)를 넘어야 핸들이 움직임
+
+    # 지령 층 — 펄스 계단·조향 슬루. 끄면 1펄스↔정지 / 핸들 요동이 돌아온다.
+    cmd.stop_enter_frames: 8     # stop-gate 0.4s 연속이어야 정지
+    cmd.stop_exit_frames: 12     # 0.6s 연속 열려야 재출발
+    cmd.brake_after_s: 1.2       # 그 전에는 펄스 0 만 (리니어 2단 깜빡임 방지)
+    cmd.steer_lpf_alpha: 0.35    # MPPI 각이 필터에서 죽지 않게
+    cmd.steer_slew_deg_s: 28.0   # 도로휠 deg/s
+    cmd.steer_deadband_deg: 0.0  # SW 불감대 끔. B보드 1.41° 가 이미 있다
+    cmd.dodge_steer_deg: 6.0     # |조향|이 이보다 크면 1펄스로 회피 (원본 ~3 km/h)
+
+    # 액추에이터 상한. ★2 = 순항 ≈ 6.4 km/h 를 못 넘긴다★
+    kasa.max_pulse: 2
+    kasa.require_auto_mode: true
+    kasa.require_estop_clear: true
+
+    costmap:
+      size_x: 18.0
+      size_y: 14.0
+      resolution: 0.1
+      # 0,0 이면 노드가 AGL 슬랩에서 유도한다
+      #   AGL 0.20 → z = 0.20-1.17 = -0.97
+      #   AGL 1.50 → z = 1.50-1.17 = +0.33
+      ground_z_min: 0.0
+      ground_z_max: 0.0
+      inflation_radius: 0.40
+      min_range: 0.40
+      sensor_offset_x: 0.0       # 후륜차축 바로 위
+      sensor_offset_y: 0.0
+      sensor_yaw_offset: 0.0     # 0 이면 flip_lidar_xy 가 π 를 넣는다
+      occupancy_decay: 0.50
+      # cone_lidar roi_x_min=2.0 과 맞춤. 1.4 m 만 지우면 보닛·탑승자가
+      # 전방 벽이 되어 회피 실패(리니어 2단)가 뜬다. 콘은 2.0 m 부터 보인다.
+      ego_clear_radius: 0.90
+      ego_clear_margin: 0.12
+      ego_clear_front_max: 2.00
+      ego_clear_x_min: -0.45
+      ego_clear_x_max: 1.95
+      ego_clear_y_half: 0.85
+      ego_cost_clear_radius: 1.00
+
+    mppi:
+      horizon_steps: 60
+      dt: 0.05
+      num_samples: 1200
+      # catkin_ws 3params.yaml 과 같은 비용 구조. 금색차는 축거비로 stanley 만 스케일.
+      lambda: 3.2
+      noise_std_v: 0.12
+      noise_std_delta: 0.28
+      noise_correlation: 0.65
+      desired_speed: 1.768       # 직진 순항 2펄스. 회피 중엔 노드가 1펄스로 내린다
+      weight_obstacle: 1.4
+      weight_path: 1.0
+      weight_heading: 0.9
+      weight_speed: 2.0
+      weight_smooth_v: 0.6
+      weight_smooth_delta: 0.85
+      stanley_lookahead: 2.0     # 원본 1.2 × (1.25/0.75)
+      s_curve_dodge_frac: 0.22
+      s_curve_return_power: 0.70
+      path_progress_floor: 0.12
+      avoid_path_scale: 0.30
+      avoid_obs_gain: 80.0
+      offset_return_y: 0.18
+      offset_return_scale: 0.90
+      weight_return_clear: 3.5
+      return_clear_cost: 40.0
+      weight_path_terminal: 22.0
+      weight_heading_terminal: 12.0
+      max_lateral_offset: 1.20
+      weight_lateral_wall: 12.0
+      lookahead_distance: 7.0
+      lookahead_step: 0.40
+      weight_lookahead: 0.55
+      stop_cost_threshold: 750.0
