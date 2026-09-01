@@ -39,3 +39,7 @@ Thumbs.db
 *.png
 *.jpg
 *.jpeg
+
+# ouster 드라이버가 실행 위치에 떨구는 메타데이터 (config 로 ~/.ros 에 고정했지만
+# 드라이버를 직접 띄우면 여전히 cwd 에 생긴다 — 센서 정체는 config/ 사본이 갖는다)
+*-metadata.json

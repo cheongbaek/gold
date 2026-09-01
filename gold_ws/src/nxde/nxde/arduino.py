@@ -19,6 +19,11 @@
 #                                          angular.z = 조향각 -40~40 (★− 좌 / + 우★)
 #                 /control_state (Bool)   True = 구동 허용 / False = 정지
 #                 /brake_level (Int32)    브레이크 단계 0 / 1 / 2 (선택 — 안 오면 0)
+#                 /aeb_stop (Bool)        ★[2026-08-25] 전방 장애물 확정 = 비상정지★
+#                                         True 면 ★모드와 무관하게★ 구동을 끊고
+#                                         리니어를 aeb_brake_level 단으로 물린다.
+#                                         ★aeb_brake_level=0 (기본) 이면 이 토픽은
+#                                         통째로 무시된다★ — 아래 (1-1) 참고.
 #   보드 → ROS :  /encoder (Int32)              A보드 좌+우 펄스의 ★합★
 #                 /steer_angle_measured (Int32) B보드 실측 조향각 (− 좌 / + 우, 그대로 중계)
 #                 /vehicle_mode (Bool)          B보드 D5 : True = 자율 / False = 수동조종
@@ -30,9 +35,17 @@
 #                                               '사람이 발로 밟았는가'를 구별할 수 있다
 #                                               (수동조종에서는 후자만 움직인다).
 #                                               ※ 400 이상이면 B보드가 제동등(D11)을 켠다.
-#                 /drive_pulse_cmd (Int32)      ★A보드로 실제 보낸 주행 목표펄스★
-#                                               자율=계획값 / 수동조종=페달 환산값
-#                                               → mapping 노드의 수집 라벨(①)로 쓰인다
+#                 /drive_pulse_cmd (Int32)      ★주행 목표펄스 (0~15 스케일)★
+#                                               자율=계획값(=A보드로 실제 나간 값)
+#                                               수동조종=페달 환산값(★라벨 전용★ — 실제로
+#                                               나가는 것은 아래 /drive_pwm_cmd 다)
+#                                               → mapping 노드의 수집 라벨(①)로 쓰인다.
+#                                               ★스케일을 절대 바꾸지 않는다★ 수집·로스백이
+#                                               전부 0~15 로 기록되어 있다.
+#                 /drive_pwm_cmd (Int32)        ★[2026-08-25] A보드로 실제 나간 직접 PWM★
+#                                               수동조종에서 페달을 밟는 동안만 16~255,
+#                                               그 외(자율·정지·페달 놓음)에는 0 이다
+#                                               (= 직접 PWM 경로를 쓰지 않는 상태).
 #                 /estop (Bool)                 A·B 중 한쪽이라도 STOP 이면 True
 #                 /board_status (String)        "A:1,B:1,ESTOP:0,MODE:1" (진단·로스백용)
 #
@@ -111,16 +124,77 @@
 #      "x,0" 의 뜻은 **해제 직후에 적용될 마지막 명령을 안전한 값으로 두는 것**이다
 #      (조향 힘빼기 = 사람이 핸들을 잡고 있어도 급조향이 없다).
 #
-#  (2) 수동조종 모드    : A=페달 펄스뿐, B="x,0"
+#  (1-1) AEB 비상정지  : A="0", B="<x 또는 마지막 조향각>,<aeb_brake_level>"
+#      ★[2026-08-25 신설] 수동조종 중에도 통하는 유일한 제동 경로다★
+#
+#      ╔══════════════════════════════════════════════════════════════════════╗
+#      ║ 왜 /brake_level 로는 안 되는가 — 아래 (2) 는 브레이크를 ★항상 0★ 으로 ║
+#      ║ 보낸다. "제동은 사람 발이 한다" 는 2026-08-04/05 의 불변식이다. 그래서 ║
+#      ║ 사람이 페달로 몰고 있는 동안 라이다가 장애물을 봐도 /brake_level 을    ║
+#      ║ 아무리 발행해도 ★리니어는 움직이지 않는다★ (조용히 아무 일도 안 난다).║
+#      ╚══════════════════════════════════════════════════════════════════════╝
+#
+#      → 그 하나의 경우를 위해 ★이름을 갈라★ 열었다. /brake_level 을 수동조종에
+#        통하게 열지 않은 이유는 그것이 ★발행자가 여럿인 요청 토픽★ 이기 때문이다
+#        (신호등 인지·GUI 레버가 사람이 운전하는 중에 리니어를 물릴 수 있다 —
+#        2026-08-05 에 실제로 문제가 됐던 경로다). 별 토픽이면 "리니어가 왜
+#        나왔나" 의 답이 ★AEB 하나로 좁혀진다★.
+#
+#      ★기본은 꺼져 있다★ aeb_brake_level 기본값이 0 이라, 이 파라미터를 주지
+#        않는 런치(white1 one_launch.py 등)에서는 구독만 하고 아무 일도 하지
+#        않는다 — 종전 거동과 ★완전히 동일★ 하다. 켜는 것은 지금 lidar 패키지의
+#        one_launch.py 하나다.
+#
+#      ┌ 이 분기가 하는 일 ─────────────────────────────────────────────────┐
+#      │ · A보드 = 단일값 "0" ★콤마 2값을 보내지 않는다★ 그래야 펌웨어의       │
+#      │   setPulseTarget 이 직접 PWM 모드를 해제하고 코스트로 넘긴다.        │
+#      │   ("0,0" 도 같은 경로지만, 직접 PWM 을 안 쓰는 상태에서는 단일값이    │
+#      │   이 파일의 기본 규칙이다 — (2) 분기 주석과 같은 이유다)             │
+#      │ · 리니어 = aeb_brake_level 단 (권장 2 = 풀브레이킹)                  │
+#      │ · 조향 = 수동조종이면 'x'(힘빼기) — ★사람이 핸들을 쥐고 있다★.       │
+#      │   자율이면 마지막 조향각 유지(정지 순간 정면 급조향 방지, (3) 과 같다)│
+#      └──────────────────────────────────────────────────────────────────────┘
+#
+#      ★신선도를 본다 (aeb_stale_s)★ 판단 노드는 이 토픽을 ★상태로, 끊기지 않게★
+#      낸다(20Hz, true/false 둘 다). 그 시간 넘게 안 오면 해제한다 — 그래야
+#        ① '판단자가 죽었다' 와 '장애물이 없다' 가 구별되고
+#        ② 죽은 노드가 리니어를 영구히 물고 있는 일이 없다
+#        ③ 이 분기가 ★'살아 있는 센서의 사실'★ 이라고 말할 수 있어, 모드 전환
+#           불변식(_disarm_brakes_on_mode_edge)의 대상인 '남아 있던 캐시 요청'
+#           과 성질이 갈린다. 그래서 모드 엣지에서 이것을 지우지 않는다 —
+#           지워도 다음 20ms 에 같은 값이 다시 오고, 그때 앞에 장애물이 있는 것은
+#           사실이기 때문이다.
+#      ★fail-open 이다★ 끊기면 제동을 푼다. 그 상태는 'AEB 가 없는 수동조종' =
+#      원래 상태이고, 사람이 예상하지 못한 정지가 뒤차·경사에서 더 위험하다.
+#
+#  (2) 수동조종 모드    : A=페달 ★직접 PWM★ ("<pwm>,<pwm>"), 안 밟으면 "0", B="x,0"
 #      D5 스위치가 개방(모드 0)인 동안. 사람이 핸들과 페달을 직접 잡으므로
 #        - 조향은 'x'(힘빼기) — DC모터에 힘이 들어가면 사람이 핸들을 못 돌린다
 #        - 브레이크는 ★항상 0★ — 제동은 사람 발이 한다. ROS 가 개입하지 않는다.
-#        - 주행 펄스는 ★페달뿐★ — 밟은 만큼(throttle_to_pulse), 안 밟으면 0.
+#        - 구동은 ★페달뿐★ — 밟은 만큼(throttle_to_pwm), 안 밟으면 0.
+#
 #      ★[2026-08-11] '발을 뗐을 때 /cmd_vel_raw 지정펄스 사용' 경로를 도로 뺐다★
 #        [2026-08-07] white806 의 매핑 헤딩 초기화(페달 없이 곧게 굴려 초기 헤딩을
 #        잡는 절차)를 위해 열어 둔 경로였는데, 그 절차를 '사람이 페달로 직접 곧게
 #        굴리는' 방식으로 바꿔 더 이상 필요 없다. 수동조종 중 소프트웨어가 펄스를
 #        대신 낼 길을 남겨 두면 그만큼 사람 조작과 다툴 여지가 생기므로 없앤다.
+#
+#      ★★ [2026-08-25] 수동조종의 구동을 '펄스'에서 '직접 PWM'으로 바꿨다 ★★
+#        종전에는 페달 raw 를 목표펄스(0~15)로 환산해 A보드에 넘겼고, 보드의 PID 가
+#        그 펄스를 맞추려고 PWM 을 만들었다. 그런데 수동조종은 ★사람이 밟은 만큼
+#        나가야 하는★ 조작이다. 그 사이에 PID·기동 블랭킹·코스트/캐치가 끼면
+#          · 페달을 밟아도 램프가 끝날 때까지 안 나가고
+#          · 페달을 조금 떼면 코스트(PWM 0)로 떨어져 '툭' 끊기고
+#          · 내리막에서 목표펄스를 넘으면 폭주감지가 동력을 끊는다
+#        → 발끝과 바퀴 사이가 어긋난다. 그래서 페달 개도량을 ★그대로 PWM 에 비례★
+#          시켜 A보드의 직접 PWM 경로(16~255)로 내려보낸다. 사람 발이 곧 스로틀이다.
+#
+#        ⚠️ 직접 PWM 은 펌웨어의 ★무보호 경로★ 다 (PID·슬루레이트·폭주감지·기동
+#          블랭킹이 전부 빠진다 — kasa_0730_A.ino 주석 참고). 그 보호를 사람의 발이
+#          대신한다는 전제이므로 ★수동조종에서 페달을 밟는 동안에만★ 쓴다.
+#          자율주행(3)(4)·E-stop(1)·페달을 뗀 순간은 종전 그대로 단일값(펄스)이다.
+#          페달을 떼면 "0" 이 나가고, 펌웨어 setPulseTarget 이 직접 PWM 모드를
+#          해제하며 코스트(무동력 감속)로 넘긴다.
 #
 #  (3) /control_state=False : A="0", B="<마지막 조향각>,<stop_brake_level>"
 #      driving.py 가 정지를 지시한 상태(instant_stop / 경로 미로드 / STOP 명령).
@@ -140,8 +214,15 @@
 #     않고, PD 가 목표 근처에서 계속 힘을 준다.
 #   - A보드 펌웨어에는 무입력 타임아웃이 없다(0713에서 제거). 마지막 명령을 계속 물고
 #     있으므로 ★종료 시 정지값이 반드시 시리얼까지 나가야 한다★ → stop_and_close.
-#   - A보드로는 항상 **단일값**을 보낸다. 콤마 2값은 16~255 를 '직접 PWM(무보호 경로)'
-#     으로 해석하는데, 자율주행에서 그 경로를 쓸 이유가 없고 오발동만 위험하다.
+#   - A보드로는 ★수동조종에서 페달을 밟는 동안을 빼면★ 항상 **단일값**을 보낸다.
+#     콤마 2값만이 16~255 를 '직접 PWM(무보호 경로)' 으로 해석하는데, 자율주행에서
+#     그 경로를 쓸 이유가 없고 오발동만 위험하다. ★[2026-08-25] 수동조종의 페달 구동
+#     하나만 예외로 열었다★ — 사람 발이 곧 스로틀이어야 하기 때문이다(위 (2) 참고).
+#     그래서 콤마 2값이 나가는 곳은 compose() (2) 분기 ★단 한 줄★ 이다. 다른 분기에서
+#     콤마가 보이면 그것은 버그다.
+#   - ★수동조종 중에는 TX 가 매 주기(20Hz) 나간다★ 페달 raw 가 계속 흔들려 PWM 값이
+#     매번 바뀌기 때문이다. A보드는 이것을 문제 삼지 않는다(B보드처럼 도달판정을
+#     되돌리는 상태기계가 없고, 직접 PWM 은 값을 그대로 출력할 뿐이다).
 #
 #  ★★ 연결 정책 (2026-08-04 개편) ★★
 #   - ★생성자는 블로킹하지 않는다★ 예전에는 두 보드를 다 찾을 때까지 __init__ 안에서
@@ -181,10 +262,14 @@
 #      자율주행          : ros2 launch white one_launch.py (이 노드를 포함해 함께 뜬다)
 
 import os
+import signal
+import sys
 import threading
 import time
+import traceback
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int32, String
 from geometry_msgs.msg import Twist
@@ -203,6 +288,27 @@ BAUD_RATE = 115200
 # ── A보드 프로토콜 상한 (kasa_0730_A.ino) ──
 # 단일값 입력은 0~PULSE_MAX 만 유효하고 그 외는 펌웨어가 줄 통째로 무시한다.
 PULSE_MIN, PULSE_MAX = 0, 15
+
+# ── ★A보드 직접 PWM (콤마 2값 형식 전용)★ ──
+#   "<좌>,<우>" 형식에서만 16~255 가 직접 PWM 으로 해석된다(펌웨어 applySide).
+#   같은 형식의 0~15 는 여전히 펄스, 256 이상은 정지다. 단일값 줄은 0~15 펄스만 받는다
+#   — 직접 PWM 오발동을 막으려고 펌웨어가 형식으로 갈라 놓은 것이다.
+#   ★무보호 경로다★ PID·슬루레이트·폭주감지·기동 블랭킹이 전부 적용되지 않고,
+#   펄스 모드 상한(PWM_MAX=170)도 무시하고 받은 값을 그대로 출력한다.
+PWM_DIRECT_MIN, PWM_DIRECT_MAX = 16, 255
+
+# 수동조종 페달 → 직접 PWM 환산의 기본 구간 (파라미터 manual_pwm_min/max 의 기본값).
+#   min = PWM_DIRECT_MIN : 페달 초반을 ★올려치지 않는다★ (밟은 만큼 순수 비례).
+#     ⚠️ 펌웨어 FF 표상 바퀴가 실제로 돌기 시작하는 지점은 PWM 60 부근이다
+#        (ffPwmTable 의 첫 칸 = 펄스 1.0 → PWM 60). 그래서 기본값에서는 페달 개도
+#        1/3 쯤까지가 '밟아도 안 나가는' 구간이 된다. 실차에서 그 유격이 거슬리면
+#        manual_pwm_min 을 60 부근까지 올려라 — 대신 페달을 살짝만 건드려도 바로
+#        기동 PWM 이 걸린다(초기 시험에서는 낮은 쪽이 안전하다).
+#   max = 150 : 종전 수동 상한(목표펄스 15)에 대응하는 FF 표상 PWM 이 ≈147 이다
+#     (표: 펄스 13.05→140, 16.05→150). 즉 ★체감 최고속을 종전과 비슷하게 두었다★.
+#     직접 PWM 은 개루프라 같은 값이라도 경사·하중에 따라 실제 속도가 달라진다.
+MANUAL_PWM_MIN = PWM_DIRECT_MIN
+MANUAL_PWM_MAX = 150
 
 # ── B보드 프로토콜 (kasa_0804_B.ino) ──
 STEER_DEG_MAX = 40           # 입력 조향각 클램프 (STEER_ANGLE_MAX 와 동일해야 한다)
@@ -235,11 +341,25 @@ BRAKE_RELEASE_HOLD_S = 0.5
 
 # ── 보드 탐색 ──
 DETECT_READ_S  = 5.0         # 포트 하나를 A/B 로 식별하기 위해 읽어보는 시간
+# ★E-STOP 중에는 두 보드가 모두 "STOP" 만 내보낸다★ (kasa_0730_A / kasa_0821_B 의
+#   sendOutput: estop_active 면 println("STOP") 하고 return). 그래서 그 동안에는
+#   'S,'/'P,' 접두어가 아예 나오지 않아 ★역할을 알 수 없다★.
+#   그때 5초 만에 포트를 닫으면 두 가지가 나쁘다:
+#     ① 로그가 "보드 미발견 — 케이블 확인" 이 되어 원인을 하드웨어에서 찾게 된다
+#        (실제로 그렇게 헤맸다. 정답은 'E-STOP 을 풀어라' 다)
+#     ② close 가 DTR 을 토글해 ★보드를 리셋한다★ — 8초마다 리셋이 반복되고,
+#        E-STOP 을 풀어도 부팅 대기 때문에 붙는 데 시간이 더 걸린다
+#   → "STOP" 을 한 줄이라도 보면 ★그 포트에 kasa 보드가 있다는 증거★ 로 받아들이고,
+#     포트를 닫지 않고 이 시간까지 해제를 기다린다. 풀리는 즉시 식별된다.
+DETECT_ESTOP_HOLD_S = 15.0
 DETECT_RETRY_S = 3.0         # 두 보드를 아직 못 찾았을 때 재스캔 간격
 DETECT_OPEN_RETRY   = 5      # open 간헐 실패 시 재시도 횟수
 DETECT_OPEN_DELAY_S = 1.0
 PORT_SETTLE_S       = 0.5    # 한 보드를 이미 연 상태에서 다음 포트를 열기 전 USB 안정화 대기
 STOP_FLUSH_S        = 0.15   # 종료 직전 정지값이 실제로 시리얼로 나갈 시간
+# 잔재 프로세스를 죽인 뒤, 커널이 fd 를 회수하고 배타 잠금이 풀릴 때까지 기다리는 시간.
+#   프로세스가 사라졌다고 곧바로 열리지는 않는다 — USB-serial 은 close 처리가 끝나야 한다.
+PORT_RECLAIM_SETTLE_S = 0.6
 
 # 포트는 항상 배타적으로 연다. POSIX 는 기본이 비배타적이라 두 프로세스가 같은
 # /dev/ttyACM* 을 동시에 열 수 있고, 그러면 잔재 노드와 새 노드가 같은 보드에 명령을
@@ -273,6 +393,8 @@ def is_busy_error(exc):
 #  아두이노 계열 USB-serial VID: Arduino 정품(2341) / CH340 클론(1A86) / Arduino LLC(2A03)
 #  ★ A/B 두 대가 같은 VID/PID 라서 VID/PID 로는 역할을 구분할 수 없다 ★ 실제 식별은
 #  포트를 열어 첫 텔레메트리 접두어('S,'=A / 'P,'=B)로 한다 — identify_port().
+#  ★단, E-STOP 중에는 두 보드가 모두 "STOP" 만 보낸다★ → 그 동안은 역할을 알 수 없다.
+#    그 경우를 '보드 없음' 과 구별해 다루는 이유는 DETECT_ESTOP_HOLD_S 주석에 적었다.
 ARDUINO_VIDS = {0x2341, 0x1A86, 0x2A03}
 
 #  ★★ GPS·IMU 를 스스로 제외한다 ★★
@@ -353,33 +475,175 @@ def candidate_ports(exclude=None):
     return likely + others
 
 
-def open_serial(port, baud, logger):
+def port_holders(port):
+    """이 포트를 지금 열고 있는 프로세스들 — [(pid, comm, cmdline), ...]
+
+    ★왜 필요한가★ 배타 open(SERIAL_EXCLUSIVE)이 막히면 예외 문구는
+    "[Errno 11] Resource temporarily unavailable" 뿐이다. ★누가 잡고 있는지가
+    빠져 있고, 그게 유일하게 알아야 하는 정보다★ — 이전 런치의 잔재인지,
+    Arduino IDE(arduino-cli daemon 이 보드 탐색으로 포트를 훑는다)인지, 시리얼
+    모니터인지에 따라 할 일이 완전히 다르다. /proc 를 훑어 이름을 붙여 준다.
+
+    ※ 같은 사용자 소유 프로세스만 보인다(다른 사용자의 fd 는 커널이 감춘다).
+      우리가 신경 쓰는 잔재·IDE 는 모두 같은 사용자이므로 실용상 충분하다.
+    """
+    try:
+        target = os.path.realpath(port)
+    except OSError:
+        return []
+    me = os.getpid()
+    found = []
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == me:
+            continue
+        fd_dir = f'/proc/{entry}/fd'
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue          # 권한 없음 / 그 사이에 죽음
+        for fd in fds:
+            try:
+                if os.path.realpath(os.path.join(fd_dir, fd)) != target:
+                    continue
+            except OSError:
+                continue
+            try:
+                with open(f'/proc/{entry}/comm', encoding='utf-8') as f:
+                    comm = f.read().strip()
+            except OSError:
+                comm = '?'
+            try:
+                with open(f'/proc/{entry}/cmdline', encoding='utf-8') as f:
+                    cmdline = f.read().replace('\0', ' ').strip()
+            except OSError:
+                cmdline = ''
+            found.append((pid, comm, cmdline))
+            break             # 한 프로세스는 한 번만 센다
+    return found
+
+
+def is_own_stale(cmdline):
+    """이 cmdline 이 ★우리 자신의 잔재★(nxde arduino 노드)인가.
+
+    ★여기를 좁게 유지하는 것이 안전의 핵심이다★ 이 판정이 True 면 아래
+    reclaim_port() 가 그 프로세스를 죽인다. Arduino IDE·시리얼 모니터·GPS 드라이버는
+    ★절대 여기에 걸리지 않아야 한다★ — 남의 프로세스를 죽이는 것은 이 노드의 일이
+    아니고, 그건 사람이 판단할 문제다. 그래서 'nxde' 와 'arduino' 가 함께 있는
+    경우만 인정한다 (`ros2 run nxde arduino` / 런치가 띄운 nxde/arduino 실행파일).
+    """
+    low = cmdline.lower()
+    if 'nxde' not in low:
+        return False
+    return ('arduino' in low) and ('arduino-ide' not in low) and ('arduino-cli' not in low)
+
+
+def reclaim_port(port, logger):
+    """포트를 물고 있는 ★우리 자신의 잔재★ 를 정리한다. 정리했으면 True.
+
+    ★왜 자동으로 죽이는가★ 잔재가 배타 open 을 물고 있으면 재실행은 ★영원히★
+    보드를 못 잡는다(재시도로 풀리지 않는다). 그때 사람이 해야 하는 일은 늘 같다:
+    `pkill -f nxde.arduino`. 그 한 가지를 노드가 대신한다 — 대상이 '방금 그 포트를
+    물고 있는, 우리와 같은 실행파일' 로 특정되므로 판단의 여지가 없다.
+    ★남의 프로세스는 손대지 않는다★ (is_own_stale 참고) — 이름만 알려주고 끝낸다.
+    """
+    holders = port_holders(port)
+    if not holders:
+        return False
+
+    mine = [h for h in holders if is_own_stale(h[2])]
+    others = [h for h in holders if not is_own_stale(h[2])]
+
+    for pid, comm, _ in others:
+        logger.error(
+            f"{port} 를 다른 프로그램이 잡고 있습니다 — ★{comm} (pid {pid})★. "
+            f"이 노드는 남의 프로세스를 죽이지 않습니다. "
+            f"Arduino IDE 라면 시리얼 모니터를 닫으세요 "
+            f"(IDE 의 보드 탐색이 포트를 주기적으로 훑습니다)")
+
+    if not mine:
+        return False
+
+    for pid, comm, _ in mine:
+        logger.warn(f"{port} 를 이전 실행의 잔재가 물고 있습니다 — "
+                    f"{comm} (pid {pid}) 를 정리합니다")
+        for sig, label in ((signal.SIGTERM, 'SIGTERM'), (signal.SIGKILL, 'SIGKILL')):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                break          # 이미 죽었다
+            except PermissionError:
+                logger.error(f"pid {pid} 를 정리할 권한이 없습니다 (같은 사용자인지 확인)")
+                break
+            # 죽을 시간을 준다. SIGTERM 으로 안 죽으면 다음 바퀴에서 SIGKILL.
+            for _ in range(20):
+                time.sleep(0.05)
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                except PermissionError:
+                    break
+            else:
+                if sig is signal.SIGTERM:
+                    logger.warn(f"pid {pid} 가 {label} 로 안 죽습니다 — SIGKILL 합니다")
+                continue
+            break
+    # 커널이 fd 를 회수하고 배타 잠금이 풀릴 시간
+    time.sleep(PORT_RECLAIM_SETTLE_S)
+    return True
+
+
+def open_serial(port, baud, logger, reclaim=True):
     """포트를 재시도하며 연다. 끝내 실패하면 None (예외를 밖으로 던지지 않는다 —
-    한 포트의 open 실패가 노드 전체를 죽이지 않도록)."""
+    한 포트의 open 실패가 노드 전체를 죽이지 않도록).
+
+    ★[2026-08-25] 점유 오류는 재시도만으로 풀리지 않는다★ 배타 open 이 막힌 것은
+    '아직 준비가 안 됐다' 가 아니라 '누가 갖고 있다' 는 뜻이므로, 같은 동작을 5번
+    반복해도 결과가 같다. 그래서 그 경우에는
+      ① 누가 잡고 있는지 이름을 찍고 (port_holders)
+      ② 그게 우리 자신의 잔재면 정리한 뒤 다시 시도한다 (reclaim_port)
+    reclaim=False 면 ②를 하지 않는다(진단용)."""
+    reclaimed = False
     for attempt in range(1, DETECT_OPEN_RETRY + 1):
         try:
             return serial.Serial(port, baud, timeout=0.2, exclusive=SERIAL_EXCLUSIVE)
         except (serial.SerialException, OSError) as e:
+            busy = is_busy_error(e)
+            # ★점유 오류는 한 번만 회수 시도한다★ 무한 kill 루프가 되지 않게.
+            if busy and reclaim and not reclaimed:
+                reclaimed = True
+                if reclaim_port(port, logger):
+                    logger.info(f"{port} 잔재를 정리했습니다 — 다시 엽니다")
+                    continue                     # 재시도 횟수를 쓰지 않고 곧장
             if attempt < DETECT_OPEN_RETRY:
                 logger.warn(f"{port} 열기 실패({attempt}/{DETECT_OPEN_RETRY}), "
                             f"{DETECT_OPEN_DELAY_S}s 후 재시도: {e}")
                 time.sleep(DETECT_OPEN_DELAY_S)
             else:
                 logger.warn(f"{port} 열기 최종 실패({DETECT_OPEN_RETRY}회 시도): {e}")
-                if is_busy_error(e):
-                    logger.error(f"{port}를 열 수 없습니다. {BUSY_HINT}")
+                if busy:
+                    held = port_holders(port)
+                    if held:
+                        who = ', '.join(f"{c}(pid {i})" for i, c, _ in held)
+                        logger.error(f"{port} 를 ★{who}★ 가 잡고 있습니다. {BUSY_HINT}")
+                    else:
+                        logger.error(f"{port}를 열 수 없습니다. {BUSY_HINT}")
     return None
 
 
-def identify_port(port, baud, logger):
+def identify_port(port, baud, logger, reclaim=True):
     """포트를 열어 DETECT_READ_S 동안 읽으며 첫 'S,'/'P,' 줄로 보드를 식별.
        반환: ('A'|'B'|None, serial.Serial 또는 None(실패 시))"""
-    ser = open_serial(port, baud, logger)
+    ser = open_serial(port, baud, logger, reclaim=reclaim)
     if ser is None:
         return None, None
 
     buf = b''
     deadline = time.monotonic() + DETECT_READ_S
+    saw_stop = False
     while time.monotonic() < deadline:
         try:
             data = ser.read(256)
@@ -398,9 +662,21 @@ def identify_port(port, baud, logger):
                     return 'A', ser
                 if text.startswith('P,'):
                     return 'B', ser
+                # ★E-STOP 중 — 보드는 있는데 역할을 말해주지 않는다★ (상수 주석 참고)
+                #   포트를 닫지 않고 해제를 기다린다. 닫으면 보드가 리셋된다.
+                if text == 'STOP' and not saw_stop:
+                    saw_stop = True
+                    deadline = time.monotonic() + DETECT_ESTOP_HOLD_S
+                    logger.warn(
+                        f"⛔ {port} : ★E-STOP 이 걸려 있습니다★ 보드는 붙어 있는데 "
+                        f"펌웨어가 \"STOP\" 만 보내 A/B 를 구별할 수 없습니다 "
+                        f"(케이블 문제가 아닙니다). 스위치를 해제하면 즉시 붙습니다 "
+                        f"— {DETECT_ESTOP_HOLD_S:.0f}초까지 포트를 잡고 기다립니다")
 
     ser.close()
-    return None, None
+    # ★'보드가 없다' 와 'E-STOP 때문에 역할을 모른다' 를 구별해서 돌려준다★
+    #   호출측(_link_loop)의 경고 문구가 갈라진다 — 사람이 볼 곳이 달라지기 때문이다.
+    return ('ESTOP' if saw_stop else None), None
 
 
 class Arduino(Node):
@@ -423,10 +699,45 @@ class Arduino(Node):
         #   모드 전환은 제동 지시가 아니고, 실차에서 스위치를 수동으로 내리는 순간 리니어가
         #   브레이크 페달을 밟고 튀어나왔다(E-STOP 도 아닌데). 수동에서는 브레이크를 항상
         #   0 으로 보낸다 — 제동은 사람 발이 한다. compose() (2) 분기 참고.
-        # 수동조종에서 페달 최대치가 대응할 펄스. 기본은 A보드 상한(15 ≈ 47km/h)으로
-        # kasa_ws master.py 와 동일하게 두었다. 초기 시험에서는 낮춰 두는 것이 안전하다.
+        # 수동조종에서 페달 최대치가 대응할 펄스.
+        #   ★[2026-08-25] 이 값은 더 이상 차를 굴리지 않는다★ 수동조종의 실제 구동은
+        #   manual_pwm_min/max 가 만드는 직접 PWM 이고, 이 값은 /drive_pulse_cmd 라벨
+        #   (mapping 수집 라벨 ①)을 종전과 같은 0~15 스케일로 유지하기 위해서만 쓴다.
+        #   ⚠️ 그러므로 ★속도를 낮추려고 이 값을 건드리지 말 것★ — 라벨만 줄어들고
+        #     차는 그대로 나간다. 속도는 manual_pwm_max 로 조절한다.
         self.manual_pulse_max = int(
             self.declare_parameter('manual_pulse_max', PULSE_MAX).value)
+        # ★수동조종 페달 → 직접 PWM 환산 구간★ (상수 주석에 근거를 적었다)
+        #   페달 개도 0%→manual_pwm_min, 100%→manual_pwm_max 로 선형 대응한다.
+        #   실차 튜닝은 여기 두 개로 한다 : 초반 유격은 min, 최고속은 max.
+        self.manual_pwm_min = int(
+            self.declare_parameter('manual_pwm_min', MANUAL_PWM_MIN).value)
+        self.manual_pwm_max = int(
+            self.declare_parameter('manual_pwm_max', MANUAL_PWM_MAX).value)
+        # 프로토콜 밖의 값은 여기서 못 나가게 잘라 둔다 — 16 미만은 펌웨어가 '펄스'로
+        # 읽어버리고(= 살짝 밟았는데 펄스 15 목표가 걸리는 사고), 255 초과는 '정지'다.
+        self.manual_pwm_min = max(PWM_DIRECT_MIN, min(PWM_DIRECT_MAX, self.manual_pwm_min))
+        self.manual_pwm_max = max(self.manual_pwm_min,
+                                  min(PWM_DIRECT_MAX, self.manual_pwm_max))
+        # ══════════════════════════════════════════════════════════════
+        #  ★[2026-08-25] AEB 비상정지 (/aeb_stop)★ 헤더 (1-1) 분기가 쓴다
+        # ══════════════════════════════════════════════════════════════
+        #  aeb_brake_level = 0 이면 ★기능 자체가 꺼진다★ (구독만 하고 무시).
+        #  기본을 0 으로 둔 것은 이 파일이 white1 자율주행 스택과 공용이기
+        #  때문이다 — 그쪽 런치는 이 파라미터를 주지 않으므로 거동이 종전과
+        #  완전히 같다. 켜는 곳은 lidar/launch/one_launch.py 하나다.
+        #    2 = 풀브레이킹 (권장) / 1 = 약한 브레이킹 / 0 = 기능 꺼짐
+        self.aeb_brake_level = int(
+            self.declare_parameter('aeb_brake_level', 0).value)
+        self.aeb_brake_level = max(0, min(BRAKE_LEVEL_MAX, self.aeb_brake_level))
+        # 판단 노드와 ★같은 이름★ 이어야 한다 (lidar manual_aeb_node 의 aeb_stop_topic).
+        self.aeb_topic = str(
+            self.declare_parameter('aeb_topic', '/aeb_stop').value) or '/aeb_stop'
+        # ★신선도 [s]★ 이 시간 넘게 안 오면 해제한다(fail-open — 헤더 (1-1) 참고).
+        #   판단 노드가 20Hz 로 내므로 1.0 은 20틱이 빠진 것이다. 0 이하로 주면
+        #   신선도를 보지 않는다(= 마지막 값을 영구히 물고 있는다) — 권하지 않는다.
+        self.aeb_stale_s = float(
+            self.declare_parameter('aeb_stale_s', 1.0).value)
         self.throttle_raw_min = int(
             self.declare_parameter('throttle_raw_min', THROTTLE_RAW_MIN).value)
         self.throttle_raw_max = int(
@@ -450,6 +761,8 @@ class Arduino(Node):
         self.rx_buf_b = b''
         self.last_line_a = None
         self.last_line_b = None
+        # ★E-STOP 때문에 역할을 못 읽은 포트★ (_scan_once 가 매 바퀴 다시 채운다)
+        self._estop_ports = []
 
         # ── 보드 → ROS 최신 상태 (STOP·형식오류 시 마지막 값 유지) ──
         self.pulse_l = 0
@@ -486,6 +799,13 @@ class Arduino(Node):
         #   브레이크 0 을 보낸다 — '모드 전환은 절대로 리니어를 체결하지 않는다'는
         #   불변식을 이 유예가 건드리면 안 되기 때문이다. 모드 전환 시에는
         #   _disarm_brakes_on_mode_edge() 가 유예까지 함께 지운다.
+        # ── ★[2026-08-25] AEB 비상정지 상태★ 헤더 (1-1) ──
+        #   ★모드 전환 엣지에서 지우지 않는다★ 이것은 '남아 있던 캐시 요청'이 아니고
+        #   살아 있는 센서가 20Hz 로 계속 말하고 있는 사실이다. 그 성질을 보장하는
+        #   것이 아래 신선도(aeb_stale_s)다 — 끊기면 스스로 풀린다.
+        self.aeb_stop = False
+        self.aeb_stop_t = 0.0         # 마지막 수신 시각 (monotonic)
+        self._aeb_engaged = False     # 로그 엣지용
         self._brake_rx_t = 0.0        # 마지막 /brake_level 수신 시각(진단 로그용)
         self._brake_hold_level = 0    # 마지막으로 받은 '0 아닌' 단계
         self._brake_hold_t = 0.0
@@ -523,11 +843,19 @@ class Arduino(Node):
         self.pub_mode = self.create_publisher(Bool, '/vehicle_mode', 10)
         self.pub_throttle = self.create_publisher(Int32, '/throttle_pedal', 10)
         self.pub_brake_pot = self.create_publisher(Int32, '/brake_pot', 10)
-        # ★ A보드로 실제 보낸 주행 목표펄스 ★ 자율=계획값 / 수동조종=페달 환산값.
+        # ★ 주행 목표펄스 (0~15 스케일) ★ 자율=계획값(A보드로 실제 나간 값)
+        #   수동조종=페달 환산값(★[2026-08-25] 부터 라벨 전용★ — 실제 구동은 아래
+        #   /drive_pwm_cmd 다).
         #   수동조종 수집(mapping)의 라벨 ①이 이 값이다 — 환산 규칙(throttle_raw_min/max,
         #   manual_pulse_max)이 이 노드에만 있으므로, 여기서 발행해야 소비측이 규칙을
         #   복제하지 않는다(복제하면 파라미터를 바꿀 때 조용히 어긋난다).
         self.pub_drive_pulse = self.create_publisher(Int32, '/drive_pulse_cmd', 10)
+        # ★[2026-08-25] A보드로 실제 나간 직접 PWM★ 수동조종에서 페달을 밟는 동안만
+        #   16~255, 그 외에는 0(직접 PWM 경로를 쓰지 않는 상태)이다.
+        #   /drive_pulse_cmd 의 스케일(0~15)을 건드리지 않으려고 별 토픽으로 뺐다 —
+        #   수집·로스백이 전부 그 스케일로 기록되어 있어서, 거기에 PWM 을 흘리면
+        #   라벨이 조용히 10배로 어긋난다. 이쪽은 진단·로스백 전용이다.
+        self.pub_drive_pwm = self.create_publisher(Int32, '/drive_pwm_cmd', 10)
         self.pub_estop = self.create_publisher(Bool, '/estop', 10)
         self.pub_status = self.create_publisher(String, '/board_status', 10)
 
@@ -540,6 +868,17 @@ class Arduino(Node):
         # 브레이크 단계(0/1/2). Twist 에 필드가 없어 별 토픽으로 받는다. 선택 입력 —
         # 아무도 발행하지 않으면 0(놓음)으로 유지된다(white 의 driving 은 발행하지 않는다).
         self.create_subscription(Int32, '/brake_level', self.cb_brake_level, 10)
+        # ★[2026-08-25] AEB 비상정지★ aeb_brake_level=0(기본)이면 받아도 무시한다.
+        #   구독 자체는 항상 걸어 둔다 — 파라미터로 켠 순간부터 바로 듣게.
+        self.create_subscription(Bool, self.aeb_topic, self.cb_aeb_stop, 10)
+        if self.aeb_brake_level > 0:
+            self.get_logger().warn(
+                f"🛑 AEB 비상정지 켜짐 — {self.aeb_topic} 가 True 면 구동을 끊고 "
+                f"리니어를 {self.aeb_brake_level}단으로 물립니다 "
+                f"(★수동조종 중에도 물립니다★ / 신선도 {self.aeb_stale_s:.1f}s)")
+
+        # ★ 종료 신호를 직접 받는다 ★ (포트를 열기 전에 걸어야 탐색 구간도 커버된다)
+        self._install_exit_handlers()
 
         # ★ 포트를 열기 전에 부모 감시를 걸어둔다 ★
         #   탐색 스레드가 포트를 여는 도중에 런치가 내려가면 이 프로세스가 고아로 남아
@@ -588,9 +927,18 @@ class Arduino(Node):
 
             if self.ser_a is None or self.ser_b is None:
                 missing = [n for n, s in (('A', self.ser_a), ('B', self.ser_b)) if s is None]
-                self.get_logger().warn(
-                    f"{'/'.join(missing)}보드 미발견, {DETECT_RETRY_S}s 후 재스캔 "
-                    f"(연결·전원·USB 케이블 확인)", throttle_duration_sec=15.0)
+                if self._estop_ports:
+                    # ★원인이 확실할 때는 케이블을 의심하게 만들지 않는다★
+                    self.get_logger().warn(
+                        f"{'/'.join(missing)}보드가 아직 안 붙었습니다 — "
+                        f"★E-STOP 이 걸려 있습니다★ ({', '.join(self._estop_ports)}). "
+                        f"스위치를 해제하면 {DETECT_RETRY_S}s 안에 붙습니다 "
+                        f"(케이블·전원은 정상입니다 — 보드가 응답하고 있습니다)",
+                        throttle_duration_sec=10.0)
+                else:
+                    self.get_logger().warn(
+                        f"{'/'.join(missing)}보드 미발견, {DETECT_RETRY_S}s 후 재스캔 "
+                        f"(연결·전원·USB 케이블 확인)", throttle_duration_sec=15.0)
                 self.publish_status()
                 time.sleep(DETECT_RETRY_S)
             elif not first_round:
@@ -601,6 +949,9 @@ class Arduino(Node):
         """후보 포트를 한 바퀴 돌며 아직 못 찾은 보드를 채운다."""
         owned = {s.port for s in (self.ser_a, self.ser_b) if s is not None}
         exclude = list(self.exclude_ports) + list(owned)
+        # ★이번 바퀴에서 'E-STOP 때문에 역할을 못 읽은' 포트★ (매 바퀴 새로 판단한다 —
+        #   해제되면 다음 바퀴에서 정상 식별되어야 하므로 남겨두면 안 된다)
+        self._estop_ports = []
 
         for port in candidate_ports(exclude=exclude):
             if not (self._running and rclpy.ok()):
@@ -616,6 +967,11 @@ class Arduino(Node):
                 role, ser = identify_port(port, self.baud, self.get_logger())
             except Exception as e:   # 한 포트의 예기치 못한 오류가 스레드를 죽이지 않도록
                 self.get_logger().warn(f"{port} 감지 중 오류(건너뜀): {e}")
+                continue
+
+            if role == 'ESTOP':
+                # 보드는 있다 — 역할만 모른다. identify_port 가 이미 경고했다.
+                self._estop_ports.append(port)
                 continue
 
             if role == 'A' and self.ser_a is None:
@@ -712,21 +1068,80 @@ class Arduino(Node):
             self._brake_hold_level = level
             self._brake_hold_t = self._brake_rx_t
 
+    def cb_aeb_stop(self, msg: Bool):
+        """/aeb_stop — 전방 장애물 확정. ★수동조종 중에도 통하는 제동 경로★
+
+        엣지가 아니라 ★상태★ 를 받는다(발행자가 20Hz 로 계속 낸다). 여기서는
+        값과 수신 시각만 남기고, 판단은 compose() (1-1) 이 한다 —
+        ★aeb_brake_level=0 이면 아래 값은 아무 데도 쓰이지 않는다★."""
+        self.aeb_stop = bool(msg.data)
+        self.aeb_stop_t = time.monotonic()
+
+    def aeb_engaged(self):
+        """지금 AEB 로 차를 세워야 하는가. ★신선도까지 본다★ (헤더 (1-1))
+
+        판단 노드가 죽으면(토픽이 끊기면) False 로 돌아온다 — fail-open 이다.
+        그 상태는 'AEB 가 없는 수동조종' = 원래 상태이고, 사람이 예상하지 못한
+        정지가 뒤차·경사에서 더 위험하기 때문이다. 대신 조용히 넘기지 않는다."""
+        if self.aeb_brake_level <= 0:
+            return False                      # 기능 꺼짐 (기본)
+        if not self.aeb_stop:
+            return False
+        if self.aeb_stale_s > 0.0 and \
+                (time.monotonic() - self.aeb_stop_t) > self.aeb_stale_s:
+            self.get_logger().error(
+                f"⚠️ AEB 정지신호({self.aeb_topic})가 {self.aeb_stale_s:.1f}초 넘게 "
+                f"끊겼습니다 — ★제동을 풉니다★ (판단 노드가 살아 있는지 확인). "
+                f"지금은 AEB 없는 수동조종 상태입니다",
+                throttle_duration_sec=2.0)
+            return False
+        return True
+
     # ═══════════════════════════════════════════════════════════════
     #  ROS → 보드 : 명령 조립 + 전송
     # ═══════════════════════════════════════════════════════════════
-    def throttle_to_pulse(self, raw):
-        """쓰로틀 페달 raw(0~1023) → 주행펄스. 수동조종 모드 전용.
+    def throttle_frac(self, raw):
+        """쓰로틀 페달 raw(0~1023) → 개도량 0.0~1.0. 수동조종 모드 전용.
 
-        throttle_raw_min~max 구간을 0~manual_pulse_max 에 선형 대응시킨다(데드존 없음 —
-        페달을 놓은 상태의 잔노이즈는 throttle_raw_min 을 실측값으로 올려 잡아 흡수한다)."""
+        throttle_raw_min~max 를 0~1 에 선형 대응시킨다(데드존 없음 — 페달을 놓은 상태의
+        잔노이즈는 throttle_raw_min 을 실측값으로 올려 잡아 흡수한다).
+        ★환산의 원점은 여기 하나다★ 펄스(라벨)와 PWM(실제 구동)이 같은 개도량에서
+        갈라져 나가야 로스백에서 둘을 나란히 놓고 볼 수 있다."""
         raw = max(0, min(ADC_MAX, int(raw)))
         lo, hi = self.throttle_raw_min, self.throttle_raw_max
         if hi <= lo or raw <= lo:
+            return 0.0
+        return min(1.0, (raw - lo) / (hi - lo))
+
+    def throttle_to_pulse(self, raw):
+        """쓰로틀 페달 raw → 주행펄스 0~manual_pulse_max.
+
+        ★[2026-08-25] 이제 이것은 차를 굴리지 않는다★ /drive_pulse_cmd 라벨 전용이다
+        (mapping 수집 라벨 ①의 스케일을 종전 0~15 그대로 유지한다).
+        실제 구동은 throttle_to_pwm 이 만든다 — compose() (2) 분기 참고."""
+        frac = self.throttle_frac(raw)
+        if frac <= 0.0:
             return 0
-        frac = (raw - lo) / (hi - lo)
         return max(0, min(PULSE_MAX,
                           _round_half_away(frac * self.manual_pulse_max)))
+
+    def throttle_to_pwm(self, raw):
+        """쓰로틀 페달 raw → A보드 ★직접 PWM★. 수동조종 모드 전용.
+
+        반환값 0 = 페달을 밟지 않음(→ 단일값 "0" 을 보내 펄스 모드로 되돌린다),
+        16~255 = 직접 PWM(→ "<pwm>,<pwm>" 콤마 2값으로 보낸다).
+
+        개도량 0~1 을 manual_pwm_min~manual_pwm_max 에 선형 대응시킨다 —
+        ★사람이 밟은 만큼 그대로★ 가 이 함수의 전부다. 여기에 슬루레이트나 평활을
+        넣지 않는다: 그것을 넣는 순간 다시 '발끝과 바퀴 사이에 뭔가가 낀' 상태가 되고,
+        급가속을 막는 역할은 사람 발이 한다(페달을 천천히 밟으면 천천히 오른다).
+        페달 raw 자체는 A보드가 이미 9샘플 중앙값으로 스파이크를 걷어낸 값이다."""
+        frac = self.throttle_frac(raw)
+        if frac <= 0.0:
+            return 0
+        pwm = _round_half_away(
+            self.manual_pwm_min + frac * (self.manual_pwm_max - self.manual_pwm_min))
+        return max(PWM_DIRECT_MIN, min(PWM_DIRECT_MAX, pwm))
 
     def to_board_angle(self, ros_deg):
         """ROS 조향각 → B보드로 보낼 값. ★기본은 그대로 통과다★ (같은 규약 − 좌 / + 우)
@@ -817,16 +1232,60 @@ class Arduino(Node):
         self._stop_brake_armed = False
 
     def compose(self):
-        """현재 상태에서 A/B 보드로 보낼 페이로드 두 개를 만든다.
+        """현재 상태에서 A/B 보드로 보낼 페이로드 두 개 + 라벨용 목표펄스를 만든다.
 
-        반환: (a_payload, b_payload) — 둘 다 개행 없는 문자열.
+        반환: (a_payload, b_payload, drive_pulse)
+          a_payload   개행 없는 문자열. ★단일값 = 펄스 0~15★ / ★"<pwm>,<pwm>" = 직접 PWM★
+                      (콤마 2값은 수동조종에서 페달을 밟는 동안에만 나온다 — 헤더 (2) 참고)
+          b_payload   개행 없는 문자열 "<조향각|x>,<브레이크단계>"
+          drive_pulse /drive_pulse_cmd 로 발행할 0~15 스케일 라벨. 자율에서는 A보드로
+                      실제 나간 펄스와 같은 값이고, 수동조종에서는 같은 페달 개도량을
+                      펄스로 환산한 값이다(실제로 나가는 것은 PWM 이다).
+                      ★a_payload 를 파싱해서 라벨을 만들지 않는다★ — 콤마 2값이 생긴
+                      뒤로는 파싱이 스케일을 뒤섞는 길이 되었다. 여기서 같이 돌려준다.
+
         우선순위는 파일 헤더의 '주행 상태 판단' 순서와 같다."""
 
         # (1) E-stop — B보드가 리니어 2단 체결과 0단 복귀를 스스로 한다([0804-3]).
         #     ★ 여기서 수동 래치를 건드리지 않는다 ★ 해제 시 B보드가 이미 HOME(0단)으로
         #     돌아가는데 우리가 2단을 다시 물리면 그 복귀와 싸운다.
         if self.estop_active:
-            return '0', f'{STEER_RELEASE_TOKEN},0'
+            # ★'페달을 밟아도 안 나간다' 의 이유를 로그에 남긴다★ [2026-08-25]
+            #   E-STOP 이 걸려 있으면 이 분기가 수동조종보다 먼저 이겨서 A보드로
+            #   '0' 이 나간다 — 페달은 아무 일도 하지 않는다. 그 사실이 로그에
+            #   없으면 "보드는 붙었는데 페달이 안 먹는다" 로만 보이고, 원인을
+            #   포트·펌웨어에서 찾게 된다(실제로 그렇게 헤맸다). 보드 리셋 직후
+            #   E-STOP 이 걸린 채 올라오는 경우가 있어 더욱 그렇다.
+            if not self.auto_mode:
+                self.get_logger().warn(
+                    "⛔ E-STOP 이 걸려 있어 ★페달이 동작하지 않습니다★ "
+                    "(수동조종이라도 E-STOP 이 우선합니다). 스위치를 해제하세요 "
+                    "— B보드가 500ms 연속 단락을 확인하면 풀립니다",
+                    throttle_duration_sec=5.0)
+            return '0', f'{STEER_RELEASE_TOKEN},0', 0
+
+        # (1-1) ★AEB 비상정지 — 수동조종 중에도 통하는 유일한 제동 경로★
+        #       [2026-08-25 신설] 근거·불변식은 파일 헤더 (1-1) 에 전부 적었다.
+        #       ★aeb_brake_level 기본값 0 이면 여기는 절대 참이 되지 않는다★
+        #       (white1 런치는 이 값을 주지 않으므로 거동이 종전과 같다).
+        #
+        #       A보드는 ★단일값 "0"★ 이다 — 콤마 2값이 아니라야 펌웨어가 직접 PWM
+        #       모드를 해제하고 코스트로 넘긴다(수동조종에서 페달이 직접 PWM 을
+        #       내고 있을 수 있다. (2) 분기 참고). 구동을 끊고 리니어로 잡는다.
+        if self.aeb_engaged():
+            if not self._aeb_engaged:
+                self._aeb_engaged = True
+                self.get_logger().warn(
+                    f"🛑 ★AEB 비상정지★ 구동 차단 + 리니어 {self.aeb_brake_level}단 "
+                    f"— 조향은 {'힘빼기(사람이 핸들)' if not self.auto_mode else '마지막 각도 유지'}")
+            # 조향 : 수동조종이면 힘빼기('x') 그대로 — 사람이 핸들을 쥐고 있다.
+            #        자율이면 마지막 각도를 유지한다((3) 과 같은 이유).
+            steer = (STEER_RELEASE_TOKEN if not self.auto_mode
+                     else self.to_board_angle(self.cmd_angle))
+            return '0', f'{steer},{self.aeb_brake_level}', 0
+        if self._aeb_engaged:
+            self._aeb_engaged = False
+            self.get_logger().info("🟢 AEB 해제 — 리니어를 풉니다(0단)")
 
         # (2) 수동조종 (D5 개방) — /control_state 와 무관하게 항상 이 경로
         #     ★[2026-08-04] '진입 시 브레이크 체결' 로직을 완전히 제거했다★
@@ -837,17 +1296,34 @@ class Arduino(Node):
         #     있으면 오히려 출발도 못 한다.
         #     → 수동에서는 브레이크를 ★항상 0★ 으로 보낸다. 제동은 사람 발이 한다.
         #
-        #     ★주행 펄스는 페달뿐이다★ [2026-08-07] 에 열었던 'ROS 지정펄스 대체' 경로를
+        #     ★구동은 페달뿐이다★ [2026-08-07] 에 열었던 'ROS 지정펄스 대체' 경로를
         #     [2026-08-11] 되돌렸다(위쪽 (2) 요약 참고) — 소프트웨어가 수동조종 중
-        #     펄스를 대신 낼 길이 없어야 사람 조작과 다툴 여지가 아예 사라진다.
+        #     구동을 대신 낼 길이 없어야 사람 조작과 다툴 여지가 아예 사라진다.
+        #
+        #     ★★ [2026-08-25] 페달을 밟는 동안은 '직접 PWM' 을 보낸다 ★★
+        #     페달 개도량 → PWM 선형 대응(throttle_to_pwm). 콤마 2값 형식이라야 펌웨어가
+        #     16~255 를 PWM 으로 읽는다(단일값은 0~15 펄스로만 받는다). 좌/우를 같은
+        #     값으로 보낸다 — 수동조종에서는 사람이 핸들로 돌리고 ROS 는 차동을 하지 않는다.
+        #     ★이 한 줄이 파일 전체에서 유일하게 콤마 2값을 내는 곳이다★
+        #
+        #     페달을 떼면(pwm == 0) 단일값 "0" 으로 돌아간다. 그래야 펌웨어
+        #     setPulseTarget 이 직접 PWM 모드를 해제하고 코스트(무동력 감속)로 넘긴다 —
+        #     "0,0" 을 보내도 같은 경로지만, 직접 PWM 을 쓰지 않는 상태에서는 파일의
+        #     기본 규칙(단일값)으로 되돌아가는 편이 로스백에서 읽기 쉽다.
         if not self.auto_mode:
+            pwm = self.throttle_to_pwm(self.throttle_raw)
+            # 라벨(0~15)은 실제 구동과 무관하게 같은 개도량에서 뽑는다 — mapping 수집이
+            # 종전 스케일 그대로 이어지도록.
             pulse = self.throttle_to_pulse(self.throttle_raw)
-            src = 'pedal' if pulse > 0 else None
+            src = 'pedal' if pwm > 0 else None
             if src != self._manual_src:
                 self._manual_src = src
                 if src == 'pedal':
-                    self.get_logger().info("[수동조종] 페달 입력 감지")
-            return str(pulse), f'{STEER_RELEASE_TOKEN},0'
+                    self.get_logger().info(
+                        f"[수동조종] 페달 입력 감지 — 직접 PWM "
+                        f"{self.manual_pwm_min}~{self.manual_pwm_max} 구간으로 나갑니다")
+            a_payload = f'{pwm},{pwm}' if pwm > 0 else '0'
+            return a_payload, f'{STEER_RELEASE_TOKEN},0', pulse
 
         # (3) ROS 가 정지를 지시한 상태. 조향각은 마지막 값을 유지한다(정면 급조향 방지).
         #     브레이크는 stop_brake_level 이 /brake_level 보다 우선한다 — '정지 지시'가
@@ -860,7 +1336,7 @@ class Arduino(Node):
             stop_brake = self.stop_brake_level if self._stop_brake_armed else 0
             brake = max(stop_brake, self.cmd_brake)
             brake = max(0, min(BRAKE_LEVEL_MAX, brake))
-            return '0', f'{self.to_board_angle(self.cmd_angle)},{brake}'
+            return '0', f'{self.to_board_angle(self.cmd_angle)},{brake}', 0
 
         # (4) 정상 자율주행 — /brake_level 을 그대로 반영(안 오면 0)
         brake = max(0, min(BRAKE_LEVEL_MAX, self.cmd_brake))
@@ -881,7 +1357,7 @@ class Arduino(Node):
         #    이 줄은 camera_judgment 처럼 ★주행 중에 브레이크를 요청하는 다른
         #    발행자★ 가 있을 때 실제로 일을 한다.)
         pulse = 0 if brake > 0 else self.cmd_pulse
-        return str(pulse), f'{self.to_board_angle(self.cmd_angle)},{brake}'
+        return str(pulse), f'{self.to_board_angle(self.cmd_angle)},{brake}', pulse
 
     def on_tx_timer(self):
         """값이 바뀌었거나 KEEPALIVE_S 가 지났을 때만 실제로 시리얼에 쓴다.
@@ -892,7 +1368,7 @@ class Arduino(Node):
         # 모드 전환 엣지 정리를 compose() 앞에 둔다 — compose() 는 '지금 상태로 페이로드를
         # 만드는' 순수 판정만 하게 유지한다(상태 변경은 이 함수에서).
         self._disarm_brakes_on_mode_edge()
-        a_payload, b_payload = self.compose()
+        a_payload, b_payload, drive_pulse = self.compose()
         now = time.monotonic()
 
         if a_payload != self._last_a or (now - self._last_a_t) >= KEEPALIVE_S:
@@ -905,13 +1381,20 @@ class Arduino(Node):
                 self._last_b = b_payload
                 self._last_b_t = now
 
-        # ★ A보드로 실제 나간 주행 목표펄스를 그대로 발행한다 ★ 수동조종에서는 페달
-        #   환산값이므로 mapping 의 수집 라벨 ①이 된다. 보드가 단절되어 전송이 안 된
-        #   주기에도 '이번에 내려던 값'을 발행한다 — 라벨은 명령의 기록이기 때문이다.
-        try:
-            self.pub_drive_pulse.publish(Int32(data=int(a_payload)))
-        except ValueError:
-            pass   # a_payload 는 항상 정수 문자열이지만 방어적으로 둔다
+        # ★ 주행 목표펄스(0~15 라벨)를 발행한다 ★ 수동조종에서는 페달 환산값이므로
+        #   mapping 의 수집 라벨 ①이 된다. 보드가 단절되어 전송이 안 된 주기에도
+        #   '이번에 내려던 값'을 발행한다 — 라벨은 명령의 기록이기 때문이다.
+        #   ★[2026-08-25] a_payload 를 int() 로 되파싱하던 것을 걷어냈다★ 수동조종의
+        #   페이로드가 "<pwm>,<pwm>" 이 되면서 그 파싱은 ValueError 로 조용히 버려지거나
+        #   (라벨이 통째로 끊긴다) 첫 토큰을 집어 PWM 을 0~15 라벨 자리에 흘릴 수 있다.
+        #   이제 compose() 가 라벨을 직접 돌려준다.
+        self.pub_drive_pulse.publish(Int32(data=int(drive_pulse)))
+
+        # ★A보드로 실제 나간 직접 PWM★ 콤마 2값일 때만 값이 있고 그 외에는 0 이다.
+        #   판정 근거를 a_payload(= 실제로 나간 줄) 하나로 두어, 발행값과 시리얼이
+        #   어긋날 수 없게 한다.
+        drive_pwm = int(a_payload.split(',')[0]) if ',' in a_payload else 0
+        self.pub_drive_pwm.publish(Int32(data=drive_pwm))
 
     def send_line(self, which, text):
         """한 보드에 한 줄 전송. 성공하면 True.
@@ -1073,6 +1556,46 @@ class Arduino(Node):
     # ═══════════════════════════════════════════════════════════════
     #  종료 정리 (정상 종료 / 부모 사망 공용)
     # ═══════════════════════════════════════════════════════════════
+    def _install_exit_handlers(self):
+        """★SIGTERM·SIGHUP 에서도 정지값이 나가고 포트가 풀리게 한다★ [2026-08-25]
+
+        ══════════════════════════════════════════════════════════════════
+         왜 필요한가 — 실측으로 확인한 구멍
+        ══════════════════════════════════════════════════════════════════
+        rclpy 는 ★SIGINT 만★ 처리한다. 그 경로는 정상이다(측정: Ctrl+C 에서
+        프로세스 그룹 전체가 0.45초에 내려가고 포트도 풀린다). 문제는 SIGTERM 이다:
+        핸들러가 없으면 파이썬 기본 동작으로 ★즉사★ 하므로
+          · stop_and_close 가 돌지 않는다 → ★정지값이 보드에 안 나간다★
+            (A보드 펌웨어에는 무입력 타임아웃이 없다 — 마지막 명령을 계속 물고 있다)
+          · 포트가 커널에 의해 갑자기 닫힌다 → DTR 토글로 ★보드가 리셋된다★
+            → 부팅 중 E-STOP 핀이 개방으로 읽혀 STOP 이 걸린 채 올라올 수 있고,
+              그러면 다음 실행에서 ★페달을 밟아도 안 나간다★ (compose (1) 이 이긴다)
+        SIGTERM 은 드물지 않다 — launch 가 SIGINT 후 sigterm_timeout 안에 안 죽으면
+        보내고, `kill`·`pkill`·systemd·위 reclaim_port 도 그것을 쓴다.
+
+        ★핸들러 안에서 하는 일을 최소로 둔다★ 정지값 쓰기 + close 뒤 os._exit.
+        rclpy 를 건드리지 않는다(신호 문맥에서 executor 를 만지면 데드락 위험).
+        proc_guard._die 와 같은 태도다.
+        """
+        def handler(signum, _frame):
+            try:
+                self.stop_and_close()
+            except BaseException:      # noqa: BLE001 — 정리 실패가 종료를 막지 않게
+                pass
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+            except Exception:          # noqa: BLE001
+                pass
+            # 128+signum : 셸 관례. 어디에 블로킹돼 있어도 확실히 끝난다.
+            os._exit(128 + signum)
+
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass                   # 메인 스레드가 아니면 등록할 수 없다 — 무해
+
     def stop_and_close(self):
         """차를 세우는 정지값을 두 보드에 직접 쓰고 포트를 닫는다.
 
@@ -1126,14 +1649,37 @@ def main(args=None):
         if rclpy.ok():
             rclpy.shutdown()
         return
+    code = 0
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except ExternalShutdownException:
+        # ★런치가 내린 SIGINT 의 정상 경로다★ rclpy 의 신호 핸들러가 컨텍스트를
+        #   내리면 spin 이 이것을 던진다. 잡지 않으면 트레이스백 + 종료코드 1 이
+        #   되어 launch 로그에 '죽었다' 로 남는다 — 정상 종료인데 사고처럼 보인다.
+        pass
+    except BaseException:              # noqa: BLE001
+        # ★예상 못한 예외는 반드시 티가 나야 한다★ 아래 os._exit 로 종료를 강제하는데,
+        #   그때 0 을 돌려주면 크래시가 '정상 종료' 로 보인다(launch 로그에도 그렇게
+        #   남는다). 트레이스백을 찍고 종료코드를 1 로 남긴다.
+        traceback.print_exc()
+        code = 1
     finally:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+        # ★여기서 확실히 끝낸다★ [2026-08-25]
+        #   위 정리로 포트는 이미 닫혔다. 그런데도 인터프리터 종료가 남은 스레드나
+        #   rclpy 내부 정리에 걸려 늦어지면, 그 사이에 사람이 다시 런치를 올린다.
+        #   그러면 새 프로세스가 (아직 살아 있는) 이 프로세스와 배타 open 을 다투고,
+        #   ★재실행이 보드를 못 잡는다★. 종료를 운에 맡기지 않는다.
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:              # noqa: BLE001
+            pass
+        os._exit(code)
 
 
 if __name__ == '__main__':
