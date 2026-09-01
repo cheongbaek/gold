@@ -167,11 +167,11 @@
 #      ★fail-open 이다★ 끊기면 제동을 푼다. 그 상태는 'AEB 가 없는 수동조종' =
 #      원래 상태이고, 사람이 예상하지 못한 정지가 뒤차·경사에서 더 위험하다.
 #
-#  (2) 수동조종 모드    : A=페달 ★직접 PWM★ ("<pwm>,<pwm>"), 안 밟으면 "0", B="x,0"
+#  (2) 수동조종 모드    : A=페달 구동, 안 밟으면 "0", B="x,0"
 #      D5 스위치가 개방(모드 0)인 동안. 사람이 핸들과 페달을 직접 잡으므로
 #        - 조향은 'x'(힘빼기) — DC모터에 힘이 들어가면 사람이 핸들을 못 돌린다
 #        - 브레이크는 ★항상 0★ — 제동은 사람 발이 한다. ROS 가 개입하지 않는다.
-#        - 구동은 ★페달뿐★ — 밟은 만큼(throttle_to_pwm), 안 밟으면 0.
+#        - 구동은 ★페달뿐★ — manual_use_pwm 이 경로를 가른다(아래).
 #
 #      ★[2026-08-11] '발을 뗐을 때 /cmd_vel_raw 지정펄스 사용' 경로를 도로 뺐다★
 #        [2026-08-07] white806 의 매핑 헤딩 초기화(페달 없이 곧게 굴려 초기 헤딩을
@@ -179,22 +179,12 @@
 #        굴리는' 방식으로 바꿔 더 이상 필요 없다. 수동조종 중 소프트웨어가 펄스를
 #        대신 낼 길을 남겨 두면 그만큼 사람 조작과 다툴 여지가 생기므로 없앤다.
 #
-#      ★★ [2026-08-25] 수동조종의 구동을 '펄스'에서 '직접 PWM'으로 바꿨다 ★★
-#        종전에는 페달 raw 를 목표펄스(0~15)로 환산해 A보드에 넘겼고, 보드의 PID 가
-#        그 펄스를 맞추려고 PWM 을 만들었다. 그런데 수동조종은 ★사람이 밟은 만큼
-#        나가야 하는★ 조작이다. 그 사이에 PID·기동 블랭킹·코스트/캐치가 끼면
-#          · 페달을 밟아도 램프가 끝날 때까지 안 나가고
-#          · 페달을 조금 떼면 코스트(PWM 0)로 떨어져 '툭' 끊기고
-#          · 내리막에서 목표펄스를 넘으면 폭주감지가 동력을 끊는다
-#        → 발끝과 바퀴 사이가 어긋난다. 그래서 페달 개도량을 ★그대로 PWM 에 비례★
-#          시켜 A보드의 직접 PWM 경로(16~255)로 내려보낸다. 사람 발이 곧 스로틀이다.
-#
-#        ⚠️ 직접 PWM 은 펌웨어의 ★무보호 경로★ 다 (PID·슬루레이트·폭주감지·기동
-#          블랭킹이 전부 빠진다 — kasa_0730_A.ino 주석 참고). 그 보호를 사람의 발이
-#          대신한다는 전제이므로 ★수동조종에서 페달을 밟는 동안에만★ 쓴다.
-#          자율주행(3)(4)·E-stop(1)·페달을 뗀 순간은 종전 그대로 단일값(펄스)이다.
-#          페달을 떼면 "0" 이 나가고, 펌웨어 setPulseTarget 이 직접 PWM 모드를
-#          해제하며 코스트(무동력 감속)로 넘긴다.
+#      ★★ [2026-08-26] 페달 구동 경로를 파라미터로 고른다 (manual_use_pwm) ★★
+#        True  = 직접 PWM ("<pwm>,<pwm>", 16~255). 개루프라 밟은 듀티가 유지되고
+#                PID·폭주감지가 없다. ★풀 엑셀 = PWM 255★ (펄스 모드 상한 170 무시).
+#        False = 목표펄스 (단일값 0~manual_pulse_max). 보드 PID 가 그 속도를 맞추고
+#                페달을 떼면 "0" → 코스트(서서히 감속). 펌웨어 PWM_MAX=170 에 묶인다.
+#        기본 True — white1·lidar 런치 모두 2026-08-27 이후 PWM 을 전제로 넘긴다.
 #
 #  (3) /control_state=False : A="0", B="<마지막 조향각>,<stop_brake_level>"
 #      driving.py 가 정지를 지시한 상태(instant_stop / 경로 미로드 / STOP 명령).
@@ -237,8 +227,13 @@
 #
 #  ★★ RX 정책 ★★
 #   - SERIAL_POLL_S = 0.05 (A·B 텔레메트리 주기 50ms 와 일치).
-#     kasa_ws 원본은 0.1 이었는데, poll 마다 최신 줄 하나만 쓰므로(latest = texts[-1])
-#     보드가 보낸 텔레메트리의 절반을 버리고 있었다. 0.05 로 맞추면 버리지 않는다.
+#   - ★poll 한 번에 들어온 줄을 전부 본다★ [2026-08-27]
+#     예전에는 최신 줄 하나만 썼다(latest = texts[-1]). 그런데 수동조종 PWM 경로는
+#     A보드로 "<pwm>,<pwm>" 을 20Hz 로 보내고, CH340 클론은 그 TX 를 RX 로 에코하는
+#     경우가 있다. 같은 50ms 창에 `S,0,0,512` 와 `180,180` 이 같이 오면 최신 줄이
+#     에코가 되어 parse_a 가 조용히 return → ★스로틀 raw 가 0(또는 휴지)에 언다★.
+#     타이밍이 맞으면 S, 가 최신이라 되고, 아니면 안 된다 = "가끔 스로틀이 안 받아진다".
+#     사람이 Ctrl+C 로 다시 띄우면 그 레이스가 리셋될 뿐 원인은 그대로다.
 #   - 그래도 근본적인 측정 공백은 남는다: 펄스 필드는 '직전 20ms 창'의 카운트인데 보고는
 #     50ms 마다다 → 50ms 중 30ms 는 계측되지 않는다. gps_imu 의 DR 거리적분이 그만큼
 #     거칠다는 뜻이다(펌웨어에 누적 카운터를 넣지 않기로 결정했으므로 감수한다).
@@ -267,6 +262,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -279,6 +275,10 @@ try:
     from serial.tools import list_ports
 except Exception:      # pyserial 이 없는 환경에서도 import 는 되게
     list_ports = None
+try:
+    import termios
+except Exception:      # POSIX 가 아닌 곳에서는 HUPCL 을 못 끈다
+    termios = None
 
 from nxde.proc_guard import watch_parent
 
@@ -304,26 +304,45 @@ PWM_DIRECT_MIN, PWM_DIRECT_MAX = 16, 255
 #        1/3 쯤까지가 '밟아도 안 나가는' 구간이 된다. 실차에서 그 유격이 거슬리면
 #        manual_pwm_min 을 60 부근까지 올려라 — 대신 페달을 살짝만 건드려도 바로
 #        기동 PWM 이 걸린다(초기 시험에서는 낮은 쪽이 안전하다).
-#   max = 150 : 종전 수동 상한(목표펄스 15)에 대응하는 FF 표상 PWM 이 ≈147 이다
-#     (표: 펄스 13.05→140, 16.05→150). 즉 ★체감 최고속을 종전과 비슷하게 두었다★.
-#     직접 PWM 은 개루프라 같은 값이라도 경사·하중에 따라 실제 속도가 달라진다.
+#   max = 255 : A보드 프로토콜 상한. 끝까지 밟으면 전개가 나간다.
+#     ★150 으로 두지 않는다★ 그 값은 종전 목표펄스 15 의 FF 표상 PWM(≈147)이라
+#     풀 엑셀이어도 듀티가 58% 에 묶였다. 속도를 묶을 때는 런치에서
+#     manual_pwm_max 를 낮춘다(90 ≈ 4펄스).
 MANUAL_PWM_MIN = PWM_DIRECT_MIN
-MANUAL_PWM_MAX = 150
+MANUAL_PWM_MAX = PWM_DIRECT_MAX
 
 # ── B보드 프로토콜 (kasa_0804_B.ino) ──
 STEER_DEG_MAX = 40           # 입력 조향각 클램프 (STEER_ANGLE_MAX 와 동일해야 한다)
 BRAKE_LEVEL_MAX = 2          # 0 = 놓음 / 1 = 약 / 2 = 풀
 STEER_RELEASE_TOKEN = 'x'    # 조향 힘빼기 ([0730-2])
 
-# ── 쓰로틀 페달 raw → 펄스 환산 (실측 2026-07-30, master.py 와 동일 값) ──
-THROTTLE_RAW_MIN = 177       # 페달을 완전히 놓았을 때
-THROTTLE_RAW_MAX = 800       # 끝까지 밟았을 때
+# ── 쓰로틀 페달 raw → 펄스 환산 ──
+#   데드존은 여기 최솟값 하나다. 이보다 작거나 같은 raw 는 개도 0 → 지령 0.
+#   [2026-07-30] 177 — 당시 휴지 166~172
+#   [2026-08-26] 220 — 실차 /throttle_pedal 휴지가 200~208 로 올라 있었다.
+#     lidar one_launch 휴지 raw 200~208 이 옛 177 기준을 넘으면 지령이 나갔다.
+#     220 이면 208 은 0 이다. 휴지가 더 올라가면 이 값을 더 올린다.
+THROTTLE_RAW_MIN = 220       # 페달을 완전히 놓았을 때 (여유 포함)
+#   ★[2026-08-27] 800→950★ 실차 /throttle_pedal 풀 밟음이 946 까지 올라간다.
+#     옛 800 은 행정 중반(살짝 밟음)에서 이미 개도 1.0 → /drive_pulse_cmd=15,
+#     PWM 255 가 나와 엑셀로 속도를 나눌 수 없었다. 0점은 220(휴지 196~197) 유지.
+THROTTLE_RAW_MAX = 950       # 끝까지 밟았을 때 (실측 풀 행정 ≈946)
+# 페달 개도 곡선. 1.0 = 선형. >1 이면 초반이 완만해져 저속 구간을 발로 나눌 수 있다.
+#   1.4 : 살짝 밟으면 저속, 946≈풀. 1.0 으로 두면 포텐이 초반에 급격히 오를 때
+#   다시 15 로 붙기 쉽다.
+THROTTLE_GAMMA = 1.4
+# 지령용 중앙값 창(20Hz 샘플). /throttle_pedal 발행값은 원값 그대로다.
+#   실측이 204→581→204 처럼 한 틱에 수백 카운트 튀면, 그 스파이크가 개도 1.0 이 된다.
+THROTTLE_MEDIAN_N = 5
 ADC_MAX = 1023
 
 # ── 주기 ──
 SERIAL_POLL_S = 0.05         # 시리얼 수신 폴링 + 텔레메트리 발행 (보드 50ms 와 일치)
 TX_PERIOD_S   = 0.05         # 전송 판정 주기 (실제 write 는 변경/keepalive 시에만)
 KEEPALIVE_S   = 1.0          # 값이 안 바뀌어도 이 간격으로는 한 번 재전송
+# A보드가 붙어 있는데 S, 텔레메트리(쓰로틀 필드)가 이 시간 넘게 없으면 경고.
+#   에코/STOP/식별 실패가 가린 채로 페달이 죽은 것처럼 보이는 상태를 로그로 드러낸다.
+TELEMETRY_STALE_S = 1.0
 # ★[2026-08-14] 브레이크 해제 유예 [s]★ 자율주행 분기 (4) 에서만 쓴다.
 #   0 이 아닌 요청을 받은 뒤 이 시간 동안은 ★푸는 방향으로 내려가지 않는다★.
 #   근거 : 로스백 manual-20260814_151206 에서 /brake_level 이 ★0.10초 주기로 2↔0★ 을
@@ -340,7 +359,10 @@ KEEPALIVE_S   = 1.0          # 값이 안 바뀌어도 이 간격으로는 한 �
 BRAKE_RELEASE_HOLD_S = 0.5
 
 # ── 보드 탐색 ──
-DETECT_READ_S  = 5.0         # 포트 하나를 A/B 로 식별하기 위해 읽어보는 시간
+DETECT_READ_S  = 8.0         # 포트 하나를 A/B 로 식별하기 위해 읽어보는 시간
+#   ★5→8 [2026-08-27]★ USB-ACM open 이 DTR 로 보드를 리셋한다. Mega 부트로더
+#   (~2s) + 스케치 setup + 첫 S,/P, 가 5초 경계에 걸리면 식별 실패 → close 가
+#   또 리셋 → 다음 스캔도 부팅 중. 그 루프가 "스로틀이 안 들어와 Ctrl+C" 다.
 # ★E-STOP 중에는 두 보드가 모두 "STOP" 만 내보낸다★ (kasa_0730_A / kasa_0821_B 의
 #   sendOutput: estop_active 면 println("STOP") 하고 return). 그래서 그 동안에는
 #   'S,'/'P,' 접두어가 아예 나오지 않아 ★역할을 알 수 없다★.
@@ -375,6 +397,20 @@ BUSY_HINT = ("재시도로는 풀리지 않습니다 — 이전 런치의 잔재
 def _round_half_away(x):
     """아두이노 round() 매크로와 같은 반올림 (파이썬 내장 round 는 은행가 반올림이라 다름)."""
     return int(x + 0.5) if x >= 0 else -int(-x + 0.5)
+
+
+def _as_bool(value, default=False):
+    """런치 인자는 문자열 'false' 로 온다. bool('false') 는 True 라서 쓰면 안 된다."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if s in ('1', 'true', 'yes', 'on'):
+        return True
+    if s in ('0', 'false', 'no', 'off', ''):
+        return False
+    return default
 
 
 def is_busy_error(exc):
@@ -596,6 +632,26 @@ def reclaim_port(port, logger):
     return True
 
 
+def _keep_dtr_on_close(ser):
+    """close() 가 DTR 을 떨어뜨려 보드를 리셋하지 않게 HUPCL 을 끈다.
+
+    USB-ACM 은 기본적으로 HUPCL 이 켜져 있어, 식별 실패 후 ser.close() 가
+    DTR 하강 → Mega 리셋 → 부트로더 침묵을 만든다. 그 다음 스캔의 open 이
+    또 리셋이라, A보드가 영원히 S, 줄을 못 내고 ★스로틀 raw 가 0 에 언다★.
+    식별에 성공한 포트에도 걸어 둔다 — 종료 시 리셋이 다음 런치의 '가끔 실패'를
+    만든다."""
+    if termios is None or ser is None:
+        return
+    try:
+        fd = ser.fd
+        attrs = termios.tcgetattr(fd)
+        if attrs[2] & termios.HUPCL:
+            attrs[2] &= ~termios.HUPCL
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def open_serial(port, baud, logger, reclaim=True):
     """포트를 재시도하며 연다. 끝내 실패하면 None (예외를 밖으로 던지지 않는다 —
     한 포트의 open 실패가 노드 전체를 죽이지 않도록).
@@ -609,7 +665,9 @@ def open_serial(port, baud, logger, reclaim=True):
     reclaimed = False
     for attempt in range(1, DETECT_OPEN_RETRY + 1):
         try:
-            return serial.Serial(port, baud, timeout=0.2, exclusive=SERIAL_EXCLUSIVE)
+            ser = serial.Serial(port, baud, timeout=0.2, exclusive=SERIAL_EXCLUSIVE)
+            _keep_dtr_on_close(ser)
+            return ser
         except (serial.SerialException, OSError) as e:
             busy = is_busy_error(e)
             # ★점유 오류는 한 번만 회수 시도한다★ 무한 kill 루프가 되지 않게.
@@ -719,6 +777,10 @@ class Arduino(Node):
         self.manual_pwm_min = max(PWM_DIRECT_MIN, min(PWM_DIRECT_MAX, self.manual_pwm_min))
         self.manual_pwm_max = max(self.manual_pwm_min,
                                   min(PWM_DIRECT_MAX, self.manual_pwm_max))
+        # ★페달 → A보드 경로★ True=직접 PWM / False=목표펄스(PID, 떼면 코스트).
+        #   런치가 문자열 'false' 를 넘기므로 bool() 로 받지 않는다(_as_bool).
+        self.manual_use_pwm = _as_bool(
+            self.declare_parameter('manual_use_pwm', True).value, True)
         # ══════════════════════════════════════════════════════════════
         #  ★[2026-08-25] AEB 비상정지 (/aeb_stop)★ 헤더 (1-1) 분기가 쓴다
         # ══════════════════════════════════════════════════════════════
@@ -742,6 +804,18 @@ class Arduino(Node):
             self.declare_parameter('throttle_raw_min', THROTTLE_RAW_MIN).value)
         self.throttle_raw_max = int(
             self.declare_parameter('throttle_raw_max', THROTTLE_RAW_MAX).value)
+        self.throttle_raw_min = max(0, min(ADC_MAX, self.throttle_raw_min))
+        self.throttle_raw_max = max(self.throttle_raw_min + 1,
+                                    min(ADC_MAX, self.throttle_raw_max))
+        self.throttle_gamma = float(
+            self.declare_parameter('throttle_gamma', THROTTLE_GAMMA).value)
+        if self.throttle_gamma < 0.5:
+            self.throttle_gamma = 0.5
+        elif self.throttle_gamma > 3.0:
+            self.throttle_gamma = 3.0
+        median_n = int(
+            self.declare_parameter('throttle_median_n', THROTTLE_MEDIAN_N).value)
+        self._thr_buf = deque(maxlen=max(1, min(15, median_n)))
         # ★ 아두이노가 아닌 장치 경로 — 탐색에서 추가로 제외한다 ★
         #   ※ 안 넘겨도 된다 — candidate_ports() 가 GPS/IMU VID/PID(NON_ARDUINO_VIDPID)와
         #     udev 링크(/dev/gps · /dev/imu)를 이미 스스로 걸러낸다. 이 파라미터는 같은
@@ -749,6 +823,19 @@ class Arduino(Node):
         #     (one_launch.py 가 GPS/IMU 실경로를 넘겨준다).
         self.exclude_ports = [
             str(p) for p in self.declare_parameter('exclude_ports', ['']).value if str(p)]
+
+        if self.manual_use_pwm:
+            self.get_logger().info(
+                f"수동조종 구동 = 직접 PWM {self.manual_pwm_min}~{self.manual_pwm_max} "
+                f"(개루프 — 밟은 듀티가 유지됩니다, "
+                f"페달 raw {self.throttle_raw_min}~{self.throttle_raw_max}, "
+                f"gamma={self.throttle_gamma:.2f})")
+        else:
+            self.get_logger().info(
+                f"수동조종 구동 = 목표펄스 0~{self.manual_pulse_max} "
+                f"(보드 PID · 페달을 떼면 코스트, "
+                f"페달 raw {self.throttle_raw_min}~{self.throttle_raw_max}, "
+                f"gamma={self.throttle_gamma:.2f})")
 
         # ── 시리얼 ──
         # ★ _running / _link_thread 를 여기서 먼저 만든다 ★ watch_parent 가 등록하는
@@ -761,6 +848,8 @@ class Arduino(Node):
         self.rx_buf_b = b''
         self.last_line_a = None
         self.last_line_b = None
+        self._last_s_t = 0.0           # 마지막 유효 S, 수신 (monotonic). 0 = 아직 없음
+        self._skip_junk_n = 0          # 에코/잡음 줄을 건너뛴 횟수 (경고 throttle 용)
         # ★E-STOP 때문에 역할을 못 읽은 포트★ (_scan_once 가 매 바퀴 다시 채운다)
         self._estop_ports = []
 
@@ -978,6 +1067,7 @@ class Arduino(Node):
                 ser.timeout = 0            # 이후 폴링은 논블로킹
                 self.rx_buf_a = b''        # 재연결이면 이전 버퍼 잔재를 버린다
                 self._last_a = None        # 변경감지 캐시 초기화 → 다음 TX 에서 즉시 재전송
+                self._last_s_t = time.monotonic()  # 부팅 직후 S, 유예
                 self.ser_a = ser
                 self.get_logger().info(f"[A보드 연결] {port} (인휠 PID + 주행펄스)")
                 self.publish_status()
@@ -1011,6 +1101,8 @@ class Arduino(Node):
             self.ser_a = None
             self.rx_buf_a = b''
             self.last_line_a = None
+            self._last_s_t = 0.0
+            self._thr_buf.clear()
         else:
             self.ser_b = None
             self.rx_buf_b = b''
@@ -1100,18 +1192,33 @@ class Arduino(Node):
     # ═══════════════════════════════════════════════════════════════
     #  ROS → 보드 : 명령 조립 + 전송
     # ═══════════════════════════════════════════════════════════════
+    def throttle_cmd_raw(self):
+        """지령에 쓰는 페달 raw. /throttle_pedal 은 원값, 지령은 최근 N샘플 중앙값.
+
+        실측이 한 틱에 204→800 으로 튀면 옛 max=800 매핑에서 개도 1.0 이 되어
+        /drive_pulse_cmd 가 15 로 점프했다. 중앙값은 그 스파이크만 걷고, 발을
+        천천히 밟는 행정은 그대로 따라간다."""
+        buf = self._thr_buf
+        if not buf:
+            return int(self.throttle_raw)
+        s = sorted(buf)
+        return int(s[len(s) // 2])
+
     def throttle_frac(self, raw):
         """쓰로틀 페달 raw(0~1023) → 개도량 0.0~1.0. 수동조종 모드 전용.
 
-        throttle_raw_min~max 를 0~1 에 선형 대응시킨다(데드존 없음 — 페달을 놓은 상태의
-        잔노이즈는 throttle_raw_min 을 실측값으로 올려 잡아 흡수한다).
+        throttle_raw_min~max 를 0~1 에 대응시킨 뒤 throttle_gamma 로 굽힌다.
         ★환산의 원점은 여기 하나다★ 펄스(라벨)와 PWM(실제 구동)이 같은 개도량에서
         갈라져 나가야 로스백에서 둘을 나란히 놓고 볼 수 있다."""
         raw = max(0, min(ADC_MAX, int(raw)))
         lo, hi = self.throttle_raw_min, self.throttle_raw_max
         if hi <= lo or raw <= lo:
             return 0.0
-        return min(1.0, (raw - lo) / (hi - lo))
+        lin = min(1.0, (raw - lo) / (hi - lo))
+        g = self.throttle_gamma
+        if g == 1.0:
+            return lin
+        return lin ** g
 
     def throttle_to_pulse(self, raw):
         """쓰로틀 페달 raw → 주행펄스 0~manual_pulse_max.
@@ -1131,11 +1238,10 @@ class Arduino(Node):
         반환값 0 = 페달을 밟지 않음(→ 단일값 "0" 을 보내 펄스 모드로 되돌린다),
         16~255 = 직접 PWM(→ "<pwm>,<pwm>" 콤마 2값으로 보낸다).
 
-        개도량 0~1 을 manual_pwm_min~manual_pwm_max 에 선형 대응시킨다 —
-        ★사람이 밟은 만큼 그대로★ 가 이 함수의 전부다. 여기에 슬루레이트나 평활을
-        넣지 않는다: 그것을 넣는 순간 다시 '발끝과 바퀴 사이에 뭔가가 낀' 상태가 되고,
-        급가속을 막는 역할은 사람 발이 한다(페달을 천천히 밟으면 천천히 오른다).
-        페달 raw 자체는 A보드가 이미 9샘플 중앙값으로 스파이크를 걷어낸 값이다."""
+        개도량 0~1 을 manual_pwm_min~manual_pwm_max 에 대응시킨다.
+        슬루레이트는 넣지 않는다 — 발을 천천히 밟으면 천천히 오른다.
+        창 중앙값(throttle_cmd_raw)과 gamma 만 쓴다. 전자는 한 틱 스파이크가
+        전개가 되는 것을 막고, 후자는 페달 초반을 저속에 남겨 정밀 제어가 되게 한다."""
         frac = self.throttle_frac(raw)
         if frac <= 0.0:
             return 0
@@ -1300,29 +1406,31 @@ class Arduino(Node):
         #     [2026-08-11] 되돌렸다(위쪽 (2) 요약 참고) — 소프트웨어가 수동조종 중
         #     구동을 대신 낼 길이 없어야 사람 조작과 다툴 여지가 아예 사라진다.
         #
-        #     ★★ [2026-08-25] 페달을 밟는 동안은 '직접 PWM' 을 보낸다 ★★
-        #     페달 개도량 → PWM 선형 대응(throttle_to_pwm). 콤마 2값 형식이라야 펌웨어가
-        #     16~255 를 PWM 으로 읽는다(단일값은 0~15 펄스로만 받는다). 좌/우를 같은
-        #     값으로 보낸다 — 수동조종에서는 사람이 핸들로 돌리고 ROS 는 차동을 하지 않는다.
-        #     ★이 한 줄이 파일 전체에서 유일하게 콤마 2값을 내는 곳이다★
-        #
-        #     페달을 떼면(pwm == 0) 단일값 "0" 으로 돌아간다. 그래야 펌웨어
-        #     setPulseTarget 이 직접 PWM 모드를 해제하고 코스트(무동력 감속)로 넘긴다 —
-        #     "0,0" 을 보내도 같은 경로지만, 직접 PWM 을 쓰지 않는 상태에서는 파일의
-        #     기본 규칙(단일값)으로 되돌아가는 편이 로스백에서 읽기 쉽다.
+        #     ★구동 경로 = manual_use_pwm★
+        #       True  : 페달 개도 → 직접 PWM, 콤마 2값. ★파일에서 콤마 2값이 나오는
+        #               유일한 곳이다★ 개루프라 밟은 듀티가 유지된다.
+        #       False : 페달 개도 → 목표펄스 단일값. 보드 PID 가 속도를 맞추고,
+        #               떼면 "0" → 코스트(white1 과 같은 체감).
         if not self.auto_mode:
-            pwm = self.throttle_to_pwm(self.throttle_raw)
-            # 라벨(0~15)은 실제 구동과 무관하게 같은 개도량에서 뽑는다 — mapping 수집이
-            # 종전 스케일 그대로 이어지도록.
-            pulse = self.throttle_to_pulse(self.throttle_raw)
-            src = 'pedal' if pwm > 0 else None
+            cmd_raw = self.throttle_cmd_raw()
+            pulse = self.throttle_to_pulse(cmd_raw)
+            if self.manual_use_pwm:
+                pwm = self.throttle_to_pwm(cmd_raw)
+                src = 'pedal' if pwm > 0 else None
+                a_payload = f'{pwm},{pwm}' if pwm > 0 else '0'
+                engaged_msg = (
+                    f"[수동조종] 페달 입력 감지 — 직접 PWM "
+                    f"{self.manual_pwm_min}~{self.manual_pwm_max} 구간으로 나갑니다")
+            else:
+                src = 'pedal' if pulse > 0 else None
+                a_payload = str(pulse)
+                engaged_msg = (
+                    f"[수동조종] 페달 입력 감지 — 목표펄스 "
+                    f"0~{self.manual_pulse_max} (떼면 코스트)")
             if src != self._manual_src:
                 self._manual_src = src
                 if src == 'pedal':
-                    self.get_logger().info(
-                        f"[수동조종] 페달 입력 감지 — 직접 PWM "
-                        f"{self.manual_pwm_min}~{self.manual_pwm_max} 구간으로 나갑니다")
-            a_payload = f'{pwm},{pwm}' if pwm > 0 else '0'
+                    self.get_logger().info(engaged_msg)
             return a_payload, f'{STEER_RELEASE_TOKEN},0', pulse
 
         # (3) ROS 가 정지를 지시한 상태. 조향각은 마지막 값을 유지한다(정면 급조향 방지).
@@ -1419,8 +1527,27 @@ class Arduino(Node):
         self.poll_port('a')
         self.poll_port('b')
         self.update_estop()
+        self._warn_stale_throttle()
         self.publish_telemetry()
         self.publish_status()
+
+    def _warn_stale_throttle(self):
+        """A보드는 붙었는데 S, 가 안 오면 페달이 죽은 것처럼 보인다. 조용히 넘기지 않는다."""
+        if self.ser_a is None:
+            return
+        if self._last_s_t <= 0.0:
+            self.get_logger().warn(
+                "A보드는 붙었는데 S, 텔레메트리(쓰로틀)를 아직 못 받았습니다 "
+                "— /throttle_pedal 이 0 으로 보입니다. 보드 부팅·E-STOP 을 확인하세요",
+                throttle_duration_sec=5.0)
+            return
+        age = time.monotonic() - self._last_s_t
+        if age > TELEMETRY_STALE_S:
+            self.get_logger().warn(
+                f"A보드 S, 텔레메트리가 {age:.1f}초째 없습니다 "
+                f"(마지막 줄={self.last_line_a!r}). 스로틀 raw 가 갱신되지 않습니다 "
+                f"— E-STOP 이 STOP 만 보내거나, TX 에코가 S, 를 가리고 있을 수 있습니다",
+                throttle_duration_sec=5.0)
 
     def poll_port(self, which):
         ser = self.ser_a if which == 'a' else self.ser_b
@@ -1456,13 +1583,44 @@ class Arduino(Node):
         if not texts:
             return
 
-        latest = texts[-1]                          # 가장 최신 완성 줄 하나만 사용
+        # ★한 창의 줄을 전부 본다★ 최신 한 줄만 쓰면 TX 에코("<pwm>,<pwm>" / "0")가
+        #   S,/P, 뒤에 붙어 스로틀·모드 파싱이 건너뛰어지고, 페달이 죽은 것처럼 보인다.
+        #   STOP 과 텔레메트리가 같은 창에 있으면 ★더 나중 줄이 이긴다★
+        #   (부팅 직후 STOP → S, 회복 / 체결 직후 S, → STOP).
+        last_telem = None
+        last_is_stop = False
+        junk = 0
+        prefix = 'S,' if which == 'a' else 'P,'
+        for t in texts:
+            if t == 'STOP':
+                last_is_stop = True
+                last_telem = None
+            elif t.startswith(prefix):
+                last_telem = t
+                last_is_stop = False
+            else:
+                junk += 1
+        if junk:
+            self._skip_junk_n += junk
+            self.get_logger().warn(
+                f"[{which.upper()}보드] 텔레메트리가 아닌 줄 {junk}개를 건너뛰었습니다 "
+                f"(예: TX 에코). 스로틀/모드는 S,/P, 만 반영합니다",
+                throttle_duration_sec=10.0)
+
+        if last_is_stop:
+            if which == 'a':
+                self.last_line_a = 'STOP'
+            else:
+                self.last_line_b = 'STOP'
+            return
+        if last_telem is None:
+            return                          # 에코만 온 주기 — 직전 S,/P, 를 유지
         if which == 'a':
-            self.last_line_a = latest
-            self.parse_a(latest)
+            self.last_line_a = last_telem
+            self.parse_a(last_telem)
         else:
-            self.last_line_b = latest
-            self.parse_b(latest)
+            self.last_line_b = last_telem
+            self.parse_b(last_telem)
 
     def parse_a(self, text):
         """"S,<왼쪽펄스>,<오른쪽펄스>,<쓰로틀raw>" (kasa_0730_A.ino).
@@ -1477,6 +1635,8 @@ class Arduino(Node):
             self.pulse_r = int(fields[2])
             if len(fields) == 4:
                 self.throttle_raw = int(fields[3])
+                self._thr_buf.append(self.throttle_raw)
+            self._last_s_t = time.monotonic()
         except ValueError:
             pass
 
