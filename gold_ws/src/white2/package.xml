@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>white2</name>
+  <version>0.0.0</version>
+  <description>
+    white 패키지를 kasa(금색차) 이식 이전, 1/5카(헤네스 브룬 T870) 전용 규약으로
+    되돌린 판. 속도는 /cmd_vel_raw 로 m/s 를 직접 주고받고(펄스 양자화 없음),
+    조향 부호는 ROS 토픽·내부 제어기 모두 +좌/−우로 통일되어 있으며, 아두이노
+    통신은 단일 Mega 브리지(motor 노드, C/S 프레임)를 쓴다 — kasa 의 A/B 2보드
+    브리지(nxde)는 이 차량에 맞지 않으므로 의존하지 않는다.
+  </description>
+  <maintainer email="domi@todo.todo">domi</maintainer>
+  <license>TODO: License declaration</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <!-- iahrs 노드의 TF 브로드캐스트 -->
+  <depend>tf2_ros</depend>
+
+  <!--
+    one_launch.py 가 띄우는 하드웨어 노드들의 실행 의존성.
+    아두이노(1/5카 단일 Mega)는 이 패키지 자체의 motor 노드가 담당한다 —
+    kasa 전용인 nxde 패키지는 의존하지 않는다.
+  -->
+  <exec_depend>nmea_navsat_driver</exec_depend>
+  <exec_depend>usb_cam</exec_depend>
+  <!-- usb_cam_ctrl · ports.resolve_camera_format 의 v4l2-ctl -->
+  <exec_depend>v4l-utils</exec_depend>
+  <!-- iahrs 시리얼 + ports.py 의 VID/PID 스캔 -->
+  <exec_depend>python3-serial</exec_depend>
+  <!-- ports.probe_camera 의 프레임 판정 -->
+  <exec_depend>python3-opencv</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
