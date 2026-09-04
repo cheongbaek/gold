@@ -4,7 +4,18 @@
 #   kasa_ws/src/nxde/nxde/arduino.py 에서 통신 로직만 가져와, 토픽 계약을 white 패키지
 #   규약으로 바꾼 것이다. **kasa_ws 쪽은 수정하지 않았다** — 저쪽은 /in·/out String
 #   프로토콜을 그대로 쓰고, 이쪽은 white 의 Twist/Bool/Int32 토픽을 직접 주고받는다.
-#   아두이노 펌웨어(kasa_0730_A.ino / ★kasa_0821_B.ino★)도 무수정 전제다.
+#   아두이노 펌웨어(★kasa_0904_A.ino / kasa_0904_B.ino★)도 무수정 전제다.
+#
+#   ★[2026-09-04] 펌웨어가 0904 로 올라갔다 — 이 파일이 함께 바뀐 곳★
+#     ① ★연결확인 핸드셰이크★ 식별 직후 '-' 를 보내고 "YES" 를 받아야 연결로 인정한다.
+#        텔레메트리는 보드→PC 한 방향만 증명하므로, 그것만 보고 "연결됨" 을 찍으면
+#        TX 가 죽은 채로 런치가 올라간다. 상세는 HANDSHAKE_* 상수 주석 참고.
+#     ② ★E-stop 확인시간 500ms → 100ms★ (A·B 공통). 비상정지가 늦게 걸리던 것을 줄였다.
+#     ③ ★E-stop 을 판정하는 보드는 이제 B 하나다★ A보드는 ESTOP_ENABLED = false 다.
+#        D12 NC 라인은 그대로 두 보드에 병렬로 물려 있고, B보드가 그 라인을 본다.
+#        이 파일의 update_estop 은 A·B 의 OR 이라 코드는 그대로 맞는다 — 다만 실제로
+#        "STOP" 을 내보내는 것은 B 뿐이고, ★E-stop 중에도 A보드는 계속 'S,' 를 낸다★
+#        (그래서 그 동안에도 A는 정상 식별되고 쓰로틀 raw 가 끊기지 않는다).
 #
 #   ★[2026-08-21] B보드 출력이 3필드가 되었다★ "P,<조향각>,<A5원본>,<모드>".
 #     parse_b 는 ★이 양식 하나만 받는다★ — 구형(0813 이하, "P,<조향각>,<모드>")과의
@@ -34,7 +45,8 @@
 #                                               값 자체라서, '리니어가 시킨 대로 갔는가'와
 #                                               '사람이 발로 밟았는가'를 구별할 수 있다
 #                                               (수동조종에서는 후자만 움직인다).
-#                                               ※ 400 이상이면 B보드가 제동등(D11)을 켠다.
+#                                               ※ ★350★ 이상이면 B보드가 제동등(D11)을
+#                                               켠다(kasa_0904_B.ino BRAKELIGHT_ON_RAW).
 #                 /drive_pulse_cmd (Int32)      ★주행 목표펄스 (0~15 스케일)★
 #                                               자율=계획값(=A보드로 실제 나간 값)
 #                                               수동조종=페달 환산값(★라벨 전용★ — 실제로
@@ -65,14 +77,17 @@
 #     GUI 의 가로 조향 레버는 왼쪽 끝이 −40 인데 +가 좌회전이면 **레버 방향과 바퀴 방향이
 #     반대**가 된다(nxde master 실차 시험에서 확인). 그래서 ROS 토픽 전체를 kasa B보드
 #     부호로 통일했다 — 화면·토픽·시리얼·펌웨어가 전부 같은 부호를 쓴다.
-#       kasa B보드 : − 좌 / + 우 (kasa_0804_B.ino angleToPot: −40 → RAW_LEFT_LIMIT(576))
+#       kasa B보드 : − 좌 / + 우 (kasa_0904_B.ino angleToPot: −40 → 왼쪽 끝 raw)
+#       ※ 그 '왼쪽 끝 raw' 는 이제 고정값이 아니다 — 코드 기본값은
+#         DEF_RAW_LEFT_LIMIT(684) 지만, 조향 영점 캘리브레이션('a')이 EEPROM 에
+#         저장해 둔 값이 있으면 그쪽이 우선한다([0813-2]). ★부호 규약은 그대로다★
 #     → steer_invert 기본값은 **False**. 배선/펌웨어를 뒤집었을 때만 True 로 쓴다.
 #     ※ driving.py 제어기 내부는 여전히 '+좌'로 튜닝되어 있고, 그 반전은
 #       driving.publish_cmd 의 to_ros_steer() 한 줄에서만 일어난다(거기서 이미 끝났다).
 #
 #  2-1) 브레이크 단계는 /brake_level (Int32) 로 받는다.
 #     Twist 에는 브레이크 필드가 없어 별 토픽을 쓴다. 값은 ★0 / 1 / 2 단계★ 이며
-#     0~255 PWM 이 아니다(kasa_0804_B.ino). 안 오면 0(놓음)으로 둔다.
+#     0~255 PWM 이 아니다(kasa_0904_B.ino). 안 오면 0(놓음)으로 둔다.
 #     자율주행 경로에서만 반영된다 — E-stop 과 수동조종에서는 아래 상태판단이 우선한다.
 #
 #  3) /encoder 는 좌·우 펄스의 **합**이다 (평균이 아니다).
@@ -84,8 +99,10 @@
 #  4) 후진은 없다. A보드가 음수를 받지 않으므로 주행값은 항상 0 이상으로 클램프한다.
 #     (후진이 필요하면 사람이 수동조종 모드에서 한다는 전제)
 #
-#  5) 브레이크는 0~255 PWM 이 아니라 **단계 0/1/2** 다 (kasa_0804_B.ino).
-#       0 = 놓음 / 1 = 약한 브레이킹(행정 1/3) / 2 = 풀브레이킹
+#  5) 브레이크는 0~255 PWM 이 아니라 **단계 0/1/2** 다 (kasa_0904_B.ino).
+#       0 = 놓음(위치를 보지 않고 REV 로 1초) / 1 = 약한 브레이킹(A5 raw 600)
+#       2 = 풀브레이킹(A5 raw 850)
+#     ★[0813-1] 이후 단계는 '행정 몇 분의 몇' 이 아니라 ★가변저항 절대위치★ 다★
 #     범위 밖 값은 B보드가 브레이크 필드만 무시한다.
 #
 # ══════════════════════════════════════════════════════════════════════════════
@@ -285,7 +302,7 @@ from nxde.proc_guard import watch_parent
 
 BAUD_RATE = 115200
 
-# ── A보드 프로토콜 상한 (kasa_0730_A.ino) ──
+# ── A보드 프로토콜 상한 (kasa_0904_A.ino) ──
 # 단일값 입력은 0~PULSE_MAX 만 유효하고 그 외는 펌웨어가 줄 통째로 무시한다.
 PULSE_MIN, PULSE_MAX = 0, 15
 
@@ -311,10 +328,10 @@ PWM_DIRECT_MIN, PWM_DIRECT_MAX = 16, 255
 MANUAL_PWM_MIN = PWM_DIRECT_MIN
 MANUAL_PWM_MAX = PWM_DIRECT_MAX
 
-# ── B보드 프로토콜 (kasa_0804_B.ino) ──
+# ── B보드 프로토콜 (kasa_0904_B.ino) ──
 STEER_DEG_MAX = 40           # 입력 조향각 클램프 (STEER_ANGLE_MAX 와 동일해야 한다)
 BRAKE_LEVEL_MAX = 2          # 0 = 놓음 / 1 = 약 / 2 = 풀
-STEER_RELEASE_TOKEN = 'x'    # 조향 힘빼기 ([0730-2])
+STEER_RELEASE_TOKEN = 'x'    # 조향 힘빼기 (B보드 isReleaseToken)
 
 # ── 쓰로틀 페달 raw → 펄스 환산 ──
 #   데드존은 여기 최솟값 하나다. 이보다 작거나 같은 raw 는 개도 0 → 지령 0.
@@ -358,14 +375,40 @@ TELEMETRY_STALE_S = 1.0
 #   로 나눴다. 사람이 체감하는 해제 지연이 정확히 1초다.
 BRAKE_RELEASE_HOLD_S = 0.5
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-04] 연결확인 핸드셰이크 ('-' → "YES") ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  텔레메트리('S,'/'P,')가 나온다는 것은 ★보드→PC 한 방향★ 만 증명한다. PC→보드는
+#  아무것도 증명하지 못한다 — TX 선이 빠져 있어도, 다른 프로세스가 포트를 물고 있어
+#  이쪽 write 가 실제로 보드에 닿지 않아도, 화면에는 텔레메트리가 멀쩡히 흐른다.
+#  그 상태로 "A/B 보드 모두 연결됨" 을 찍으면 사람은 정상이라고 믿고 런치를 올린다.
+#  → 그래서 ★식별 직후 '-' 를 보내고 "YES" 를 받아야 비로소 연결로 인정한다★.
+#    받지 못하면 포트를 닫고(=보드 리셋) 다음 스캔에서 처음부터 다시 확인한다.
+#  펌웨어 : kasa_0904_A.ino [0904-3] / kasa_0904_B.ino [0904-2].
+#    보드는 "YES" 한 줄을 찍고 2초 동안 평상시 텔레메트리를 멈춘다 — 그래서 응답이
+#    'S,'/'P,' 에 섞이지 않는다. 구동에는 아무 영향이 없다.
+#  ※ 구형 펌웨어(0821 이하)를 꽂으면 '-' 를 무시하므로 여기서 걸린다. 그때는
+#    "펌웨어가 0904 인지" 를 먼저 의심할 것 — 로그 문구가 그렇게 안내한다.
+HANDSHAKE_TOKEN     = '-'    # 보드로 보내는 한 글자
+HANDSHAKE_REPLY     = 'YES'  # 보드가 돌려주는 한 줄 (정확히 이 문자열)
+HANDSHAKE_TIMEOUT_S = 1.5    # 한 번 보내고 응답을 기다리는 시간
+HANDSHAKE_TRIES     = 3      # 같은 포트를 연 채로 재시도할 횟수 (넘으면 닫고 재연결)
+# 보드가 "YES" 뒤에 평상시 텔레메트리를 멈추는 시간(펌웨어 HANDSHAKE_HOLD_MS = 2000ms).
+#   ★이 값을 모르면 연결 직후 1초쯤 "S, 텔레메트리가 없습니다" 경고가 뜬다★ — 정상인데
+#   경고가 나가면 다음부터 그 경고를 안 믿게 되므로, 그만큼 유예를 준다.
+HANDSHAKE_HOLD_S    = 2.0
+
 # ── 보드 탐색 ──
 DETECT_READ_S  = 8.0         # 포트 하나를 A/B 로 식별하기 위해 읽어보는 시간
 #   ★5→8 [2026-08-27]★ USB-ACM open 이 DTR 로 보드를 리셋한다. Mega 부트로더
 #   (~2s) + 스케치 setup + 첫 S,/P, 가 5초 경계에 걸리면 식별 실패 → close 가
 #   또 리셋 → 다음 스캔도 부팅 중. 그 루프가 "스로틀이 안 들어와 Ctrl+C" 다.
-# ★E-STOP 중에는 두 보드가 모두 "STOP" 만 내보낸다★ (kasa_0730_A / kasa_0821_B 의
-#   sendOutput: estop_active 면 println("STOP") 하고 return). 그래서 그 동안에는
-#   'S,'/'P,' 접두어가 아예 나오지 않아 ★역할을 알 수 없다★.
+# ★E-STOP 중에는 B보드가 "STOP" 만 내보낸다★ (kasa_0904_B.ino sendOutput:
+#   estop_active 면 println("STOP") 하고 return). 그래서 그 동안에는 'P,' 접두어가
+#   아예 나오지 않아 ★B보드의 역할을 알 수 없다★.
+#   ★[2026-09-04] A보드는 더 이상 여기 걸리지 않는다★ ESTOP_ENABLED = false 라
+#     E-STOP 중에도 'S,' 를 계속 내보낸다 — A는 그 동안에도 정상 식별된다.
+#     아래 설명은 이제 B보드 하나에 대한 것이다.
 #   그때 5초 만에 포트를 닫으면 두 가지가 나쁘다:
 #     ① 로그가 "보드 미발견 — 케이블 확인" 이 되어 원인을 하드웨어에서 찾게 된다
 #        (실제로 그렇게 헤맸다. 정답은 'E-STOP 을 풀어라' 다)
@@ -692,9 +735,60 @@ def open_serial(port, baud, logger, reclaim=True):
     return None
 
 
+def handshake(ser, port, role, logger):
+    """★양방향 확인★ '-' 를 보내고 "YES" 한 줄을 받는다. 성공하면 True.
+
+    텔레메트리만으로는 보드→PC 한 방향밖에 증명되지 않는다(상수 주석 참고).
+    보드는 "YES" 를 찍은 뒤 2초 동안 평상시 텔레메트리를 멈추므로, 그 사이에 오는
+    줄은 사실상 "YES" 뿐이다. 그래도 STOP·잔여 텔레메트리가 섞일 수 있으니 줄 단위로
+    훑어 정확히 "YES" 인 줄을 찾는다.
+
+    ★같은 포트를 연 채로 HANDSHAKE_TRIES 번까지 다시 보낸다★ 보드가 막 부팅을 끝냈거나
+    입력 버퍼가 지저분한 경우가 있어서다. 그래도 안 되면 False 를 돌려주고, 호출측이
+    포트를 닫는다 — close 가 DTR 을 건드려 보드를 리셋하므로 그 자체가 재초기화다."""
+    for attempt in range(1, HANDSHAKE_TRIES + 1):
+        try:
+            ser.reset_input_buffer()
+            ser.write((HANDSHAKE_TOKEN + '\n').encode('ascii'))
+            ser.flush()
+        except (serial.SerialException, OSError) as e:
+            logger.warn(f"{port} ({role}보드) 핸드셰이크 전송 실패: {e}")
+            return False
+
+        buf = b''
+        deadline = time.monotonic() + HANDSHAKE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            try:
+                data = ser.read(256)
+            except (serial.SerialException, OSError) as e:
+                logger.warn(f"{port} ({role}보드) 핸드셰이크 수신 실패: {e}")
+                return False
+            if not data:
+                continue
+            buf += data
+            while b'\n' in buf:
+                line, buf = buf.split(b'\n', 1)
+                if line.decode('ascii', errors='ignore').strip() == HANDSHAKE_REPLY:
+                    if attempt > 1:
+                        logger.info(f"{port} ({role}보드) 핸드셰이크 성공 "
+                                    f"({attempt}회째 시도)")
+                    return True
+        logger.warn(f"{port} ({role}보드) '{HANDSHAKE_TOKEN}' 을 보냈지만 "
+                    f"\"{HANDSHAKE_REPLY}\" 가 오지 않았습니다 "
+                    f"({attempt}/{HANDSHAKE_TRIES})")
+    return False
+
+
 def identify_port(port, baud, logger, reclaim=True):
-    """포트를 열어 DETECT_READ_S 동안 읽으며 첫 'S,'/'P,' 줄로 보드를 식별.
-       반환: ('A'|'B'|None, serial.Serial 또는 None(실패 시))"""
+    """포트를 열어 DETECT_READ_S 동안 읽으며 첫 'S,'/'P,' 줄로 보드를 식별하고,
+       이어서 ★'-' → "YES" 핸드셰이크로 PC→보드 방향까지 확인★한다.
+
+       반환: (role, serial.Serial 또는 None)
+         role = 'A' | 'B'      : 식별 + 핸드셰이크 모두 성공 (ser 유효)
+                'NOACK'        : 역할은 알았는데 "YES" 가 안 왔다 → 포트를 닫았다.
+                                 호출측이 다음 스캔에서 다시 열어 재확인한다.
+                'ESTOP'        : 보드는 있는데 STOP 만 보내 역할을 모른다.
+                None           : 아무것도 못 봤다 (보드가 아니거나 열지 못했다)."""
     ser = open_serial(port, baud, logger, reclaim=reclaim)
     if ser is None:
         return None, None
@@ -716,10 +810,23 @@ def identify_port(port, baud, logger, reclaim=True):
             while b'\n' in buf:
                 line, buf = buf.split(b'\n', 1)
                 text = line.decode('ascii', errors='ignore').strip()
-                if text.startswith('S,'):
-                    return 'A', ser
-                if text.startswith('P,'):
-                    return 'B', ser
+                role = 'A' if text.startswith('S,') else (
+                       'B' if text.startswith('P,') else None)
+                if role is not None:
+                    # ★출력이 정상이어도 여기서 끝내지 않는다★ '-' → "YES" 로
+                    #   PC→보드 방향까지 확인해야 연결로 인정한다.
+                    if handshake(ser, port, role, logger):
+                        return role, ser
+                    logger.error(
+                        f"❌ {port} : {role}보드의 텔레메트리는 보이는데 "
+                        f"'{HANDSHAKE_TOKEN}' 에 \"{HANDSHAKE_REPLY}\" 로 답하지 "
+                        f"않습니다 — ★보내는 방향(PC→보드)이 죽었거나 펌웨어가 "
+                        f"kasa_0904 이전 판입니다★. 포트를 닫고 다시 확인합니다")
+                    try:
+                        ser.close()
+                    except (serial.SerialException, OSError):
+                        pass
+                    return 'NOACK', None
                 # ★E-STOP 중 — 보드는 있는데 역할을 말해주지 않는다★ (상수 주석 참고)
                 #   포트를 닫지 않고 해제를 기다린다. 닫으면 보드가 리셋된다.
                 if text == 'STOP' and not saw_stop:
@@ -850,8 +957,12 @@ class Arduino(Node):
         self.last_line_b = None
         self._last_s_t = 0.0           # 마지막 유효 S, 수신 (monotonic). 0 = 아직 없음
         self._skip_junk_n = 0          # 에코/잡음 줄을 건너뛴 횟수 (경고 throttle 용)
+        # 핸드셰이크 직후 보드가 텔레메트리를 멈추는 구간. 그 동안은 S, 공백을 탓하지 않는다.
+        self._telem_grace_until = 0.0
         # ★E-STOP 때문에 역할을 못 읽은 포트★ (_scan_once 가 매 바퀴 다시 채운다)
         self._estop_ports = []
+        # ★텔레메트리는 나오는데 '-' 에 "YES" 로 답하지 않은 포트★ (같이 매 바퀴 갱신)
+        self._noack_ports = []
 
         # ── 보드 → ROS 최신 상태 (STOP·형식오류 시 마지막 값 유지) ──
         self.pulse_l = 0
@@ -1016,7 +1127,17 @@ class Arduino(Node):
 
             if self.ser_a is None or self.ser_b is None:
                 missing = [n for n, s in (('A', self.ser_a), ('B', self.ser_b)) if s is None]
-                if self._estop_ports:
+                if self._noack_ports:
+                    # ★출력은 정상인데 응답이 없다 = 케이블을 의심할 자리가 아니다★
+                    self.get_logger().error(
+                        f"{'/'.join(missing)}보드가 아직 안 붙었습니다 — "
+                        f"★텔레메트리는 나오는데 '{HANDSHAKE_TOKEN}' 에 "
+                        f"\"{HANDSHAKE_REPLY}\" 로 답하지 않습니다★ "
+                        f"({', '.join(self._noack_ports)}). "
+                        f"보드 펌웨어가 kasa_0904 인지, 시리얼 TX(PC→보드)가 살아 있는지 "
+                        f"확인하세요. {DETECT_RETRY_S}s 뒤 포트를 다시 열어 재확인합니다",
+                        throttle_duration_sec=10.0)
+                elif self._estop_ports:
                     # ★원인이 확실할 때는 케이블을 의심하게 만들지 않는다★
                     self.get_logger().warn(
                         f"{'/'.join(missing)}보드가 아직 안 붙었습니다 — "
@@ -1041,6 +1162,9 @@ class Arduino(Node):
         # ★이번 바퀴에서 'E-STOP 때문에 역할을 못 읽은' 포트★ (매 바퀴 새로 판단한다 —
         #   해제되면 다음 바퀴에서 정상 식별되어야 하므로 남겨두면 안 된다)
         self._estop_ports = []
+        # ★핸드셰이크에 답하지 않은 포트도 매 바퀴 새로 판단한다★ (선을 다시 꽂거나
+        #   펌웨어를 올리면 다음 바퀴에서 붙어야 하므로 남겨두면 안 된다)
+        self._noack_ports = []
 
         for port in candidate_ports(exclude=exclude):
             if not (self._running and rclpy.ok()):
@@ -1063,20 +1187,32 @@ class Arduino(Node):
                 self._estop_ports.append(port)
                 continue
 
+            if role == 'NOACK':
+                # ★역할은 알았는데 '-' 에 "YES" 로 답하지 않았다★ identify_port 가 이미
+                #   포트를 닫았다(=보드 리셋). 다음 바퀴에서 다시 열어 처음부터 확인한다.
+                self._noack_ports.append(port)
+                continue
+
             if role == 'A' and self.ser_a is None:
                 ser.timeout = 0            # 이후 폴링은 논블로킹
                 self.rx_buf_a = b''        # 재연결이면 이전 버퍼 잔재를 버린다
                 self._last_a = None        # 변경감지 캐시 초기화 → 다음 TX 에서 즉시 재전송
                 self._last_s_t = time.monotonic()  # 부팅 직후 S, 유예
+                # ★핸드셰이크 직후 2초는 보드가 텔레메트리를 멈춘다★ (펌웨어 유예)
+                self._telem_grace_until = time.monotonic() + HANDSHAKE_HOLD_S
                 self.ser_a = ser
-                self.get_logger().info(f"[A보드 연결] {port} (인휠 PID + 주행펄스)")
+                self.get_logger().info(
+                    f"[A보드 연결] {port} (인휠 PID + 주행펄스) "
+                    f"— 핸드셰이크 확인됨('{HANDSHAKE_TOKEN}'→\"{HANDSHAKE_REPLY}\")")
                 self.publish_status()
             elif role == 'B' and self.ser_b is None:
                 ser.timeout = 0
                 self.rx_buf_b = b''
                 self._last_b = None
                 self.ser_b = ser
-                self.get_logger().info(f"[B보드 연결] {port} (조향 + 제동 + 모드)")
+                self.get_logger().info(
+                    f"[B보드 연결] {port} (조향 + 제동 + 모드) "
+                    f"— 핸드셰이크 확인됨('{HANDSHAKE_TOKEN}'→\"{HANDSHAKE_REPLY}\")")
                 self.publish_status()
             elif ser is not None:
                 ser.close()
@@ -1535,6 +1671,9 @@ class Arduino(Node):
         """A보드는 붙었는데 S, 가 안 오면 페달이 죽은 것처럼 보인다. 조용히 넘기지 않는다."""
         if self.ser_a is None:
             return
+        # ★핸드셰이크 유예 중에는 S, 가 없는 것이 정상이다★ (펌웨어가 2초 멈춘다)
+        if time.monotonic() < self._telem_grace_until:
+            return
         if self._last_s_t <= 0.0:
             self.get_logger().warn(
                 "A보드는 붙었는데 S, 텔레메트리(쓰로틀)를 아직 못 받았습니다 "
@@ -1576,9 +1715,10 @@ class Arduino(Node):
         if not texts:
             return
 
-        # ★ 진단 줄('#'로 시작, kasa_0804_B.ino DEBUG_LINEAR)은 걸러낸다 ★
-        #   운용 시엔 DEBUG_LINEAR=false 라 나오지 않지만, 표 보정 중에 켜 두면
-        #   그 줄이 최신 줄로 잡혀 텔레메트리를 덮어버린다.
+        # ★ 진단 줄('#'로 시작)은 걸러낸다 ★ kasa_0904_B.ino 의 DEBUG_B 와 조향 영점
+        #   캘리브레이션('a') 결과가 이 형식으로 나온다. 운용 중 DEBUG_B=false 라도
+        #   캘리브레이션 줄은 항상 나오므로, 걸러내지 않으면 그 줄이 최신 줄로 잡혀
+        #   텔레메트리를 덮어버린다.
         texts = [t for t in texts if not t.startswith('#')]
         if not texts:
             return
@@ -1592,6 +1732,11 @@ class Arduino(Node):
         junk = 0
         prefix = 'S,' if which == 'a' else 'P,'
         for t in texts:
+            if t == HANDSHAKE_REPLY:
+                # ★핸드셰이크 응답★ 연결 확인 때 말고는 올 일이 없다(이 노드는 운용 중
+                #   '-' 를 보내지 않는다). 잡음으로 세지 않고 그냥 흘린다 — 텔레메트리도
+                #   STOP 도 아니므로 아무 상태를 바꾸지 않는다.
+                continue
             if t == 'STOP':
                 last_is_stop = True
                 last_telem = None
@@ -1623,7 +1768,7 @@ class Arduino(Node):
             self.parse_b(last_telem)
 
     def parse_a(self, text):
-        """"S,<왼쪽펄스>,<오른쪽펄스>,<쓰로틀raw>" (kasa_0730_A.ino).
+        """"S,<왼쪽펄스>,<오른쪽펄스>,<쓰로틀raw>" (kasa_0904_A.ino).
            STOP/형식오류 시 마지막 값 유지. 쓰로틀 필드가 없는 구버전(3필드)도 받아준다."""
         if not text.startswith('S,'):
             return
@@ -1641,7 +1786,7 @@ class Arduino(Node):
             pass
 
     def parse_b(self, text):
-        """"P,<조향각>,<A5원본>,<모드>" (kasa_0821_B.ino). 조향각 부호는 ★− 좌 / + 우★
+        """"P,<조향각>,<A5원본>,<모드>" (kasa_0904_B.ino). 조향각 부호는 ★− 좌 / + 우★
            로 ROS 규약과 같다(그대로 발행한다). STOP/형식오류 시 마지막 값 유지.
 
         ★지금 펌웨어 양식 하나만 받는다 [2026-08-21]★ 구버전 호환 분기를 두지
@@ -1666,7 +1811,12 @@ class Arduino(Node):
                 f"[주행모드 전환] {'자율주행' if new_mode else '수동조종'} (B보드 D5)")
 
     def update_estop(self):
-        """A·B 중 한쪽이라도 최신 줄이 STOP 이면 e-stop (OR 판정). 전환 시점만 로그."""
+        """A·B 중 한쪽이라도 최신 줄이 STOP 이면 e-stop (OR 판정). 전환 시점만 로그.
+
+        ★[2026-09-04] 실제로 STOP 을 내보내는 것은 B보드 하나다★ A보드는
+        ESTOP_ENABLED = false 라 D12 를 보지 않는다(kasa_0904_A.ino [0904-2]).
+        ★그래도 OR 판정을 그대로 둔다★ — A보드의 ESTOP_ENABLED 를 true 로 되돌리면
+        곧바로 다시 맞고, 판정이 한쪽에만 묶여 있으면 그때 조용히 틀리기 때문이다."""
         active = (self.last_line_a == 'STOP') or (self.last_line_b == 'STOP')
         if active and not self.estop_active:
             self.get_logger().warn(

@@ -35,6 +35,8 @@
 ═══════════════════════════════════════════════════════════════════════════════
    A보드      Arduino Mega  텔레메트리 "S," (인휠 PID + 주행펄스)
    B보드      Arduino Mega  텔레메트리 "P," (조향 + 제동 + 모드스위치)
+              ★[2026-09-04] 두 보드 모두 접두어만으로는 ✅ 를 주지 않는다★
+              '-' 를 보내 "YES" 를 받아야(양방향) 정상 연결로 처리한다 — 아래 참고.
    조이스틱   Arduino Mega  텔레메트리 "J," 또는 "U,"   ※ 없어도 정상(선택 장치)
    GPS        u-blox        ★NMEA GGA 의 fix quality 를 실제로 읽어 RTK 여부를 본다★
    IMU        iAHRS/CP210x  포트 열림 + 데이터 유입
@@ -43,6 +45,24 @@
  ⚠️ 이 도구는 포트를 '열어서' 확인한다 (--quick 이 아니면).
     · 아두이노는 포트를 열 때 자동리셋이 걸린다 — 확인에 5초쯤 걸리는 이유다.
     · 끝나면 모두 닫는다. 그래도 런치는 이게 완전히 끝난 뒤에 띄우는 것이 안전하다.
+
+═══════════════════════════════════════════════════════════════════════════════
+ ★★ [2026-09-04] 아두이노는 ★양방향★ 으로 확인한다 ('-' → "YES") ★★
+═══════════════════════════════════════════════════════════════════════════════
+ 텔레메트리("S,"/"P,")가 보인다는 것은 ★보드→PC 한 방향★ 만 증명한다. PC→보드는
+ 아무것도 증명하지 못한다 — TX 선이 빠져 있어도, 다른 프로세스가 포트를 물고 있어
+ 이쪽 write 가 실제로 닿지 않아도, 화면에는 텔레메트리가 멀쩡히 흐른다. 그 상태로
+ ✅ 를 보고 런치를 올리면 ★차가 명령을 하나도 받지 않는다★.
+
+ → 그래서 역할을 알아낸 뒤 '-' 한 줄을 보내고 "YES" 를 기다린다. 받으면 ✅,
+   못 받으면 ❌ 이고 ★포트를 닫았다가 다시 열어 한 번 더 확인한다★
+   (close 가 DTR 을 건드려 보드를 리셋하므로, 그 자체가 재초기화다).
+
+ 펌웨어 : kasa_0904_A.ino [0904-3] / kasa_0904_B.ino [0904-2].
+   보드는 "YES" 한 줄을 찍고 2초 동안 평상시 텔레메트리를 멈춘다(구동에는 영향 없음).
+   ★구형 펌웨어(0821 이하)는 '-' 를 무시하므로 여기서 ❌ 가 난다★ — 그때는 케이블이
+   아니라 ★펌웨어 판올림★ 을 먼저 확인할 것.
+   nxde/arduino.py 의 identify_port 도 같은 확인을 하므로, 여기서 ❌ 면 런치도 못 붙는다.
 """
 
 import argparse
@@ -80,6 +100,14 @@ SYMLINKS = ('/dev/gps', '/dev/imu', '/dev/kasa_a', '/dev/kasa_b')
 
 BAUD = 115200
 ARDUINO_READ_S = 5.0    # 자동리셋 + 부트로더 대기를 감안한 식별 시간
+
+# ★연결확인 핸드셰이크★ (nxde/arduino.py 의 같은 이름 상수와 ★값을 맞춰 둘 것★ —
+#   여기서 ✅ 인데 런치에서 못 붙거나 그 반대이면 사람이 원인을 못 찾는다)
+HANDSHAKE_TOKEN     = '-'    # 보드로 보내는 한 글자
+HANDSHAKE_REPLY     = 'YES'  # 보드가 돌려주는 한 줄 (정확히 이 문자열)
+HANDSHAKE_TIMEOUT_S = 1.5    # 한 번 보내고 응답을 기다리는 시간
+HANDSHAKE_TRIES     = 2      # 같은 포트를 연 채로 재시도할 횟수
+HANDSHAKE_REOPEN    = 1      # 그래도 실패하면 포트를 닫고 처음부터 다시 할 횟수
 GPS_READ_S     = 4.0    # GGA 는 보통 1Hz 이므로 몇 초는 봐야 한다
 IMU_READ_S     = 1.5
 
@@ -174,30 +202,83 @@ def read_lines(ser, seconds):
             yield line.decode('ascii', errors='ignore').strip()
 
 
+def handshake(ser, role):
+    """★양방향 확인★ '-' 를 보내고 "YES" 한 줄을 받는다. 성공하면 True.
+
+    텔레메트리만으로는 보드→PC 한 방향밖에 증명되지 않는다(헤더 참고).
+    보드는 "YES" 를 찍은 뒤 2초 동안 평상시 텔레메트리를 멈추므로, 그 사이에 오는
+    줄은 사실상 "YES" 뿐이다. 그래도 STOP·잔여 텔레메트리가 섞일 수 있으니 줄 단위로
+    훑어 정확히 "YES" 인 줄을 찾는다."""
+    for _ in range(HANDSHAKE_TRIES):
+        try:
+            ser.reset_input_buffer()
+            ser.write((HANDSHAKE_TOKEN + '\n').encode('ascii'))
+            ser.flush()
+        except Exception as e:
+            return False, f"'{HANDSHAKE_TOKEN}' 전송 실패: {e}"
+        for text in read_lines(ser, HANDSHAKE_TIMEOUT_S):
+            if text == HANDSHAKE_REPLY:
+                return True, f"'{HANDSHAKE_TOKEN}' → \"{HANDSHAKE_REPLY}\" 확인 (양방향)"
+    return False, (f"'{HANDSHAKE_TOKEN}' 을 {HANDSHAKE_TRIES}번 보냈지만 "
+                   f"\"{HANDSHAKE_REPLY}\" 가 오지 않았습니다")
+
+
 def identify_arduino(dev):
-    """아두이노 포트를 열어 텔레메트리 접두어로 역할을 식별.
+    """아두이노 포트를 열어 텔레메트리 접두어로 역할을 식별하고,
+    이어서 ★'-' → "YES" 핸드셰이크로 PC→보드 방향까지 확인★한다.
 
     반환 (role, detail):
       role = 'A' | 'B' | 'JOY' | None
+      ★핸드셰이크에 실패하면 role = None★ — 출력만 보이는 상태를 ✅ 로 보고하지
+      않는다. 그 상태로 런치를 올리면 차가 명령을 하나도 받지 못한다.
+      ※ 조이스틱 보드(J,/U,)는 ★보고 전용 입력 장치★ 라 PC→보드 방향이 필요 없고
+        '-' 응답 규약도 없다. 그래서 핸드셰이크 대상에서 뺀다(선택 장치이기도 하다).
+
+    ★못 받으면 포트를 닫고 다시 열어 한 번 더 확인한다★ (HANDSHAKE_REOPEN)
+      close 가 DTR 을 건드려 보드를 리셋하므로, 그 자체가 재초기화다.
     """
-    ser = open_port(dev)
-    if isinstance(ser, Exception):
-        return None, f"열기 실패: {ser}"
-    try:
-        for text in read_lines(ser, ARDUINO_READ_S):
-            if text.startswith('S,'):
-                return 'A', f"텔레메트리 '{text[:40]}'"
-            if text.startswith('P,'):
-                return 'B', f"텔레메트리 '{text[:40]}'"
-            if text.startswith('J,') or text.startswith('U,'):
-                return 'JOY', f"텔레메트리 '{text[:40]}'"
-        return None, (f"{ARDUINO_READ_S:.0f}초 동안 'S,'/'P,'/'J,' 접두어가 안 나왔습니다 "
-                      f"— 펌웨어가 안 올라갔거나 다른 아두이노일 수 있습니다")
-    finally:
+    last_detail = None
+    for round_i in range(HANDSHAKE_REOPEN + 1):
+        ser = open_port(dev)
+        if isinstance(ser, Exception):
+            return None, f"열기 실패: {ser}"
         try:
-            ser.close()
-        except Exception:
-            pass
+            role = None
+            telem = None
+            for text in read_lines(ser, ARDUINO_READ_S):
+                if text.startswith('S,'):
+                    role, telem = 'A', text[:40]
+                elif text.startswith('P,'):
+                    role, telem = 'B', text[:40]
+                elif text.startswith('J,') or text.startswith('U,'):
+                    # 조이스틱은 핸드셰이크 없이 그대로 통과시킨다(위 docstring 참고)
+                    return 'JOY', f"텔레메트리 '{text[:40]}'"
+                if role:
+                    break
+
+            if role is None:
+                return None, (f"{ARDUINO_READ_S:.0f}초 동안 'S,'/'P,'/'J,' 접두어가 "
+                              f"안 나왔습니다 — 펌웨어가 안 올라갔거나 다른 "
+                              f"아두이노일 수 있습니다")
+
+            ok, hs_detail = handshake(ser, role)
+            if ok:
+                return role, f"텔레메트리 '{telem}' / {hs_detail}"
+
+            last_detail = (f"텔레메트리 '{telem}' 는 나오는데 {hs_detail} "
+                           f"— ★보내는 방향(PC→보드)이 죽었거나 펌웨어가 kasa_0904 "
+                           f"이전 판입니다★")
+        finally:
+            try:
+                ser.close()
+            except Exception:
+                pass
+        if round_i < HANDSHAKE_REOPEN:
+            print(f"     → ⚠️ {last_detail}")
+            print(f"     → 포트를 닫고 다시 열어 재확인합니다 "
+                  f"({round_i + 2}/{HANDSHAKE_REOPEN + 1})...")
+            time.sleep(1.0)      # close 로 걸린 자동리셋이 끝날 시간
+    return None, last_detail
 
 
 def probe_gps(dev):
@@ -454,8 +535,10 @@ def run(args):
                 found['imu'] = p.device
                 details['imu'] = detail
         elif kind == 'arduino':
-            print(f"     → Arduino Mega 계열 — 역할 식별 중 "
-                  f"(포트 자동리셋 때문에 최대 {ARDUINO_READ_S:.0f}초)...")
+            print(f"     → Arduino Mega 계열 — 역할 식별 + 양방향 확인 중 "
+                  f"('{HANDSHAKE_TOKEN}' → \"{HANDSHAKE_REPLY}\", "
+                  f"포트 자동리셋 때문에 최대 "
+                  f"{ARDUINO_READ_S + HANDSHAKE_TIMEOUT_S * HANDSHAKE_TRIES:.0f}초)...")
             role, detail = identify_arduino(p.device)
             if role:
                 name = {'A': 'A보드 (인휠 PID + 주행펄스)',
@@ -537,13 +620,19 @@ def run(args):
             missing_required.append(label)
 
     if args.quick:
-        print("\n  ※ --quick 이라 A/B 역할과 GPS RTK 상태는 확인하지 않았습니다.")
+        print("\n  ※ --quick 이라 A/B 역할·핸드셰이크와 GPS RTK 상태는 "
+              "확인하지 않았습니다.")
 
     print()
     if missing_required:
         print(f"  ❌ 필수 장치 {len(missing_required)}개 미확인: "
               f"{', '.join(missing_required)}")
         print("     연결·전원·USB 케이블을 확인한 뒤 다시 실행하십시오.")
+        if any(label.startswith(('A보드', 'B보드')) for label in missing_required):
+            print(f"     ※ 위 로그에 \"{HANDSHAKE_REPLY} 가 오지 않았습니다\" 가 있으면 "
+                  f"케이블이 아니라 ★펌웨어(kasa_0904 인지)★ 와")
+            print("       PC→보드 방향(TX)을 먼저 확인하십시오 — 출력만으로는 "
+                  "연결로 보지 않습니다.")
         rc = 1
     else:
         print("  ✅ 필수 장치가 모두 확인되었습니다. 런치를 띄워도 됩니다:")
