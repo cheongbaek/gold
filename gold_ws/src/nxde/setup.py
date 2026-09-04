@@ -26,8 +26,8 @@ setup(
     entry_points={
         'console_scripts': [
             # ══════════════════════════════════════════════════════════════
-            #  실행 대상 7개 — 전부 ros2 run 으로 띄운다 (런치파일 없음)
-            #    ※ tts 는 ROS 노드가 아닌 작업용 GUI 도구다
+            #  실행 대상 8개 — 전부 ros2 run 으로 띄운다 (런치파일 없음)
+            #    ※ tts·kill 은 ROS 노드가 아닌 작업용 도구다
             # ══════════════════════════════════════════════════════════════
             # ★차량 구동의 필수 노드★ A/B 2보드 통신 전담. 이게 없으면 아무것도 안 움직인다.
             #   자율주행 시에는 white one_launch.py 가 이 노드를 함께 띄운다.
@@ -54,6 +54,13 @@ setup(
             #   구독만 하므로 제어에 끼어들지 않는다.  ros2 run nxde sound
             #   (white806 one_launch.py 가 use_sound:=true 로 함께 띄운다)
             'sound    = nxde.sound:main',
+            # ★돌고 있는 ROS2 를 한 번에 끝낸다★  ros2 run nxde kill
+            #   launch 의 종료가 질척거릴 때(hud 가 SIGKILL 까지 15초, gps 가
+            #   트레이스백, os_driver 가 errorprocessing) 쓰는 도구다. 자기 자신과
+            #   자기 조상만 빼고 전부 SIGKILL 한 뒤 시리얼 큐·FastDDS 공유메모리를
+            #   초기화한다. ★ROS 노드가 아니다★ (rclpy 를 import 하지 않는다)
+            #   미리 볼 때: ros2 run nxde kill --dry-run
+            'kill     = nxde.kill:main',
             # ★대화형 TTS★ 문장을 입력하면 그 자리에서 읽어 준다(edge-tts + tkinter).
             #   sound/*.mp3 안내 음성을 만들거나 문구를 귀로 확인하는 작업용 도구다.
             #   ROS 노드가 아니고 ★인터넷이 필요하다★.  ros2 run nxde tts

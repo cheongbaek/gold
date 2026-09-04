@@ -73,6 +73,14 @@ Arduino IDE 로 보드에 직접 굽는 파일이라 colcon 빌드 대상이 아
 > - **E-STOP 확인시간 500ms → 100ms** (발동·해제 대칭).
 > - **D12 를 판정하는 보드는 B 하나** (A보드는 `ESTOP_ENABLED = false`).
 >   그 덕에 E-STOP 중에도 A보드는 `S,` 를 계속 내보내 정상 식별된다.
+> - **★A보드 무입력 워치독 `[0904-4]`★** — 3초 동안 줄이 한 개도 안 오면 보드가
+>   스스로 정지한다(`RX_TIMEOUT_MS = 3000`). 0713 부터 타임아웃이 아예 없어서,
+>   상위가 SIGKILL·터미널 종료·USB 단선·PC 정지로 말을 멈추면 **마지막 명령을
+>   영원히 물고 차가 계속 갔다.** 상위의 `KEEPALIVE_S`(1.0s, A·B 양쪽 재전송)와
+>   **한 쌍이다** — 어느 한쪽만 늘리면 정상 주행 중에 구동이 끊긴다.
+>   **B보드 펌웨어는 고치지 않았다** — 조향·제동은 그 상태로 멎어도 안전 문제가
+>   없다(조향은 마지막 각도 유지, 리니어는 마지막 단수 유지).
+>   상세는 `gold_ws/src/nxde/README.md` 3절.
 
 ## 실행
 
@@ -84,16 +92,25 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-`gold_ws` 를 통째로 쓰지 않고 기존 워크스페이스에 얹으려면 `gold_ws/src/white`,
+`gold_ws` 를 통째로 쓰지 않고 기존 워크스페이스에 얹으려면 `gold_ws/src/white1`,
 `gold_ws/src/nxde` 두 디렉터리만 그쪽 `src/` 로 복사하면 된다.
 
 실행:
 
 ```bash
 ros2 run nxde check                    # 0) 하드웨어 연결 점검
-ros2 launch white one_launch.py        # 1) GPS·IMU·카메라·아두이노 + 자율주행
-ros2 run white prompt                  # 2) CLI 메뉴 (별 터미널)
+ros2 launch white1 one_launch.py       # 1) GPS·IMU·카메라·아두이노 + 자율주행
+ros2 run white1 prompt                 # 2) CLI 메뉴 (별 터미널)
+
+ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때 ★2026-09-04★
 ```
+
+> **★`colcon build --symlink-install` 을 권한다★** [2026-09-04]
+> `--symlink-install` 없이 빌드하면 `white1/paths.py` 가 소스트리를 못 찾아
+> `~/white1/{sound,gps_data,ros2bag}` 로 떨어졌다 — **음성 안내가 한 마디도 안 나오고
+> 경로 CSV 목록이 비어 보이던** 원인이다. 그 폴백은 [2026-09-04] 에 고쳤으므로
+> 복사설치로도 맞게 돌지만, 심볼릭 설치가 첫 줄에서 바로 맞는 정공법이다.
+> **소스를 고친 뒤에는 반드시 다시 빌드할 것** — 복사설치본은 스스로 갱신되지 않는다.
 
 ### ★ 수동조종(D5) 주행은 어느 상태에서도 가능하다 ★
 

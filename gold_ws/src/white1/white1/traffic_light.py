@@ -270,6 +270,7 @@ try:
 except ImportError:                     # fail-open — 아래 TextRenderer 주석 참고
     PILImage = ImageDraw = ImageFont = None
 import rclpy
+import rclpy.executors
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -2348,14 +2349,20 @@ def main(args=None):
         while rclpy.ok():
             node.show_pending()
             time.sleep(0.02)          # 표시 주기 ≈50Hz 상한(그릴 것이 없으면 즉시 반환)
-    except KeyboardInterrupt:
+    # ★[2026-09-04] ExternalShutdownException 도 받는다★ launch 가 내려갈 때
+    #   rclpy 의 신호 처리기가 컨텍스트를 먼저 닫으면 spin 은 KeyboardInterrupt 가
+    #   아니라 이것을 던진다. 안 받으면 노드마다 트레이스백을 십수 줄 쏟아, 정작
+    #   봐야 할 종료 로그를 밀어낸다(구독/발행 노드가 종료에 실패할 일은 없으므로
+    #   그 트레이스백의 정보량은 0 이다). 원인 로그: gps 의 `rcl_shutdown already
+    #   called` RCLError — 그것은 아래 rclpy.ok() 가드가 막는다.
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     finally:
         executor.shutdown()
         node.shutdown_release()
         node.destroy_node()
         if rclpy.ok():
-            rclpy.shutdown()
+                rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -20,6 +20,7 @@
   IMU 데이터 파싱·공분산·TF 브로드캐스트 로직은 원본과 완전히 동일하다.
 """
 import rclpy
+import rclpy.executors
 from rclpy.node import Node
 
 from sensor_msgs.msg import Imu
@@ -281,12 +282,18 @@ def main(args=None):
     iahrs_driver_node = IahrsDriver()
     try:
         rclpy.spin(iahrs_driver_node)
-    except KeyboardInterrupt:
+    # ★[2026-09-04] ExternalShutdownException 도 받는다★ launch 가 내려갈 때
+    #   rclpy 의 신호 처리기가 컨텍스트를 먼저 닫으면 spin 은 KeyboardInterrupt 가
+    #   아니라 이것을 던진다. 안 받으면 노드마다 트레이스백을 십수 줄 쏟아, 정작
+    #   봐야 할 종료 로그를 밀어낸다(구독/발행 노드가 종료에 실패할 일은 없으므로
+    #   그 트레이스백의 정보량은 0 이다). 원인 로그: gps 의 `rcl_shutdown already
+    #   called` RCLError — 그것은 아래 rclpy.ok() 가드가 막는다.
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     finally:
         iahrs_driver_node.destroy_node()
         if rclpy.ok():
-            rclpy.shutdown()
+                rclpy.shutdown()
 
 if __name__ == "__main__":
     main()

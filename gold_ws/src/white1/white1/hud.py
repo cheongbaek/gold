@@ -622,6 +622,24 @@ class HudApp:
     def tick(self):
         if not self._alive:
             return
+        # ★★ [2026-09-04] 여기가 '런치 종료가 15초 걸리던' 자리다 ★★
+        #   증상 : one_launch.py 를 Ctrl-C 로 내리면 hud 만 안 나가서
+        #     `failed to terminate '5' seconds after receiving 'SIGINT'` →
+        #     `failed to terminate '10.0' seconds after 'SIGTERM'` → SIGKILL.
+        #     그 15초 동안 launch 는 "ctrl-c again, ignoring..." 만 찍는다.
+        #   원인 : ★rclpy.init 이 SIGINT·SIGTERM 을 자기 처리기로 가로챈다★
+        #     그 처리기는 컨텍스트를 닫을 뿐 프로세스를 끝내지 않는다. 다른 노드는
+        #     rclpy.spin 이 그 순간 예외를 던져 main 이 빠져나가지만, 이 노드의 본
+        #     스레드는 tkinter mainloop 에 있어서 ★아무 일도 일어나지 않는다★
+        #     (spin 은 데몬 스레드에 있다). SIGTERM 이 기본동작이면 즉사할 텐데,
+        #     rclpy 가 그것마저 가로채므로 SIGKILL 밖에 남지 않는다.
+        #   고침 : ★틱마다 컨텍스트의 생존을 본다★ 신호가 오면 rclpy 가 컨텍스트를
+        #     닫고, 우리는 늦어도 UI_MS(50ms) 안에 그것을 보고 창을 닫는다.
+        #     신호 처리기를 우리가 다시 설치하지 않는 것이 요점이다 — rclpy 와
+        #     처리기를 다투면 종료 경로가 둘로 갈라져 더 나빠진다.
+        if not rclpy.ok():
+            self.on_quit()
+            return
         try:
             self.draw()
         except tk.TclError:

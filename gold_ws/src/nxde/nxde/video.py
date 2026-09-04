@@ -100,6 +100,7 @@ import time
 from datetime import datetime
 
 import rclpy
+import rclpy.executors
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
@@ -497,7 +498,7 @@ def main(args=None):
         except Exception:
             pass
         if rclpy.ok():
-            rclpy.shutdown()
+                rclpy.shutdown()
 
 
 if __name__ == '__main__':

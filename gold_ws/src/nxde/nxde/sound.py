@@ -90,6 +90,7 @@ import threading
 import time
 
 import rclpy
+import rclpy.executors
 from rclpy.node import Node
 
 from std_msgs.msg import Bool, String
@@ -112,6 +113,15 @@ SND_ESTOP_CLEAR  = 'estop_re'
 #   한다(그쪽 로컬 대기 상태라서). 이름을 여기 두는 이유는 음원 목록의 주인이
 #   이 파일이기 때문이다 — 이름이 갈라지면 파일명 오타를 한쪽에서만 고치게 된다.
 SND_ESTOP_HOLD   = 'estop_x'
+
+# ★[2026-09-04] 이 노드가 쓸 수 있는 음원 전체★ 뜨는 즉시 폴더를 점검하는 데 쓴다.
+#   prompt 가 내는 넷(prompt_1·mapping·driving·estop_x)도 넣는다 — 점검의 목적은
+#   '이 스택의 음원이 갖춰졌는가' 이고, 그 목록의 주인은 이 파일이다(위 주석 참고).
+ALL_SOUNDS = (
+    SND_LAUNCH, SND_BOARDS, SND_PROMPT, SND_WAIT_MAP, SND_WAIT_DRIVE,
+    SND_MAP_BEGIN, SND_MAP_END, SND_DRIVE_BEGIN, SND_ARRIVED, SND_DEVIATED,
+    SND_ESTOP, SND_ESTOP_CLEAR, SND_ESTOP_HOLD,
+)
 
 # 이벤트 문구에서 찾을 조각 (driving.py 가 /drive_event 로 내보내는 문장)
 EVENT_ARRIVED  = '🎯 도착'
@@ -145,11 +155,21 @@ PLAYERS = (
 
 
 def sound_dir(explicit: str = "") -> str:
-    """음원 폴더. white806/paths.py 와 같은 규칙이다.
+    """음원 폴더. white1/paths.py 와 같은 규칙이다.
 
     1) 명시 경로  2) 환경변수 NXDE_SOUND_DIR  3) ★소스 트리★ <...>/src/nxde/sound
-    colcon 을 --symlink-install 로 빌드하면 이 파일이 소스를 가리키는 심볼릭 링크라
-    realpath 로 소스 위치를 되찾을 수 있다. 못 찾으면 ~/nxde_sound.
+    (★있을 때만★ — [2026-08-14] 이후 이 폴더는 보통 없다)  4) ★white1 의 음원 폴더★
+    5) 못 찾으면 ~/nxde_sound.
+
+    ★[2026-09-04] 4) 를 새로 넣었다★ 근거는 둘이다.
+      ① 음원의 주인이 white1 로 옮겨 가면서(헤더 [2026-08-14] 절) <nxde>/sound 는
+         빈 폴더도 아니고 ★아예 없는 폴더★ 가 됐다. 그런데 3) 이 실패하면 곧바로
+         ~/nxde_sound 로 떨어져, 헤더가 지원한다고 적어 둔 `ros2 run nxde sound`
+         단독 실행이 ★항상★ 벙어리였다(런치는 sound_dir 을 넘겨 주므로 무사했다).
+      ② white1/paths.sound_dir() 이 소스트리·설치본 share 를 모두 훑으므로, 그
+         한 줄을 빌리면 이쪽에 같은 탐색 논리를 복제하지 않아도 된다.
+    ★import 를 감싼다★ white1 은 이 패키지의 의존이 아니다(package.xml 에 없다).
+    nxde 만 빌드한 기계에서도 이 함수가 예외 없이 돌아야 한다 — 그때는 5) 로 간다.
     """
     if explicit:
         return os.path.abspath(os.path.expanduser(explicit))
@@ -158,8 +178,16 @@ def sound_dir(explicit: str = "") -> str:
         return os.path.abspath(os.path.expanduser(env))
     here = os.path.dirname(os.path.realpath(__file__))   # .../src/nxde/nxde
     root = os.path.dirname(here)                         # .../src/nxde
-    if os.path.isfile(os.path.join(root, 'package.xml')):
-        return os.path.join(root, 'sound')
+    own = os.path.join(root, 'sound')
+    if os.path.isfile(os.path.join(root, 'package.xml')) and os.path.isdir(own):
+        return own
+    try:
+        from white1 import paths as white1_paths
+        borrowed = white1_paths.sound_dir()
+    except Exception:
+        borrowed = ''
+    if borrowed and os.path.isdir(borrowed):
+        return borrowed
     return os.path.expanduser('~/nxde_sound')
 
 
@@ -269,6 +297,22 @@ class Player:
                         return
                 time.sleep(0.05)
 
+    def audit(self, names):
+        """★음원 폴더를 뜨는 즉시 점검한다★ (폴더가 없나, 빠진 이름 목록) 을 돌려준다.
+
+        [2026-09-04] 왜 필요한가 — 종전에는 _path() 가 ★재생을 시도할 때★ 처음
+        '음원 없음' 을 경고했다. 그러면 폴더 경로가 통째로 틀린 경우(복사설치에서
+        white1/paths.py 가 ~/white1/sound 를 돌려주던 [0904] 버그)에도 런치 로그에는
+        시작 안내를 시도한 한 줄만 남고, 나머지 안내는 사건이 일어날 때마다 한 줄씩
+        흩어져 찍힌다 — 수십 줄이 흐르는 런치 화면에서 그건 사실상 안 보인다.
+        '지금 이 폴더에 음원이 몇 개 있는가' 를 뜰 때 한 번 말하게 한다.
+        """
+        if not os.path.isdir(self.dir):
+            return True, list(names)
+        missing = [n for n in names
+                   if not os.path.isfile(os.path.join(self.dir, f"{n}.mp3"))]
+        return False, missing
+
     def stop_loop(self):
         with self._lock:
             if self._loop is None:
@@ -322,8 +366,34 @@ class SoundNode(Node):
         # 반복재생을 붙잡고 있는 동안 발행자가 죽는 경우를 감시한다(AEB_STALE_S).
         self.create_timer(0.25, self.check_aeb_stale)
 
-        self.get_logger().info(
-            f"🔈 음성 안내 {'준비' if enabled else '꺼짐(enable:=false)'} — {self.player.dir}")
+        # ★[2026-09-04] 폴더를 먼저 점검하고, 그 결과를 뜨는 순간 한 번에 말한다★
+        #   침묵의 원인은 셋뿐이다 — enable:=false / 재생기 없음 / 음원 폴더가 틀림.
+        #   앞의 둘은 이미 로그에 남았으므로(생성자·Player.__init__) 셋째를 여기서 잡는다.
+        if not enabled:
+            self.get_logger().info(
+                f"🔈 음성 안내 꺼짐(enable:=false) — {self.player.dir}")
+        else:
+            no_dir, missing = self.player.audit(ALL_SOUNDS)
+            if no_dir:
+                self.get_logger().error(
+                    f"🔇 ★음원 폴더가 없습니다 — 음성 안내가 하나도 나오지 않습니다★ "
+                    f"{self.player.dir}\n"
+                    f"    · white1 런치에서 왔다면 sound_dir 인자를 직접 주십시오: "
+                    f"ros2 launch white1 one_launch.py "
+                    f"sound_dir:=<워크스페이스>/src/white1/sound\n"
+                    f"    · 이 노드를 단독으로 띄웠다면: "
+                    f"ros2 run nxde sound --ros-args -p sound_dir:=<...>/src/white1/sound\n"
+                    f"    · white1 을 다시 빌드하면 기본값이 스스로 맞습니다 "
+                    f"(colcon build --packages-select white1 nxde)")
+            elif missing:
+                self.get_logger().warning(
+                    f"🔈 음성 안내 준비 — {self.player.dir} "
+                    f"(★음원 {len(missing)}개가 없습니다★: "
+                    f"{', '.join(n + '.mp3' for n in missing)})")
+            else:
+                self.get_logger().info(
+                    f"🔈 음성 안내 준비 — {self.player.dir} "
+                    f"(음원 {len(ALL_SOUNDS)}개 확인)")
         if enabled and bool(self.get_parameter('startup_sound').value):
             self.player.play(SND_LAUNCH)
 
@@ -442,9 +512,17 @@ def main(args=None):
     node = SoundNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    # ★[2026-09-04] ExternalShutdownException 도 받는다★ 런치가 내려갈 때(SIGINT/SIGTERM)
+    #   rclpy 의 신호 처리기가 컨텍스트를 먼저 닫으면 spin 은 KeyboardInterrupt 가 아니라
+    #   이것을 던진다. 안 받으면 ★런치를 Ctrl-C 로 내릴 때마다★ 이 노드만 트레이스백을
+    #   14줄 쏟아, 정작 봐야 할 다른 노드의 종료 로그를 밀어낸다(구독 전용 노드가
+    #   종료에 실패할 일은 없으므로 그 트레이스백은 정보가 0 이다).
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     finally:
+        # ★재생 중이던 것을 끊는다★ 안 끊으면 subprocess 가 부모보다 오래 살아,
+        #   런치를 내린 뒤에도 안내가 몇 초 더 흘러나온다.
+        node.player.stop()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

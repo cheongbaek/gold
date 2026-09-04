@@ -34,16 +34,25 @@
 
 ## 1. 구조
 
-노드 4개, 전부 `ros2 run` 으로 띄운다.
+실행 대상 8개, 전부 `ros2 run` 으로 띄운다(**런치파일 없음**).
+앞의 5개는 ROS 노드이고, 뒤의 3개는 노드가 아닌 도구다.
 
 ```
+── ROS 노드 ────────────────────────────────────────────────────────────
 arduino    ★차량 구동의 필수 노드★  A/B 2보드 시리얼 브리지
-           구독 /cmd_vel_raw /control_state /brake_level
+           구독 /cmd_vel_raw /control_state /brake_level /aeb_stop
            발행 /encoder /steer_angle_measured /vehicle_mode /throttle_pedal
-                /drive_pulse_cmd /estop /board_status
+                /drive_pulse_cmd /drive_pwm /estop /board_status
 master     마우스·키보드 GUI 조종 (하드웨어 검증용)
 joystick   조이스틱 메가 보드("J,"/"U,") 조종 — ★자율모드 한정 + 영점→SWA★
+sound      ★음성 안내★ 사건에 맞춰 mp3 재생 (구독 전용 — 제어에 끼어들지 않는다)
+           음원의 주인은 white1 이다 → `white1/sound/`, 경로는 sound_dir 파라미터
+video      ★인지 화면 녹화★ /image_raw → video/cam-<시각>.mp4 (구독 전용)
+
+── 노드가 아닌 도구 ────────────────────────────────────────────────────
 check      ★런치 전 하드웨어 연결 점검★ 보고하고 종료
+kill       ★돌고 있는 ROS2 를 한 번에 끝낸다★ 전부 SIGKILL + 포트 초기화 (3절)
+tts        대화형 TTS — 안내 음성 mp3 를 만드는 작업용 GUI (인터넷 필요)
 ```
 
 ### 실행 조합
@@ -59,8 +68,12 @@ ros2 run nxde master         # 터미널 2 — 마우스/키보드
 ros2 run nxde joystick       # 터미널 2 — 조이스틱 (master 와 동시 사용 금지)
 
 # ── 자율주행 ───────────────────────────────────────────────────
-ros2 launch white one_launch.py   # 터미널 1 — arduino 노드를 함께 띄운다
-ros2 run    white prompt          # 터미널 2 — CLI 메뉴
+ros2 launch white1 one_launch.py  # 터미널 1 — arduino·sound 노드를 함께 띄운다
+ros2 run    white1 prompt         # 터미널 2 — CLI 메뉴
+
+# ── 끝낼 때 / 종료가 질척거릴 때 ★[2026-09-04]★ ────────────────
+ros2 run nxde kill                # 전부 SIGKILL + 시리얼·공유메모리 초기화
+ros2 run nxde kill --dry-run      # 무엇을 죽일지만 먼저 본다
 ```
 
 ⚠️ **`master` · `joystick` · `one_launch.py`(driving_node) 중 둘 이상을 동시에 띄우지 말 것** —
@@ -81,6 +94,14 @@ nxde/check.py       하드웨어 연결 점검 (자립형 — 어떤 패키지�
 nxde/video.py       ★인지 카메라 화면 녹화★ /image_raw → video/cam-<시각>.mp4
                     구독만 한다(제어에 끼어들지 않는다). 장치를 직접 열지 않아
                     usb_cam 과 다투지 않는다 — 그쪽이 죽으면 신호등 인지가 죽는다.
+nxde/sound.py       ★음성 안내★ 사건 → mp3 재생. 음원은 white1/sound/ 에 있고
+                    one_launch.py 가 sound_dir 로 그 경로를 넘긴다. 뜨는 즉시
+                    폴더를 점검해 '음원 N개 확인' 또는 무엇이 없는지를 찍는다.
+nxde/kill.py        ★돌고 있는 ROS2 를 한 번에 끝낸다★ /proc 의 maps 를 보고
+                    ROS 프로세스를 찾아 전부 SIGKILL 하고, 시리얼 큐와 FastDDS
+                    공유메모리를 초기화한다. ★rclpy 를 import 하지 않는다★ —
+                    자기 자신을 죽이지 않는 것이 구조로 보장된다(3절).
+nxde/tts.py         대화형 TTS (edge-tts + tkinter). 안내 음성을 만드는 도구.
 nxde/proc_guard.py  부모 프로세스 사망 감지 (고아 방지, POSIX 전용판)
 ```
 
@@ -205,14 +226,92 @@ status 를 FIX/NO_FIX 로만 채운다 — u-center 에서 GGA 출력을 켤 것
 
 ### ⚠️ 종료 : arduino 노드를 남기지 말 것
 
-A보드 펌웨어에는 무입력 타임아웃이 없다(0713에서 제거). 마지막 수신 명령을 계속 물고 있다.
+**★[2026-09-04] A보드에 무입력 워치독이 생겼다★** (`kasa_0904_A.ino` `[0904-4]`,
+`RX_TIMEOUT_MS = 3000`) — 3초 동안 줄이 한 개도 안 오면 보드가 스스로 정지한다.
+0713~0904-3 까지는 타임아웃이 아예 없어서 **마지막 명령을 영원히 물고 있었다.**
 
-- **`one_launch.py` 를 Ctrl+C** → arduino 도 함께 내려가고, 종료 직전에 정지값
-  (`0` / `x,0`)을 시리얼로 직접 써 넣는다(`stop_and_close`). 차가 선다. **안전**
-- **arduino 만 남기고 자율주행 노드를 내리면** → `/cmd_vel_raw` 가 끊길 뿐이고 arduino 는
-  마지막 명령을 1초 주기로 계속 재전송한다. **차가 계속 간다**
+`KEEPALIVE_S`(1.0s) 와 **한 쌍이다.** 상위는 값이 안 바뀌어도 1초마다 같은 값을
+재전송하므로(A·B 양쪽) 정상 상태의 줄 간격은 최대 1초다. 3초는 그 keepalive 를
+**세 번 연속 놓쳤을 때** 발동한다 — USB 재열거나 한두 번의 전송 실패로는 안 걸리고,
+진짜 단절이면 3초 안에 반드시 걸린다.
+⚠️ **어느 한쪽만 늘리지 말 것.** `KEEPALIVE_S` 를 3초 이상으로 늘리면 정상 주행 중에
+워치독이 걸려 구동이 끊긴다.
 
-급할 때는 E-stop 스위치를 쓴다.
+| 종료 경로 | 무슨 일이 나는가 |
+|---|---|
+| **`one_launch.py` 를 Ctrl+C** | arduino 가 종료 직전 정지값(`0` / `x,0`)을 시리얼까지 써 넣는다(`stop_and_close`). **즉시 선다** |
+| **`ros2 run nxde kill`, OOM, 강제종료** | SIGKILL 은 `stop_and_close` 를 실행하지 않는다 → **워치독이 3초 뒤 세운다** |
+| **터미널이 먼저 닫혀 노드가 고아** | 같음 — 워치독 3초 |
+| **USB 단선 / PC 정지** | 상위가 아무것도 못 한다 → 워치독 3초 |
+| **arduino 만 남기고 자율주행 노드만 내리면** | arduino 는 살아서 마지막 명령을 1초마다 재전송한다 → **워치독이 안 걸린다. 차가 계속 간다** |
+
+마지막 줄이 요점이다 — **워치독은 '상위가 말을 멈춘 것'만 잡는다.** arduino 노드가
+살아 있으면 그것은 성실히 keepalive 를 보내므로 워치독의 대상이 아니다.
+**급할 때는 E-stop 스위치를 쓴다.**
+
+### ★ `ros2 run nxde kill` — 종료가 질척거릴 때 ★ [2026-09-04 신설]
+
+```bash
+ros2 run nxde kill              # 전부 SIGKILL + 포트 초기화
+ros2 run nxde kill --dry-run    # 무엇을 죽일지만 보여주고 아무것도 안 한다
+ros2 run nxde kill --no-ports   # 프로세스만 죽인다
+ros2 run nxde kill --quiet      # 한 줄 요약만
+```
+
+**무엇을 고치려고 만들었나** — `one_launch.py` 를 Ctrl+C 로 내릴 때 실제로 겪은 것:
+
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| `ctrl-c again, ignoring...` 가 스무 줄 | launch 는 **두 번째 이후의 Ctrl-C 를 설계상 무시한다** — 더 눌러도 안 빨라진다 | 이 도구로 끝낸다 |
+| `hud` 가 SIGINT 5s → SIGTERM 10s → SIGKILL (**15초**) | `rclpy.init` 이 SIGINT·SIGTERM 을 가로채는데 그 처리기는 컨텍스트만 닫는다. hud 의 본 스레드는 tkinter mainloop 에 있어 아무 일도 안 일어난다 | `hud.py tick()` 이 매 틱 `rclpy.ok()` 를 본다 → 50ms 안에 창을 닫는다 |
+| `gps` 가 `rcl_shutdown already called` RCLError | `rclpy.shutdown()` 을 가드 없이 불렀다 | 전 노드에 `if rclpy.ok():` 가드 + `ExternalShutdownException` 수신 |
+| `os_driver` 가 `errorprocessing` | 컨텍스트가 죽은 뒤 lifecycle 전이를 시도 | 외부 패키지 — 이 도구로 끊는다 |
+
+세 번째까지는 각 노드에서 고쳤다. **그래도 이 도구가 필요하다** — respawn 이 걸린 노드,
+터미널이 먼저 닫혀 고아가 된 노드, 다른 터미널의 `ros2 run` 은 launch 의 종료 절차가
+아예 닿지 않는다.
+
+**무엇을 죽이나** — `ros2 node list` 를 쓰지 않는다. pid 를 주지 않고(노드↔프로세스가
+1:1 이 아니다), 지금 고치려는 디스커버리 층에 의존하기 때문이다. 대신 `/proc` 를 훑는다:
+
+1. **1순위 `/proc/<pid>/maps`** — 살아 있는 ROS2 프로세스는 언어와 무관하게 `librcl`
+   계열을 물고 있다. 실행파일 이름에 `ros` 가 한 글자도 없어도 걸린다.
+2. 2순위 `cmdline` — `--ros-args`, `/opt/ros/`, 워크스페이스 `install` 경로, `ros2cli`,
+   `_ros2_daemon`. maps 가 아직 안 붙은 기동 직전 프로세스와 launch 부모를 잡는다.
+
+**죽이지 않는 것** : 자기 자신, **자기 조상 프로세스 전부**(부모 `ros2` CLI 를 죽이면
+stdout 이 끊겨 보고가 유실된다), 다른 사용자·root 소유(권한이 없다 — 보고만 한다).
+
+**처음부터 SIGKILL 이다.** 이 도구를 부르는 시점은 이미 정상 종료가 실패한 뒤다. 거기서
+SIGTERM 을 다시 보내고 기다리는 것은 위의 15초를 한 번 더 반복하는 짓이다. 유예는 없고,
+**순서만** 있다 — respawn 을 끊기 위해 launch·부모를 먼저 지운다(사이에 sleep 이 없어
+전체가 밀리초 안에 끝난다).
+
+**포트 초기화** — SIGKILL 은 정리 코드를 실행하지 않지만 커널이 fd 를 닫아 주므로
+*점유 자체는* 풀린다(배타 open·소켓 바인드 모두). 그래도 남는 자리가 둘이다:
+
+- **시리얼 커널 버퍼** : 죽는 순간 보드가 보내던 텔레메트리 조각이 큐에 남는다. 다음
+  런치의 보드 식별(`identify_port`)이 그 조각을 먼저 읽어 **A/B 를 잘못 짚거나 식별을
+  놓친다.** → 열어서 `termios TCIOFLUSH` 로 송·수신 큐를 비운다.
+- **FastDDS 공유메모리** `/dev/shm/fastrtps_*` : 정상 종료면 지워지는데 SIGKILL 은 안
+  지운다. 쌓이면 유령 참가자가 보이고 `/dev/shm` 이 차면 새 노드가 못 뜬다. → ROS
+  프로세스가 **전부** 사라진 것을 확인한 뒤에만 지운다(살아 있는 참가자의 세그먼트를
+  지우는 것은 정리가 아니라 고장이다).
+  현 기계의 RMW 는 `rmw_cyclonedds_cpp` 라 늘 '잔재 없음' 이 된다 — Cyclone 은 기본
+  설정에서 UDP 만 쓴다. `RMW_IMPLEMENTATION` 은 환경변수 하나로 바뀌므로 이 단계를
+  빼지 않았다(비용이 glob 두 번이다).
+- **UDP 포트**(라이다 7502/7503, DDS 7400+)는 할 일이 없다. 소켓은 fd 라서 커널이
+  닫는 순간 완전히 풀린다.
+
+⚠️ **이 도구는 보드에 정지값을 쓰지 않는다** — SIGKILL 은 `stop_and_close` 를 실행하지
+않는다. **[2026-09-04] 부터 A보드 워치독이 3초 뒤에 세운다**(`[0904-4]`, 위 절).
+즉 주행 중에 이것을 쓰면 **차가 최대 3초 더 간다.** 4.42 m/s 면 약 13m 다.
+**주행 중이면 먼저 E-stop 스위치를 누르고** 이 도구를 쓴다.
+(그 3초를 없애려면 `kill.py` 가 시리얼을 여는 자리에서 `write(b'0\n')` 를 먼저 하면
+된다 — 포트를 이미 열고 있으므로 한 줄이다. 아직 넣지 않았다.)
+
+측정 : 노드 7개 + `ros2 run` 부모 3개 + 데몬 = **1.0초, 종료코드 0**, 이후
+`ros2 node list` 가 비었다(2026-09-04 실측).
 
 ---
 
