@@ -262,6 +262,12 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                    '상태기계가 굳는다. 그 구간을 로그에서 구별하는 유일한 단서'),
     TopicSpec('/drive_state', String, ('drive_state',), _scalar,
               note='driving 상태기계 ★기록 구간을 정하는 신호★'),
+    #  ★[2026-09-07] /lstatus — 구간 문자 '0'|'L'|'S' 가 곧 조종권이다★
+    #  이 열 하나로 "지금 누가 몰고 있었나" 가 로그에서 바로 드러난다. 종전에는
+    #  /lidar_permit(Bool) 을 봐야 했는데 그 토픽은 없어졌다.
+    TopicSpec('/lstatus', String, ('lstatus',), _scalar,
+              note="구간 문자 0=GPS추종 / L=라이다(mppi) / S=일시정지. "
+                   "★driving → mppi 조종권★ (terrain 열을 정규화한 값)"),
     TopicSpec('/drive_cmd', String, ('drive_cmd',), _scalar, hold=False,
               note='prompt 하달 (경로 선택 / STOP)'),
     TopicSpec('/drive_event', String, ('drive_event',), _scalar, hold=False,

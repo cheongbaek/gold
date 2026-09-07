@@ -288,7 +288,14 @@ HEADING_PULSE = 3            # 헤딩 초기화 중 속도 ≈ 9.5 km/h
 #  왜 파라미터 신뢰만으로 부족한가 : rec_20260811_214852 종점 접근에서 ★4펄스를
 #  지령했는데 GPS 실측이 4.83 m/s(=5.5펄스, 17.4 km/h)★ 였다. 지령은 개루프라
 #  실제 속도가 그보다 높게 나올 수 있으므로, 지령 자체의 천장을 낮게 못 박는다.
-MAX_PULSE_LIMIT = 4          # send() 가 ★기준속도(REF)★ 를 이 값으로 자른다
+#  ★[2026-09-07] 상한을 6 으로 올렸다 — 그러나 ★기본값은 4 로 남긴다★
+#  6펄스(19.1 km/h)는 2단 정지거리가 2.84 → ★6.39 m★ 로 2.25배가 되는 변경이라
+#  (거리는 v² 에 비례한다) 미검증 스택에서 한 번에 갈 값이 아니다. 상한만 열어 두고
+#  런치 인자로 4 → 5 → 6 을 단계로 확인한다:
+#      ros2 launch white1 one_launch.py drive_pulse:=5
+#  ★파생 상수는 전부 6펄스에서도 성립하게 미리 고쳐 두었다★ (CURVE_PREVIEW_FAR_MAX
+#  · LFD_MAX_M · MIN_SPEED_RATIO · corner_min_pulse). 그래서 런치 인자만 올리면 된다.
+MAX_PULSE_LIMIT = 6          # send() 가 ★기준속도(REF)★ 를 이 값으로 자른다
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ 저속 펄스 보정 — 지령대로 안 구르는 구간에서만 REF 를 밀어 준다 (2026-08-12) ★★
@@ -398,7 +405,12 @@ LFD_OMEGA_N  = 0.97         # [rad/s] 목표 고유진동수. ★낮추면 LFD �
 #    포화가 늦게 오는 쪽이라 실질 여유는 커졌다.
 #    ⚠️ 반대로 ★낮추면 곧바로 포화 영역으로 들어간다★ — 함부로 내리지 말 것.
 LFD_MIN_M    = 2.3          # [m] 하한 (구 white min_lfd — 진동유발 영역 탈출 실측값)
-LFD_MAX_M    = 6.4          # [m] 상한 (구 표의 마지막 행 = 5펄스 15.9km/h)
+#  ★[2026-09-07] 6.4 → 7.8★ 6.4 는 구 표의 마지막 행(5펄스)이었다. 설계식
+#  LFD = v·√2/ω_n 에 6펄스(5.304 m/s)를 넣으면 7.73 m 라, 6.4 로 두면 상한에 잘려
+#  ω_n 이 0.97 → 1.17 로 올라간다(PM +37° → +31°). 발산임계 ≈2.3 이라 위험하지는
+#  않지만 ★설계 의도(ω_n 을 0.97 로 유지)와 어긋난다★. 4펄스에서는 설계식이 5.16 m
+#  라 이 상한에 애초에 닿지 않으므로 ★종전 거동이 그대로다★.
+LFD_MAX_M    = 7.8          # [m] 상한 (설계식 6펄스 = 7.73 m 를 담는다)
 LFD_GOAL_A   = 0.45         # 종점 접근 캡 : max(LFD_GOAL_MIN, 남은거리·A + B)
 LFD_GOAL_B   = 1.30
 LFD_GOAL_MIN = 2.2          # 이 구간만은 포화 임계(2.98m) 아래다 — 위 ★ 참고
@@ -453,7 +465,16 @@ MS_PER_PULSE = 0.884
 #    · WINDOW_PEAK_M(1.2m) = 3점 외접원(Menger). 짧고 급한 필렛을 잡는다 —
 #      3m 창은 R≈2m 코너를 11° 로 과소평가하는 것이 구 실측으로 확인돼 추가됐다.
 CURVE_PREVIEW_NEAR_K  = 1.6    # 근거리 스캔거리 = LFD · 이것 (현재 코너 속도용)
-CURVE_PREVIEW_FAR_MAX = 14.0   # [m] 원거리 스캔 상한 (다가오는 코너 조기 인지)
+#  ★[2026-09-07] 14.0 → 20.0 — 6펄스에서 이 값이 제일 먼저 막힌다★
+#  코너 1단 제동의 체결 지점은 d_need × CORNER_BRAKE_LATE_K(1.2) + 1.5 다.
+#      4→2펄스 : 5.33 × 1.2 + 1.5 =  7.89 m   ← 14 m 창에 들어온다
+#      6→3펄스 : ★11.99 × 1.2 + 1.5 = 15.9 m★ ← ★14 m 창을 넘는다 = 못 문다★
+#  즉 종전 값으로 6펄스를 쓰면 '코너를 보기도 전에 물어야 하는' 상태가 되어 체결
+#  조건이 성립하지 않고, 코너 진입속도가 목표를 넘어 언더스티어로 밀린다
+#  (2026-08-11 실차와 같은 실패). 20 m 면 15.9 m 를 4.1 m 여유로 담는다.
+#  ★비용은 없다★ 곡률 프로파일은 build_curve_profile 이 경로당 한 번만 만들고,
+#  매 틱 도는 scan_curve_demand 는 0.4 m 간격이라 20 m = 50점이다.
+CURVE_PREVIEW_FAR_MAX = 20.0   # [m] 원거리 스캔 상한 (다가오는 코너 조기 인지)
 CURVE_WINDOW_M        = 3.0    # [m] 곡률 창 (평활 주신호)
 CURVE_WINDOW_PEAK_M   = 1.2    # [m] 짧은 창 (급코너 피크)
 CURVE_SCAN_STEP_M     = 0.4    # [m] 스캔 간격
@@ -464,7 +485,14 @@ PEAK_SPEED_BLEND        = 0.50 # 피크를 속도에 반영하는 비율(0=무�
 BRAKE_GATE_DECEL        = 2.0  # [m/s²] 제동거리 가정 감속도 (조기 감속 위해 보수적)
 BRAKE_GATE_MARGIN       = 1.5  # [m] 코너 이만큼 전에 목표속도에 도달해 있도록
 OMEGA_N_MAX             = 0.95 # 코너에서 LFD 가 짧아질 때 ω_n 을 이 밑으로 묶는다
-MIN_SPEED_RATIO         = 1.0 / 2.8   # 최저속도 = 상한 × 이것 (구 white 와 동일)
+#  ★[2026-09-07] 1/2.8 → 1/2★ 코너 목표를 ★기본속도의 절반★ 으로 못 박는다.
+#  6펄스 → 2.652 m/s = ★정확히 3펄스★ / 4펄스 → 1.768 m/s = ★정확히 2펄스★ 다.
+#  ★왜 정수 펄스에 맞추는가★ corner_speed 는 corner_brake 에 ★연속값★ v_corner 를
+#  넘기고, corner_brake 는 그 값으로 제동거리와 REF 캡을 계산한다. 연속값이 실제
+#  지령 펄스와 어긋나면 ★존재하지 않는 목표를 겨눠★ 필요 이상으로 일찍·오래 문다.
+#      종전(1/2.8) 4펄스 : min 1.263 m/s = 1.43펄스 → 지령은 2펄스(하한 클램프)
+#                          = 겨누는 값과 내는 값이 0.57펄스 어긋나 있었다.
+MIN_SPEED_RATIO         = 1.0 / 2.0   # 최저속도 = 상한 × 이것 = ★기본속도의 절반★
 MIN_SPEED_FLOOR         = 0.9  # [m/s] 그래도 이 밑으로는 내리지 않는다
 #  ★코너 최저 펄스 = 2 (1.77 m/s)★ [2026-08-11 실측으로 정한 값]
 #  구 white 는 m/s 로 연속 제어했지만 이 차는 정수 펄스라 1펄스 = 0.884 m/s 로 거칠다.
@@ -473,7 +501,15 @@ MIN_SPEED_FLOOR         = 0.9  # [m/s] 그래도 이 밑으로는 내리지 않�
 #  전진 0. 저속 + 코너 타이어 스크럽 부하에서 인휠이 차를 못 굴린 것이다. 그리고
 #  멈춘 상태의 코일 통전이 기동 블랭킹 허수 카운트를 만들어 브레이크 채터까지 불렀다.
 #  ★2펄스 구간이 오히려 추종이 가장 좋았다★(10.9초, max|CTE| 0.17m) — 그래서 2.
-CORNER_MIN_PULSE        = 2
+#  ★[2026-09-07] 고정 2 를 버리고 ★기본속도의 절반★ 으로 유도한다★
+#  요구는 "기본 6펄스일 때 코너 3펄스" 인데, 고정 3 으로 두면 ★기본 4펄스에서도
+#  코너가 3펄스로 굳는다★ — 사람은 매핑할 때 코너를 0.44~0.66 m/s(0.5~0.75펄스)에
+#  풀 락으로 돌았으므로, 그 코너를 3펄스(2.65 m/s)로 도는 것은 검증되지 않았다.
+#  그래서 self.corner_min_pulse = max(CORNER_MIN_PULSE_FLOOR, round(drive_pulse/2)) 다:
+#      drive_pulse 4 → 2 (★종전과 같다★)   /   6 → 3 (요구 충족)
+#  ★바닥값 2 는 그대로 남는다★ 1펄스로 내려가면 이 차는 코너에서 아예 못 움직여
+#  그 자리에 선다(위 실측). 그것을 막는 것이 이 값의 원래 역할이다.
+CORNER_MIN_PULSE_FLOOR  = 2
 #  ⚠️ 이 하한(2)은 ★아직 실차 검증 전★ 이다. rec_20260811_214350·214852 는 하한이
 #     1 이던 코드로 달린 기록이다(로그의 51~52%가 1펄스 — 지금 코드로는 나올 수 없는
 #     값이다). 노드를 재시작하지 않아 이 상수가 반영되지 않았다.
@@ -750,7 +786,36 @@ GOAL_RELEASE_HOLD_S    = 0.50  # [s] arduino BRAKE_RELEASE_HOLD_S 와 같은 값
 GOAL_RELEASE_RETRACT_S = 0.54  # [s] 리니어 1단→0단 290카운트 후퇴
 GOAL_RELEASE_TORQUE_S  = 0.35  # [s] A보드 PWM 슬루로 구동 토크가 돌아오기까지
 GOAL_CREEP_KMH   = 4.0    # [km/h] 해제 문턱의 ★하한★. 위 계산값과 큰 쪽을 쓴다
-GOAL_CREEP_PULSE = 1      # 크립 목표펄스 — 저속 보정이 이 값을 유지시킨다
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-07] 종점 감속 개편 — '5 m 앞부터 2펄스' (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  종전 : 체결 지점을 ★속도로 계산★ 했다(need1 = v·0.55 + v²/2a₁ + 0.5) → 1단 →
+#         크립 ★1펄스★ → 도착 2단.
+#  지금 : ★종점 5 m 앞 고정★ 에서 1단을 물고, `/encoder` 가 2펄스로 내려오면 풀어
+#         ★2펄스로 유지★ 하다가 도착 즉시 2단이다.
+#
+#  ★왜 크립 1펄스를 버렸나★ 1펄스는 이 차가 못 구르는 속도다 — 정지에서 떼어내는
+#  힘이 달라 67초 동안 GPS 이동 0.0 m 였던 실측이 있고(아래 킥 절), 그래서 4펄스
+#  킥이라는 우회로가 필요했다. ★2펄스는 A보드 적분 누적 조건(|err| < 4) 안이라
+#  PID 가 정상으로 붙는다★ — 이 차에서 가장 잘 구르는 구간이기도 하다
+#  (2026-08-11 실측: 2펄스 구간이 추종이 제일 좋았다, max|CTE| 0.17 m).
+#
+#  ★5 m 는 4펄스에 맞는 값이고 그 위에서는 모자란다 — 알고 쓴다★
+#  1단(a=1.30)으로 v → 2펄스까지 줄이는 데 필요한 거리 :
+#        3펄스 2.96 m  /  ★4펄스 5.55 m★  /  5펄스 8.74 m  /  6펄스 12.54 m
+#  4펄스에서 0.55 m 모자라 종점을 ~2.3펄스로 통과한다(오차 미미). 그러나 6펄스면
+#  절반도 못 줄이므로 ★2단 백스톱이 먼저 걸려 종점을 지킨다★(아래 need2).
+#  → 그래서 런치 기본 drive_pulse 는 4 로 두었다(MAX_PULSE_LIMIT 절 참고).
+GOAL_DECEL_M     = 5.0    # [m] ★이 거리부터 1단 + 2펄스 목표★ (속도로 계산하지 않는다)
+GOAL_HOLD_PULSE  = 2      # 종점 접근 유지 펄스 ≈ 6.4 km/h (종전 크립 1펄스)
+#  ★해제 판정에 `/encoder` 를 쓴다 (사용자 지시)★ 단 그 값 하나만 믿지 않는다 —
+#  저속에서 엔코더는 ★위로 튄다★(실측: 지령 0~1펄스 구간에서 중앙 16, 최대 34.
+#  정상은 4~5). 그것만 보면 "아직 2펄스보다 빠르다"고 오판해 1단을 계속 물어
+#  ★차를 세운다★ — 리니어 브레이크 3차 실패의 근원이 정확히 이 경로였다.
+#  그래서 ① 중앙값 3점 필터를 지난 self.enc_pulse 를 쓰고(바퀴 하나 기준)
+#         ② GPS 실측속도 해제선과 ★OR★ 로 묶고 (둘 다 '푸는 쪽' 이라 안전하다)
+#         ③ GOAL_BRAKE1_MAX_S 시간 상한을 그대로 남긴다.
+GOAL_HOLD_ENC_PULSE = 2   # self.enc_pulse 가 이 밑이면 '2펄스로 내려왔다'
 GOAL_CREEP_MIN_LEFT_M = 1.2   # [m] 이보다 가까우면 굳이 풀지 않는다 — 곧 도착 판정이 선다
 #   ※ WP_REACH_M(0.9)보다 크게 둔다. 0.9 안이면 그 자리에서 도착이 성립하므로, 풀어
 #     봐야 한 틱 뒤에 도착이 2단을 다시 무는 꼴이 된다(리니어 왕복).
@@ -788,7 +853,11 @@ CB_NONE, CB_BRAKING, CB_LOCKOUT = 0, 1, 2
 #     (CHANGES_2026-08-18.md 4절). 애초에 세우지 않는 편이 언제나 낫다.
 GOAL_KICK_KMH    = 1.0    # [km/h] 이 밑이면 '섰다'로 본다
 GOAL_KICK_WAIT_S = 0.7    # [s] 그 상태가 이만큼 이어져야 킥한다(제동 해제 직후 과민 방지)
-GOAL_KICK_PULSE  = 4      # 킥 목표펄스 (MAX_PULSE_LIMIT 와 같다 — 이 이상은 못 나간다)
+#  ★[2026-09-07] 4 → 3★ 4 는 A보드 적분 동결 함정(|err| < I_ACCUM_ERR_MAX=4)에
+#  정확히 걸리는 지령이다 — 정지한 차에 목표 4를 주면 err 가 딱 4 라 적분이 자라지
+#  않고 PWM 이 92(= FF 90 + 0.4×4)에 묶인다. 3 은 err=3 이라 적분이 붙는다
+#  (FF 80 → PWM 121 까지 자란다). ★유지 펄스가 2 로 올라가 이 경로 자체를 덜 탄다★
+GOAL_KICK_PULSE  = 3      # 킥 목표펄스. ★4 를 쓰지 말 것 — 적분 동결★
 GOAL_KICK_S      = 0.6    # [s] 킥 지속
 GOAL_KICK_MAX_N  = 3      # 이만큼 시도해도 못 움직이면 구동을 끊는다
 #   ※ 끊는 이유 : 실차 로그의 67초가 정확히 '안 움직이는 차에 계속 전류를 넣는' 상태였다.
@@ -943,8 +1012,9 @@ CTE_DEVIATION_M = 2.0
 #  │ 한쪽이 조용히 죽으면 마지막 펄스로 차가 계속 굴러간다. 겹치지 않게 하는 것이  │
 #  │ 이 설계의 전부다:                                                          │
 #  │                                                                          │
-#  │   G 구간 : driving 이 발행  ·  /lidar_permit = False → mppi ★침묵★         │
-#  │   L 구간 : driving ★침묵★   ·  /lidar_permit = True  → mppi 가 발행         │
+#  │   G 구간 : driving 이 발행  ·  /lstatus = '0' → mppi ★침묵★                │
+#  │   L 구간 : driving ★침묵★   ·  /lstatus = 'L' → mppi 가 발행                │
+#  │   S 지점 : driving 이 세운다 ·  /lstatus = 'S' → mppi ★침묵★                │
 #  └──────────────────────────────────────────────────────────────────────────┘
 #
 #  ★양방향 계약이다★ 허락만 보내고 끝내면, mppi 가 안 떠 있을 때(use_lidar:=false
@@ -963,7 +1033,90 @@ CTE_DEVIATION_M = 2.0
 LIDAR_ZONE_CHARS = ('L', 'l')   # terrain 열이 이 값이면 라이다 구간. 그 외는 전부 GPS
 LIDAR_ZONE_COLUMN = 'terrain'   # 읽는 열 이름 (mapping.py 가 늘 '0' 을 쓰는 미사용 열)
 LIDAR_ACTIVE_TOPIC = '/lidar_active'   # mppi → 이 노드 : "나 살아 있다"
-LIDAR_PERMIT_TOPIC = '/lidar_permit'   # 이 노드 → mppi : "네가 몰아라"
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-07] /lidar_permit → ★/lstatus★ 로 대체 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  종전에는 Bool 두 개(/lidar_permit 허락, /lidar_active 생존)로 계약했다. 지금은
+#  ★경로가 요구하는 구간 문자 하나★ 를 String 으로 내고, 그것이 곧 허락이다 —
+#  "어차피 L 일 때 라이다에게 넘길 텐데 같은 역할을 한다"(사용자).
+#
+#      driving ──/lstatus (String '0'|'L'|'S')──▶ mppi_local_planner
+#      driving ◀──/lidar_active (Bool)────────── mppi_local_planner
+#
+#  ★/lidar_active 는 남는다★ 방향이 반대라 합칠 수 없고, 없으면 mppi 가 죽었을 때
+#  이 노드가 침묵한 채 arduino 가 마지막 펄스를 래치해 ★차가 계속 간다★.
+#
+#  ★terrain 원값을 그대로 흘리지 않는다 — 반드시 lstatus_now() 를 거친다★
+#    ① 회수를 따라가야 한다 : _revoke_lidar(E-STOP·GPS 두절)가 조종권을 거둬도
+#       경로의 terrain 은 여전히 'L' 이다. 원값을 내면 mppi 가 계속 몬다.
+#       → self._lidar_zone(내가 실제로 이양했는가)을 본다.
+#    ② CSV 가 지저분하다 : '' · '0' · '0.0' · '-1'(구 white 지형코드) · 'l' · 's' 가
+#       섞여 온다. ★발행자가 세 값으로 정규화★ 하지 않으면 구독자마다 파싱이 갈린다.
+#
+#  ★신선도가 곧 허락이다★ 이 노드는 매 틱(20Hz) 낸다. mppi 쪽 lstatus_stale_s(1.0)
+#  가 그것을 받는다 — 이 노드가 죽으면 mppi 는 마지막 'L' 을 붙들지 않고 침묵한다.
+LSTATUS_TOPIC = '/lstatus'      # 이 노드 → mppi (String). ★조종권 그 자체★
+LSTATUS_GPS   = '0'             # GPS 추종 — mppi 침묵
+LSTATUS_LIDAR = 'L'             # 라이다가 몬다
+LSTATUS_STOP  = 'S'             # 일시정지 처리 중
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-07] terrain 'S' — 일시정지 후 재출발 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  매핑 CSV 의 terrain 열에 ★한 행만★ 'S'(또는 's')를 적어 둔 지점이다.
+#    · 그 행에 ★도달하거나 지나치는 즉시★ 리니어 2단으로 선다.
+#    · A보드 양 펄스가 모두 0 이 된 뒤 ★3.5초★ 를 세고, 리니어 0단, 그다음 재출발.
+#  전체 경로에 1~2 군데 있을 예정이다.
+#
+#  ★"같은가" 로 보면 놓친다 — 구간 검사여야 한다★
+#  advance_wp_idx() 는 한 틱에 최대 WP_MAX_ADVANCE(5) 까지 건너뛴다(GPS 튐·라이다
+#  복귀 직후). S 는 한 행뿐이라 wp_idx == S 인덱스 로 보면 그 틱을 건너뛰는 순간
+#  ★조용히 사라진다★. 그래서 직전 틱 이후 ★지나온 구간 (prev, wp_idx]★ 을 훑는다.
+#
+#  ★새 state 를 만들지 않는다 — enter() 가 리니어를 풀어 버린다★
+#  enter() 의 마지막 블록은 "DRIVE_DONE 이 아닌 모든 상태에서 set_brake(BRAKE_NONE)"
+#  다. 그것은 "리니어를 물리는 곳은 DRIVE_DONE 하나뿐" 이라는 안전 불변식이라
+#  깨면 안 된다(특히 수동조종 진입 = 사람이 차를 넘겨받는 순간). 그래서 종점 접근
+#  (_goal_phase) · 코너 제동(_cb_state) 과 같은 ★DRIVE_RUN 안의 서브페이즈★ 로 둔다.
+#
+#  ★정차 위치는 S 를 지나서다 (사용자 결정: '지시 그대로 즉시 2단')★
+#  2단 정지거리는 4펄스 2.84 m / 6펄스 6.39 m (a=2.2 하한) 이고 판정·행정 지연이
+#  더해진다. 정지선처럼 쓰려면 ★사람이 S 를 그만큼 앞당겨 적는다★.
+STOP_ZONE_CHARS = ('S', 's')
+STOP_HOLD_AFTER_ZERO_S = 3.5   # [s] 양 펄스 0 확인 뒤 이만큼 기다렸다 리니어를 푼다
+#  ★'양 펄스가 모두 0' 은 /encoder 로 정확히 판정된다★ 그 토픽은 좌+우 ★합★ 이고
+#  둘 다 음수가 아니므로 합 0 ⇔ 양쪽 0 이다. 다만 self.enc_pulse 는 중앙값 3점 뒤
+#  ×0.5 한 값이라 눈금이 절반이다 — ENC_STOP_EPS 를 그대로 재사용한다(같은 판정을
+#  _check_done_release·_goal_stopped 가 이미 쓰고 있다. 문턱을 새로 만들지 않는다).
+STOP_ZERO_HOLD_S = 0.5         # [s] 0 이 이만큼 이어져야 '섰다'로 인정 (GOAL_STOP_HOLD_S 와 같다)
+STOP_WAIT_MAX_S  = 12.0        # [s] 엔코더가 영영 0 이 안 되어도 굳지 않는다
+#  ★리니어 0단은 즉시 풀리지 않는다★ B보드는 0단을 위치를 보지 않고 REV 로
+#  BRAKE_HOME_MS(1000ms) 돌린다(kasa_0904_B.ino). 게다가 arduino 에 해제유예
+#  0.5초가 있다. 브레이크가 아직 밟혀 있는 채로 구동을 걸면 서로 민다.
+STOP_RELEASE_WAIT_S = 1.0      # [s] 0단 명령 뒤 이만큼은 펄스 0 을 유지한다
+#  ★재출발은 3펄스다 — 4 를 쓰지 말 것★ A보드 적분 동결(|err| < 4). GOAL_KICK_PULSE
+#  와 같은 값·같은 이유다. 굴러가기 시작하면 평소 규칙으로 돌려준다.
+STOP_RESUME_PULSE = 3
+STOP_RESUME_KMH   = 1.0        # [km/h] 이 위로 올라오면 '굴러가기 시작했다'
+STOP_RESUME_MAX_S = 6.0        # [s] 이 안에 못 떼면 정지 절차로 넘긴다
+
+# ── S 서브페이즈 (DRIVE_RUN 안에서만 산다) ──
+SP_NONE, SP_BRAKING, SP_WAIT, SP_RELEASE, SP_RESUME = 0, 1, 2, 3, 4
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-07] 라이다 인계 전 서행 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  "인계지점을 앞두고 종점과 동일한 서행로직이 작동하되 완전 정지하지 않고 2펄스의
+#  속도로 라이다에게 인계한다."
+#  → 종점 접근(goal_approach)과 ★같은 거리·같은 유지펄스★ 를 쓴다. 다른 것은
+#    끝에서 무엇을 하느냐뿐이다 — 종점은 2단으로 서고, 여기서는 서지 않고 넘긴다.
+#
+#  ★서행 시작 지점은 주행 시작 직전에 미리 계산한다 (사용자 지시)★
+#  build_waypoints() 가 경로를 한 번 훑어 L 구간 시작들의 ★누적 호길이★ 를 표로
+#  박아 둔다(self._lz_starts). 제어 루프에서는 뺄셈 한 번이면 끝이고, '언제 서행을
+#  시작하는가' 와 '언제 /lstatus 가 L 이 되는가' 가 코드상 완전히 분리된다.
+LIDAR_DECEL_M   = GOAL_DECEL_M      # [m] L 구간 진입 이 거리 앞부터 1단 + 유지펄스
+LIDAR_HOLD_PULSE = GOAL_HOLD_PULSE  # 인계 속도 = 종점 유지속도 = 2펄스
 #  ★신선도 = 상대의 생존★ 이보다 낡으면 이양하지 않고, 구간 중이면 정지한다.
 #  mppi 는 20Hz 로 내므로 1.0s 는 20틱 여유다.
 LIDAR_ACTIVE_STALE_S = 1.0
@@ -1185,6 +1338,11 @@ class DrivingNode(Node):
         self.max_speed_ms = self.drive_pulse * MS_PER_PULSE
         self.min_speed_ms = min(self.max_speed_ms,
                                 max(MIN_SPEED_FLOOR, self.max_speed_ms * MIN_SPEED_RATIO))
+        #  ★코너 하한은 기본속도의 절반★ (상수 CORNER_MIN_PULSE_FLOOR 절 참고)
+        #    4펄스 → 2 / 5펄스 → 3(2.5 를 0 에서 먼 쪽으로) / 6펄스 → 3
+        self.corner_min_pulse = min(
+            self.drive_pulse,
+            max(CORNER_MIN_PULSE_FLOOR, int(self.drive_pulse / 2.0 + 0.5)))
 
         # ── 곡률 프로파일 (경로가 정적이므로 build_waypoints 에서 한 번만 계산) ──
         self.wp_s = []          # 누적 호길이 [m]
@@ -1288,6 +1446,21 @@ class DrivingNode(Node):
         self._rejoin = False          # L → G 복귀 재수렴 중인가
         self._rejoin_t0 = 0.0         # 재수렴 시작 시각 (REJOIN_TIMEOUT_S 판정)
         self._rejoin_cte0 = 0.0       # 복귀 순간의 CTE (로그 — 얼마나 벗어나 돌아왔나)
+        # ── 라이다 인계 전 서행 [2026-09-07] ──
+        self._lz_starts = []          # L 구간 시작들의 누적 호길이 [m] (주행 직전 계산)
+        self._lz_slow = False         # 인계 서행(1단 + 유지펄스) 중인가
+        self._lz_slow_t = 0.0         # 그 시작 시각 (시간 상한)
+        # ── S 일시정지 서브페이즈 [2026-09-07] ──
+        self._sp_state = SP_NONE
+        self._sp_idx = -1             # 지금 처리 중인 S 의 WP 인덱스
+        self._sp_t = 0.0              # 단계 진입 시각
+        self._sp_zero_t = 0.0         # 엔코더 0 이 이어지기 시작한 시각
+        #   ★_goal_still_t 와 공유하지 않는다★ 종점 판정과 섞이면 그쪽이 오염된다
+        self._sp_ready_t = 0.0        # '섰다' 를 인정한 시각 → 여기서 3.5초를 센다
+        self._stop_idx = []           # 경로의 S 인덱스 목록 (주행 직전 계산)
+        self._stop_done = set()       # 이미 처리한 S 인덱스 (재발동 방지)
+        self._wp_idx_prev = 0         # 직전 틱의 진행 포인터 (구간 검사용)
+        self._last_steer = 0.0        # 마지막으로 내보낸 조향각 (S 정지 중 유지)
 
         # ── 진단 계측 (/drive_diag) ★제어 판단에 절대 쓰지 않는다★ ──
         #   여기 있는 값이 제어로 새어 들어가면 '계측을 위해 거동이 바뀌는' 상태가
@@ -1323,8 +1496,8 @@ class DrivingNode(Node):
         #  ★라이다 구간 이양★ 상단 '라이다 구간 이양' 절 참고. /tl_permit 과 같은
         #  규약이다 — True/False 를 매 틱 계속 내므로 ★신선도가 곧 허락★ 이고, 이
         #  노드가 죽으면 값이 끊겨 mppi 가 스스로 손을 뗀다.
-        self.pub_lidar_permit = self.create_publisher(
-            Bool, LIDAR_PERMIT_TOPIC, 10)
+        #  ★[2026-09-07] /lidar_permit(Bool) → /lstatus(String) 로 대체★ 상수절 참고.
+        self.pub_lstatus = self.create_publisher(String, LSTATUS_TOPIC, 10)
         self.pub_event = self.create_publisher(String, '/drive_event',      10)
         self.pub_ego   = self.create_publisher(Float64MultiArray, '/ego_state', 10)
         # ★[2026-08-08] 추종 진단 — record 전용, 제어는 이 값을 읽지 않는다★
@@ -1520,6 +1693,208 @@ class DrivingNode(Node):
     def in_lidar_zone(self, idx=None):
         return self.zone_at(self.wp_idx if idx is None else idx) in LIDAR_ZONE_CHARS
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  /lstatus — ★이 토픽이 조종권이다★ [2026-09-07]
+    # ══════════════════════════════════════════════════════════════════════════
+    def lstatus_now(self):
+        """지금 내보낼 구간 문자. ★terrain 원값이 아니라 '내가 실제로 손을 놓았는가'★
+
+        상수절 '/lidar_permit → /lstatus' 의 두 이유가 여기 들어 있다:
+          ① `self._lidar_zone` 을 본다 → _revoke_lidar(E-STOP·GPS 두절)가 조종권을
+             거두면 경로가 그대로여도 곧바로 '0' 이 나간다.
+          ② `S_DRIVE_RUN` 이 아니면 무조건 '0' 이다 → 도착·이탈·수동전환 뒤에 mppi 가
+             선 차를 계속 몰지 않는다.
+        """
+        if self.state != S_DRIVE_RUN:
+            return LSTATUS_GPS
+        if self._sp_state != SP_NONE:
+            return LSTATUS_STOP
+        if self._lidar_zone:
+            return LSTATUS_LIDAR
+        return LSTATUS_GPS
+
+    def publish_lstatus(self, value):
+        self.pub_lstatus.publish(String(data=value))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  라이다 인계 전 서행 — 남은 거리 [2026-09-07]
+    # ══════════════════════════════════════════════════════════════════════════
+    def lidar_zone_left_m(self):
+        """다음 L 구간 시작까지 남은 ★호길이★ [m]. 없으면 inf.
+
+        표(self._lz_starts)는 build_waypoints() 가 주행 직전에 만들어 둔다 —
+        여기서는 뺄셈뿐이다(상수절 '라이다 인계 전 서행' 참고).
+
+        ★호길이를 쓰는 것이 여기서는 맞다★ 종점 접근이 s_left 를 피한 이유는
+        "포인터가 앞서 튀면 0 으로 주저앉는다" 였는데, 그 오류의 방향이 여기서는
+        ★일찍 감속한다 = 안전한 쪽★ 이다(종점에서는 '일찍 2단' = 위험한 쪽이었다).
+        """
+        if not self._lz_starts or not self.wp_s:
+            return float('inf')
+        here = self.wp_s[min(self.wp_idx, len(self.wp_s) - 1)]
+        for s0 in self._lz_starts:
+            if s0 >= here:
+                return s0 - here
+        return float('inf')
+
+    def lidar_approach(self, pulse):
+        """L 구간 진입 LIDAR_DECEL_M 앞부터 ★1단 + 유지펄스★ 로 내려놓는다.
+        → 돌려주는 값이 이번 틱의 목표펄스다. ★세우지 않는다★
+        [2026-09-07 신설 — 사용자 지시 '완전 정지하지 않고 2펄스로 인계']
+
+        구조는 goal_approach 와 같고 ★끝에서 서지 않는다★는 것만 다르다.
+        · 체결 : 남은 호길이 ≤ LIDAR_DECEL_M (고정. 종점과 같은 거리)
+        · 해제 : 엔코더가 유지펄스로 내려왔거나, 시간 상한
+        · 소유권 : 종점·S·신호등이 리니어를 잡고 있으면 손을 뗀다(아래 ok)
+        """
+        left = self.lidar_zone_left_m()
+        ok = (self.state == S_DRIVE_RUN
+              and self._goal_phase == GOAL_PHASE_NONE
+              and self._sp_state == SP_NONE
+              and self.tl_brake_req() == 0
+              and not self.estop)
+
+        if not self._lz_slow:
+            if not ok or left > LIDAR_DECEL_M:
+                return pulse
+            #  ★이미 유지펄스 밑이면 물지 않는다★ 물어 봐야 세울 위험만 있다.
+            kmh = self.measured_kmh()
+            if kmh is not None and kmh <= LIDAR_HOLD_PULSE * MS_PER_PULSE * 3.6:
+                return min(pulse, LIDAR_HOLD_PULSE)
+            self._lz_slow = True
+            self._lz_slow_t = time.time()
+            self.set_brake(BRAKE_SOFT)
+            self.event(f"🔻 라이다 인계 서행 — L 구간 {left:.1f}m 앞, "
+                       f"{LIDAR_HOLD_PULSE}펄스로 내린다 "
+                       f"(지금 {'속도 미수신' if kmh is None else f'{kmh:.1f}km/h'})")
+            return 0
+
+        # ── 서행 중 : 푸는 판정만 본다 (무는 쪽은 위 기하가 이미 정했다) ──
+        held = time.time() - self._lz_slow_t
+        if not ok:
+            self._lz_release("소유권을 넘긴다")
+            return pulse
+        if self.enc_pulse <= GOAL_HOLD_ENC_PULSE:
+            self._lz_release(f"엔코더 {self.enc_pulse:.1f}펄스 도달")
+            return min(pulse, LIDAR_HOLD_PULSE)
+        kmh = self.measured_kmh()
+        if kmh is not None and kmh <= self.goal_release_kmh():
+            self._lz_release(f"{kmh:.1f}km/h ≤ 해제선 {self.goal_release_kmh():.1f}km/h")
+            return min(pulse, LIDAR_HOLD_PULSE)
+        if held >= GOAL_BRAKE1_MAX_S:
+            self._lz_release(f"★{GOAL_BRAKE1_MAX_S:.0f}초 초과★ — 굳지 않게 푼다")
+            return min(pulse, LIDAR_HOLD_PULSE)
+        return 0                       # 제동 유지 — 구동은 내지 않는다
+
+    def _lz_release(self, why):
+        self._lz_slow = False
+        self.set_brake(BRAKE_NONE)
+        self.event(f"🛞 인계 서행 해제 — {why}. {LIDAR_HOLD_PULSE}펄스로 인계 대기")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  terrain 'S' — 일시정지 후 재출발 [2026-09-07]
+    # ══════════════════════════════════════════════════════════════════════════
+    def stop_zone_hit_in(self, prev_idx):
+        """prev_idx 이후 ★지나온 구간★ 에 아직 처리 안 한 S 가 있으면 그 인덱스.
+
+        ★'같은가' 로 보면 놓친다★ advance_wp_idx() 는 한 틱에 최대
+        WP_MAX_ADVANCE(5) 까지 뛴다. S 는 한 행뿐이라 그 틱을 건너뛰면 사라진다.
+        포인터는 단조 증가이므로 (prev, wp_idx] 를 훑으면 ★반드시 잡는다★.
+        """
+        for i in range(prev_idx + 1, self.wp_idx + 1):
+            if i in self._stop_done:
+                continue
+            if self.zone_at(i) in STOP_ZONE_CHARS:
+                return i
+        return None
+
+    def begin_stop_zone(self, idx):
+        """S 도달·통과 — ★즉시 리니어 2단★ (사용자 지시).
+
+        ★조향은 0 으로 꺾지 않는다★ enter(S_DRIVE_DONE) 은 조향 0 을 내지만 그건
+        '경로를 버리는' 경우다. 여기서는 다시 출발하므로 마지막 각을 유지하는 편이
+        재출발 궤적에 낫고, 정지 상태에서 조향 기구를 돌리는 것은 부하도 크다.
+        (순수추종은 계속 계산해 내보내고 펄스만 0 으로 둔다 — run_follow 참고)
+        """
+        self._sp_state = SP_BRAKING
+        self._sp_idx = idx
+        self._sp_t = time.time()
+        self._sp_zero_t = 0.0
+        self._sp_ready_t = 0.0
+        self._lz_slow = False                    # 서행 중이었다면 소유권을 넘긴다
+        self.set_brake(BRAKE_FULL)
+        self._publish_brake(force=True)
+        self.publish_lstatus(LSTATUS_STOP)       # 한 틱 먼저 알린다
+        self.event(f"🛑 일시정지 지점 — WP {idx}/{len(self.waypoints)} "
+                   f"(terrain='S'), 리니어 2단. 완전정지 뒤 "
+                   f"{STOP_HOLD_AFTER_ZERO_S:.1f}초 대기 후 재출발")
+
+    def run_stop_zone(self, steer):
+        """S 서브페이즈 한 틱. ★조향은 계속 내고 펄스만 0 이다★
+
+        BRAKING ─(양 펄스 0 이 0.5초)─▶ WAIT ─(3.5초)─▶ RELEASE ─(1.0초)─▶ RESUME ─▶ NONE
+        """
+        now = time.time()
+
+        if self._sp_state == SP_BRAKING:
+            self.send(0, steer, control=True)
+            #  ★'A보드 양 펄스가 모두 0' = /encoder 합 0★ (상수절 참고).
+            if self.enc_pulse > ENC_STOP_EPS:
+                self._sp_zero_t = 0.0
+            elif self._sp_zero_t == 0.0:
+                self._sp_zero_t = now
+            elif now - self._sp_zero_t >= STOP_ZERO_HOLD_S:
+                self._sp_state = SP_WAIT
+                self._sp_ready_t = now
+                self.event(f"⏸️ 완전정지 확인(엔코더 0) — "
+                           f"{STOP_HOLD_AFTER_ZERO_S:.1f}초 대기 시작")
+                return
+            #  ★굳지 않는다★ 엔코더가 영영 0 이 안 되어도 대기로 넘어간다.
+            if now - self._sp_t >= STOP_WAIT_MAX_S:
+                self._sp_state = SP_WAIT
+                self._sp_ready_t = now
+                self.event(f"⚠️ 엔코더 0 을 {STOP_WAIT_MAX_S:.0f}초 안에 못 봤다 "
+                           f"(지금 {self.enc_pulse:.1f}펄스) — 그대로 대기로 넘어간다. "
+                           f"★엔코더 허수 카운트를 의심할 것★")
+            return
+
+        if self._sp_state == SP_WAIT:
+            self.send(0, steer, control=True)
+            if now - self._sp_ready_t >= STOP_HOLD_AFTER_ZERO_S:
+                self._sp_state = SP_RELEASE
+                self._sp_t = now
+                self.set_brake(BRAKE_NONE)
+                self._publish_brake(force=True)   # ★0 은 평소 재확인하지 않는다★
+                self.event(f"🟢 {STOP_HOLD_AFTER_ZERO_S:.1f}초 경과 — 리니어 0단")
+            return
+
+        if self._sp_state == SP_RELEASE:
+            #  ★B보드 0단은 위치를 안 보고 REV 로 1000ms 돈다★ 그 사이에 구동을
+            #  걸면 브레이크가 아직 빠지는 중인 채로 민다(상수절 참고).
+            self.send(0, steer, control=True)
+            if now - self._sp_t >= STOP_RELEASE_WAIT_S:
+                self._sp_state = SP_RESUME
+                self._sp_t = now
+                self.reset_cte_integral()         # 정지 중 누적을 출발에 싣지 않는다
+                self.event(f"▶ 재출발 — {STOP_RESUME_PULSE}펄스로 뗀다 "
+                           f"(★4펄스는 A보드 적분 동결★)")
+            return
+
+        # SP_RESUME — 굴러가기 시작하면 평소 규칙으로 돌려준다
+        kmh = self.measured_kmh()
+        if kmh is not None and kmh >= STOP_RESUME_KMH:
+            self._stop_done.add(self._sp_idx)
+            self._sp_state = SP_NONE
+            self.event(f"✅ 재출발 확인({kmh:.1f}km/h) — 평소 추종으로 복귀")
+            return
+        if now - self._sp_t >= STOP_RESUME_MAX_S:
+            self.enter(S_DRIVE_DONE,
+                       f"⛔ 일시정지 뒤 {STOP_RESUME_MAX_S:.0f}초 안에 못 떴다 "
+                       f"(WP {self._sp_idx}). 정지 + 리니어 2단 — "
+                       f"스위치를 내려 사람이 옮길 것")
+            return
+        self.send(STOP_RESUME_PULSE, steer, control=True)
+
     def cb_speed(self, msg: Float32):
         """speed.py 의 IMU 적분 속도 [km/h]. ★저속 펄스 보정에만 쓴다★
         (추종 기하·상태 판정에는 절대 쓰지 않는다 — speed.py 헤더의 정확도 실측 참고:
@@ -1615,6 +1990,10 @@ class DrivingNode(Node):
         self._cb_t = 0.0
         self._cb_release_t = 0.0
         self._cb_lock_gate = 0.0
+        #  ★[2026-09-07] 새 과도 상태 둘도 같은 이유로 지운다★ 둘 다 '내가 지금 v 로
+        #  굴러가며 목표까지 d 가 남았다' 는 전제 위에 서 있다.
+        self._lz_slow = False
+        self._sp_state = SP_NONE
         self.set_brake(BRAKE_NONE)
 
     def cb_drive_cmd(self, msg: String):
@@ -1704,6 +2083,7 @@ class DrivingNode(Node):
         self.raw_zone = zone
         n_lidar = sum(1 for z in zone if z in LIDAR_ZONE_CHARS)
         self.event(f"📁 경로 선택: {name} (WP {len(wps)}개) — 스위치를 자율로 올리면 출발")
+        self._warn_stop_zones(zone)
         if n_lidar:
             # ★몇 개인지가 아니라 몇 토막인지를 말한다★ 사람이 손으로 적은 열이라
             #   오타 하나가 구간을 둘로 쪼개는데, 개수만 보면 그것이 안 드러난다.
@@ -1716,14 +2096,46 @@ class DrivingNode(Node):
             self.event(f"🛰️ 라이다 구간 없음 — 전 구간 GPS 추종 "
                        f"({LIDAR_ZONE_COLUMN} 열에 'L' 이 없다)")
 
+    def _warn_stop_zones(self, zone):
+        """terrain 'S' 를 세고 ★사람이 손으로 적은 열의 실수★ 를 그 자리에서 말한다.
+        [2026-09-07 신설]
+
+        ★오타 하나가 조용히 무시되는 것이 이 열의 제일 위험한 실패다★ — 적었는데
+        안 서는 것보다, 왜 안 섰는지 로그에 아무것도 안 남는 것이 더 나쁘다.
+        """
+        idx = [i for i, z in enumerate(zone) if z in STOP_ZONE_CHARS]
+        if not idx:
+            self.event(f"⏸️ 일시정지 지점 없음 ({LIDAR_ZONE_COLUMN} 열에 'S' 가 없다)")
+            return
+        self.event(f"⏸️ 일시정지 지점 {len(idx)}곳 — WP {', '.join(str(i) for i in idx)} "
+                   f"({LIDAR_ZONE_COLUMN} 열의 'S')")
+        #  ① ★S 는 한 행이어야 한다★ 연속이면 사람이 끌어 적은 것이다 —
+        #     첫 행만 소비되고 나머지는 무시되므로(구간 검사) 그 사실을 말해 준다.
+        runs = [(i0, i1) for i0, i1 in self._zone_segments(zone, STOP_ZONE_CHARS)
+                if i1 > i0]
+        for i0, i1 in runs:
+            self.event(f"⚠️ S 가 {i1 - i0 + 1}행 연속이다 (WP {i0}~{i1}) — "
+                       f"S 는 ★한 행★ 이어야 한다. 첫 행만 쓰고 나머지는 무시한다")
+        #  ② ★S 를 L 구간 안에 두지 않는다★ 그 구간에서는 이 노드가 침묵하므로
+        #     S 판정이 아예 돌지 않는다 = 적었는데 안 선다.
+        inside = [i for i in idx
+                  if any(i0 <= i <= i1 for i0, i1 in self._zone_segments(zone))]
+        if inside:
+            self.event(f"❌ S 가 라이다(L) 구간 안에 있다 — WP "
+                       f"{', '.join(str(i) for i in inside)}. "
+                       f"그 구간은 mppi 가 몰기 때문에 ★일시정지가 발동하지 않는다★. "
+                       f"L 구간 밖으로 옮길 것")
+
     @staticmethod
-    def _zone_segments(zone):
-        """연속된 라이다 구간을 (시작idx, 끝idx) 목록으로 접는다 (로그용)."""
+    def _zone_segments(zone, chars=LIDAR_ZONE_CHARS):
+        """연속된 구간을 (시작idx, 끝idx) 목록으로 접는다.
+        [2026-09-07] chars 를 받아 L 뿐 아니라 S 연속 검사에도 쓴다.
+        ★build_waypoints 의 _lz_starts 도 이 함수를 쓴다 — 로그 전용이 아니다.★"""
         segs, i, n = [], 0, len(zone)
         while i < n:
-            if zone[i] in LIDAR_ZONE_CHARS:
+            if zone[i] in chars:
                 j = i
-                while j + 1 < n and zone[j + 1] in LIDAR_ZONE_CHARS:
+                while j + 1 < n and zone[j + 1] in chars:
                     j += 1
                 segs.append((i, j))
                 i = j + 1
@@ -1746,6 +2158,17 @@ class DrivingNode(Node):
         self._lfd_lpf = self._lfd_out = LFD_MAX_M
         self._warned_infeasible = False
         self.build_curve_profile()
+        #  ★[2026-09-07] 구간 표를 ★주행 시작 직전★ 에 한 번 만든다 (사용자 지시)★
+        #  build_curve_profile 이 채운 wp_s(누적 호길이) 뒤에 와야 한다.
+        #  제어 루프에서는 이 표로 뺄셈만 한다 — lidar_zone_left_m / stop_zone_hit.
+        self._lz_starts = [self.wp_s[i0] for i0, _ in self._zone_segments(self.wp_zone)
+                           if i0 < len(self.wp_s)]
+        self._stop_idx = [i for i, z in enumerate(self.wp_zone)
+                          if z in STOP_ZONE_CHARS]
+        self._stop_done = set()
+        self._wp_idx_prev = 0
+        self._sp_state = SP_NONE
+        self._lz_slow = False
         return True
 
     def build_curve_profile(self):
@@ -1880,13 +2303,18 @@ class DrivingNode(Node):
         self._cb_t = 0.0
         self._cb_release_t = 0.0
         self._cb_lock_gate = 0.0
+        #  ★[2026-09-07] S 일시정지·인계 서행도 상태가 바뀌면 버린다★
+        #  ★여기서 set_brake 를 부르지 않는다★ 아래 '브레이크' 절이 DRIVE_DONE 이면
+        #  2단, 아니면 0단을 무조건 내므로 리니어 처리는 그 한 곳이 소유한다.
+        self._sp_state = SP_NONE
+        self._lz_slow = False
         # ★라이다 이양도 함께 내린다 [2026-09-01]★ 도착·이탈·정지명령·수동전환으로
         #   상태가 바뀌면 조종권은 무조건 이 노드로 돌아온다. 내리지 않으면 도착해
         #   선 차를 mppi 가 계속 몰 수 있다 — publish_state_topics 가 다음 틱에
         #   허락을 False 로 내리지만, 그 한 틱을 기다릴 이유가 없다.
         if self._lidar_zone:
             self._lidar_zone = False
-            self.pub_lidar_permit.publish(Bool(data=False))
+            self.publish_lstatus(LSTATUS_GPS)
         self._rejoin = False
         if msg:
             self.event(msg)
@@ -2166,7 +2594,7 @@ class DrivingNode(Node):
         if not self._lidar_zone:
             return
         self._lidar_zone = False
-        self.pub_lidar_permit.publish(Bool(data=False))
+        self.publish_lstatus(LSTATUS_GPS)          # ★회수를 즉시 알린다★
         self.event(f"🛰️ 라이다 조종권 회수 — {why}")
 
     def begin_lidar_zone(self):
@@ -2193,7 +2621,7 @@ class DrivingNode(Node):
         self._rejoin = False                 # 재수렴 중에 다시 L 로 들어갈 수 있다
         self._clear_transients()             # ★리니어를 놓는다★ (그쪽 docstring)
         self.send(0, 0.0, control=True)      # ★마지막 한 번★ — 그 뒤로는 침묵이다
-        self.pub_lidar_permit.publish(Bool(data=True))   # 한 틱 먼저 알린다
+        self.publish_lstatus(LSTATUS_LIDAR)              # 한 틱 먼저 알린다
         cte = self.signed_cte()
         self.event(f"🛞 라이다 구간 진입 — WP {self.wp_idx}/{len(self.waypoints)} "
                    f"에서 조종권 이양 (CTE {cte:+.2f}m). "
@@ -2260,7 +2688,7 @@ class DrivingNode(Node):
         #  아니라 ★이양 경계에서 한 번★ 이므로 그 규칙과 충돌하지 않는다)
         self.set_brake(BRAKE_NONE)
         self._publish_brake(force=True)
-        self.pub_lidar_permit.publish(Bool(data=False))  # 한 틱 먼저 알린다
+        self.publish_lstatus(LSTATUS_GPS)                # 한 틱 먼저 알린다
         self.event(f"🛰️ GPS 추종 복귀 — WP {self.wp_idx}/{len(self.waypoints)}, "
                    f"CTE {self._rejoin_cte0:+.2f}m "
                    f"(라이다 {time.time() - self._lidar_zone_t0:.1f}s). "
@@ -2283,6 +2711,17 @@ class DrivingNode(Node):
         # ══════════════════════════════════════════════════════════════════════
         #  ★라이다 구간 이양★ (상단 '라이다 구간 이양' 절에 설계 근거)
         # ══════════════════════════════════════════════════════════════════════
+        #  ★진행 포인터의 '지나온 구간' 을 기록한다★ S 는 한 행뿐이라 이것이 없으면
+        #  포인터가 그 행을 건너뛰는 틱에 조용히 사라진다(stop_zone_hit 참고).
+        prev_idx = self._wp_idx_prev
+        self._wp_idx_prev = self.wp_idx
+
+        #  ── S 일시정지 처리 중이면 여기서 끝난다 [2026-09-07] ──
+        #    ★조향은 정지 직전 각을 유지한다★ (begin_stop_zone docstring 참고)
+        if self._sp_state != SP_NONE:
+            self.run_stop_zone(self._last_steer)
+            return
+
         if self.in_lidar_zone():
             if not self._lidar_zone:
                 if not self.begin_lidar_zone():
@@ -2291,6 +2730,18 @@ class DrivingNode(Node):
             return
         if self._lidar_zone:
             self.end_lidar_zone()
+
+        #  ── S 도달·통과 판정 [2026-09-07] ──
+        #    ★라이다 구간 판정보다 뒤에 둔다★ L 구간에서는 이 노드가 침묵하므로
+        #    S 가 발동할 수 없다 — 그래서 'S 를 L 안에 두지 않는다' 가 규약이고,
+        #    select_route 가 그것을 검사해 경고한다.
+        #    ★종점이 리니어를 잡고 있으면 손대지 않는다★ (소유권 우선순위)
+        if self._goal_phase == GOAL_PHASE_NONE:
+            hit = self.stop_zone_hit_in(prev_idx)
+            if hit is not None:
+                self.begin_stop_zone(hit)
+                self.run_stop_zone(self._last_steer)
+                return
 
         # ★경로이탈 안전정지★ 매핑 경로에서 CTE_DEVIATION_M 이상 벗어나면 조향을
         #   더 계산하지 않고 곧바로 도착과 같은 정지 절차로 넘긴다.
@@ -2370,6 +2821,13 @@ class DrivingNode(Node):
         #   차는 여전히 종점을 향해 굴러간다.
         pulse = self.goal_approach(s_left, d2goal, pulse)
 
+        # ── 판단 3-2. 라이다 인계 전 서행 [2026-09-07] ──
+        #   ★종점 바로 뒤·코너 바로 앞★ 이 자리가 소유권 순서다:
+        #       종점 접근 > S 일시정지 > ★L 인계 서행★ > 코너 1단 제동
+        #   goal_approach 가 이번 틱에 리니어를 물었으면 그쪽 _goal_phase 가 이미
+        #   NONE 이 아니므로 이 함수가 스스로 손을 뗀다(그쪽 ok 조건).
+        pulse = self.lidar_approach(pulse)
+
         # ── 판단 4. 코너 1단 선행제동 [2026-08-18] ──
         #   ★반드시 goal_approach 뒤에 둔다★ 그쪽이 이번 틱에 종점 제동을 물었다면
         #   _goal_phase 가 이미 NONE 이 아니므로 corner_brake 가 스스로 손을 뗀다.
@@ -2431,26 +2889,35 @@ class DrivingNode(Node):
         v = (MAX_PULSE_LIMIT * MS_PER_PULSE) if kmh is None else max(0.0, kmh) / 3.6
         vs = (f"{v/MS_PER_PULSE:.1f}펄스" if kmh is not None
               else f"★속도 미수신★ {v/MS_PER_PULSE:.1f}펄스로 가정")
-        need1 = self.stop_dist(v, self.goal_a1, GOAL_BRAKE1_LAG_S) + GOAL_BRAKE_MARGIN_M
-        need2 = GOAL_BRAKE2_K * self.stop_dist(v, GOAL_BRAKE2_MS2, GOAL_BRAKE2_LAG_S) \
+        #  ★[2026-09-07] 기준이 '정지' 에서 '유지펄스(2)' 로 바뀌었다★
+        #  종전 need1/need2 는 "종점 전에 ★세울 수 있는가★" 였다. 지금은 종점을
+        #  ★2펄스로 통과★ 하고 도착 즉시 2단으로 세우는 설계이므로, 물어야 하는
+        #  질문도 "종점 전에 ★2펄스로 내려놓을 수 있는가★" 다.
+        #  ★이 재기준화를 빠뜨리면 백스톱이 5 m 서행보다 먼저 걸려 설계가 무효가 된다★
+        #    4펄스 : 종전 need2 5.18 m > GOAL_DECEL_M 5.0 → 늘 2단으로 직행했다
+        #    재기준 need2 4.33 m < 5.0 → 1단 서행이 먼저 걸린다 (의도대로)
+        v_hold = GOAL_HOLD_PULSE * MS_PER_PULSE
+        need1 = self.decel_dist(v, v_hold, self.goal_a1, GOAL_BRAKE1_LAG_S) \
             + GOAL_BRAKE_MARGIN_M
-        # ★행정 램프가 끝난 자리에서도 2단 문턱보다 위에 있도록 체결 지점을 내린다★
-        #   (근거는 상수 GOAL_BACKSTOP_SLACK_M 절 — 재현 시뮬이 잡은 결함이다)
-        if self.goal_backstop:
-            need1 = max(need1,
-                        need2 + v * GOAL_BRAKE1_LAG_S + GOAL_BACKSTOP_SLACK_M)
+        need2 = GOAL_BRAKE2_K * self.decel_dist(v, v_hold, GOAL_BRAKE2_MS2,
+                                                GOAL_BRAKE2_LAG_S) \
+            + GOAL_BRAKE_MARGIN_M
+        #  ★종전의 'need1 을 need2 밑으로 내리는' 보정은 없앴다★ 체결 지점이 이제
+        #  속도가 아니라 ★고정 5 m★ 라 내릴 대상이 없다. 늦었을 때의 보호는 아래
+        #  백스톱 분기가 그대로 맡는다(need2 가 5 m 보다 크면 그쪽이 먼저 걸린다).
+        #    6펄스 : need2 9.23 m > 5.0 → ★백스톱이 종점을 지킨다★ (설계대로)
 
         # ── ① 아직 손대지 않았다 : 감시 창 안에서 '지금 물어야 하는가'만 본다 ──────
         if self._goal_phase == GOAL_PHASE_NONE:
             self._diag_goal_need = need1
             if not (s_left <= self.goal_brake_m and d2goal <= self.goal_brake_m):
                 return pulse
-            if kmh is not None and kmh <= self.goal_creep_kmh:
-                # 이미 느리다(저속 코너를 빠져나온 직후 등) — 물 이유가 없다
+            if kmh is not None and kmh <= GOAL_HOLD_PULSE * MS_PER_PULSE * 3.6:
+                # 이미 유지펄스 밑이다(저속 코너를 빠져나온 직후 등) — 물 이유가 없다
                 self._goal_phase = GOAL_PHASE_CREEP
                 self._goal_still_t = 0.0
                 self.event(f"🐢 종점 {d2goal:.1f}m — 이미 {kmh:.1f}km/h 라 제동 없이 "
-                           f"{GOAL_CREEP_PULSE}펄스 크립")
+                           f"{GOAL_HOLD_PULSE}펄스 유지")
             elif self.goal_backstop and d2goal <= need2:
                 # ★진입부터 늦었다 — 1단을 건너뛰고 2단으로 곧장 간다★
                 #   여기서 1단을 물면 다음 틱에 곧바로 2단으로 올리게 되고, B보드는
@@ -2463,11 +2930,17 @@ class DrivingNode(Node):
                     f"🛑 종점 2단 — {d2goal:.1f}m 남아 1단으로는 이미 늦었다 "
                     f"(1단 필요 {need1:.1f}m / 2단 필요 {need2:.1f}m, 지금 {vs}). "
                     f"★감시 창(goal_brake_m={self.goal_brake_m:.0f}m)이 좁지 않은지 볼 것★")
-            elif d2goal <= need1:
+            elif d2goal <= GOAL_DECEL_M:
+                #  ★체결 지점은 고정 5 m 다 (사용자 지시)★ need1 은 진단으로만 쓴다 —
+                #  필요 거리가 5 m 를 넘으면 "이 속도로는 5 m 안에 못 내려온다" 는
+                #  뜻이고, 그때는 종점을 유지펄스보다 빠르게 통과한다(백스톱이 받는다).
+                short = max(0.0, need1 - GOAL_DECEL_M)
                 self._goal_engage(
                     GOAL_PHASE_BRAKE1, BRAKE_SOFT, now, v,
-                    f"🔻 종점 1단 제동 — {d2goal:.1f}m 남음 "
-                    f"(필요 {need1:.1f}m, 지금 {vs}, a1={self.goal_a1:.2f} 가정)")
+                    f"🔻 종점 1단 제동 — {GOAL_DECEL_M:.0f}m 지점 통과, "
+                    f"{GOAL_HOLD_PULSE}펄스로 내린다 (지금 {vs}, "
+                    f"a1={self.goal_a1:.2f} 로 {need1:.1f}m 필요"
+                    + (f" — ★{short:.1f}m 모자란다★" if short > 0.2 else "") + ")")
             else:
                 return pulse                       # 아직 이르다 — 그대로 굴러간다
 
@@ -2509,6 +2982,24 @@ class DrivingNode(Node):
         여유(margin)는 넣지 않는다 — 단계마다 다르게 쓰려고 부르는 쪽에서 더한다."""
         return v * lag + (v * v) / (2.0 * max(a, 0.05))
 
+    @staticmethod
+    def decel_dist(v0, v1, a, lag):
+        """v0 → v1 로 ★줄이는 데★ 필요한 거리 [m]. (stop_dist 의 일반화 — v1=0 이면 같다)
+        [2026-09-07 신설]
+
+        ★왜 필요한가★ 이 스택의 감속은 이제 대부분 '세우기' 가 아니라 '내려놓기' 다:
+          · 종점 접근  : 종점을 ★유지펄스(2)★ 로 통과한다 (goal_approach)
+          · 라이다 인계: L 구간을 ★2펄스★ 로 넘긴다 (lidar_approach)
+          · 코너 선행제동 : 코너 목표속도까지만 줄인다 (corner_brake 는 이미 이 식이다)
+        정지 기준(stop_dist)으로 재면 필요 거리를 ★과대평가★ 해 매번 너무 일찍 물고,
+        그 결과 평균속도가 설계보다 훨씬 낮아진다.
+
+            d = v0·lag + (v0² − v1²) / 2a        (v1 ≥ v0 이면 0)
+        """
+        if v1 >= v0:
+            return 0.0
+        return v0 * lag + (v0 * v0 - v1 * v1) / (2.0 * max(a, 0.05))
+
     def _goal_engage(self, phase, level, now, v, msg):
         """제동 단계로 들어간다 — 리니어를 물고 타이머·기준속도를 새로 잡는다.
         ★단계마다 타이머를 새로 잡는다★ 1단에서 2단으로 올라가면 최대 물림 시간도
@@ -2533,7 +3024,7 @@ class DrivingNode(Node):
                 + 0.5 * (self.goal_a1 + A_COAST_MS2) * GOAL_RELEASE_RETRACT_S
                 + A_COAST_MS2 * GOAL_RELEASE_TORQUE_S)
         return max(self.goal_creep_kmh,
-                   (GOAL_CREEP_PULSE * MS_PER_PULSE + lead) * 3.6)
+                   (GOAL_HOLD_PULSE * MS_PER_PULSE + lead) * 3.6)
 
     def _goal_stopped(self, now):
         """제동 중 '완전정지' 판정 — ★엔코더로만 본다★ (근거는 상수 GOAL_STOP_HOLD_S 절).
@@ -2554,18 +3045,30 @@ class DrivingNode(Node):
         여기서만 쓴다. 코너 1단 제동의 비대칭(체결=기하 / 해제=실측)과 같은 규칙이고,
         이유도 같다 — 실측이 이상해도 결과가 언제나 ★푸는 쪽★ 이면 되먹임이 안 생긴다.
 
-          ① 완전정지    : 사용자 요구 그대로 — 섰는데 종점이 남았으면 크립으로 마저 간다
-          ② 크립 속도   : ★아직 구르는 중일 때 넘기는 쪽이 확실하다★ 정지한 차를 다시
+          ① 완전정지    : 사용자 요구 그대로 — 섰는데 종점이 남았으면 유지펄스로 마저 간다
+          ② ★`/encoder` 가 유지펄스로 내려왔다★ [2026-09-07 신설 — 사용자 지시]
+                          "리니어 1단을 체결하여 /encoder 가 2펄스가 될 때까지" 가
+                          그대로 이 조건이다. self.enc_pulse 는 ★중앙값 3점 + 좌우
+                          평균(바퀴 하나 기준)★ 이라 /encoder 원값(합)과 눈금이 다르다 —
+                          합과 2 를 직접 비교하면 실제로는 4펄스에서 풀린다.
+          ③ 해제선 속도 : ★아직 구르는 중일 때 넘기는 쪽이 확실하다★ 정지한 차를 다시
                           떼어내는 것이 이 차의 최대 난점이라(67초 정체 실측) 세우기
                           전에 넘긴다. 단 종점이 GOAL_CREEP_MIN_LEFT_M 안이면 그냥 두어
                           도착 판정이 서게 한다 — 풀었다 곧바로 2단을 무는 왕복 방지.
-          ③ 시간 초과   : 속도·엔코더가 전부 이상해도 ★리니어를 문 채 굳지 않는다★.
+                          ★대개 이 조건이 ②보다 먼저 걸린다★ 해제 명령 뒤에도 차는
+                          한참 더 주므로(goal_release_kmh 의 선행량 ≈1.25 m/s), 유지펄스
+                          6.4 km/h 를 겨누면 해제선이 ~10.9 km/h 로 나온다. ②를 기다렸다
+                          풀면 그때는 이미 유지펄스 밑으로 내려가 있다.
+          ④ 시간 초과   : 속도·엔코더가 전부 이상해도 ★리니어를 문 채 굳지 않는다★.
                           굳으면 차는 서 있고 도착 판정도 영영 서지 않는다.
         """
         held = now - self._goal_brake_t
         rel = self.goal_release_kmh()
         if self._goal_stopped(now):
             why = f"완전정지 확인 — 종점 {d_left:.1f}m 미달"
+        elif self.enc_pulse <= GOAL_HOLD_ENC_PULSE:
+            why = (f"엔코더 {self.enc_pulse:.1f}펄스 ≤ {GOAL_HOLD_ENC_PULSE} — "
+                   f"목표 속도로 내려왔다 (종점 {d_left:.1f}m)")
         elif (kmh is not None and kmh <= rel
                 and d_left > GOAL_CREEP_MIN_LEFT_M):
             why = (f"{kmh:.1f}km/h ≤ 해제선 {rel:.1f}km/h — 종점 {d_left:.1f}m 남아 "
@@ -2579,7 +3082,7 @@ class DrivingNode(Node):
         self._goal_phase = GOAL_PHASE_CREEP
         self._goal_still_t = 0.0     # 킥 타이머(creep_pulse)는 여기서부터 새로 잰다
         self.event(f"🐢 종점 {label} 해제 — {why}. "
-                   f"{GOAL_CREEP_PULSE}펄스로 종점까지")
+                   f"{GOAL_HOLD_PULSE}펄스로 종점까지")
         return True
 
     def creep_pulse(self):
@@ -2601,13 +3104,13 @@ class DrivingNode(Node):
             self._goal_still_t = 0.0
             self._goal_kicks = 0
             self._goal_kick_done = False
-            return GOAL_CREEP_PULSE
+            return GOAL_HOLD_PULSE
 
         if self._goal_still_t == 0.0:
             self._goal_still_t = now
-            return GOAL_CREEP_PULSE
+            return GOAL_HOLD_PULSE
         if now - self._goal_still_t < GOAL_KICK_WAIT_S:
-            return GOAL_CREEP_PULSE                    # 제동 해제 직후의 순간 정지 대비
+            return GOAL_HOLD_PULSE                    # 제동 해제 직후의 순간 정지 대비
 
         if self._goal_kicks >= GOAL_KICK_MAX_N:
             if not self._goal_kick_done:
@@ -2718,11 +3221,10 @@ class DrivingNode(Node):
 
         v_target = max(self.min_speed_ms, min(self.max_speed_ms, v_target))
         # 정수 펄스로 환산(구 kasa_units.ms_to_pulse 와 같은 반올림).
-        # ★하한이 CORNER_MIN_PULSE(2)★ 인 이유는 그 상수 주석에 있다 — 1펄스로
+        # ★하한이 self.corner_min_pulse★ 인 이유는 그 상수 주석에 있다 — 1펄스로
         #   내려가면 이 차는 코너에서 아예 못 움직여 그 자리에 선다(실측).
         pulse = int(v_target / MS_PER_PULSE + 0.5)
-        pulse = max(min(CORNER_MIN_PULSE, self.drive_pulse),
-                    min(self.drive_pulse, pulse))
+        pulse = max(self.corner_min_pulse, min(self.drive_pulse, pulse))
         return pulse, gate_dist, gate_v_corner
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2768,6 +3270,8 @@ class DrivingNode(Node):
         ok = (self.cb_enable
               and self.state == S_DRIVE_RUN
               and self._goal_phase == GOAL_PHASE_NONE   # 종점이 소유권을 가졌으면 손 뗀다
+              and self._sp_state == SP_NONE             # ★S 일시정지★ [2026-09-07]
+              and not self._lz_slow                     # ★라이다 인계 서행★ [2026-09-07]
               and self.tl_brake_req() == 0              # 신호등이 소유권을 가졌으면 손 뗀다
               and not self.estop
               and v_now is not None)
@@ -2824,7 +3328,7 @@ class DrivingNode(Node):
         if v_corner is None:
             return pulse
         cap = int(v_corner / MS_PER_PULSE + 0.5)
-        cap = max(min(CORNER_MIN_PULSE, self.drive_pulse), cap)
+        cap = max(self.corner_min_pulse, cap)
         return min(pulse, cap)
 
     def _cb_hold(self, now, v_now, ok, v_corner, gate_dist):
@@ -2859,7 +3363,7 @@ class DrivingNode(Node):
         #   v_corner 가 사라졌으면(코너가 스캔창을 벗어남) 코너 하한을 목표로 본다 —
         #   그 경우 남은 제동 이유가 없으니 곧바로 풀리는 것이 맞다.
         target = (v_corner if v_corner is not None
-                  else CORNER_MIN_PULSE * MS_PER_PULSE)
+                  else self.corner_min_pulse * MS_PER_PULSE)
         if v_now <= target + CORNER_BRAKE_RELEASE_LEAD_MS:
             a_meas = max(0.0, self._cb_v0 - v_now) / max(held, 1e-3)
             self._cb_release(
@@ -3233,6 +3737,7 @@ class DrivingNode(Node):
         msg = Twist()
         msg.linear.x = float(out)                  # ★펄스 그대로 (m/s 아님)★
         msg.angular.z = float(steer_deg)           # ★− 좌 / + 우★
+        self._last_steer = float(steer_deg)        # S 일시정지가 이 각을 유지한다
         self.pub_cmd.publish(msg)
         self.pub_state.publish(Bool(data=bool(control)))
 
@@ -3457,8 +3962,7 @@ class DrivingNode(Node):
         #   스스로 손을 뗀다(그쪽 permit_stale_s). 그래서 False 도 계속 내보낸다.
         #   ★S_DRIVE_RUN 밖에서는 무조건 False★ — 매핑 중이나 도착 뒤에 라이다가
         #   차를 몰기 시작하면 안 된다. _lidar_zone 은 enter() 가 상태 전이마다 내린다.
-        self.pub_lidar_permit.publish(Bool(
-            data=bool(self._lidar_zone and self.state == S_DRIVE_RUN)))
+        self.publish_lstatus(self.lstatus_now())
         ego = Float64MultiArray()
         ego.data = [
             float(self.x), float(self.y),

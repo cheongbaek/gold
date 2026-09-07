@@ -263,7 +263,7 @@ class HudNode(Node):
         #  ★조종권 [2026-09-01]★ 지금 /cmd_vel_raw 를 누가 내고 있나. 이 표시가
         #  없으면 주행 중에 GPS 추종과 라이다 회피 중 무엇이 차를 몰고 있는지
         #  화면으로 알 수 없다 — 라바콘 구간에서 조향이 이상할 때 원인을 못 가른다.
-        self.lidar_permit = Sample()      # driving → mppi : "네가 몰아라"
+        self.lstatus = Sample()           # driving → mppi : 구간 문자 '0'|'L'|'S'
         self.lidar_active = Sample()      # mppi → driving : "나 살아 있다"
         self.drive_event = Sample()
         self.ego = Sample()
@@ -352,8 +352,9 @@ class HudNode(Node):
                                  lambda m: self.tl_enable.set(bool(m.data)), qos)
         self.create_subscription(Bool, '/tl_permit',
                                  lambda m: self.tl_permit.set(bool(m.data)), qos)
-        self.create_subscription(Bool, '/lidar_permit',
-                                 lambda m: self.lidar_permit.set(bool(m.data)), qos)
+        #  ★[2026-09-07] /lidar_permit(Bool) → /lstatus(String)★ 값이 곧 조종권이다.
+        self.create_subscription(String, '/lstatus',
+                                 lambda m: self.lstatus.set(str(m.data)), qos)
         self.create_subscription(Bool, '/lidar_active',
                                  lambda m: self.lidar_active.set(bool(m.data)), qos)
         self.create_subscription(Bool, '/tl/stop_line_wait',
@@ -747,7 +748,8 @@ class HudApp:
                    보인다면 use_lidar:=false 로 띄웠거나 mppi 가 죽은 것이다.
         · 라이다 대기  mppi 는 살아 있고 회피 구간을 기다린다 (평소 GPS 와 함께 뜸)
         """
-        p = self.n.lidar_permit.get(stale)
+        p = self.n.lstatus.get(stale)
+        p = None if p is None else (p == 'L')
         a = self.n.lidar_active.get(stale)
         if p is None and a is None:
             return '조종 —', PANEL2, DIM          # 이양 기능이 없는 구성이다

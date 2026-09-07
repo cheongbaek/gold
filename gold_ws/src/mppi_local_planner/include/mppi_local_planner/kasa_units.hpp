@@ -90,7 +90,10 @@ constexpr double CTE_BLIND_M             = 0.26;
 constexpr double MS_PER_PULSE  = 0.884;
 constexpr double KMH_PER_PULSE = 3.182;
 constexpr int    PULSE_PROTOCOL_MAX  = 15;   // A보드 수용 상한 (47.7 km/h)
-constexpr int    PULSE_OPERATING_MAX = 4;    // white1 MAX_PULSE_LIMIT (12.7 km/h)
+//  ★[2026-09-07] 4 → 6★ white1 MAX_PULSE_LIMIT 을 6 으로 올린 것과 ★짝이다★
+//  (driving.py 의 그 상수 주석 참고 — 상한만 열고 런치 기본은 4 로 두었다).
+//  두 곳이 갈라지면 L 구간에서 속도가 뚝 떨어지거나 반대로 GPS 구간보다 빨라진다.
+constexpr int    PULSE_OPERATING_MAX = 6;    // white1 MAX_PULSE_LIMIT (19.1 km/h)
 
 // ★A보드 재가속 함정 (kasa_0804_A.ino / CHANGELOG 2026-08-18(2))★
 //    if (pwm > 0 && pwm < PWM_MAX && abs(err) < I_ACCUM_ERR_MAX /* =4 */) pidI += err;

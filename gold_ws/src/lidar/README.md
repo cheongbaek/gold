@@ -265,7 +265,7 @@ ros2 bag play ~/catkin_ws/rosbag/txa1
   구간에서만 `driving.py` 가 조종권을 놓고 **`mppi_local_planner`** 가 몬다.
   발행자를 시간축에서 배타로 만드는 방식이라 `/cmd_vel_raw` 경합이 없다.
 
-      driving ──/lidar_permit──▶ mppi        "이 구간은 네가 몰아라"
+      driving ──/lstatus('L')──▶ mppi        "이 구간은 네가 몰아라"
       driving ◀──/lidar_active── mppi        "나 살아 있다" (매 틱)
 
   실행은 `ros2 launch white1 one_launch.py` 하나다(`use_lidar` 기본 true).

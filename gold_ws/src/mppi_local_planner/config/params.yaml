@@ -10,6 +10,16 @@
 # ══════════════════════════════════════════════════════════════════════════
 mppi_local_planner_node:
   ros__parameters:
+    # ══════════════════════════════════════════════════════════════════════
+    #  ★★ 최고속도는 ★여기 한 값★ 으로 정한다 [2026-09-07] ★★
+    # ══════════════════════════════════════════════════════════════════════
+    #  종전에는 mppi.desired_speed · max_speed · min_speed · kasa.max_pulse 넷이
+    #  짝이라 한쪽만 고치면 조용히 안 들었다. 지금은 노드가 이 값에서 나머지를
+    #  유도한다(mppi_local_planner_node.cpp 의 cruise_pulse 상자 참고).
+    #      1펄스 = 0.884 m/s = 3.182 km/h
+    #      2펄스 = 1.768 m/s = 6.36 km/h   ← 라바콘 구간 기본
+    #  ★0 으로 두면 유도를 끄고 아래 개별 값을 그대로 쓴다★ (구 설정 호환)
+    cruise_pulse: 2
     lidar_topic: "/ouster/points"
     imu_topic: "/imu"            # ★외장 iAHRS★ (white1 iahrs). /ouster/imu 는 자이로만이라 드리프트가 큼
     imu_use_orientation: true    # AHRS 쿼터니언 yaw 사용. false 면 자이로 적분
@@ -25,14 +35,19 @@ mppi_local_planner_node:
     #  그 밖에는 침묵하고 GPS 추종(driving.py)이 낸다. 설계 근거는 driving.py
     #  헤더 '라이다 구간 이양' 절과 노드 생성자의 상자에 있다.
     #
-    #  ★require_permit: false 는 종전의 '런치 = 출발' 이다★ 라이다 단독 시험용.
+    #  ★[2026-09-07] /lidar_permit(Bool) → /lstatus(String) 로 대체★
+    #  driving 이 매핑 CSV 의 terrain 을 정규화해 '0'|'L'|'S' 로 매 틱 낸다.
+    #  ★'L' 이 곧 허락이다★ — '0'(GPS 추종)·'S'(일시정지)에서는 이 노드가 침묵한다.
+    #  driving 이 조종권을 회수하면(E-STOP·GPS 두절) 경로가 그대로여도 '0' 이 온다.
+    #
+    #  ★require_lstatus: false 는 종전의 '런치 = 출발' 이다★ 라이다 단독 시험용.
     #  white1 one_launch 로 실차를 띄울 때 이 값이 false 면 이 노드가 GPS 추종
     #  구간에서도 발행해 driving.py 와 20Hz 로 서로를 덮는다 — 반드시 true.
     handover:
-      permit_topic: "/lidar_permit"     # driving → 나 : "네가 몰아라"
+      lstatus_topic: "/lstatus"         # driving → 나 : 구간 문자 '0' | 'L' | 'S'
       active_topic: "/lidar_active"     # 나 → driving : "나 살아 있다" (매 틱)
-      require_permit: true
-      permit_stale_s: 1.0               # 허락이 이보다 낡으면 침묵 (driving 은 20Hz)
+      require_lstatus: true
+      lstatus_stale_s: 1.0              # 이보다 낡으면 침묵 (driving 은 20Hz)
 
     # 장착 (lidar cone_lidar.yaml / drive_lidar.yaml 2026-08-25 실측)
     sensor_height_m: 1.17
@@ -67,6 +82,7 @@ mppi_local_planner_node:
     # ── 제원 (실측) ──────────────────────────────────────────────────────
     wheelbase: 1.25              # [m] 축거 1250mm
     track_width: 1.10            # [m] 윤거 1100mm (white/kasa_units.py). lidar yaml 0.65 는 1/5 잔재
+    #  ⚠️ 아래 셋은 ★cruise_pulse > 0 이면 노드가 덮어쓴다★ (0 으로 둘 때만 유효)
     max_speed: 2.05              # [m/s] 플래너 하드캡. 2펄스(1.768) 위 여유
     min_speed: 0.80              # 회피 중 1펄스(~3 km/h, 원본 3params 와 같음)를 허용
     max_steering_angle: 0.40     # [rad] ≈23°. 원본 3params 와 동일. 0.32 는 불감대에 막혔다
@@ -84,8 +100,9 @@ mppi_local_planner_node:
     cmd.steer_deadband_deg: 0.0  # SW 불감대 끔. B보드 1.41° 가 이미 있다
     cmd.dodge_steer_deg: 6.0     # |조향|이 이보다 크면 1펄스로 회피 (원본 ~3 km/h)
 
-    # 액추에이터 상한. ★2 = 순항 ≈ 6.4 km/h 를 못 넘긴다★
-    kasa.max_pulse: 2
+    # 액추에이터 상한 — ★실제로 차를 묶는 값★. cruise_pulse 에서 유도되므로
+    #   여기 적지 않는다(적으면 그쪽이 이겨 cruise_pulse 와 갈라진다).
+    # kasa.max_pulse: 2
     kasa.require_auto_mode: true
     kasa.require_estop_clear: true
 
@@ -123,7 +140,7 @@ mppi_local_planner_node:
       noise_std_v: 0.12
       noise_std_delta: 0.28
       noise_correlation: 0.65
-      desired_speed: 1.768       # 직진 순항 2펄스. 회피 중엔 노드가 1펄스로 내린다
+      desired_speed: 1.768       # ★cruise_pulse 가 덮어쓴다★ (0 으로 둘 때만 유효)
       weight_obstacle: 1.4
       weight_path: 1.0
       weight_heading: 0.9

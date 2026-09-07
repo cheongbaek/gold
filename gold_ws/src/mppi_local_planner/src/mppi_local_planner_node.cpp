@@ -15,6 +15,7 @@
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
 
 #include "mppi_local_planner/ego_costmap.hpp"
@@ -81,6 +82,13 @@ public:
     if (cmd_vel_topic_ != "/cmd_vel_raw" && !has_parameter("kasa.cmd_vel_topic")) {
       declare_parameter<std::string>("kasa.cmd_vel_topic", cmd_vel_topic_);
     }
+    //  ★kasa.max_pulse 도 cruise_pulse 에서 유도한다 [2026-09-07]★
+    //  이 값이 ★실제로 차를 묶는 상한★ 이다(msToPulse 의 clamp). KasaActuator 가
+    //  스스로 declare 하므로 ★그보다 먼저★ 여기서 박아 두어야 이긴다.
+    //  yaml/런치가 명시했으면 그쪽을 존중한다(has_parameter 검사).
+    if (cruise_pulse_ > 0 && !has_parameter("kasa.max_pulse")) {
+      declare_parameter<int>("kasa.max_pulse", cruise_pulse_);
+    }
     actuator_ = std::make_unique<lidar::kasa::KasaActuator>(this);
     static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
 
@@ -106,18 +114,21 @@ public:
     //  driving.py 가 동시에 내면 20Hz 로 서로를 덮는다. 겹치지 않게 하는 것이
     //  이 계약의 전부다 — 자세한 설계는 driving.py 헤더 '라이다 구간 이양' 절.
     //
-    //    구독 /lidar_permit : driving → 나. "이 구간은 네가 몰아라"
+    //    구독 /lstatus      : driving → 나. 구간 문자 '0' | 'L' | 'S'
     //    발행 /lidar_active : 나 → driving. "나 살아 있다" (매 틱. ★값보다 신선도★)
     //
     //  ★허락이 없으면 이 노드는 아무것도 발행하지 않는다★ hold() 조차 부르지
     //  않는다 — 그 함수도 /cmd_vel_raw 에 0 을 실제로 발행하기 때문이다.
-    //  ★/lidar_permit 이 끊기면 침묵한다★ (permit_stale_s). driving 이 죽었을 때
+    //  ★[2026-09-07] /lidar_permit(Bool) → /lstatus(String) 로 대체★
+    //  driving 이 경로의 terrain 을 정규화해 매 틱 낸다. 'L' 이 곧 허락이고,
+    //  driving 이 조종권을 회수하면(E-STOP·GPS 두절) 경로가 그대로여도 '0' 이 온다.
+    //  ★/lstatus 가 끊기면 침묵한다★ (lstatus_stale_s). driving 이 죽었을 때
     //  마지막 True 를 붙들고 계속 몰지 않기 위해서다 — 신선도가 곧 허락이다.
-    permit_sub_ = create_subscription<std_msgs::msg::Bool>(
-      permit_topic_, rclcpp::QoS(10),
-      [this](const std_msgs::msg::Bool::ConstSharedPtr & m) {
-        permit_.store(m->data, std::memory_order_relaxed);
-        permit_stamp_.store(nowSeconds(), std::memory_order_relaxed);
+    lstatus_sub_ = create_subscription<std_msgs::msg::String>(
+      lstatus_topic_, rclcpp::QoS(10),
+      [this](const std_msgs::msg::String::ConstSharedPtr & m) {
+        lstatus_.store(m->data.empty() ? '0' : m->data[0], std::memory_order_relaxed);
+        lstatus_stamp_.store(nowSeconds(), std::memory_order_relaxed);
       });
     active_pub_ = create_publisher<std_msgs::msg::Bool>(active_topic_, rclcpp::QoS(10));
 
@@ -201,19 +212,34 @@ private:
     declare_parameter<std::string>("path_topic", "/mppi_local_planner/local_path");
     declare_parameter<std::string>("reference_path_topic", "/mppi_local_planner/reference_path");
     // ── 조종권 계약 [2026-09-01] (위 생성자의 상자 참고) ──
-    declare_parameter<std::string>("handover.permit_topic", "/lidar_permit");
+    declare_parameter<std::string>("handover.lstatus_topic", "/lstatus");
     declare_parameter<std::string>("handover.active_topic", "/lidar_active");
     //  ★false 로 두면 종전처럼 '런치 = 출발' 이다★ 라이다 단독 시험용. 실차에서
     //  white1 one_launch 로 띄울 때는 반드시 true 여야 한다 — 아니면 이 노드가
     //  GPS 추종 구간에서도 /cmd_vel_raw 를 내며 driving.py 와 다툰다.
-    declare_parameter<bool>("handover.require_permit", true);
+    declare_parameter<bool>("handover.require_lstatus", true);
     //  허락이 이보다 낡으면 '허락 없음'. driving 은 20Hz 로 내므로 1.0s 는 20틱 여유.
-    declare_parameter<double>("handover.permit_stale_s", 1.0);
+    declare_parameter<double>("handover.lstatus_stale_s", 1.0);
     declare_parameter<std::string>("base_frame_id", "os_sensor");
 
     // ★금색차 실측 (lidar/kasa_units.hpp · drive_lidar.yaml)★
     declare_parameter<double>("wheelbase", lidar::kasa::WHEELBASE_M);
     declare_parameter<double>("track_width", 1.10);  // white/kasa_units.py 윤거 실측
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★[2026-09-07] 순항속도를 ★한 값★ 으로 묶었다 (사용자 지시)★
+    // ══════════════════════════════════════════════════════════════════════
+    //  종전에는 네 곳이 짝이었다 — mppi.desired_speed(순항) · max_speed(플래너
+    //  하드캡) · min_speed(하한) · kasa.max_pulse(액추에이터 상한). 그래서
+    //  ★한쪽만 올리면 조용히 안 듣는다★:
+    //    · desired_speed 만 올리면 max_speed 가 먼저 자른다
+    //    · 둘을 올리고 kasa.max_pulse 를 안 올리면 msToPulse 가 자른다
+    //  런치 주석도 "짝을 맞춰 둘 것" 이라고만 적혀 있었다 — 그 주석이 필요하다는
+    //  것 자체가 설계 결함이다.
+    //
+    //  ★지금은 cruise_pulse 하나만 고치면 된다★ 나머지 셋은 여기서 유도한다.
+    //  0 보다 크면 유도가 이기고, 0 이면 종전처럼 개별 파라미터를 그대로 쓴다
+    //  (오래된 params.yaml·런치 호환).
+    declare_parameter<int>("cruise_pulse", 2);
     declare_parameter<double>("max_speed", lidar::kasa::pulseToMs(2) * 1.15);
     declare_parameter<double>("min_speed", lidar::kasa::pulseToMs(1) * 0.90);
     declare_parameter<double>("max_steering_angle", 0.40);
@@ -344,16 +370,26 @@ private:
     costmap_topic_ = get_parameter("costmap_topic").as_string();
     path_topic_ = get_parameter("path_topic").as_string();
     reference_path_topic_ = get_parameter("reference_path_topic").as_string();
-    permit_topic_ = get_parameter("handover.permit_topic").as_string();
+    lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
     active_topic_ = get_parameter("handover.active_topic").as_string();
-    require_permit_ = get_parameter("handover.require_permit").as_bool();
-    permit_stale_s_ = std::max(0.0, get_parameter("handover.permit_stale_s").as_double());
+    require_lstatus_ = get_parameter("handover.require_lstatus").as_bool();
+    lstatus_stale_s_ =
+      std::max(0.0, get_parameter("handover.lstatus_stale_s").as_double());
     base_frame_id_ = get_parameter("base_frame_id").as_string();
 
     vehicle_params_.wheelbase = get_parameter("wheelbase").as_double();
     vehicle_params_.track_width = get_parameter("track_width").as_double();
     vehicle_params_.max_speed = get_parameter("max_speed").as_double();
     vehicle_params_.min_speed = get_parameter("min_speed").as_double();
+    //  ★cruise_pulse 가 이긴다★ (위 선언부의 상자 참고)
+    cruise_pulse_ = get_parameter("cruise_pulse").as_int();
+    if (cruise_pulse_ > 0) {
+      cruise_pulse_ = std::min(cruise_pulse_, lidar::kasa::PULSE_PROTOCOL_MAX);
+      //  하드캡은 순항의 15% 위 — 플래너가 순항을 낼 수 있게 여유만 준다.
+      vehicle_params_.max_speed = lidar::kasa::pulseToMs(cruise_pulse_) * 1.15;
+      //  하한은 회피 중 1펄스를 허용한다(원본 3params 와 같은 뜻).
+      vehicle_params_.min_speed = lidar::kasa::pulseToMs(1) * 0.90;
+    }
     vehicle_params_.max_steering_angle = get_parameter("max_steering_angle").as_double();
     vehicle_params_.rear_overhang = get_parameter("rear_overhang").as_double();
     vehicle_params_.front_overhang = get_parameter("front_overhang").as_double();
@@ -432,6 +468,9 @@ private:
     mppi_params_.noise_std_delta = get_parameter("mppi.noise_std_delta").as_double();
     mppi_params_.noise_correlation = get_parameter("mppi.noise_correlation").as_double();
     mppi_params_.desired_speed = get_parameter("mppi.desired_speed").as_double();
+    if (cruise_pulse_ > 0) {
+      mppi_params_.desired_speed = lidar::kasa::pulseToMs(cruise_pulse_);
+    }
     mppi_params_.weight_obstacle = get_parameter("mppi.weight_obstacle").as_double();
     mppi_params_.weight_path = get_parameter("mppi.weight_path").as_double();
     mppi_params_.weight_heading = get_parameter("mppi.weight_heading").as_double();
@@ -505,21 +544,23 @@ private:
   }
 
   /// 지금 이 노드가 /cmd_vel_raw 를 내도 되는가.
-  /// ★신선도가 곧 허락이다★ driving 이 죽어 토픽이 끊기면 마지막 True 를 붙들지
+  /// ★신선도가 곧 허락이다★ driving 이 죽어 토픽이 끊기면 마지막 'L' 을 붙들지
   /// 않고 손을 뗀다 — 붙들면 아무도 감시하지 않는 채로 차를 계속 몬다.
+  /// ★'L' 하나만 본다★ '0'(GPS 추종)·'S'(일시정지)에서는 자동으로 침묵이므로
+  /// 일시정지 로직을 위해 이 노드에 더 넣을 코드가 없다.
   bool permitted() const
   {
-    if (!require_permit_) {
+    if (!require_lstatus_) {
       return true;                       // 라이다 단독 시험 — 종전의 '런치 = 출발'
     }
-    if (!permit_.load(std::memory_order_relaxed)) {
-      return false;
-    }
-    const double stamp = permit_stamp_.load(std::memory_order_relaxed);
+    const double stamp = lstatus_stamp_.load(std::memory_order_relaxed);
     if (stamp <= 0.0) {
       return false;                      // 한 번도 못 받았다
     }
-    return permit_stale_s_ <= 0.0 || (nowSeconds() - stamp) <= permit_stale_s_;
+    if (lstatus_stale_s_ > 0.0 && (nowSeconds() - stamp) > lstatus_stale_s_) {
+      return false;                      // driving 이 죽었다
+    }
+    return lstatus_.load(std::memory_order_relaxed) == 'L';
   }
 
   /// 살아 있다는 신고. ★매 틱 낸다 — driving 은 값이 아니라 신선도를 본다★
@@ -1160,12 +1201,13 @@ private:
   rclcpp::Time last_reference_reset_time_{0, 0, RCL_ROS_TIME};
 
   // ── 조종권 계약 [2026-09-01] (생성자의 상자 참고) ──
-  std::string permit_topic_ = "/lidar_permit";
+  int cruise_pulse_ = 2;                    // ★순항 단일 소유자★ (0 = 개별 파라미터)
+  std::string lstatus_topic_ = "/lstatus";
   std::string active_topic_ = "/lidar_active";
-  bool require_permit_ = true;
-  double permit_stale_s_ = 1.0;
-  std::atomic<bool> permit_{false};
-  std::atomic<double> permit_stamp_{0.0};   // 마지막 수신 시각 [s] — 신선도 판정
+  bool require_lstatus_ = true;
+  double lstatus_stale_s_ = 1.0;
+  std::atomic<char> lstatus_{'0'};          // 마지막으로 받은 구간 문자
+  std::atomic<double> lstatus_stamp_{0.0};  // 마지막 수신 시각 [s] — 신선도 판정
   bool was_permitted_ = false;              // 상승엣지(재무장) 검출용
   //  ★절대 yaw 를 기억해 둔다★ 재무장 때 heading_ref_yaw_ 를 지금 방위로 갈아야
   //  하는데, imuCallback 안의 지역변수로만 두면 그 값을 꺼낼 수 없다.
@@ -1178,7 +1220,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr control_cb_group_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr permit_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr lstatus_sub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;

@@ -31,7 +31,7 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
     driving 이 조종권을 놓고 mppi_local_planner 가 라바콘을 피하며 몬다.
     그 밖의 값(빈 칸·'0')은 전부 GPS 추종이다 — ★기존 CSV 가 그대로 돈다★.
 
-        driving ──/lidar_permit──▶ mppi        "이 구간은 네가 몰아라"
+        driving ──/lstatus('L')──▶ mppi        "이 구간은 네가 몰아라"
         driving ◀──/lidar_active── mppi        "나 살아 있다" (매 틱·신선도가 생존)
 
     설계 근거는 white1/white1/driving.py 헤더의 '라이다 구간 이양' 절에 있다.
@@ -135,13 +135,18 @@ def _lidar_actions(context, *_a, **_kw):
             {
                 # ★반드시 true★ false 면 이 노드가 GPS 추종 구간에서도 /cmd_vel_raw 를
                 #   내며 driving.py 와 20Hz 로 서로를 덮는다. 런치 인자로도 열지 않는다.
-                'handover.require_permit': True,
+                #   ★[2026-09-07] require_permit → require_lstatus (이름만 바뀌었다)★
+                'handover.require_lstatus': True,
                 # 외장 iAHRS. /ouster/imu 는 자이로만이라 드리프트가 크다.
                 'imu_topic': '/imu',
                 'imu_use_orientation': True,
                 'flip_lidar_xy': LaunchConfiguration('flip_lidar_xy'),
-                'mppi.desired_speed': LaunchConfiguration('lidar_speed'),
-                'kasa.max_pulse': LaunchConfiguration('lidar_pulse'),
+                #  ★[2026-09-07] 순항속도 인자를 하나로 줄였다★ 종전에는
+                #  lidar_speed(m/s) 와 lidar_pulse(상한) 둘을 열어 두고 "짝을 맞춰
+                #  둘 것" 이라고만 적어 두었는데, 한쪽만 올리면 조용히 안 들었다.
+                #  지금은 노드가 cruise_pulse 에서 desired_speed·max_speed·
+                #  kasa.max_pulse 를 전부 유도한다.
+                'cruise_pulse': LaunchConfiguration('lidar_pulse'),
                 # 실차 게이트는 항상 켠다 — D5 수동조종·E-STOP 중에는 안 움직인다.
                 'kasa.require_auto_mode': True,
                 'kasa.require_estop_clear': True,
@@ -594,13 +599,13 @@ def generate_launch_description():
             description='라이다 xy 180° 반전. lidar cone_lidar.yaml 과 같은 값이다. '
                         '차 앞 3m 에 사람이 서서 코스트맵 전방에 점이 생기면 맞다'),
         DeclareLaunchArgument(
-            'lidar_speed', default_value='1.768',
-            description='L 구간 순항속도 [m/s]. 1.768 = 2펄스 ≈ 6.4 km/h. '
-                        '★정지 재출발에서 4펄스는 피한다★ (A보드 재가속 함정 — '
-                        'lidar/include/lidar/kasa_units.hpp 2절)'),
-        DeclareLaunchArgument(
             'lidar_pulse', default_value='2',
-            description='L 구간 펄스 상한. lidar_speed 와 짝을 맞춰 둘 것'),
+            description='★L 구간 순항속도 [펄스] — 이것 하나만 고치면 된다★ '
+                        '2 = 1.768 m/s ≈ 6.4 km/h. mppi 가 이 값에서 '
+                        'desired_speed · max_speed · kasa.max_pulse 를 유도한다. '
+                        '★정지 재출발에서 4펄스는 피한다★ (A보드 적분 동결 — '
+                        'lidar/include/lidar/kasa_units.hpp 2절). '
+                        '종전 lidar_speed 인자는 삭제됐다(짝이 어긋나던 원인)'),
     ]
 
     return LaunchDescription(args + [
@@ -619,7 +624,7 @@ def generate_launch_description():
         record,
         hud,
         # 라이다(드라이버 + mppi 회피) — use_lidar 가 true 일 때만 실제로 만든다.
-        #   ★driving 뒤에 둔다★ mppi 는 /lidar_permit 을 기다리는 쪽이고, 그 발행자가
+        #   ★driving 뒤에 둔다★ mppi 는 /lstatus 를 기다리는 쪽이고, 그 발행자가
         #   driving 이다. 순서가 동작을 바꾸지는 않지만(둘 다 신선도로 판단한다)
         #   로그를 읽을 때 누가 누구를 기다리는지가 순서로 드러난다.
         OpaqueFunction(function=_lidar_actions),

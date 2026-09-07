@@ -31,7 +31,7 @@ import serial
 import time
 import math
 
-from white import ports
+from white1 import ports
 
 # 🌟 외부 라이브러리(transforms3d) 의존성 제거! 자체 수학 연산 적용
 def euler_to_quaternion(roll, pitch, yaw):
