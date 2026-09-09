@@ -6,8 +6,10 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
     ros2 launch white1 braketest.launch.py
 
   ★런치 = 출발★ D5 가 자율주행이고 GPS 가 서면 ★그 자리에서 지정속도로 굴러간다★.
-  헤딩 초기화 구간이 없다 — 직선 경로라 출발 방위를 경로에서 빌려 오고, 굴러가면
-  GPS 코스로 갈아탄다(아래 '헤딩' 절). 자이로를 쓰지 않는다.
+  그리고 ★직선 매핑임을 그대로 이용한다★ (아래 '직선 전용 조준' 절):
+      ① 출발 직후  : ★조향 무조건 0°★ — 곧게 굴러 GPS 코스로 헤딩을 세운다
+      ② 헤딩 확정 후 : ★CSV 의 마지막 점★ 하나만 겨눈다
+  헤딩 초기화를 위해 따로 서행하는 구간이 없고, 자이로도 쓰지 않는다.
 
   직선(또는 직선에 가까운) 매핑 경로를 GPS 로 추종하면서 ★고정 속도★ 로 달리다가,
   ★둘 중 먼저 오는 것★ 에서 리니어 2단을 물고 완전정지한다:
@@ -164,6 +166,31 @@ CONTROL_HZ    = 20.0      # driving.py 와 같은 주기 (A보드 텔레메트�
 #       1.77 m 를 가므로 RTK 에서 코스 오차가 1° 안쪽이다 — 자이로보다 낫다.
 HEADING_COURSE_MIN_KMH = 2.0   # 이 위로 구르면 GPS 코스를 헤딩으로 쓴다
 HEADING_LPF = 0.35             # 코스 잡음 완화 (1.0 = 그대로 따라감)
+#  ★유효 코스를 이만큼 연속으로 받아야 '헤딩을 잡았다'로 본다★ 5Hz 원시 fix 기준
+#  5회 = 1초 = 10펄스에서 8.8 m — 그 거리면 코스가 확실히 선다.
+HEADING_LOCK_N = 5
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-09] 직선 전용 조준 — 출발 0° → 그다음 ★CSV 마지막 점★ ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 웨이포인트 순수추종을 버렸나★ 경로가 직선이면 중간 점들은 아무 정보도 주지
+#  않는다. 그런데 그 점들을 차례로 겨누면 ①GPS 잡음이 목표점을 앞뒤로 흔들고
+#  ②LFD 가 속도에 따라 변하며 ③목표가 바뀔 때마다 조향이 계단을 만든다 —
+#  전부 사행의 재료다. 직선에서는 ★끝점 하나만 겨누면★ 그 셋이 통째로 사라진다.
+#
+#  ★두 단계로만 간다★
+#   ① 출발 직후 : ★조향 무조건 0°★ — 곧게 굴러 GPS 코스로 헤딩을 세운다.
+#      경로에서 빌린 방위(seed_heading)는 '대략 맞다' 일 뿐이라, 그것으로 조향을
+#      하면 틀린 만큼 그대로 꺾는다. 차라리 안 꺾고 곧게 가는 편이 낫다 —
+#      경로 위에 세워 두고 출발하므로 몇 미터는 곧게 가도 벗어나지 않는다.
+#   ② 헤딩을 잡은 뒤 : ★CSV 의 마지막 점★ 을 겨눈다. 목표가 고정이라 계단이 없고,
+#      멀리 있어서 각도 변화가 완만하다(= 이득이 낮다 = 안정하다).
+#
+#  ★가까워지면 이득이 커진다 — 그래서 분모에 바닥을 둔다★
+#  δ = atan(2·L·sin α / d) 에서 d 가 작아지면 같은 횡오차가 큰 각이 된다.
+#  종점 부근에서 그것이 튀지 않게 d 를 AIM_MIN_DIST_M 아래로 내려가지 않게 한다
+#  (driving.pure_pursuit_steer 의 `denom = max(lfd·0.5, dist)` 과 같은 장치다).
+AIM_MIN_DIST_M = 10.0
 #  ★출발 전 위치 확인★ 경로에서 이보다 멀리 떨어져 있으면 출발하지 않는다.
 #  방위를 경로에서 빌려 오므로, 차가 경로 위에 있지 않으면 그 전제가 깨진다.
 START_MAX_OFFSET_M = 2.0
@@ -173,18 +200,9 @@ STEER_PLANT_GAIN   = 1.26     # pot 지령 / 도로휠각
 STEER_UNDERSTEER   = 5.17     # [deg/(m/s²)]
 STEER_MAX_DEG      = 40       # B보드 수용 상한
 
-#  ★LFD 는 속도에 비례한다★ LFD = v·√2/ω_n (driving.py lookahead_m 과 같은 설계식).
-#  10펄스(8.84 m/s)에서 12.9 m 가 되므로 ★직선 경로여야 성립한다★ — 이 노드가
-#  직선 전용인 이유가 여기에도 있다.
-LFD_OMEGA_N = 0.97
-LFD_MIN_M   = 2.3
-LFD_MAX_M   = 14.0
-#  ★[2026-09-09] LFD 평활 — driving.py 와 같은 값을 가져왔다★
-#  종전 braketest 는 이것이 없어서 속도가 흔들릴 때마다 LFD 가 같이 널뛰었고,
-#  그러면 목표점이 앞뒤로 움직여 조향이 진동한다.
-LFD_LPF_ALPHA = 0.40      # 시상수 ≈95ms @20Hz
-LFD_RATE_UP   = 0.9       # [m/s] 증가 상한
-LFD_RATE_DOWN = 2.0       # [m/s] 감소 상한
+#  ※ LFD(선행거리) 개념이 없다 — ★끝점 하나를 겨누기 때문★ 이다(위 절).
+#    속도에 따라 목표가 움직이지 않으므로 driving.py 의 LFD 평활·레이트 제한도
+#    필요 없다. 그 대신 AIM_MIN_DIST_M 이 종점 부근의 이득만 막는다.
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-09] 조향 안정화 — 실차에서 사행이 심했다 ★★
@@ -364,6 +382,8 @@ class BrakeTestNode(Node):
         self.gps_sigma = float('nan')
         self.heading = None          # 출발 시 경로에서 빌리고, 구르면 GPS 코스로 간다
         self.gps_course = float('nan')  # /gps_fused[9]
+        self._heading_locked = False    # ★잠그기 전에는 조향 0°★
+        self._course_n = 0              # 유효 코스 연속 수신 수
         self.enc_pulse = 0.0
         self._enc_buf = []
         self.auto_mode = None
@@ -378,10 +398,7 @@ class BrakeTestNode(Node):
         self._wp_prev = 0
         self.route_name = ''
 
-        #  ★조향·LFD 평활 상태 [2026-09-09]★ (상단 '조향 안정화' 절)
-        self._lfd_lpf = LFD_MAX_M
-        self._lfd_out = LFD_MAX_M
-        self._lfd_t = 0.0
+        #  ★조향 평활 상태 [2026-09-09]★ (상단 '조향 안정화' 절)
         self._steer_out = 0.0
         self._steer_t = 0.0
 
@@ -516,11 +533,24 @@ class BrakeTestNode(Node):
 
         #  ★굴러가면 헤딩을 GPS 코스로 갈아탄다★ (상단 '헤딩' 절)
         #  10펄스면 5Hz fix 사이 1.77 m — RTK 에서 코스 오차가 1° 안쪽이다.
-        if (self.heading is not None and math.isfinite(self.gps_course)
-                and self.gps_kmh is not None
-                and self.gps_kmh >= HEADING_COURSE_MIN_KMH):
-            self.heading = wrap180(
-                self.heading + HEADING_LPF * wrap180(self.gps_course - self.heading))
+        moving = (math.isfinite(self.gps_course) and self.gps_kmh is not None
+                  and self.gps_kmh >= HEADING_COURSE_MIN_KMH)
+        if not moving:
+            self._course_n = 0
+            return
+        self._course_n += 1
+        if not self._heading_locked:
+            #  ★잠그는 순간 코스를 그대로 취한다★ 경로에서 빌린 값을 버린다 —
+            #  차가 실제로 간 방향이 답이고, 그것이 잠금의 뜻이다.
+            self.heading = self.gps_course
+            if self._course_n >= HEADING_LOCK_N:
+                self._heading_locked = True
+                self.event(f"🧭 헤딩 확정 {self.heading:+.1f}° "
+                           f"(GPS 코스 {self._course_n}회 연속) — "
+                           f"이제 ★CSV 마지막 점★ 을 겨눈다")
+            return
+        self.heading = wrap180(
+            self.heading + HEADING_LPF * wrap180(self.gps_course - self.heading))
 
     def cb_encoder(self, msg: Int32):
         self._enc_buf.append(float(msg.data))
@@ -618,53 +648,31 @@ class BrakeTestNode(Node):
             best = best_ahead
         self.wp_idx = max(self.wp_idx, min(best, self.wp_idx + WP_MAX_ADVANCE))
 
-    def lookahead_m(self, now):
-        """LFD = v·√2/ω_n → ★저역통과 + 레이트 제한★ (driving.lookahead_m 과 같은 설계)
+    def aim_at_goal(self):
+        """★CSV 의 마지막 점★ 을 겨누는 도로휠각 [deg, +좌]  [2026-09-09]
 
-        ★평활이 없으면 사행한다★ 속도가 조금만 흔들려도 LFD 가 같이 널뛰고, 그러면
-        목표점이 앞뒤로 움직여 조향이 진동한다. driving.py 가 같은 이유로 LPF 와
-        레이트 제한을 두고 있는데 종전 braketest 에는 그것이 통째로 빠져 있었다.
+        직선 경로 전용이다(상단 '직선 전용 조준' 절). 목표가 고정이라 웨이포인트를
+        차례로 겨눌 때 생기던 계단·잡음·LFD 변동이 통째로 사라진다.
+
+            δ = atan(2·L·sin α / max(d, AIM_MIN_DIST_M))
+
+        ★분모에 바닥을 두는 이유★ 종점에 가까워지면 d 가 작아져 같은 횡오차가 큰
+        각이 된다 — 그대로 두면 마지막 몇 미터에서 조향이 튄다.
+        (driving.pure_pursuit_steer 의 denom 하한과 같은 장치다.)
         """
-        v = self.speed_ms()
-        if v is None or not math.isfinite(v):
-            v = self.nominal_ms if math.isfinite(self.nominal_ms) else 3.0
-        target = max(LFD_MIN_M, min(LFD_MAX_M, v * math.sqrt(2.0) / LFD_OMEGA_N))
-        dt = (now - self._lfd_t) if self._lfd_t > 0.0 else (1.0 / CONTROL_HZ)
-        dt = max(1e-3, min(0.2, dt))
-        self._lfd_t = now
-        self._lfd_lpf += LFD_LPF_ALPHA * (target - self._lfd_lpf)
-        self._lfd_out = min(self._lfd_out + LFD_RATE_UP * dt,
-                            max(self._lfd_out - LFD_RATE_DOWN * dt, self._lfd_lpf))
-        return max(LFD_MIN_M, min(LFD_MAX_M, self._lfd_out))
-
-    def pure_pursuit(self, lfd):
-        """목표점 = wp_idx 이후 LFD 이상 떨어진 첫 앞쪽 WP → 도로휠각 [deg, +좌]."""
-        n = len(self.waypoints)
+        gx, gy = self.waypoints[-1]
+        dx, dy = gx - self.x, gy - self.y
         ch = math.cos(math.radians(self.heading))
         sh = math.sin(math.radians(self.heading))
-        tgt = None
-        for i in range(self.wp_idx, n):
-            wx, wy = self.waypoints[i]
-            dx, dy = wx - self.x, wy - self.y
-            if dx * ch + dy * sh <= 0.0:
-                continue
-            if math.hypot(dx, dy) >= lfd:
-                tgt = (dx, dy)
-                break
-        if tgt is None:
-            wx, wy = self.waypoints[-1]
-            tgt = (wx - self.x, wy - self.y)
-        dx, dy = tgt
-        d = math.hypot(dx, dy)
-        if d < 1e-3:
+        lx = dx * ch + dy * sh          # 전방
+        ly = -dx * sh + dy * ch         # 왼쪽 +
+        d = math.hypot(lx, ly)
+        if d < 1e-3 or lx <= 0.0:
+            #  종점을 이미 지났거나 등 뒤다 — 겨눌 것이 없다. 곧게 간다.
             return 0.0
-        # 차체기준 방위 (왼쪽 +)
-        alpha = math.atan2(-dx * sh + dy * ch, dx * ch + dy * sh)
-        #  ★denom 하한 = LFD/2★ driving.pure_pursuit_steer 와 같다. 목표점이 가까워
-        #  잡히는 순간(경로 끝·튐) 분모가 작아져 조향이 튀는 것을 막는다 —
-        #  종전 braketest 는 dist 를 그대로 써서 그 보호가 없었다.
-        denom = max(lfd * 0.5, d)
-        return math.degrees(math.atan2(2.0 * WHEELBASE_M * math.sin(alpha), denom))
+        alpha = math.atan2(ly, lx)
+        return math.degrees(
+            math.atan2(2.0 * WHEELBASE_M * math.sin(alpha), max(d, AIM_MIN_DIST_M)))
 
     def steer_command(self, road_deg, v_ms):
         """도로휠각 → B보드 pot 지령. ★부호가 여기서 한 번만 뒤집힌다 (− 좌 / + 우)★
@@ -903,16 +911,29 @@ class BrakeTestNode(Node):
             self.begin_brake(WHY_GOAL, now)
             return
 
-        lfd = self.lookahead_m(now)
-        road = self.pure_pursuit(lfd)
         v = self.speed_ms()
+        if not self._heading_locked:
+            #  ★① 헤딩을 잡기 전에는 무조건 0°★ (상단 '직선 전용 조준' 절)
+            #  경로에서 빌린 방위는 '대략 맞다' 일 뿐이라, 그것으로 조향하면 틀린
+            #  만큼 그대로 꺾는다. 곧게 굴러 GPS 코스가 서기를 기다리는 편이 낫다.
+            self._steer_out = 0.0
+            self.send(self.cmd_value, 0.0, control=True)
+            self.throttle(
+                f"🅑 곧게 가는 중(조향 0°) — 헤딩 확정 대기 "
+                f"{self._course_n}/{HEADING_LOCK_N}, "
+                f"{'?' if self.gps_kmh is None else f'{self.gps_kmh:.1f}'}km/h, "
+                f"CTE {cte:+.2f}m", period=0.5)
+            return
+
+        #  ★② 헤딩을 잡았다 — CSV 마지막 점을 겨눈다★
+        road = self.aim_at_goal()
         steer = self.smooth_steer(
             self.steer_command(road, v if v is not None else self.nominal_ms), now)
         self.send(self.cmd_value, steer, control=True)
         self.throttle(
-            f"🅑 주행 중 — WP {self.wp_idx}/{len(self.waypoints)}, "
+            f"🅑 주행 중 — 종점까지 {d2goal:.1f}m, "
             f"{'?' if self.gps_kmh is None else f'{self.gps_kmh:.1f}'}km/h, "
-            f"CTE {cte:+.2f}m, LFD {lfd:.1f}m", period=1.0)
+            f"CTE {cte:+.2f}m, 조향 {steer:+.1f}°", period=1.0)
 
     def begin_brake(self, why, now, own_brake=True):
         """정지 트리거 — 여기서부터가 측정 구간이다.
