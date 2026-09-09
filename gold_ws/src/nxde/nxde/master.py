@@ -136,12 +136,12 @@ from geometry_msgs.msg import Twist
 
 from nxde.proc_guard import watch_parent
 
-# ── 프로토콜 한계 (kasa_0904_A.ino / kasa_0904_B.ino, arduino.py 와 같은 값) ──
+# ── 프로토콜 한계 (kasa_0904_A.ino / kasa_0909_B.ino, arduino.py 와 같은 값) ──
 PULSE_MAX = 15          # A보드 단일값 입력 상한 (TARGET_MAX)
 STEER_MAX = 40          # B보드 STEER_ANGLE_MAX
 ADC_MAX   = 1023
 
-BRAKE_LEVEL_MAX = 2     # ★브레이크 단계 0/1/2★ (kasa_0904_B.ino — 0~255 PWM 이 아니다)
+BRAKE_LEVEL_MAX = 2     # ★브레이크 단계 0/1/2★ (kasa_0909_B.ino — 0~255 PWM 이 아니다)
 BRAKE_LABELS = {0: "놓음", 1: "약(1/3)", 2: "풀"}
 KEYBOARD_BRAKE_STEP = 1     # PageUp/PageDown 1회당 브레이크 단계 증감
 
@@ -155,9 +155,9 @@ KEYBOARD_BRAKE_STEP = 1     # PageUp/PageDown 1회당 브레이크 단계 증감
 #  필요했고, 그 재영점이 어긋나면 이동량이 통째로 흔들렸다).
 #      1단 = A5 raw ★600★   /   2단 = A5 raw ★850★
 #  ★그래서 이제 '시켰다' 와 '실제로 밟혔다' 를 구별할 수 있다★ — 그 값이 /brake_pot 다.
-BRAKE_POT_RAW = {0: 0, 1: 600, 2: 850}   # 단계별 A5 목표 raw (kasa_0904_B.ino)
+BRAKE_POT_RAW = {0: 0, 1: 600, 2: 850}   # 단계별 A5 목표 raw (kasa_0909_B.ino)
 BRAKE_POT_TOL = 60                       # 목표와 이 안이면 '도달' 로 본다
-#  ★A5 >= 350 이면 B보드가 D11 제동등을 켠다★ (kasa_0904_B.ino BRAKELIGHT_ON_RAW.
+#  ★A5 >= 350 이면 B보드가 D11 제동등을 켠다★ (kasa_0909_B.ino BRAKELIGHT_ON_RAW.
 #  0821 초판 400 → 실차에서 350). 브레이크 단계도 주행모드도 E-stop 도 보지 않고
 #  이 값 하나로만 판정하므로, 화면에 그대로 비춰 주면 배선 확인이 눈으로 끝난다.
 BRAKELIGHT_ON_RAW = 350

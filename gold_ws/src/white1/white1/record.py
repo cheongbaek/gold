@@ -183,7 +183,7 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #       brake_level 2 + brake_pot 620 → ★행정이 덜 나왔다★ (기구·전원 의심)
     #       brake_level 0 + brake_pot 700 → ★사람이 발로 밟았다★ (수동조종 구간)
     #   기준값은 B보드 상수다 — 1단 600 / 2단 850 / 제동등 점등 ★350★
-    #   ([2026-09-09 정정] 0821 초판 400 → 실차에서 350. kasa_0904_B.ino
+    #   ([2026-09-09 정정] 0821 초판 400 → 실차에서 350. kasa_0909_B.ino
     #    BRAKELIGHT_ON_RAW. 400 으로 읽으면 점등 구간을 좁게 본다)
     TopicSpec('/brake_pot', Int32, ('brake_pot',), _scalar,
               note='B보드 A5 리니어 가변저항 raw 0~1023 — 브레이크 페달 ★실제 위치★. '

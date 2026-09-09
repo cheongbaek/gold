@@ -1129,7 +1129,7 @@ STOP_HOLD_AFTER_ZERO_S = 3.5   # [s] 양 펄스 0 확인 뒤 이만큼 기다렸
 STOP_ZERO_HOLD_S = 0.5         # [s] 0 이 이만큼 이어져야 '섰다'로 인정 (GOAL_STOP_HOLD_S 와 같다)
 STOP_WAIT_MAX_S  = 12.0        # [s] 엔코더가 영영 0 이 안 되어도 굳지 않는다
 #  ★리니어 0단은 즉시 풀리지 않는다★ B보드는 0단을 위치를 보지 않고 REV 로
-#  BRAKE_HOME_MS(1000ms) 돌린다(kasa_0904_B.ino). 게다가 arduino 에 해제유예
+#  BRAKE_HOME_MS(1000ms) 돌린다(kasa_0909_B.ino). 게다가 arduino 에 해제유예
 #  0.5초가 있다. 브레이크가 아직 밟혀 있는 채로 구동을 걸면 서로 민다.
 STOP_RELEASE_WAIT_S = 1.0      # [s] 0단 명령 뒤 이만큼은 펄스 0 을 유지한다
 #  ★재출발은 3펄스다 — 4 를 쓰지 말 것★ A보드 적분 동결(|err| < 4). GOAL_KICK_PULSE
