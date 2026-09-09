@@ -11,7 +11,13 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
       ② 헤딩 확정 후 : ★CSV 의 마지막 점★ 으로 방향을 잡고,
                        ★스탠리 횡오차항 + CTE 적분★ 으로 가운데에 붙인다
                        (아래 '횡오차 보정' 절 — 끝점 조준만으로는 못 붙는다)
-  헤딩 초기화를 위해 따로 서행하는 구간이 없고, 자이로도 쓰지 않는다.
+  헤딩 초기화를 위해 따로 서행하는 구간이 없다.
+
+  ★[2026-09-10] 자이로를 쓴다 — 종전에는 안 썼다★ (아래 '고속 조향 안정화' 절)
+  헤딩은 ★자이로 적분 + GPS 코스 보정★ 의 상보필터이고, 조향에는 ★요레이트
+  댐핑★ 이 들어간다. GPS 코스가 3.4 Hz 로만 갱신되는데(실측) 그 낡은 헤딩으로
+  세게 때려서 고속 구간마다 지령이 상한에 붙은 채 좌우로 넘어갔기 때문이다.
+  IMU 는 58° 기울어 있으므로 ★중력축에 투영해서★ 쓴다(driving.py 4.7절과 같다).
 
   직선(또는 직선에 가까운) 매핑 경로를 GPS 로 추종하면서 ★고정 속도★ 로 달리다가,
   ★둘 중 먼저 오는 것★ 에서 리니어 2단을 물고 완전정지한다:
@@ -133,6 +139,7 @@ import rclpy.executors
 from rclpy.node import Node
 
 from geometry_msgs.msg import Twist
+from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Float64MultiArray, Int32, String
 
 from white1 import paths
@@ -258,7 +265,11 @@ UNDERSTEER_V_MAX_MS = 3.536   # = 4펄스. ★언더스티어 항에 쓰는 속�
 #  → B보드 시리얼 `a` 한 줄로 영점을 다시 잡고 나서 이 값을 다시 판단할 것
 #    (`BOARD_B.md` 3절 — ROS 송신 경로를 일부러 두지 않았다).
 STEER_LIMIT_DEG     = 5.0     # pot 지령 절대 상한 (런치 steer_limit_deg)
-STEER_LPF           = 0.35    # 조향 저역통과 (mppi cmd.steer_lpf_alpha 와 같다)
+#  ★[2026-09-10] 0.35 → 0.55★ 이 필터도 지연이다(τ = dt/α : 0.14s → 0.09s).
+#  지연이 지배하는 루프라 필터를 줄이는 것이 곧 안정도다. 레이트 댐핑이 들어가
+#  지령 자체가 매끄러워졌으므로 이만큼 걷어도 떨지 않는다(검증에서 포화율 동일 0%,
+#  |ψ| 3.97° → 3.77°).
+STEER_LPF           = 0.55    # 조향 저역통과 (작을수록 세게 거른다 = 더 느리다)
 STEER_SLEW_DEG_S    = 28.0    # 조향 슬루 [pot deg/s] (mppi cmd.steer_slew_deg_s)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -335,6 +346,66 @@ CTE_I_DEADBAND_M  = 0.05   # 이 안이면 적분하지 않고 감쇠 (노이즈
 CTE_I_DECAY_PER_S = 0.5    # [1/s] 불감대 안에서의 감쇠율
 CTE_I_FLIP_SCALE  = 0.35   # 부호반전 시 소프트 감쇠 (완전 리셋 아님)
 CTE_I_MIN_PULSE   = 0.3    # 실측이 이 밑이면 ★동결★ (안 구르는 차에 쌓지 않는다)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-10] 고속 조향 안정화 — IMU 헤딩 + 요레이트 댐핑 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ros2bag 000214 · 000518 에서 ★후반 고속 구간마다 조향이 흔들렸다★.
+#  로그를 뜯어 보니 흔들린 것은 조향이 아니라 ★헤딩★ 이다 —
+#      ψ오차  −3.74° → +1.17° → −3.85° → +0.12°   (주기 ≈2.4s, 진폭 ±3.8°)
+#      cmd_steer_deg 는 그동안 ★−5.00° 에 붙어 있었다★
+#  즉 제어기가 선형 영역이 아니라 ★계전기(bang-bang)로 동작하고 있었다.★
+#
+#  ★왜 포화하는가 — 선형 영역이 잡음 바닥보다 좁았다★
+#  HEADING_K=1.0 이면 ψ오차 2.3° 에서 이미 pot 5° 상한에 닿는다. 그런데 이 차의
+#  헤딩 분해능 바닥은 그보다 크다(아래). 그래서 ★거의 항상 포화★ 였고,
+#  포화한 지령은 오차가 0 을 지날 때까지 안 풀리므로 반드시 반대편으로 넘긴다.
+#
+#  ★실측으로 확인한 이 차의 두 가지 한계★
+#  ① 플랜트가 아주 둔하다 — 로그 4개 468표본에서 요레이트를 역산해 회귀했다:
+#         pot/도로휠 = 4.96 (2~4 m/s) / 7.06 (4~6) / 5.89 (6~9)
+#     운동학 모델은 1.26, 언더스티어 모델도 1.9~5.3 이다. ★실제는 그보다 둔하다★ —
+#     pot 5° 를 다 써도 도로휠은 0.85° 뿐이고, 5 m/s 에서 요레이트 3.4°/s 다.
+#     3.74° 를 지우는 데 1초가 넘게 걸린다.
+#  ② 되먹임 지연이 크다 — B보드 조향 불감시간 0.250s + 63% 0.550s(CLAUDE.md 1.3)
+#     에 더해 ★GPS 코스가 3.4 Hz 로만 갱신된다★ (로그 실측: 87틱 중 15틱만 값이
+#     바뀐다, 스텝 rms 1.07°). 여기에 HEADING_LPF 까지 걸려 있었다.
+#  둘이 겹치면 '느리게 도는 차를 낡은 헤딩으로 세게 때리는' 꼴이 된다.
+#
+#  ★고치는 방법 두 가지를 겹친다★
+#  ㉠ ★헤딩을 IMU 로 만든다★ 자이로 적분(20 Hz, 무지연)에 GPS 코스를 천천히
+#     당겨 붙이는 상보필터다. GPS 는 '느리지만 안 틀어지고', 자이로는 '빠르지만
+#     흘러간다' — 서로의 약점이 정확히 반대라 합치면 둘 다 없어진다.
+#  ㉡ ★요레이트 댐핑★ 실제로 돌고 있는 속도를 조향에서 뺀다. 포화 구간에서
+#     '이미 충분히 돌고 있다'를 알려 주는 유일한 신호이고, ★자이로에는 지연이
+#     없어서★ 오차가 0 을 지나기 전에 미리 힘을 뺀다 — 넘어가는 것을 막는다.
+#
+#  ★검증★ 실측 동특성(불감시간 0.25s + τ0.30s + 슬루 70°/s + 슈미트 6/3카운트)과
+#  실측 플랜트(pot/road 5.0/5.9/7.0)와 GPS 3.4Hz·1.07° 잡음을 전부 넣은 모형이
+#  ★현행 코드로 실제 로그를 재현하는 것을 먼저 확인했다★
+#  (모형 |ψ|max 4.0~5.0° vs 실측 3.85°, 포화율 76~85% vs 로그의 −5.00 연속 구간).
+#  그 위에서 훑은 결과 (플랜트 3종 × 시드 4종 × 자이로바이어스 3종의 ★최악값★):
+#      현행                          |ψ| 6.87°  CTE 0.96m  ★포화율 76%★
+#      ㉠ IMU 헤딩만                 |ψ| 4.58°  CTE 0.63m  포화율  9%
+#      ㉠+㉡ (채택, K_r=0.30)        |ψ| 3.77°  CTE 0.73m  ★포화율  0%★
+IMU_TOPIC        = '/imu'
+#  ★중력축 투영 (driving.py 4.7절과 같은 방법)★ 이 차의 IMU 는 z축이 수직에서
+#  ★58° 기울어 있다★ (이번 로그 2개의 정지구간에서 재확인: a=(−8.34,+0.60,+5.22),
+#  |a|=9.86, 기울기 57.9~58.1°). 그래서 gyro.z 를 그대로 쓰면 요레이트의 절반만
+#  잡힌다. ★마운트는 고정이므로 한 번 재서 기준으로 삼으면 된다★ —
+#  정지 중 가속도계는 중력만 보므로 그때 '위' 를 재고, 요레이트는 그 축에 투영한다:
+#      ω_yaw = ω⃗ · û
+#  braketest 는 출발 직전 정지 구간이 길어서(이번 로그 88·109표본) 재기에 좋다.
+IMU_AXIS_MIN_SAMPLES = 20     # 이만큼 모여야 축을 확정한다
+IMU_AXIS_G_TOL       = 1.2    # ||a|−9.81| 이 이보다 크면 그 표본은 버린다
+IMU_G                = 9.80665
+#  ★상보필터★ 자이로를 적분하고, GPS 코스가 새로 올 때마다 이 비율로 당긴다.
+#  0.5 /s = 자이로 드리프트가 2초 시정수로 지워진다. 크게 잡으면 GPS 의 3.4Hz
+#  계단이 헤딩에 그대로 실리고, 작게 잡으면 자이로 바이어스가 남는다.
+HEADING_FUSE_K = 0.5
+#  ★요레이트 댐핑 [도로휠 deg / (deg/s)]★ 검증에서 0.2~0.4 가 평탄하게 좋았다.
+#  키우면 헤딩은 더 안정되지만 경로로 돌아오는 것이 느려진다(CTE 0.65→0.79m).
+RATE_K = 0.30
 
 MS_PER_PULSE  = 0.884
 KMH_PER_PULSE = 3.182
@@ -511,6 +582,8 @@ class BrakeTestNode(Node):
         from std_msgs.msg import Float32 as _F32
         self.create_subscription(Bool, AEB_STOP_TOPIC, self.cb_aeb_stop, 5)
         self.create_subscription(_F32, LIDAR_DIST_TOPIC, self.cb_lidar_dist, 5)
+        #  ★IMU★ 헤딩(상보필터)과 요레이트 댐핑에 쓴다 (상단 '고속 조향 안정화')
+        self.create_subscription(Imu, IMU_TOPIC, self.cb_imu, 20)
         #  ★사슬 생존★ 프레임마다 오는 신호 (상단 '라이다가 살아나기 전에' 절)
         self.create_subscription(Bool, LIDAR_SIGNAL_TOPIC, self.cb_lidar_signal, 5)
 
@@ -556,6 +629,15 @@ class BrakeTestNode(Node):
         self._cte_i_term = 0.0       # [deg] 이번 틱의 적분 기여(도로휠각)
         self._cte_prev = 0.0         # 부호반전 판정용
         self._goal_brg = 0.0         # 끝점 방위 (종점 근처에서 얼려 쓴다)
+        #  ★IMU★ (상단 '고속 조향 안정화' 절)
+        self.imu_up = None           # 중력으로 잰 차량 '위' 단위벡터
+        self._acc_sum = [0.0, 0.0, 0.0]
+        self._acc_n = 0
+        self.yaw_rate = 0.0          # 투영된 요레이트 [deg/s, + = 좌]
+        self.imu_t = 0.0
+        self._fix_prev_t = 0.0       # 상보필터 보정 간격 계산용
+        self._imu_warned = False
+        self._gyro_t = 0.0
 
         self.brake_now = BRAKE_NONE
         self._brake_out = -1
@@ -704,8 +786,36 @@ class BrakeTestNode(Node):
                            f"(GPS 코스 {self._course_n}회 연속) — "
                            f"이제 ★CSV 마지막 점★ 을 겨눈다")
             return
-        self.heading = wrap180(
-            self.heading + HEADING_LPF * wrap180(self.gps_course - self.heading))
+        #  ======================================================================
+        #  ★상보필터★ 헤딩의 주인은 이제 자이로다 — GPS 는 천천히 당길 뿐이다
+        #  ======================================================================
+        #  [2026-09-10] 종전에는 여기서 GPS 코스를 LPF 로 따라갔다. 그런데
+        #  ★GPS 코스는 3.4 Hz 로만 갱신되고 스텝이 1.07° 다★ (로그 실측). 그 위에
+        #  LPF 까지 걸면 헤딩이 0.3s 안팎으로 늦고, 늦은 헤딩으로 세게 때리니
+        #  지령이 상한에 붙은 채 좌우로 넘어갔다(상단 '고속 조향 안정화' 절).
+        #
+        #  자이로 적분은 ★지연이 없다★. 대신 바이어스로 흘러간다. GPS 코스는
+        #  ★안 흘러간다★. 대신 느리다. 약점이 정확히 반대라서 합치면 둘 다 없어진다.
+        #  ⚠️ 당기는 양은 ★새 fix 가 왔을 때만★ 넣는다 — 같은 값을 20 Hz 로 계속
+        #     당기면 3.4 Hz 짜리 낡은 값에 헤딩이 그대로 끌려갈 뿐이다.
+        if self.imu_fresh(time.time()):
+            #  자이로 적분은 loop() 가 20 Hz 로 한다. 여기서는 ★GPS 보정분만★ 얹는다.
+            self.heading = wrap180(
+                self.heading + HEADING_FUSE_K * self._gps_dt()
+                * wrap180(self.gps_course - self.heading))
+        else:
+            #  IMU 가 없다 — 종전 거동(코스 LPF)으로 떨어진다. 조용히 다르게 돌지
+            #  않도록 run_follow() 가 그 사실을 이벤트로 말한다.
+            self.heading = wrap180(
+                self.heading + HEADING_LPF * wrap180(self.gps_course - self.heading))
+
+    def _gps_dt(self):
+        """직전 fix 로부터 흐른 시간 [s]. 코스 갱신이 3.4 Hz 라 고정값을 쓰면
+        보정량이 실제와 어긋난다 — 실제 간격으로 잰다."""
+        t = time.time()
+        dt = (t - self._fix_prev_t) if self._fix_prev_t > 0.0 else 0.2
+        self._fix_prev_t = t
+        return max(0.02, min(1.0, dt))
 
     def cb_encoder(self, msg: Int32):
         self._enc_buf.append(float(msg.data))
@@ -731,6 +841,78 @@ class BrakeTestNode(Node):
 
     def cb_lidar_dist(self, msg):
         self.lidar_dist = float(msg.data)
+
+    def cb_imu(self, msg: Imu):
+        """요레이트를 ★중력축에 투영해서★ 만든다 [deg/s, + = 좌].  [2026-09-10]
+
+        driving.py 4.7절과 같은 방법이다 — 그쪽은 U턴에서 요 적분이 23% 모자라
+        경로이탈로 섰던 사건이 계기였고, 여기서는 ★레이트 댐핑의 크기가 그만큼
+        틀리면 댐핑이 아니라 잡음이 되기 때문★ 이다.
+
+        ★왜 축을 '맞춰 다는' 게 아니라 '재는' 것인가★ 마운트는 고정이므로 한 번
+        재면 끝이다. 그리고 차량의 수직축은 ★중력이 알려 준다★ — 정지 중
+        가속도계는 중력만 보므로 그 방향이 곧 '위' 다. 이 노드는 출발 직전
+        정지 구간이 길어서(실측 88·109표본) 재기에 특히 좋다.
+
+        ★못 재면 z축 단독으로 떨어진다★ 그리고 그 사실을 이벤트로 말한다 —
+        조용히 절반짜리 요레이트를 쓰는 것보다 낫다(이 차는 58° 기울어 있어서
+        z축 단독이면 cos58° = 53% 만 잡힌다).
+        """
+        a = msg.linear_acceleration
+        w = msg.angular_velocity
+        if self.imu_up is None:
+            #  ★가·감속이 섞인 표본은 버린다★ 중력만 보고 있을 때만 축을 잰다
+            mag = math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z)
+            if abs(mag - IMU_G) <= IMU_AXIS_G_TOL:
+                self._acc_sum[0] += a.x
+                self._acc_sum[1] += a.y
+                self._acc_sum[2] += a.z
+                self._acc_n += 1
+            self.yaw_rate = math.degrees(w.z)          # 아직 z축 단독
+        else:
+            u = self.imu_up
+            self.yaw_rate = math.degrees(
+                w.x * u[0] + w.y * u[1] + w.z * u[2])
+        self.imu_t = time.time()
+
+    def solve_imu_axis(self):
+        """모아 둔 가속도 평균에서 차량 '위' 단위벡터를 낸다. 됐으면 True.
+        (driving.solve_imu_axis 와 같다 — 중력의 반대가 위다, 그 이상은 없다.)"""
+        if self._acc_n < IMU_AXIS_MIN_SAMPLES:
+            return False
+        g = [v / self._acc_n for v in self._acc_sum]
+        n = math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
+        if n < 1.0:
+            return False
+        self.imu_up = (g[0] / n, g[1] / n, g[2] / n)
+        return True
+
+    def imu_tilt_deg(self):
+        """IMU z축이 차량 수직축에서 얼마나 기울어져 있나 [deg] (진단·로그용)."""
+        if self.imu_up is None:
+            return float('nan')
+        return math.degrees(math.acos(max(-1.0, min(1.0, abs(self.imu_up[2])))))
+
+    def integrate_gyro(self, now):
+        """헤딩을 자이로로 20 Hz 전진시킨다. ★상보필터의 빠른 쪽★  [2026-09-10]
+
+        ★헤딩을 잡은 뒤에만 돈다★ 잠그기 전에는 조향 0 으로 곧게 굴러 GPS 코스가
+        서기를 기다리는 구간이고, 그때 적분해 봐야 기준이 없어 의미가 없다.
+        느린 쪽(GPS 코스로 당기기)은 cb_gps 가 새 fix 마다 넣는다.
+        """
+        prev = self._gyro_t
+        self._gyro_t = now
+        if (not self._heading_locked) or self.heading is None:
+            return
+        if not self.imu_fresh(now) or prev <= 0.0:
+            return
+        dt = now - prev
+        if dt <= 0.0 or dt > 0.5:
+            return
+        self.heading = wrap180(self.heading + self.yaw_rate * dt)
+
+    def imu_fresh(self, now):
+        return self.imu_t > 0.0 and (now - self.imu_t) <= 0.5
 
     def cb_lidar_signal(self, msg: Bool):
         """★사슬 생존 신호★ 값은 보지 않는다 — ★온다는 사실★ 만 본다.
@@ -1034,7 +1216,7 @@ class BrakeTestNode(Node):
             float(d2goal),                                # goal_dist_m
             float(self.gps_course),                       # gps_course_deg (nan 가능)
             n,                                            # fuse_corr_deg (IMU 융합 없음)
-            n,                                            # gyro_z_dps
+            float(self.yaw_rate),                         # gyro_z_dps (★투영된 값★)
             float(self.brake_now),                        # brake_latched
             float(self.heading if self.heading is not None else n),  # head_init_deg
             n, n, n,                                      # head_sigma/resid/dist
@@ -1067,6 +1249,7 @@ class BrakeTestNode(Node):
         self.publish_state()
         self.publish_brake()          # 물고 있는 동안 재확인 (발행자가 여럿이다)
         now = time.time()
+        self.integrate_gyro(now)
 
         if self.state == S_DONE:
             self.send(0, self._last_steer, control=True)
@@ -1193,6 +1376,20 @@ class BrakeTestNode(Node):
         gx, gy = self.waypoints[-1]
         px, py = self.waypoints[best]
         self._goal_brg = math.degrees(math.atan2(gy - py, gx - px))
+        #  ★IMU 축을 여기서 확정한다★ 바로 위 정지 대기 동안 cb_imu 가 표본을
+        #  모아 두었다(가·감속이 섞인 것은 버리고 중력만 본 것만). 출발 직전이
+        #  ★차가 확실히 서 있던 마지막 순간★ 이라 재기에 가장 좋다.
+        if self.solve_imu_axis():
+            self.event(f"🧭 IMU 축 확정 — 표본 {self._acc_n}개, "
+                       f"up=({self.imu_up[0]:+.3f},{self.imu_up[1]:+.3f},"
+                       f"{self.imu_up[2]:+.3f}), z축 기울기 "
+                       f"{self.imu_tilt_deg():.1f}° — 요레이트를 이 축에 투영한다")
+        else:
+            self.event(f"⚠️ IMU 축을 못 쟀다 (표본 {self._acc_n}개 < "
+                       f"{IMU_AXIS_MIN_SAMPLES}) — ★자이로 z축 단독으로 떨어진다★. "
+                       f"이 차는 z축이 58° 기울어 있어 요레이트가 절반쯤으로 "
+                       f"잡힌다(댐핑이 그만큼 약해진다). /imu 가 오는지 확인할 것")
+        self._gyro_t = 0.0
         self._lidar_was_ready = self.require_lidar
         lid = (f"라이다 정지 사슬 살아 있음({self.lidar_frames}프레임)"
                if self.require_lidar else "★라이다 없음 — 종점 정지만★")
@@ -1295,7 +1492,13 @@ class BrakeTestNode(Node):
         psi_err = self.heading_err_deg()
         aim = HEADING_K * psi_err
         xtrk = self.cross_track_deg(cte, vv)
-        road = self.apply_cte_integral(aim + xtrk, cte, self._steer_sat)
+        #  ★요레이트 댐핑★ 지금 실제로 돌고 있는 속도를 조향에서 뺀다.
+        #  ★부호★ yaw_rate + = 좌회전 중 → 오른쪽으로 되돌려야 한다 → + (그대로 더한다).
+        #  포화 구간에서 '이미 충분히 돌고 있다' 를 알려 주는 유일한 신호이고,
+        #  자이로는 지연이 없어서 ★오차가 0 을 지나기 전에 미리 힘을 뺀다★ —
+        #  −5° 에 4.5초 붙어 있다가 반대편으로 넘어가던 것이 이것으로 사라진다.
+        damp = RATE_K * self.yaw_rate if self.imu_fresh(now) else 0.0
+        road = self.apply_cte_integral(aim + xtrk + damp, cte, self._steer_sat)
         pot = self.steer_command(road, vv)
         #  다음 틱의 적분이 볼 포화 여부. steer_command 가 이미 self.steer_limit 로
         #  잘랐으므로 '상한에 닿았나' 만 보면 된다.
@@ -1307,8 +1510,9 @@ class BrakeTestNode(Node):
             f"🅑 주행 중 — 종점까지 {d2goal:.1f}m, "
             f"{'?' if self.gps_kmh is None else f'{self.gps_kmh:.1f}'}km/h, "
             f"CTE {cte:+.2f}m, 조향 {steer:+.1f}° "
-            f"(방위오차 {psi_err:+.2f}° → {aim:+.2f} + 횡오차 {xtrk:+.2f} + 적분 "
-            f"{self._cte_i_term:+.2f} 도로휠)", period=1.0)
+            f"(방위오차 {psi_err:+.2f}° → {aim:+.2f} + 횡오차 {xtrk:+.2f} + 댐핑 "
+            f"{damp:+.2f} + 적분 {self._cte_i_term:+.2f} 도로휠, "
+            f"요레이트 {self.yaw_rate:+.1f}°/s)", period=1.0)
 
     def begin_brake(self, why, now, own_brake=True):
         """정지 트리거 — 여기서부터가 측정 구간이다.
