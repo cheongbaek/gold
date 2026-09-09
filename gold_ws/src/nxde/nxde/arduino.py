@@ -36,6 +36,11 @@
 #                                         ★aeb_brake_level=0 (기본) 이면 이 토픽은
 #                                         통째로 무시된다★ — 아래 (1-1) 참고.
 #   보드 → ROS :  /encoder (Int32)              A보드 좌+우 펄스의 ★합★
+#                 /encoder_l, /encoder_r (Int32) ★[2026-09-09] 좌·우 원값★
+#                                               A보드 'S,<좌>,<우>' 그대로. 합치지
+#                                               않으므로 ★목표펄스와 같은 눈금★ 이고,
+#                                               좌우가 갈리는 것을 바로 볼 수 있다
+#                                               (인휠 2개가 각자 PID 를 닫는다)
 #                 /steer_angle_measured (Int32) B보드 실측 조향각 (− 좌 / + 우, 그대로 중계)
 #                 /vehicle_mode (Bool)          B보드 D5 : True = 자율 / False = 수동조종
 #                 /throttle_pedal (Int32)       A보드 A0 쓰로틀 페달 raw 0~1023
@@ -1078,6 +1083,14 @@ class Arduino(Node):
 
         # ── 퍼블리셔 ──
         self.pub_encoder = self.create_publisher(Int32, '/encoder', 10)
+        #  ★[2026-09-09] 좌·우를 따로도 낸다★ /encoder 는 합이라 "어느 바퀴가
+        #  덜 도는가" 가 보이지 않는다. 이 차는 인휠 2개가 ★각자 PID 를 닫으므로★
+        #  (A보드 좌 2번핀→8번PWM / 우 21번핀→9번PWM, 교차 없음) 좌우가 갈리는 것이
+        #  실제로 일어나고, 그때 합만 보면 '전체가 조금 느리다' 로만 보인다.
+        #  ★/encoder 는 그대로 둔다★ driving·mapping·record·master 가 전부 그 합을
+        #  쓰고 있고, 뜻을 바꾸면 속도가 2배/절반으로 조용히 어긋난다(아래 규약 3).
+        self.pub_encoder_l = self.create_publisher(Int32, '/encoder_l', 10)
+        self.pub_encoder_r = self.create_publisher(Int32, '/encoder_r', 10)
         self.pub_steer_angle = self.create_publisher(Int32, '/steer_angle_measured', 10)
         self.pub_mode = self.create_publisher(Bool, '/vehicle_mode', 10)
         self.pub_throttle = self.create_publisher(Int32, '/throttle_pedal', 10)
@@ -1885,6 +1898,12 @@ class Arduino(Node):
         enc = Int32()
         enc.data = max(0, int(self.pulse_l) + int(self.pulse_r))
         self.pub_encoder.publish(enc)
+        #  ★좌·우 원값★ A보드 'S,<좌>,<우>' 를 그대로 옮긴다 — 합치거나 나누지 않는다.
+        #  ★이 값이 곧 '한 바퀴 기준 펄스' 다★ 이름만 encoder 이지 1/5카의 엔코더
+        #  카운트가 아니다(금색차는 홀 3상 XOR 합산 펄스를 그대로 싣는다). 그래서
+        #  /cmd_vel_raw 의 목표펄스(0~15)와 ★같은 눈금★ 이고 바로 비교된다.
+        self.pub_encoder_l.publish(Int32(data=max(0, int(self.pulse_l))))
+        self.pub_encoder_r.publish(Int32(data=max(0, int(self.pulse_r))))
 
         # 실측 조향각. ★기본은 보드 값 그대로★ (ROS 와 보드가 같은 규약 − 좌 / + 우)
         #   steer_invert=True 일 때만 뒤집어, 명령과 실측이 항상 같은 부호로 보이게 한다.

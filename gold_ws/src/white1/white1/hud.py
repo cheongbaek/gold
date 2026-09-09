@@ -16,7 +16,8 @@ hud.py ― kasa 차량 상태 HUD  [white1]
     중앙   상면도 차체 + 앞바퀴 조향 + 모서리 원형 게이지 4개
              차 앞 = 라이다 AEB 범위(cone_lidar ROI). 거리 없으면 안 그림
              FL 스로틀%   FR PWM%   RL 브레이크   RR 펄스 라벨
-    우측   속도 km/h ★/gps_fused[8] 원시 fix 변위속도★ (폴백 IMU→ENC) · PWM · 펄스
+    우측   속도 km/h ★/gps_fused[8] 원시 fix 변위속도★ (폴백 IMU→ENC)
+           · PWM · ★L_Pulse / R_Pulse★ (A보드 좌·우 펄스 원값, 목표펄스와 같은 눈금)
            NAV 미니맵
              nav_mode=gps  (기본) 매핑 CSV(북쪽 위) + 실시간 GPS. 경로 없으면 NONE
              nav_mode=mppi 차량 기준 2D 탑뷰 — 코스트맵 장애물 + 롤아웃 + IMU 기준선
@@ -254,6 +255,10 @@ class HudNode(Node):
         self.brake_lv = Sample()
         self.brake_pot = Sample()
         self.encoder = Sample()
+        #  ★[2026-09-09] A보드 좌·우 펄스★ /encoder 는 둘의 합이라 어느 바퀴가
+        #  덜 도는지 안 보인다. 인휠 2개가 각자 PID 를 닫으므로 좌우가 갈린다.
+        self.enc_l = Sample()
+        self.enc_r = Sample()
         self.steer = Sample()
         self.speed = Sample()
         self.mode = Sample()
@@ -318,6 +323,10 @@ class HudNode(Node):
                                  lambda m: self.brake_lv.set(int(m.data)), qos)
         self.create_subscription(Int32, '/brake_pot',
                                  lambda m: self.brake_pot.set(int(m.data)), qos)
+        self.create_subscription(Int32, '/encoder_l',
+                                 lambda m: self.enc_l.set(int(m.data)), qos)
+        self.create_subscription(Int32, '/encoder_r',
+                                 lambda m: self.enc_r.set(int(m.data)), qos)
         self.create_subscription(Int32, '/encoder',
                                  lambda m: self.encoder.set(int(m.data)), qos)
         self.create_subscription(Int32, '/steer_angle_measured',
@@ -1147,13 +1156,27 @@ class HudApp:
         if src:
             c.create_text(x, y + 42, text=src, fill=DIM, font=self.font(8))
 
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★[2026-09-09] '펄스 · ENC' → ★L_Pulse · R_Pulse★ 로 바꿨다★
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★종전 두 칸은 사실상 같은 것을 보고 있었다★ 이 차에서 /encoder 는 이름만
+        #  encoder 이지 1/5카의 엔코더 카운트가 아니다 — 홀 3상 XOR 합산 ★펄스★ 를
+        #  그대로 싣는다. 그래서 '펄스'(/drive_pulse_cmd)와 'ENC'(/encoder)가 같은
+        #  눈금의 값이 되어 한 칸이 남았다.
+        #
+        #  ★대신 좌·우를 나눠 보인다★ 인휠 2개가 ★각자 PID 를 닫는다★ (A보드
+        #  좌 2번핀→8번PWM / 우 21번핀→9번PWM, 교차 없음). 그래서 한쪽만 덜 도는
+        #  상황이 실제로 생기는데, 합(/encoder)만 보면 '전체가 조금 느리다' 로만
+        #  보이고 어느 바퀴인지 알 수 없다. 좌우를 따로 보면 그 자리에서 드러난다.
+        #  두 값 모두 ★목표펄스(0~15)와 같은 눈금★ 이라 지령과 바로 비교된다.
         pwm = n.pwm.get(stale)
-        pulse = n.pulse.get(stale)
-        enc_s = '—' if enc is None else str(int(enc))
+        el = n.enc_l.get(stale)
+        er = n.enc_r.get(stale)
         pwm_s = '—' if pwm is None else str(int(pwm))
-        pls_s = '—' if pulse is None else str(int(pulse))
+        el_s = '—' if el is None else str(int(el))
+        er_s = '—' if er is None else str(int(er))
         c.create_text(x, y + 78,
-                      text=f'PWM  {pwm_s}    펄스  {pls_s}    ENC  {enc_s}',
+                      text=f'PWM  {pwm_s}    L_Pulse  {el_s}    R_Pulse  {er_s}',
                       fill=FG if live else DIM, font=self.font(11))
 
         cmd_p = n.cmd_pulse.get(stale)

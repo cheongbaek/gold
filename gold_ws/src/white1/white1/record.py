@@ -182,10 +182,12 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #       brake_level 2 + brake_pot 850 → 시킨 대로 갔다
     #       brake_level 2 + brake_pot 620 → ★행정이 덜 나왔다★ (기구·전원 의심)
     #       brake_level 0 + brake_pot 700 → ★사람이 발로 밟았다★ (수동조종 구간)
-    #   기준값은 B보드 상수다 — 1단 600 / 2단 850 / 제동등 점등 400.
+    #   기준값은 B보드 상수다 — 1단 600 / 2단 850 / 제동등 점등 ★350★
+    #   ([2026-09-09 정정] 0821 초판 400 → 실차에서 350. kasa_0904_B.ino
+    #    BRAKELIGHT_ON_RAW. 400 으로 읽으면 점등 구간을 좁게 본다)
     TopicSpec('/brake_pot', Int32, ('brake_pot',), _scalar,
               note='B보드 A5 리니어 가변저항 raw 0~1023 — 브레이크 페달 ★실제 위치★. '
-                   '1단 목표 600 / 2단 850 / 400 이상이면 제동등 점등(D11)'),
+                   '1단 목표 600 / 2단 850 / ★350★ 이상이면 제동등 점등(D11)'),
 
     # ── 차량 상태 ──
     #   /ego_state 는 driving 이 만든다: [x, y, heading, enc_pulse, wp_idx, wp_total, fix_ok]
@@ -240,6 +242,14 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     TopicSpec('/encoder', Int32, ('encoder_sum',), _scalar,
               note='A보드 좌+우 펄스 ★합★ — 바퀴 하나 기준(=양 바퀴 평균)으로 보려면 '
                    '÷2 한다. cmd_pulse 는 바퀴 하나 기준이라 그대로 비교하면 2배 어긋난다'),
+    #  ★[2026-09-09] 좌·우를 따로 남긴다★ 합만 있으면 '어느 바퀴가 덜 도는가' 가
+    #  로그에서 영영 안 보인다. 인휠 2개가 ★각자 PID 를 닫으므로★ (A보드 좌 2번핀→
+    #  8번PWM / 우 21번핀→9번PWM, 교차 없음) 좌우가 갈리는 것이 실제로 일어난다.
+    #  ★두 열 모두 cmd_pulse 와 같은 눈금이다★ — ÷2 하지 말 것(합이 아니다).
+    TopicSpec('/encoder_l', Int32, ('encoder_l',), _scalar,
+              note='A보드 ★왼쪽★ 바퀴 펄스 원값. cmd_pulse 와 같은 눈금(합이 아니다)'),
+    TopicSpec('/encoder_r', Int32, ('encoder_r',), _scalar,
+              note='A보드 ★오른쪽★ 바퀴 펄스 원값. 좌우 차이가 곧 구동 불균형이다'),
     TopicSpec('/speed', Float32, ('speed_kmh',), _scalar,
               note='speed.py 의 IMU 적분 속도[km/h]. ★절대값은 못 믿는다★ — '
                    '정지/기동 판정용(speed.py 헤더의 정확도 실측 참고)'),
