@@ -8,8 +8,8 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
   직선(또는 직선에 가까운) 매핑 경로를 GPS 로 추종하면서 ★고정 속도★ 로 달리다가,
   ★둘 중 먼저 오는 것★ 에서 리니어 2단을 물고 완전정지한다:
 
-      ① 라이다가 전방 장애물을 확정했을 때  (/cone_lidar_node/stop_signal)
-      ② 그런 일 없이 ★종점에 도달했을 때★
+      ① 라이다 사슬이 세웠을 때 (/aeb_stop — arduino 가 직접 문다. 아래 절)
+      ② 그런 일 없이 ★종점에 도달했을 때★ (이건 이 노드가 /brake_level 2단으로)
 
   완전정지하면 그 사이의 거리·시간·감속도를 재서 남기고, ★리니어를 풀고★
   런치를 스스로 내린다.
@@ -19,24 +19,30 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
   사람이 한 칸을 손으로 적어 두는 대신, 실제 장애물을 라이다가 보고 세운다.
 
 ════════════════════════════════════════════════════════════════════════════════
- 라이다 정지 — ★lidar one_launch.py 의 그 시스템을 그대로 쓴다★
+ 라이다 정지 — ★lidar one_launch.py 의 사슬을 ★그대로★ 쓴다 (사용자 지시)★
 ════════════════════════════════════════════════════════════════════════════════
-      ouster 드라이버 ─/ouster/points─▶ cone_lidar_node ─/…/stop_signal─▶ ★이 노드★
-                                                                            │
-                                                                     /brake_level 2단
+  ouster ─/ouster/points─▶ cone_lidar_node ─/…/stop_signal─▶ pedal_drive_node
+                              (인지·판정)                      (확정·래치)
+                                                                    │ /aeb_stop
+                                                                    ▼
+                                                          nxde/arduino  (구동차단
+                                                                       + 리니어 2단)
 
-  · `braketest.launch.py` 가 **`lidar/launch/aeb.launch.py` 를 통째로 include** 한다
-    (= ouster.launch.py + cone_lidar_node). 감지 설정은 `lidar/config/cone_lidar.yaml`
-    한 곳이 소유하며 이 노드는 ★그 판정을 그대로 받아 쓴다★ — 문턱을 다시 두지 않는다.
-  · `cone_lidar_node` 는 ★차를 움직이지 않는다★. 제동은 그 신호를 받은 쪽(= 이 노드)이
-    `/brake_level` 로 한다. `lidar` 의 주행 노드들과 같은 구조다.
-  · ROI 는 전방 2.0~6.0 m (라이다 원점 기준 = 범퍼 앞 0.8~4.8 m), AGL 0.25~0.75 m.
-    ⚠️ ★`roi_x_min = 2.0` 이라 그보다 가까운 것은 못 본다★ — 사각지대다.
+  ★이 노드는 그 사슬에 끼어들지 않는다★ 라이다 정지의 판정·래치·제동이 전부
+  위 세 노드 안에서 끝난다 — braketest 는 ★한 줄도 관여하지 않는다★.
+  반응속도가 `lidar one_launch.py` 와 같아야 한다는 것이 그 이유다(사용자 지시).
 
-  ★신선도★ stop_signal 이 LIDAR_STALE_S 넘게 안 오면 '라이다 보호 없음' 으로 보고
-  ★경고만 하고 계속 간다★. 종점 정지가 어차피 차를 세우기 때문이다 — 여기서 멈춰
-  버리면 "라이다가 잠깐 끊겨서 시험이 안 끝났다" 가 되고, 그쪽이 더 나쁘다.
-  (`pedal_drive_node` 의 fail-open 과 같은 판단이다.)
+  · `braketest.launch.py` 가 `lidar/launch/aeb.launch.py`(= ouster + cone_lidar_node)
+    를 include 하고, `pedal_drive_node` 를 그쪽 런치와 ★같은 파라미터★ 로 띄우고,
+    `arduino` 에 `aeb_brake_level` · `aeb_stale_s` · `aeb_topic` 을 넘긴다.
+    ★그 셋이 비상정지를 '켜는' 유일한 지점이다★ (arduino 기본 aeb_brake_level=0 = 꺼짐).
+  · 그래서 `/aeb_stop` 이 서면 arduino 가 ★모드와 무관하게★ A보드 구동을 끊고
+    리니어를 물린다 — 이 노드가 `/cmd_vel_raw` 에 무엇을 내고 있든 우선한다
+    (arduino compose 우선순위 (1-1)).
+
+  ★이 노드가 `/aeb_stop` 을 구독하는 것은 '계측' 때문이다★ 제동을 걸기 위해서가
+  아니다(그건 이미 arduino 가 했다). 언제 물렸는지를 알아야 제동거리·시간을 재고,
+  런치를 끝낼 시점을 알 수 있다. ★그 값으로 브레이크를 만지지 않는다.★
 
   ★driving.py 를 쓰지 않는다★ 그쪽은 코너 감속·종점 접근·CTE 적분·라이다 이양·
   신호등까지 얹힌 3600줄짜리 주행기이고, 그 장치들이 전부 '제동거리를 재는 일'에
@@ -58,9 +64,11 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
   거기에 ①헤딩 초기화 구간(1~2m) ②10펄스까지 가속하는 구간이 앞에 붙는다.
   ★차는 종점을 지나 13~20 m 를 더 간다★ — 경로 끝 뒤로 그만큼이 비어 있어야 한다.
   장애물 시험이라면 ★장애물 뒤★ 로 그만큼이 필요하다(차가 못 서면 들이받는다).
-  ⚠️ 라이다 ROI 가 전방 2.0~6.0 m 인데 10펄스 2단 정지거리가 12.9~20.4 m 다 —
-  ★장애물을 보고 나서 서기에는 원리적으로 부족하다.★ 이 시험은 '얼마나 못 서는가'
-  를 재는 것이지 '설 수 있는가' 를 보는 것이 아니다. 사람·물건을 쓰지 말 것.
+  ⚠️ ★라이다 ROI 는 범퍼 기준 0.8~4.8 m 이고, 감지에서 제동력이 서기까지 ≈575 ms 다★
+     (ouster 50 + confirm_frames 2×50 + pedal_drive engage + arduino TX 50 +
+      2단 행정 300). 10펄스면 그 사이에만 5.1 m 를 가므로 ★보고 나서 설 수 없다★.
+     실제로 세워 보려면 3펄스 이하다(3펄스 = 지연 1.5 m + 제동 1.6 m = 3.1 m).
+     사람·부술 물건을 장애물로 쓰지 말 것.
 
   · E-STOP 은 언제든 듣는다(하드웨어. B보드가 직접 문다).
   · D5 스위치를 수동조종으로 내리면 즉시 손을 뗀다.
@@ -162,18 +170,13 @@ WP_AHEAD_PENALTY_M = 1.2
 CTE_WINDOW_WP     = 60
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ★라이다 정지 — cone_lidar_node 의 판정을 그대로 받는다★ [2026-09-09]
+#  ★라이다 정지는 ★관찰만★ 한다 — 사슬에 끼어들지 않는다 [2026-09-09]★
 # ══════════════════════════════════════════════════════════════════════════════
-#  ★문턱을 여기 두지 않는다★ ROI·높이·거리 판정은 전부 lidar/config/cone_lidar.yaml
-#  이 소유하고 cone_lidar_node 가 확정해서 Bool 하나로 준다. 이 노드가 거리를 다시
-#  해석하면 소유자가 둘이 되어, 한쪽만 고치는 사고가 반드시 난다.
-#  (obstacle_distance 는 ★기록용★ 으로만 받는다 — 판정에 쓰지 않는다)
-LIDAR_STOP_TOPIC = '/cone_lidar_node/stop_signal'
-LIDAR_DIST_TOPIC = '/cone_lidar_node/obstacle_distance'
-#  ★신선도 : fail-open★ 이보다 낡으면 '라이다 보호 없음' 으로 보고 경고만 하고
-#  계속 간다. 종점 정지가 어차피 차를 세우므로, 여기서 멈추면 "라이다가 잠깐
-#  끊겨 시험이 안 끝났다" 가 된다 — pedal_drive_node 와 같은 판단이다.
-LIDAR_STALE_S = 1.0
+#  판정·래치·제동은 cone_lidar_node → pedal_drive_node → arduino 안에서 끝난다
+#  (헤더 '라이다 정지' 절). 이 노드는 ★언제 물렸는지★ 를 알아야 제동거리를 재고
+#  런치를 끝낼 수 있어서 결과 토픽 둘만 본다. ★이 값으로 브레이크를 만지지 않는다.★
+AEB_STOP_TOPIC   = '/aeb_stop'                          # pedal_drive_node → arduino
+LIDAR_DIST_TOPIC = '/cone_lidar_node/obstacle_distance'  # 기록용 (판정 아님)
 
 #  ★종점 도달 판정★ 10펄스면 한 틱에 0.44 m 를 가므로 반경을 넉넉히 둔다.
 #  driving.py 의 WP_REACH_M(0.9) 은 4펄스 기준이라 여기서는 놓칠 수 있다.
@@ -201,6 +204,10 @@ BRAKE_MAX_S   = 15.0          # 이 시간 안에 못 서면 굳지 않게 끝�
 #  arduino 의 해제유예(BRAKE_RELEASE_HOLD_S 0.5s)와 B보드 0단 복귀(BRAKE_HOME_MS
 #  1000ms)가 있으므로, 0 을 내고 ★실제로 빠질 시간★ 을 준 뒤에 종료한다.
 BRAKE_RELEASE_WAIT_S = 1.5
+#  ★AEB 가 물고 있을 때 기다려 주는 상한★ 장애물을 치우면 arduino 가 스스로
+#  푼다(pedal_drive_node 의 release_clear_s → /aeb_stop false). 그때까지 기다리되,
+#  안 치우고 가 버릴 수도 있으니 무한정 붙들지는 않는다.
+AEB_RELEASE_MAX_S = 20.0
 DONE_LINGER_S = 2.0           # 결과를 찍고 이만큼 뒤에 런치를 내린다
 
 #  정지 사유 (결과 표에 그대로 찍는다)
@@ -286,10 +293,6 @@ class BrakeTestNode(Node):
         #    false 로 두면 /braketest_go 에 true 가 올 때까지 기다린다 — 실차에서
         #    "차 앞을 비웠는지" 를 한 번 더 확인하고 싶을 때 쓴다.
         self.declare_parameter('auto_start', True)
-        #  ★true 면 라이다 판정이 살아 있을 때까지 출발하지 않는다★
-        #  기본 false — 라이다 없이 '종점 정지만' 재는 것도 정당한 시험이고,
-        #  ouster 가 붙는 데 시간이 걸려 출발이 하염없이 밀리는 것이 더 나쁘다.
-        self.declare_parameter('require_lidar', False)
 
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
         self.drive_pulse = int(self.get_parameter('drive_pulse').value)
@@ -297,7 +300,6 @@ class BrakeTestNode(Node):
         self.heading_pulse = int(self.get_parameter('heading_pulse').value)
         self.cte_abort = float(self.get_parameter('cte_abort_m').value)
         self.auto_start = bool(self.get_parameter('auto_start').value)
-        self.require_lidar = bool(self.get_parameter('require_lidar').value)
 
         #  ★지령값을 한 번만 정해 둔다★ 주행 중에 바뀌지 않는다 — 그게 이 시험의 전제다.
         if self.drive_pwm > 0:
@@ -328,9 +330,9 @@ class BrakeTestNode(Node):
         self.create_subscription(Bool, '/vehicle_mode', self.cb_mode, 10)
         self.create_subscription(Bool, '/estop', self.cb_estop, 10)
         self.create_subscription(Bool, '/braketest_go', self.cb_go, 10)
-        #  ★라이다 정지 — cone_lidar_node 의 확정 판정을 그대로 받는다★
+        #  ★관찰 전용★ 제동은 arduino 가 이미 했다 — 여기서는 시점과 거리만 받는다.
         from std_msgs.msg import Float32 as _F32
-        self.create_subscription(Bool, LIDAR_STOP_TOPIC, self.cb_lidar_stop, 5)
+        self.create_subscription(Bool, AEB_STOP_TOPIC, self.cb_aeb_stop, 5)
         self.create_subscription(_F32, LIDAR_DIST_TOPIC, self.cb_lidar_dist, 5)
 
         # ── 상태 ──
@@ -351,11 +353,9 @@ class BrakeTestNode(Node):
         self.auto_mode = None
         self.estop = False
         self.go = False
-        #  라이다 (판정은 stop_signal 하나. dist 는 기록용)
-        self.lidar_stop = False
-        self.lidar_stop_t = 0.0
+        #  라이다 사슬 관찰 (제동은 arduino 가 한다)
+        self.aeb_stop = False
         self.lidar_dist = float('nan')
-        self._lidar_warned = False
 
         self.head_est = HeadingEstimator()
         self.waypoints = []
@@ -370,6 +370,7 @@ class BrakeTestNode(Node):
 
         # 측정
         self.why = ''
+        self.own_brake = True
         self.hit_dist = float('nan')
         self.s_hit_idx = None
         self.s_hit_xy = None
@@ -509,17 +510,12 @@ class BrakeTestNode(Node):
         if bool(msg.data):
             self.go = True
 
-    def cb_lidar_stop(self, msg: Bool):
-        self.lidar_stop = bool(msg.data)
-        self.lidar_stop_t = time.time()
+    def cb_aeb_stop(self, msg: Bool):
+        """pedal_drive_node 의 확정 신호. ★관찰만 한다★ — arduino 가 이미 물었다."""
+        self.aeb_stop = bool(msg.data)
 
     def cb_lidar_dist(self, msg):
         self.lidar_dist = float(msg.data)
-
-    def lidar_fresh(self):
-        """판정이 살아 있나. ★끊겨도 멈추지 않는다★ (헤더 '신선도' 절)"""
-        return (self.lidar_stop_t > 0.0
-                and (time.time() - self.lidar_stop_t) <= LIDAR_STALE_S)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  출력
@@ -744,21 +740,14 @@ class BrakeTestNode(Node):
             self.throttle(f"⏸️ GPS 품질 대기 — {Q_LABEL.get(self.gps_quality, '?')}"
                           f"(σ={self.gps_sigma:.2f}m)")
             return
-        if self.require_lidar and not self.lidar_fresh():
-            self.throttle(f"⏸️ 라이다 판정 대기 — {LIDAR_STOP_TOPIC} 가 아직 없다 "
-                          f"(ouster 드라이버·cone_lidar_node 확인). "
-                          f"라이다 없이 종점 정지만 재려면 require_lidar:=false")
-            return
         if not self.build_waypoints():
             self.throttle("⏸️ GPS 원점 대기")
             return
         self.head_est.reset()
         self.heading = None
-        lid = ("라이다 보호 ON" if self.lidar_fresh()
-               else "★라이다 보호 없음 — 종점 정지로만 선다★")
         self.enter(S_HEADING,
                    f"▶ 출발 — 헤딩 초기화({self.heading_pulse}펄스로 곧게). "
-                   f"확정되면 {self.cmd_kind} 로 가속한다. {lid}")
+                   f"확정되면 {self.cmd_kind} 로 가속한다")
 
     def run_heading(self, now):
         #  ★진입 직후 잠깐은 굴리지 않는다★ (driving.py 와 같은 이유)
@@ -795,22 +784,14 @@ class BrakeTestNode(Node):
         self._wp_prev = self.wp_idx
 
         # ══════════════════════════════════════════════════════════════════════
-        #  ① 라이다 장애물 — ★cone_lidar_node 의 확정 판정을 그대로 쓴다★
+        #  ① 라이다 사슬이 세웠다 — ★관찰만 한다★
         # ══════════════════════════════════════════════════════════════════════
-        #  거리를 다시 해석하지 않는다(상수절 참고). Bool 하나가 곧 판정이다.
-        if self.lidar_stop and self.lidar_fresh():
-            self.begin_brake(WHY_LIDAR, now)
+        #  /aeb_stop 이 서는 순간 arduino 가 ★이미★ 구동을 끊고 리니어를 물었다
+        #  (compose 우선순위 (1-1)). 여기서 /brake_level 을 또 내면 발행자만
+        #  늘고 아무 이득이 없다 — ★계측 시점만 잡는다.★
+        if self.aeb_stop:
+            self.begin_brake(WHY_LIDAR, now, own_brake=False)
             return
-        #  ★끊겨도 멈추지 않는다 — 경고만 한다★ (헤더 '신선도' 절)
-        if not self.lidar_fresh() and not self._lidar_warned:
-            self._lidar_warned = True
-            self.event(
-                f"⚠️ 라이다 판정({LIDAR_STOP_TOPIC})이 {LIDAR_STALE_S:.1f}s 넘게 "
-                f"오지 않는다 — ★장애물 보호 없이 달린다★. 종점 정지는 그대로 "
-                f"동작한다. cone_lidar_node 와 ouster 드라이버를 확인할 것")
-        elif self.lidar_fresh() and self._lidar_warned:
-            self._lidar_warned = False
-            self.event("✅ 라이다 판정 복구 — 장애물 보호가 다시 산다")
 
         # ══════════════════════════════════════════════════════════════════════
         #  ② 종점 도달 — 반경 또는 통과, 둘 중 먼저 되는 쪽
@@ -854,10 +835,14 @@ class BrakeTestNode(Node):
             f"{'?' if self.gps_kmh is None else f'{self.gps_kmh:.1f}'}km/h, "
             f"CTE {cte:+.2f}m, LFD {lfd:.1f}m", period=1.0)
 
-    def begin_brake(self, why, now):
-        """정지 트리거 — ★즉시 리니어 2단★. 여기서부터가 측정 구간이다.
+    def begin_brake(self, why, now, own_brake=True):
+        """정지 트리거 — 여기서부터가 측정 구간이다.
 
         why 는 WHY_LIDAR / WHY_GOAL 이다. 결과 표에 그대로 찍힌다.
+        ★own_brake★ 는 '리니어를 내가 무는가' 다:
+          · 종점 도달  → True  : 이 노드가 /brake_level 2단을 낸다
+          · 라이다     → False : ★arduino 가 이미 물었다★ (/aeb_stop 경로).
+                                 여기서 또 내면 발행자만 늘고 이득이 없다.
         """
         self.why = why
         self.hit_dist = self.lidar_dist if why == WHY_LIDAR else float('nan')
@@ -867,8 +852,10 @@ class BrakeTestNode(Node):
         self.brake_t0 = now
         self.brake_v0 = self.speed_ms() if self.speed_ms() is not None else float('nan')
         self._still_t = 0.0
-        self.set_brake(BRAKE_FULL)
-        self.publish_brake(force=True)
+        self.own_brake = own_brake
+        if own_brake:
+            self.set_brake(BRAKE_FULL)
+            self.publish_brake(force=True)
         #  ★조향은 유지한다★ 정지 직전에 앞바퀴를 정면으로 꺾으면 제동 중 거동이
         #  바뀌어 측정이 오염된다. 펄스는 arduino 가 0 으로 덮는다(send docstring).
         self.send(self.cmd_value, self._last_steer, control=True)
@@ -876,10 +863,10 @@ class BrakeTestNode(Node):
                  else self.brake_v0 * 3.6)
         extra = (f", 장애물 {self.hit_dist:.2f}m"
                  if math.isfinite(self.hit_dist) else "")
+        who = "리니어 2단 체결" if own_brake else "★arduino AEB 가 물었다★"
         self.enter(S_BRAKE,
                    f"🛑 ★{why}★ (WP {self.wp_idx}/{len(self.waypoints)}{extra}) — "
-                   f"리니어 2단 체결. 진입속도 {v0kmh:.2f} km/h "
-                   f"({self.brake_v0:.3f} m/s)")
+                   f"{who}. 진입속도 {v0kmh:.2f} km/h ({self.brake_v0:.3f} m/s)")
 
     def run_brake(self, now):
         self.send(self.cmd_value, self._last_steer, control=True)
@@ -904,19 +891,44 @@ class BrakeTestNode(Node):
         """★물린 채로 런치를 내리지 않는다★
 
         arduino 가 내려간 뒤에는 /brake_level 로 풀 방법이 없어져, 차를 밀려면
-        D5 를 내렸다 올리는 수밖에 없다. 그래서 여기서 0 을 내고 ★실제로 빠질
-        시간★ 을 준 뒤에 종료한다 — arduino 해제유예 0.5s + B보드 0단 복귀
-        BRAKE_HOME_MS 1000ms 를 합쳐 BRAKE_RELEASE_WAIT_S 로 잡았다.
+        D5 를 내렸다 올리는 수밖에 없다. 그래서 0 을 내고 ★실제로 빠질 시간★ 을
+        준 뒤에 종료한다 — arduino 해제유예 0.5s + B보드 0단 복귀 BRAKE_HOME_MS
+        1000ms 를 합쳐 BRAKE_RELEASE_WAIT_S 로 잡았다.
+
+        ⚠️ ★AEB 가 물고 있으면 이 노드는 못 푼다★ /aeb_stop 이 true 인 동안
+        arduino 는 리니어를 aeb_brake_level 로 계속 물고 있고, 우리 /brake_level=0
+        은 그 분기보다 우선순위가 낮다(compose (1-1)). 그건 결함이 아니라 설계다 —
+        ★장애물이 그대로 있는데 브레이크를 푸는 노드가 있으면 안 된다.★
+        그래서 그때는 '장애물을 치우면 풀린다' 를 말해 주고 기다린다.
         """
         self.set_brake(BRAKE_NONE)
         self.publish_brake(force=True)      # ★0 은 평소 재확인하지 않는다★
-        self.enter(S_RELEASE,
-                   f"🟢 완전정지 확인 — 리니어 해제(0단). "
-                   f"{BRAKE_RELEASE_WAIT_S:.1f}초 뒤 런치를 내린다")
+        if self.aeb_stop:
+            self.enter(S_RELEASE,
+                       "🟢 완전정지 확인 — 그런데 ★AEB 가 아직 물고 있다★ "
+                       "(/aeb_stop = true). 장애물을 치우면 arduino 가 스스로 "
+                       "푼다(release_clear_s). 그때까지 기다렸다 런치를 내린다")
+        else:
+            self.enter(S_RELEASE,
+                       f"🟢 완전정지 확인 — 리니어 해제(0단). "
+                       f"{BRAKE_RELEASE_WAIT_S:.1f}초 뒤 런치를 내린다")
 
     def run_release(self, now):
         self.send(0, self._last_steer, control=True)
-        if now - self.state_t0 >= BRAKE_RELEASE_WAIT_S:
+        held = now - self.state_t0
+        if self.aeb_stop:
+            #  ★AEB 가 놓을 때까지 기다린다★ 그래야 리니어가 실제로 빠진다.
+            #  무한정 기다리지는 않는다 — 장애물을 안 치우고 가 버릴 수도 있다.
+            if held < AEB_RELEASE_MAX_S:
+                self.throttle(
+                    f"⏸️ AEB 가 리니어를 물고 있다 — 장애물을 치우면 풀린다 "
+                    f"({held:.0f}/{AEB_RELEASE_MAX_S:.0f}s)", period=2.0)
+                return
+            self.event(
+                f"⚠️ {AEB_RELEASE_MAX_S:.0f}초가 지나도 /aeb_stop 이 서 있다 — "
+                f"★리니어가 물린 채로 런치를 내린다★. 차를 밀려면 D5 를 수동조종으로 "
+                f"내렸다 올릴 것(모드 전환은 리니어를 반드시 푼다)")
+        if held >= BRAKE_RELEASE_WAIT_S:
             self._done_t = now
             self.enter(S_DONE)
 

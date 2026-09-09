@@ -773,30 +773,70 @@ ros2 launch white1 braketest.launch.py drive_pwm:=140      # ★직접 PWM★
 > `terrain` 열은 **이제 보지 않는다** — `'S'` 가 있든 없든 무시한다.
 > (`driving.py` 의 `'S'` 일시정지는 그대로다 — 그쪽과 무관한 변경이다.)
 
-**라이다 정지는 `lidar one_launch.py` 의 그 시스템을 그대로 쓴다**
+**라이다 정지는 `lidar one_launch.py` 의 사슬을 ★그대로★ 쓴다** (사용자 지시)
 
 ```
-ouster 드라이버 ─/ouster/points─▶ cone_lidar_node ─/…/stop_signal─▶ braketest
-                                                                        │
-                                                                 /brake_level 2단
+ouster ─/ouster/points─▶ cone_lidar_node ─/…/stop_signal─▶ pedal_drive_node
+                           (인지·판정)                        (확정·래치)
+                                                                   │ /aeb_stop
+                                                                   ▼
+                                                       nxde/arduino (구동차단 + 리니어)
 ```
 
-`braketest.launch.py` 가 **`lidar/launch/aeb.launch.py` 를 통째로 include** 한다
-(= `ouster.launch.py` + `cone_lidar_node`). 감지 설정은 `lidar/config/cone_lidar.yaml`
-**한 곳이 소유**하고 braketest 는 그 Bool 판정을 그대로 받는다 — **문턱을 다시 두지
-않는다.** `cone_lidar_node` 는 차를 움직이지 않고, 제동은 받는 쪽이 한다.
+**braketest 는 이 사슬에 한 줄도 끼어들지 않는다.** 반응속도가 `lidar one_launch.py`
+와 같아야 하므로, 판정·래치·제동을 전부 그쪽 노드에 맡긴다. braketest 가 하는 일은
+**GPS + 지정속도 주행**과 **계측**뿐이다.
 
-- **`use_lidar:=false`** → 종점 정지로만 (장애물 보호 없음)
-- **`require_lidar:=true`** → 라이다 판정이 살아 있을 때까지 출발하지 않는다(기본 false)
-- **신선도는 fail-open** — 판정이 1.0 s 넘게 끊기면 경고만 하고 계속 간다.
-  종점 정지가 어차피 세우므로, 여기서 멈추면 "라이다가 잠깐 끊겨 시험이 안 끝났다"
-  가 된다(`pedal_drive_node` 와 같은 판단).
+`braketest.launch.py` 가 넘기는 것 — 전부 `lidar/one_launch.py` 와 **같은 값**:
 
-> ⚠️ **라이다 ROI 는 전방 2.0~6.0 m 인데 10펄스 2단 정지거리가 12.9~20.4 m 다.**
-> **보고 나서 서기에는 원리적으로 부족하다** — 이 시험은 "얼마나 못 서는가" 를
-> 재는 것이지 "설 수 있는가" 를 보는 것이 아니다. **사람·부술 물건을 장애물로
-> 쓰지 말 것.** 결과 표에 `장애물까지 남은 여유` 가 음수로 찍히면 그것이
-> "들이받았을 거리" 다.
+| 무엇 | 값 |
+|---|---|
+| `lidar/aeb.launch.py` include | = `ouster.launch.py` + `cone_lidar_node` |
+| `pedal_drive_node` | `engage_frames 1` · `min_engage_s 1.0` · `release_clear_s 1.5` |
+| `arduino` | **`aeb_brake_level 2`** · `aeb_stale_s 1.0` · `aeb_topic /aeb_stop` |
+
+> **그 셋이 비상정지를 "켜는" 유일한 지점이다** — `arduino` 기본 `aeb_brake_level=0`
+> 은 **꺼짐**이라, 안 넘기면 `/aeb_stop` 이 아무리 서도 무시된다.
+>
+> `pedal_drive_node` 는 이름과 달리 **구동을 발행하지 않는다**
+> (`/cmd_vel_raw`·`/control_state`·`/brake_level` 을 하나도 안 낸다 — 그 파일 헤더).
+> 그래서 braketest 의 주행 지령과 겹치지 않는다.
+
+**braketest 가 `/aeb_stop` 을 구독하는 것은 계측 때문이다** — 제동을 걸기 위해서가
+아니다(이미 arduino 가 했다). 언제 물렸는지를 알아야 거리·시간을 재고 런치를 끝낼
+시점을 안다. **그 값으로 브레이크를 만지지 않는다.**
+
+> ### ⚠️ AEB 로 섰을 때는 braketest 가 리니어를 못 푼다 — 설계상 그렇다
+>
+> `/aeb_stop` 이 true 인 동안 arduino 는 리니어를 계속 물고 있고, braketest 의
+> `/brake_level=0` 은 그 분기보다 우선순위가 낮다(`compose` (1-1)).
+> **장애물이 그대로 있는데 브레이크를 푸는 노드가 있으면 안 되기 때문이다.**
+> → **장애물을 치우면** `release_clear_s` 뒤에 arduino 가 스스로 푼다.
+> 20 초(`AEB_RELEASE_MAX_S`) 안에 안 치우면 **물린 채로 런치가 내려간다** —
+> 그때는 D5 를 수동조종으로 내렸다 올리면 풀린다(모드 전환은 반드시 리니어를 푼다).
+
+**반응속도 (실측 상수만)** — 감지에서 제동력이 서기까지 **≈575 ms**:
+ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
+`TX_PERIOD_S` 50 + **2단 행정 300**. 10펄스면 그 사이에만 **5.1 m** 를 간다.
+
+> ### ⚠️ 10펄스에서는 **보고 나서 설 수 없다** — 계산으로 확정된다
+>
+> ROI 는 라이다 원점 2.0~6.0 m, 범퍼는 원점 앞 1.2 m → **범퍼 기준 0.8~4.8 m**
+> 가 실제로 볼 수 있는 전부다. 지연 575 ms 를 넣으면:
+>
+> | 펄스 | 속도 | 지연 주행 | 제동(a=2.2) | 합계 | 4.8 m 안에? |
+> |---|---|---|---|---|---|
+> | 2 | 1.77 m/s | 1.02 m | 0.71 m | **1.73 m** | ✅ |
+> | **3** | 2.65 m/s | 1.52 m | 1.60 m | **3.12 m** | ✅ |
+> | 4 | 3.54 m/s | 2.03 m | 2.84 m | 4.87 m | ❌ 경계 |
+> | 6 | 5.30 m/s | 3.05 m | 6.39 m | 9.44 m | ❌ |
+> | **10** | 8.84 m/s | **5.08 m** | 17.76 m | **22.84 m** | ❌ |
+>
+> 10펄스는 **지연 주행 5.08 m 만으로 감지한계 4.8 m 를 넘는다** — 제동이 시작되기도
+> 전에 닿는다. 이 시험은 "얼마나 못 서는가" 를 재는 것이지 "설 수 있는가" 를 보는
+> 것이 아니다. **실제로 세워 보려면 `drive_pulse:=3` 이하.**
+> **사람·부술 물건을 장애물로 쓰지 말 것.** 결과 표의 `장애물까지 남은 여유` 가
+> 음수면 그것이 "들이받았을 거리" 다.
 
 - **`driving` 을 쓰지 않는다** — 코너 감속·종점 접근제동·CTE 적분·라이다 이양이
   전부 '제동거리를 재는 일' 에 개입한다. **재려는 것 하나만 남긴 노드**가

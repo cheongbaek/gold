@@ -11,7 +11,10 @@ braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [wh
   띄우는 것 (one_launch.py 에서 ★측정에 필요한 것만★ 남겼다):
       lidar/aeb.launch.py   ★라이다 정지 시스템 그대로★ (통째로 include)
                             = ouster.launch.py(OS1-32 드라이버) + cone_lidar_node
-                            → /cone_lidar_node/stop_signal 을 braketest 가 받는다
+      lidar/pedal_drive_node ★AEB 확정·래치★ stop_signal → /aeb_stop
+                            (구동은 발행하지 않는다 — 그 파일 헤더 참고)
+      → 정지 사슬이 lidar/one_launch.py 와 ★완전히 같다★. braketest 는 끼어들지
+        않고 GPS + 지정속도 주행만 한다
       nxde/arduino          A/B 2보드 시리얼 브리지  ★없으면 아무것도 안 움직인다★
       white1/iahrs          6축 IMU → /imu
       white1/speed          /imu 적분 속도계 → /speed
@@ -26,10 +29,9 @@ braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [wh
       mapping   — 시험 중에 경로를 쓸 이유가 없다.
       prompt    — ★런치 = 출발★ 이다(아래). 고를 것이 없다.
       hud       — 띄워도 되지만 기본은 끈다(use_hud:=true 로 켤 수 있다).
-      drive_lidar_node · drive_gps_node · pedal_drive_node
+      drive_lidar_node · drive_gps_node
                 — lidar 패키지의 ★주행★ 노드들이다. /cmd_vel_raw 발행자가 겹친다.
-                  우리가 필요한 것은 ★인지(cone_lidar_node)뿐★ 이라 aeb.launch.py
-                  만 include 한다(lidar/one_launch.py 도 같은 조각을 쓴다).
+                  (pedal_drive_node 는 이름과 달리 구동을 안 내므로 함께 띄운다)
       카메라·신호등 — 제동거리와 무관하고, /cmd_vel_raw 발행자만 늘린다.
 
 ════════════════════════════════════════════════════════════════════════════════
@@ -47,9 +49,13 @@ braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [wh
   4. 런치를 띄운다. GPS 품질이 서면 ★스스로 헤딩을 잡고 출발한다.★
      → 확인하고 출발시키고 싶으면 `auto_start:=false` 로 띄우고,
        `ros2 topic pub -1 /braketest_go std_msgs/msg/Bool '{data: true}'`
-  5. 달리는 동안 ★둘 중 먼저 오는 것★ 에서 리니어 2단을 문다 —
-     ① 라이다 장애물 확정  ② 종점 도달
+  5. 달리는 동안 ★둘 중 먼저 오는 것★ 에서 선다 —
+     ① 라이다 장애물 → ★arduino AEB 가 문다★ (braketest 는 관찰만)
+     ② 종점 도달     → braketest 가 /brake_level 2단
      완전정지하면 결과를 찍고 ★리니어를 풀고★ 런치가 스스로 내려간다.
+     ⚠️ ①로 섰을 때는 ★장애물을 치워야★ arduino 가 리니어를 푼다(설계상 그렇다).
+        치우지 않으면 20초 뒤 물린 채로 런치가 내려간다 — 그때는 D5 를 수동조종으로
+        내렸다 올리면 풀린다(모드 전환은 반드시 리니어를 푼다).
 
   ⚠️ 라이다 ROI 는 전방 2.0~6.0 m 인데 10펄스 2단 정지거리가 12.9~20.4 m 다 —
      ★보고 나서 서기에는 원리적으로 부족하다.★ 이 시험은 '얼마나 못 서는가' 를
@@ -106,6 +112,12 @@ def _setup(context, *args, **kwargs):
         parameters=[{
             'baud': 115200,
             'auto_direct_pwm': True,
+            # ★비상정지를 '켜는' 유일한 지점★ arduino 기본 aeb_brake_level=0 = 꺼짐.
+            #   lidar/one_launch.py 와 ★같은 값★ 을 넘긴다(2 = 풀브레이킹 / 1.0s).
+            #   이 셋이 없으면 /aeb_stop 이 아무리 서도 arduino 는 무시한다.
+            'aeb_brake_level': cfg('aeb_brake_level'),
+            'aeb_stale_s':     cfg('aeb_stale_s'),
+            'aeb_topic':       '/aeb_stop',
             'exclude_ports': [gps_dev, imu_dev],
         }],
     )
@@ -155,7 +167,6 @@ def _setup(context, *args, **kwargs):
             'heading_pulse': cfg('heading_pulse'),
             'cte_abort_m':   cfg('cte_abort_m'),
             'auto_start':    cfg('auto_start'),
-            'require_lidar': cfg('require_lidar'),
         }],
     )
 
@@ -193,6 +204,32 @@ def _setup(context, *args, **kwargs):
         launch_arguments={'use_rviz': cfg('use_lidar_rviz')}.items(),
     )
 
+    # ═══════════════════════════════════════════════════════════════════
+    #  [AEB 확정·래치] pedal_drive_node — ★lidar/one_launch.py 와 같은 파라미터★
+    # ═══════════════════════════════════════════════════════════════════
+    #  cone_lidar_node ─stop_signal─▶ 이 노드 ─/aeb_stop─▶ arduino (구동차단+리니어)
+    #  ★braketest 는 이 사슬에 끼어들지 않는다★ 반응속도가 lidar one_launch.py 와
+    #  같아야 하므로(사용자 지시), 판정·래치·제동을 전부 그쪽 노드에 맡긴다.
+    #
+    #  ※ 이름이 'pedal_drive' 지만 ★구동을 발행하지 않는다★ —
+    #    /cmd_vel_raw·/control_state·/brake_level 을 하나도 내지 않고 /aeb_stop 만
+    #    낸다(그 파일 헤더 '발행하지 않는 것' 절). 그래서 braketest 의 주행 지령과
+    #    겹치지 않는다.
+    pedal_aeb = Node(
+        package='lidar', executable='pedal_drive_node', name='pedal_drive_node',
+        output='screen', additional_env=NODE_ENV,
+        condition=IfCondition(cfg('use_lidar')),
+        parameters=[{
+            'stop_signal_topic':       '/cone_lidar_node/stop_signal',
+            'obstacle_distance_topic': '/cone_lidar_node/obstacle_distance',
+            'aeb_stop_topic':          '/aeb_stop',
+            'engage_frames':           cfg('aeb_engage_frames'),
+            'min_engage_s':            cfg('aeb_min_engage_s'),
+            'release_clear_s':         cfg('aeb_release_clear_s'),
+            'signal_stale_s':          cfg('aeb_stale_s'),
+        }],
+    )
+
     # ★braketest 가 끝나면 런치 전체를 내린다★ (사용자 지시: 완전정지하면 종료)
     #   braketest.py 는 결과를 찍고 DONE_LINGER_S 뒤에 SystemExit 로 빠진다.
     shutdown_on_done = RegisterEventHandler(
@@ -200,8 +237,8 @@ def _setup(context, *args, **kwargs):
                       on_exit=[EmitEvent(event=Shutdown(
                           reason='braketest 완료 — 런치를 내린다'))]))
 
-    return [aeb, arduino, iahrs, speed, nmea, gps, braketest, record, hud,
-            shutdown_on_done]
+    return [aeb, pedal_aeb, arduino, iahrs, speed, nmea, gps, braketest,
+            record, hud, shutdown_on_done]
 
 
 def generate_launch_description():
@@ -239,11 +276,23 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'use_lidar_rviz', default_value='false',
             description='RViz 로 라이다 ROI 를 보면서 돌린다'),
+        #  ★lidar/one_launch.py 와 같은 기본값★ — 반응속도를 그쪽과 맞추는 것이
+        #  이 런치의 요구사항이므로, 값을 새로 발명하지 않고 그대로 가져온다.
         DeclareLaunchArgument(
-            'require_lidar', default_value='false',
-            description='true 면 라이다 판정이 살아 있을 때까지 ★출발하지 않는다★. '
-                        'false(기본)면 판정이 없어도 출발하고, 끊기면 경고만 하고 '
-                        '종점 정지로 끝낸다'),
+            'aeb_brake_level', default_value='2',
+            description='AEB 가 물 리니어 단수. ★0 이면 비상정지가 통째로 꺼진다★'),
+        DeclareLaunchArgument(
+            'aeb_stale_s', default_value='1.0',
+            description='/aeb_stop · stop_signal 이 이보다 낡으면 판단자 사망으로 본다'),
+        DeclareLaunchArgument(
+            'aeb_engage_frames', default_value='1',
+            description='pedal_drive_node 의 확정 프레임 (cone_lidar confirm_frames 뒤 한 번 더)'),
+        DeclareLaunchArgument(
+            'aeb_min_engage_s', default_value='1.0',
+            description='한 번 물면 최소 이만큼 유지 — 리니어 왕복 방지'),
+        DeclareLaunchArgument(
+            'aeb_release_clear_s', default_value='1.5',
+            description="'비었다' 가 이만큼 이어져야 해제 (사각지대 통과 방어)"),
         DeclareLaunchArgument(
             'min_quality', default_value='2',
             description='gps 노드 품질 문턱 (1=SPS 2=DGPS 3=FLOAT 4=FIXED)'),
