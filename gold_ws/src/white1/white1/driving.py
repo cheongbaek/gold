@@ -1904,6 +1904,23 @@ class DrivingNode(Node):
                 return i
         return None
 
+    def _warn_lost_stop(self, prev_idx, why):
+        """이번 틱에 지나온 구간에 S 가 있었는데 발동하지 못했으면 말한다.
+        [2026-09-09 신설]
+
+        ★조용히 사라지는 것이 이 열의 제일 위험한 실패다★ 사람이 손으로 적은
+        한 칸이고, 안 서면 "적었는데 왜 안 서지" 가 되는데 로그에 아무 흔적도
+        없으면 CSV 를 다시 열어 보는 것 말고는 확인할 방법이 없다.
+        소비 처리까지 해 둔다 — 다음 틱에 같은 구간을 또 보고 뒤늦게 밟지 않게.
+        """
+        hit = self.stop_zone_hit_in(prev_idx)
+        if hit is None:
+            return
+        self._stop_done.add(hit)
+        self.event(f"⚠️ 일시정지 지점(WP {hit}, terrain='S')을 ★건너뛰었다★ — "
+                   f"{why} 발동하지 못했다. 이번 주행에서 이 S 는 무시된다. "
+                   f"S 를 그 구간 밖으로 옮길 것")
+
     def begin_stop_zone(self, idx):
         """S 도달·통과 — ★즉시 리니어 2단★ (사용자 지시).
 
@@ -2692,6 +2709,14 @@ class DrivingNode(Node):
             if abs(ang) > 90.0:
                 best_i += 1
         self.wp_idx = best_i
+        #  ★[2026-09-09] 구간 검사 기준도 같이 옮긴다 — 안 하면 오검출한다★
+        #  build_waypoints 가 _wp_idx_prev = 0 을 넣어 두는데, 여기서 wp_idx 만
+        #  best_i 로 뛰면 첫 run_follow 틱의 검사 구간이 ★(0, best_i]★ 가 된다.
+        #  경로 중간에서 출발하면(= 순환 코스를 반쯤 돌아 세워 뒀거나, 앞부분을
+        #  건너뛰고 붙였거나) ★지난 적도 없는 S 를 그 자리에서 밟는다★.
+        #  시뮬 확인 : 출발 WP 150 / S 가 WP 137 → 첫 틱에 hit=137 이 나왔다.
+        #  포인터를 옮기는 곳에서 기준을 함께 옮기는 것이 유일한 해법이다.
+        self._wp_idx_prev = best_i
         self.event(f"📍 출발 WP {best_i}/{len(self.waypoints)} "
                    f"(최근접 {best_d:.2f}m)")
 
@@ -2842,6 +2867,11 @@ class DrivingNode(Node):
             return
 
         if self.in_lidar_zone():
+            #  ★[2026-09-09] 이 틱에 S 를 건너뛰며 L 로 들어갔는가★
+            #  한 틱에 최대 WP_MAX_ADVANCE(5) 칸을 뛰므로, S 바로 뒤에 L 이 붙어
+            #  있으면 한 틱이 둘을 함께 넘을 수 있다. 그때 S 는 검사에 닿지 못한다
+            #  — ★조용히 사라지게 두지 않고 말한다.★
+            self._warn_lost_stop(prev_idx, "라이다 구간으로 들어가느라")
             if not self._lidar_zone:
                 if not self.begin_lidar_zone():
                     return          # 이양 실패 — begin 이 이미 정지시켰다
@@ -2861,6 +2891,10 @@ class DrivingNode(Node):
                 self.begin_stop_zone(hit)
                 self.run_stop_zone(self._last_steer)
                 return
+        else:
+            #  종점이 리니어를 잡고 있으면 S 를 발동하지 않는다 — 어차피 종점이
+            #  세운다. 다만 ★적었는데 안 섰다★ 가 로그에 남아야 한다.
+            self._warn_lost_stop(prev_idx, "종점 접근제동이 리니어를 잡고 있어")
 
         # ★경로이탈 안전정지★ 매핑 경로에서 CTE_DEVIATION_M 이상 벗어나면 조향을
         #   더 계산하지 않고 곧바로 도착과 같은 정지 절차로 넘긴다.
