@@ -239,14 +239,25 @@ STEER_MAX_DEG      = 40       # B보드 수용 상한
 #      pot 5° → 도로휠 3.97° → 10펄스 횡가속도 4.34 m/s² — 72.5m 직선을 잡기에 충분.
 #   ③ 저역통과 + 슬루 제한으로 틱 단위 떨림을 없앤다(mppi 의 cmd.steer_* 와 같은 값).
 UNDERSTEER_V_MAX_MS = 3.536   # = 4펄스. ★언더스티어 항에 쓰는 속도의 상한★
-#  ★[2026-09-09 밤] 5.0 → 3.0 으로 더 조인다★ 사용자가 지시한 값은 ±5° 였다.
-#  그런데 방향항을 제대로 넣고 검증해 보니 ★5° 는 이 속도에서 권한이 과하다★ —
-#  플랜트가 예민한 쪽(U=0)이면 pot 5° 가 도로휠 3.97° = 요레이트 28°/s 라, 0.25s
-#  작동지연과 불감대 계전기가 겹쳐 헤딩이 ±9.3° 로 진동한다(폭이 커지는 진동이다).
-#  3.0° 로 조이면 같은 조건에서 ★±5.7°★ 로 내려가고 잔류 CTE 도 0.52m → 0.32m 다.
-#  둔한 쪽(U=5.17)에서 잃는 것은 0.08m → 0.21m 뿐이다. ★사용자 지시보다 더 보수적인
-#  방향이라 그대로 적용했고, 런치 인자 steer_limit_deg 로 언제든 5.0 으로 되돌린다.★
-STEER_LIMIT_DEG     = 3.0     # pot 지령 절대 상한 (런치 steer_limit_deg)
+#  ★[2026-09-09 밤] 5.0 → 3.0 으로 조였다가, [2026-09-10] 다시 5.0 으로 되돌렸다★
+#  조인 이유는 '플랜트가 예민한 쪽이면 5° 는 권한이 과하다' 였다. 어느 쪽인지 모르는
+#  채로 안전한 쪽을 골랐던 것인데, ★실차 데이터가 판정을 내 줬다.★
+#
+#  route_20210606_012345-20260909_234409 (t=2.7~8.7s, 10→25 km/h):
+#      cmd_steer_deg   −3.0° 로 ★전 구간 포화★
+#      steer_measured  −3 ~ −6 (지령을 제대로 따라갔다 — 서보는 정상이다)
+#      cte_m           −0.60 → ★−1.26m 로 계속 커졌다★
+#      heading_err     +1.0° → ★−3.7°★ (왼쪽으로 꽉 꺾은 채 오른쪽으로 돌았다)
+#  즉 ★둔한 쪽(언더스티어가 실제로 있는 쪽)★ 이고, 3° 로는 권한이 모자란다.
+#  예민한 쪽을 걱정해 조였던 근거가 사라졌으므로 사용자가 지시한 5.0 으로 되돌린다.
+#
+#  ⚠️ ★다만 5° 로 올려도 이 로그는 설명이 다 되지 않는다 — 조향 영점을 의심할 것★
+#  왼쪽으로 3° 를 꽉 물고 있는 동안 헤딩이 오른쪽으로 3.7° 돌았다. 권한 부족이라면
+#  '덜 돌아온다' 여야지 '반대로 간다' 가 되기는 어렵다. pot 영점이 실제 직진보다
+#  오른쪽으로 치우쳐 있으면 정확히 이렇게 된다(−3° 지령이 아직 우조향이다).
+#  → B보드 시리얼 `a` 한 줄로 영점을 다시 잡고 나서 이 값을 다시 판단할 것
+#    (`BOARD_B.md` 3절 — ROS 송신 경로를 일부러 두지 않았다).
+STEER_LIMIT_DEG     = 5.0     # pot 지령 절대 상한 (런치 steer_limit_deg)
 STEER_LPF           = 0.35    # 조향 저역통과 (mppi cmd.steer_lpf_alpha 와 같다)
 STEER_SLEW_DEG_S    = 28.0    # 조향 슬루 [pot deg/s] (mppi cmd.steer_slew_deg_s)
 
@@ -342,6 +353,34 @@ CTE_WINDOW_WP     = 60
 #  런치를 끝낼 수 있어서 결과 토픽 둘만 본다. ★이 값으로 브레이크를 만지지 않는다.★
 AEB_STOP_TOPIC   = '/aeb_stop'                          # pedal_drive_node → arduino
 LIDAR_DIST_TOPIC = '/cone_lidar_node/obstacle_distance'  # 기록용 (판정 아님)
+LIDAR_SIGNAL_TOPIC = '/cone_lidar_node/stop_signal'      # ★사슬 생존 신호★
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-10] 라이다가 살아나기 전에 출발했다 — 그래서 안 섰다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  route_20210606_012345-20260909_234409 주행에서 라바콘을 지나쳤는데 제동이 전혀
+#  없었다. 배선도 파라미터도 정상이었다 — ★차가 라이다보다 먼저 출발했다.★
+#
+#  ★이 노드에만 있는 결함이었다★ `lidar/one_launch.py` 는 사람이 페달로 몬다.
+#  사람은 콘솔에 드라이버가 올라온 것을 보고 나서 밟으므로 이 문제가 구조적으로
+#  생기지 않는다. 반면 braketest 는 ★런치 = 출발★ 이라, D5 가 자율이고 GPS 만
+#  서면 그 자리에서 굴러간다. OS1-32 드라이버는 TCP 설정·센서 재초기화·메타데이터를
+#  거쳐 첫 패킷까지 ★수십 초★ 가 걸리는데, 출발 게이트는 그것을 보지 않았다
+#  (go / fix_ok / 웨이포인트 / 경로이격 네 가지뿐이었다).
+#
+#  ★무엇을 보면 '살아 있다' 인가★
+#  cone_lidar_node 는 ★포인트클라우드 프레임마다★ stop_signal 과 obstacle_distance
+#  를 조건 없이 낸다(그 파일 407·413행). 그래서 stop_signal 이 들어오고 있다는 것은
+#  ★ouster 가 실제로 점군을 흘리고 있고 cone_lidar_node 가 그것을 처리하고 있다★
+#  는 뜻이다 — 사슬의 앞 두 칸을 한 번에 증명한다.
+#
+#  ⚠️ ★/aeb_stop 으로는 증명이 안 된다★ pedal_drive_node 는 ★자기 타이머★ 로
+#  /aeb_stop 을 계속 낸다(그 파일 291행, publish_period_s). 라이다가 한 프레임도
+#  안 와도 false 가 꼬박꼬박 나온다. 그것은 '판단자가 살아 있다' 일 뿐
+#  '라이다가 보고 있다' 가 아니다. 두 토픽의 뜻이 다르므로 ★둘 다★ 본다.
+LIDAR_READY_N       = 10     # 이만큼 연속으로 받아야 '스트리밍 중' 으로 인정
+LIDAR_READY_STALE_S = 0.5    # 마지막 수신이 이보다 낡으면 끊긴 것으로 본다
+AEB_STALE_S         = 1.0    # /aeb_stop 신선도. ★arduino 의 aeb_stale_s 와 같은 값★
 
 #  ★종점 도달 판정★ 10펄스면 한 틱에 0.44 m 를 가므로 반경을 넉넉히 둔다.
 #  driving.py 의 WP_REACH_M(0.9) 은 4펄스 기준이라 여기서는 놓칠 수 있다.
@@ -411,6 +450,10 @@ class BrakeTestNode(Node):
         self.declare_parameter('drive_pwm', DRIVE_PWM)
         self.declare_parameter('cte_abort_m', CTE_ABORT_M)
         self.declare_parameter('steer_limit_deg', STEER_LIMIT_DEG)
+        #  ★라이다가 살아난 뒤에 출발할지★ 런치가 use_lidar 를 그대로 넘긴다.
+        #  use_lidar:=false 로 라이다 없이 돌릴 때 영영 기다리지 않게 하는
+        #  스위치일 뿐이고, ★기본은 반드시 기다린다★ 이다.
+        self.declare_parameter('require_lidar', True)
         #  ★자동 출발★ 런치를 띄우면 준비되는 대로 곧바로 굴러간다(사용자 지시).
         #    false 로 두면 /braketest_go 에 true 가 올 때까지 기다린다 — 실차에서
         #    "차 앞을 비웠는지" 를 한 번 더 확인하고 싶을 때 쓴다.
@@ -421,6 +464,7 @@ class BrakeTestNode(Node):
         self.drive_pwm = int(self.get_parameter('drive_pwm').value)
         self.cte_abort = float(self.get_parameter('cte_abort_m').value)
         self.steer_limit = abs(float(self.get_parameter('steer_limit_deg').value))
+        self.require_lidar = bool(self.get_parameter('require_lidar').value)
         self.auto_start = bool(self.get_parameter('auto_start').value)
 
         #  ★지령값을 한 번만 정해 둔다★ 주행 중에 바뀌지 않는다 — 그게 이 시험의 전제다.
@@ -467,6 +511,8 @@ class BrakeTestNode(Node):
         from std_msgs.msg import Float32 as _F32
         self.create_subscription(Bool, AEB_STOP_TOPIC, self.cb_aeb_stop, 5)
         self.create_subscription(_F32, LIDAR_DIST_TOPIC, self.cb_lidar_dist, 5)
+        #  ★사슬 생존★ 프레임마다 오는 신호 (상단 '라이다가 살아나기 전에' 절)
+        self.create_subscription(Bool, LIDAR_SIGNAL_TOPIC, self.cb_lidar_signal, 5)
 
         # ── 상태 ──
         self.state = S_WAIT
@@ -490,6 +536,10 @@ class BrakeTestNode(Node):
         #  라이다 사슬 관찰 (제동은 arduino 가 한다)
         self.aeb_stop = False
         self.lidar_dist = float('nan')
+        self.lidar_frames = 0        # stop_signal 을 몇 번 받았나
+        self.lidar_t = 0.0           # 마지막 수신 시각
+        self.aeb_t = 0.0             # /aeb_stop 마지막 수신 시각
+        self._lidar_was_ready = False
 
         self.waypoints = []
         self.wp_idx = 0
@@ -677,9 +727,56 @@ class BrakeTestNode(Node):
     def cb_aeb_stop(self, msg: Bool):
         """pedal_drive_node 의 확정 신호. ★관찰만 한다★ — arduino 가 이미 물었다."""
         self.aeb_stop = bool(msg.data)
+        self.aeb_t = time.time()
 
     def cb_lidar_dist(self, msg):
         self.lidar_dist = float(msg.data)
+
+    def cb_lidar_signal(self, msg: Bool):
+        """★사슬 생존 신호★ 값은 보지 않는다 — ★온다는 사실★ 만 본다.
+
+        cone_lidar_node 는 점군 프레임마다 조건 없이 이것을 낸다. 그러므로 이게
+        들어온다 = ouster 가 흘리고 있고 cone_lidar_node 가 처리하고 있다.
+        (실제 정지 판단은 이 값이 아니라 /aeb_stop 으로 받는다 — 그쪽이 확정·래치를
+        거친 신호이고, arduino 를 실제로 움직이는 것도 그쪽이다.)
+        """
+        self.lidar_frames += 1
+        self.lidar_t = time.time()
+
+    def lidar_ready(self, now):
+        """라이다 정지 사슬이 ★실제로 돌고 있는가★.  [2026-09-10]
+
+        ★두 가지를 따로 본다 — 뜻이 다르기 때문이다★
+          ① cone_lidar 사슬 : stop_signal 이 LIDAR_READY_N 번 이상 왔고 신선한가
+             → ouster 가 점군을 흘리고 cone_lidar_node 가 그것을 보고 있다
+          ② 판단자        : /aeb_stop 이 신선한가
+             → pedal_drive_node 가 살아 있다 (이게 arduino 를 실제로 문다)
+        ①만 있으면 판단자가 없어 아무리 봐도 안 서고, ②만 있으면 눈이 없다.
+        """
+        chain = (self.lidar_frames >= LIDAR_READY_N
+                 and (now - self.lidar_t) <= LIDAR_READY_STALE_S)
+        judge = self.aeb_t > 0.0 and (now - self.aeb_t) <= AEB_STALE_S
+        return chain, judge
+
+    def lidar_wait_reason(self, now):
+        """왜 아직 못 나가는지 한 줄로. ★진행이 보이게 프레임 수를 함께 찍는다★"""
+        chain, judge = self.lidar_ready(now)
+        if not chain and self.lidar_frames == 0:
+            return ("⏳ ★라이다 대기★ — cone_lidar_node 의 stop_signal 이 아직 한 번도 "
+                    "오지 않았다. OS1-32 드라이버는 첫 패킷까지 수십 초가 걸린다. "
+                    "안 뜨면 : ip -br addr show eno1 (192.168.6.100/24) / "
+                    "ping -c2 192.168.6.11")
+        if not chain and (now - self.lidar_t) > LIDAR_READY_STALE_S:
+            return (f"⏳ ★라이다 대기★ — stop_signal 이 {now - self.lidar_t:.1f}s 째 "
+                    f"끊겼다 (누적 {self.lidar_frames}프레임). 점군이 끊긴다")
+        if not chain:
+            return (f"⏳ ★라이다 대기★ — 스트리밍 시작됨, 안정화 확인 중 "
+                    f"{self.lidar_frames}/{LIDAR_READY_N} 프레임")
+        if not judge:
+            return ("⏳ ★라이다 대기★ — 인지는 살아 있는데 pedal_drive_node 의 "
+                    "/aeb_stop 이 안 온다. 그 노드가 떠 있는지 확인 "
+                    "(use_lidar:=true 인가)")
+        return ''
 
     # ══════════════════════════════════════════════════════════════════════════
     #  출력
@@ -1004,6 +1101,23 @@ class BrakeTestNode(Node):
             if self.state in (S_RUN, S_BRAKE):
                 self.finish("GPS 두절로 중단")
             return
+        #  ★신선도 = 상대의 생존★ 출발할 때 살아 있던 사슬이 주행 중에 끊기면,
+        #  이 차는 ★아무도 안 보는 채로 32 km/h 로 계속 간다★. 정지 트리거가
+        #  라이다뿐인 시험에서 그 상태로 달릴 이유가 없다 — 그 자리에서 접는다.
+        #  (이 파일이 /aeb_stop 을 '계측용' 으로만 쓴다는 원칙과 어긋나지 않는다.
+        #   여기서 보는 것은 장애물 유무가 아니라 ★판단자의 생사★ 다.)
+        if self._lidar_was_ready and self.state == S_RUN:
+            chain, judge = self.lidar_ready(now)
+            if not (chain and judge):
+                self.set_brake(BRAKE_FULL)
+                self.publish_brake(force=True)
+                self.send(0, self._last_steer, control=True)
+                self.finish(
+                    "★라이다 사슬 두절★ — "
+                    + ("인지 끊김" if not chain else "판단자(/aeb_stop) 끊김")
+                    + f" (stop_signal {now - self.lidar_t:.1f}s 전, "
+                      f"/aeb_stop {now - self.aeb_t:.1f}s 전)")
+                return
 
         if self.state == S_WAIT:
             self.run_wait(now)
@@ -1050,6 +1164,21 @@ class BrakeTestNode(Node):
                 f"이 노드는 ★출발 방위를 경로에서 빌려 온다★")
             return
 
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★라이다가 살아난 뒤에 출발한다★ [2026-09-10 — 사용자 지시]
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★맨 마지막에 두는 이유★ 위 게이트들(GPS 품질·경로 이격)은 사람이 손을
+        #  써야 풀리는 것이라 먼저 알려 줘야 한다. 라이다는 기다리면 알아서 풀린다.
+        #  그래서 '사람이 할 일' 을 다 끝낸 뒤에 이 대기를 보여 준다.
+        #
+        #  ★이 시험에서 라이다는 선택이 아니라 시험 대상 그 자체다★ 정지 트리거가
+        #  라이다인데 라이다 없이 출발하면 종점까지 그냥 달릴 뿐이고, 그것은
+        #  2026-09-09 밤 주행에서 실제로 벌어진 일이다(상단 절).
+        if self.require_lidar:
+            why = self.lidar_wait_reason(now)
+            if why:
+                self.throttle(why, period=3.0)
+                return
         self.wp_idx = self._wp_prev = best
         self.heading = self.seed_heading(best)
         #  ★기록 파일명을 여기서 못 박는다★ load_route 의 이벤트는 __init__ 에서
@@ -1064,10 +1193,14 @@ class BrakeTestNode(Node):
         gx, gy = self.waypoints[-1]
         px, py = self.waypoints[best]
         self._goal_brg = math.degrees(math.atan2(gy - py, gx - px))
+        self._lidar_was_ready = self.require_lidar
+        lid = (f"라이다 정지 사슬 살아 있음({self.lidar_frames}프레임)"
+               if self.require_lidar else "★라이다 없음 — 종점 정지만★")
         self.enter(S_RUN,
                    f"▶ ★주행 시작★ [{self.route_name}] — WP {best}/"
                    f"{len(self.waypoints)} (경로에서 {off:.2f}m), 출발 방위 "
-                   f"{self.heading:+.1f}° (경로에서 빌림). 지금부터 ★{self.cmd_kind}★")
+                   f"{self.heading:+.1f}° (경로에서 빌림). 지금부터 ★{self.cmd_kind}★. "
+                   f"{lid}")
 
     def seed_heading(self, idx):
         """출발 방위를 ★경로의 진행방위★ 에서 빌린다 [2026-09-09].

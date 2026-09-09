@@ -275,6 +275,30 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #  ★[2026-09-07] /lstatus — 구간 문자 '0'|'L'|'S' 가 곧 조종권이다★
     #  이 열 하나로 "지금 누가 몰고 있었나" 가 로그에서 바로 드러난다. 종전에는
     #  /lidar_permit(Bool) 을 봐야 했는데 그 토픽은 없어졌다.
+    # ══════════════════════════════════════════════════════════════════════════
+    #  ★라이다 정지 사슬 [2026-09-10]★ — 안 남겨서 한 번 진단이 막혔다
+    # ══════════════════════════════════════════════════════════════════════════
+    #  2026-09-09 밤 braketest 에서 라바콘을 지나쳤는데 제동이 없었다. 그런데 이
+    #  세 토픽이 하나도 기록되지 않아, ★사슬의 어디가 끊겼는지를 로그로 가릴 수
+    #  없었다★ (원인은 라이다가 뜨기 전에 출발한 것이었다). 셋의 뜻이 다르므로
+    #  셋 다 남긴다 — 이 세 열만 보면 다음부터는 한눈에 갈린다:
+    #    · cone_stop 이 비어 있다        → ouster/cone_lidar 가 안 돌았다
+    #    · cone_stop 은 오는데 계속 False → 인지는 하는데 못 잡았다(ROI·코리도)
+    #    · cone_stop True 인데 aeb False  → pedal_drive_node 의 확정 단계에서 막혔다
+    #    · aeb True 인데 brake_pot 그대로 → arduino 가 무시했다(aeb_brake_level=0?)
+    TopicSpec('/cone_lidar_node/stop_signal', Bool, ('cone_stop',), _scalar,
+              note='cone_lidar_node 의 프레임별 판정. ★열이 통째로 비어 있으면 '
+                   '라이다가 한 프레임도 안 돌았다는 뜻이다★ (이 노드는 점군 '
+                   '프레임마다 조건 없이 낸다)'),
+    TopicSpec('/cone_lidar_node/obstacle_distance', Float32,
+              ('cone_dist_m',), _scalar,
+              note='코리도 안 최근접 전방거리 [m]. 비었으면 inf 로 나온다 — '
+                   '라이다 원점 기준이므로 범퍼까지는 vehicle_front_m(1.2) 를 뺀다'),
+    TopicSpec('/aeb_stop', Bool, ('aeb_stop',), _scalar,
+              note='pedal_drive_node → arduino. ★이것이 실제로 리니어를 무는 신호★ '
+                   '이다. ⚠️ 이 노드는 자기 타이머로 계속 내므로 '
+                   '★열이 차 있다는 것은 판단자 생존일 뿐 라이다 생존이 아니다★ — '
+                   '라이다 생존은 cone_stop 열로 본다'),
     TopicSpec('/lstatus', String, ('lstatus',), _scalar,
               note="구간 문자 0=GPS추종 / L=라이다(mppi) / S=일시정지. "
                    "★driving → mppi 조종권★ (terrain 열을 정규화한 값)"),

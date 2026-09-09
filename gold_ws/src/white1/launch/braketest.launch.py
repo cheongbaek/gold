@@ -10,6 +10,8 @@ braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [wh
 
   띄우는 것 (one_launch.py 에서 ★측정에 필요한 것만★ 남겼다):
       lidar/aeb.launch.py   ★라이다 정지 시스템 그대로★ (통째로 include)
+                            ※ [2026-09-10] braketest 는 이 사슬이 ★실제로 프레임을
+                              흘리기 시작한 뒤에★ 출발한다(require_lidar)
                             = ouster.launch.py(OS1-32 드라이버) + cone_lidar_node
       lidar/pedal_drive_node ★AEB 확정·래치★ stop_signal → /aeb_stop
                             (구동은 발행하지 않는다 — 그 파일 헤더 참고)
@@ -169,6 +171,10 @@ def _setup(context, *args, **kwargs):
             'drive_pwm':     cfg('drive_pwm'),
             'cte_abort_m':   cfg('cte_abort_m'),
             'steer_limit_deg': cfg('steer_limit_deg'),
+            #  ★라이다가 살아난 뒤에 출발한다★ [2026-09-10]
+            #  use_lidar 를 그대로 물려준다 — 라이다를 안 띄우는 구성에서
+            #  영영 기다리는 일이 없게 한다.
+            'require_lidar':   cfg('use_lidar'),
             'auto_start':    cfg('auto_start'),
         }],
     )
@@ -264,12 +270,11 @@ def generate_launch_description():
                         '구동계 개입 없는 순수 관성 상태로 제동에 들어가고 싶을 때만'),
 
         DeclareLaunchArgument(
-            'steer_limit_deg', default_value='3.0',
+            'steer_limit_deg', default_value='5.0',
             description='★조향 pot 지령 절대 상한 [deg]★ 직선 전용 안정화. '
                         'B보드 상한 40° 보다 훨씬 낮게 잘라 급선회를 원천 차단한다. '
-                        '[2026-09-09 밤] 5.0 → 3.0 : 5° 는 이 속도에서 권한이 과해 '
-                        '헤딩이 ±9.3° 로 진동했다(braketest.py 상단 검증). '
-                        '되돌리려면 steer_limit_deg:=5.0'),
+                        '[2026-09-10] 3.0 → 5.0 으로 되돌렸다 : 실차 로그에서 −3.0° '
+                        '가 전 구간 포화인데도 CTE 가 커졌다(braketest.py 상단 절)'),
         DeclareLaunchArgument(
             'cte_abort_m', default_value='3.0',
             description='경로에서 이만큼 벗어나면 스스로 2단을 물고 시험을 접는다'),
