@@ -168,6 +168,7 @@ def _setup(context, *args, **kwargs):
             'drive_pulse':   cfg('drive_pulse'),
             'drive_pwm':     cfg('drive_pwm'),
             'cte_abort_m':   cfg('cte_abort_m'),
+            'steer_limit_deg': cfg('steer_limit_deg'),
             'auto_start':    cfg('auto_start'),
         }],
     )
@@ -262,6 +263,11 @@ def generate_launch_description():
                         'PID·슬루·폭주감지·기동블랭킹이 전부 빠지는 무보호 경로다. '
                         '구동계 개입 없는 순수 관성 상태로 제동에 들어가고 싶을 때만'),
 
+        DeclareLaunchArgument(
+            'steer_limit_deg', default_value='5.0',
+            description='★조향 pot 지령 절대 상한 [deg]★ 직선 전용 안정화. '
+                        '5° → 도로휠 3.97° → 10펄스 횡가속도 4.34 m/s². '
+                        'B보드 상한 40° 보다 훨씬 낮게 잘라 급선회를 원천 차단한다'),
         DeclareLaunchArgument(
             'cte_abort_m', default_value='3.0',
             description='경로에서 이만큼 벗어나면 스스로 2단을 물고 시험을 접는다'),

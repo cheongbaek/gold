@@ -137,7 +137,7 @@ from white1.gps import GPS_FUSED_TOPIC, Q_LABEL, Q_NONE
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ 여기 두 값만 고치면 된다 ★★
 # ══════════════════════════════════════════════════════════════════════════════
-DRIVE_PULSE = 10          # A보드 목표펄스 0~15. ★10펄스 = 31.8 km/h★
+DRIVE_PULSE = 10       # A보드 목표펄스 0~15. ★10펄스 = 31.8 km/h★
 DRIVE_PWM   = 0           # 0 아니면 이쪽이 이긴다. A보드 직접 PWM 16~255
 #  ★주행할 경로★ gps_data 안의 파일명. 빈 문자열이면 가장 최신 route_*.csv 를 쓴다.
 #  ★직선(또는 직선에 가까운) 경로여야 한다★ — 이 노드는 코너 감속을 하지 않는다.
@@ -179,6 +179,41 @@ STEER_MAX_DEG      = 40       # B보드 수용 상한
 LFD_OMEGA_N = 0.97
 LFD_MIN_M   = 2.3
 LFD_MAX_M   = 14.0
+#  ★[2026-09-09] LFD 평활 — driving.py 와 같은 값을 가져왔다★
+#  종전 braketest 는 이것이 없어서 속도가 흔들릴 때마다 LFD 가 같이 널뛰었고,
+#  그러면 목표점이 앞뒤로 움직여 조향이 진동한다.
+LFD_LPF_ALPHA = 0.40      # 시상수 ≈95ms @20Hz
+LFD_RATE_UP   = 0.9       # [m/s] 증가 상한
+LFD_RATE_DOWN = 2.0       # [m/s] 감소 상한
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-09] 조향 안정화 — 실차에서 사행이 심했다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★원인은 steer_command 의 언더스티어 항이다 — 그 항은 v² 로 자란다★
+#      pot = 1.26·δ + 5.17·v²·tan δ / L
+#  두 번째 항은 '타이어가 미끄러지는 만큼 더 꺾는다' 는 ★전방향 보정★ 이고,
+#  driving.py 가 ★4펄스(3.54 m/s) 이하에서 126표본으로 맞춘 값★ 이다.
+#  10펄스(8.84 m/s)는 v² 가 6.25배라 그 보정이 통째로 과해진다:
+#
+#      δ 요구      4펄스 pot / 실제꺾임       10펄스 pot / 실제꺾임
+#       1.0°        2.2° /  1.7°  (×1.7)      6.9° /  5.5°  ★(×5.5)★
+#       3.0°        6.5° /  5.2°  (×1.7)     20.7° / 16.4°  ★(×5.5)★
+#      δ→0 루프이득  2.16                       6.90   → ★3.2배★
+#
+#  즉 ★10펄스에서 1° 요구가 실제로는 5.5° 꺾임 = 횡가속도 6 m/s² 급선회★ 가 된다.
+#  경로에 붙으려는 작은 보정이 매번 반대편으로 넘겨 버리니 사행할 수밖에 없다.
+#
+#  ★고치는 방법 세 가지를 겹친다★
+#   ① 언더스티어 항의 속도를 ★모델이 검증된 범위★ 로 자른다. 모델을 캘리브레이션
+#      바깥으로 외삽하지 않는다 — 그것이 애초의 잘못이다.
+#   ② pot 지령을 ±STEER_LIMIT_DEG 로 자른다(사용자 지시 ±5°). 직선 주행이라
+#      그 이상이 필요할 일이 없고, 급선회가 ★원천적으로 불가능★ 해진다.
+#      pot 5° → 도로휠 3.97° → 10펄스 횡가속도 4.34 m/s² — 72.5m 직선을 잡기에 충분.
+#   ③ 저역통과 + 슬루 제한으로 틱 단위 떨림을 없앤다(mppi 의 cmd.steer_* 와 같은 값).
+UNDERSTEER_V_MAX_MS = 3.536   # = 4펄스. ★언더스티어 항에 쓰는 속도의 상한★
+STEER_LIMIT_DEG     = 5.0     # pot 지령 절대 상한 (런치 steer_limit_deg)
+STEER_LPF           = 0.35    # 조향 저역통과 (mppi cmd.steer_lpf_alpha 와 같다)
+STEER_SLEW_DEG_S    = 28.0    # 조향 슬루 [pot deg/s] (mppi cmd.steer_slew_deg_s)
 
 MS_PER_PULSE  = 0.884
 KMH_PER_PULSE = 3.182
@@ -265,6 +300,7 @@ class BrakeTestNode(Node):
         self.declare_parameter('drive_pulse', DRIVE_PULSE)
         self.declare_parameter('drive_pwm', DRIVE_PWM)
         self.declare_parameter('cte_abort_m', CTE_ABORT_M)
+        self.declare_parameter('steer_limit_deg', STEER_LIMIT_DEG)
         #  ★자동 출발★ 런치를 띄우면 준비되는 대로 곧바로 굴러간다(사용자 지시).
         #    false 로 두면 /braketest_go 에 true 가 올 때까지 기다린다 — 실차에서
         #    "차 앞을 비웠는지" 를 한 번 더 확인하고 싶을 때 쓴다.
@@ -274,6 +310,7 @@ class BrakeTestNode(Node):
         self.drive_pulse = int(self.get_parameter('drive_pulse').value)
         self.drive_pwm = int(self.get_parameter('drive_pwm').value)
         self.cte_abort = float(self.get_parameter('cte_abort_m').value)
+        self.steer_limit = abs(float(self.get_parameter('steer_limit_deg').value))
         self.auto_start = bool(self.get_parameter('auto_start').value)
 
         #  ★지령값을 한 번만 정해 둔다★ 주행 중에 바뀌지 않는다 — 그게 이 시험의 전제다.
@@ -293,6 +330,12 @@ class BrakeTestNode(Node):
         self.pub_brake = self.create_publisher(Int32, '/brake_level', 10)
         self.pub_event = self.create_publisher(String, '/drive_event', 10)
         self.pub_dstate = self.create_publisher(String, '/drive_state', 10)
+        #  ★record 가 파일 이름을 여기서 줍는다★ [2026-09-09]
+        #  record.py 는 /drive_cmd 로 온 '<파일명>.csv' 를 붙들어 기록 파일명 앞에
+        #  붙인다(_note_route_cmd). 그것이 없으면 ros2bag/★unknown★-<시각>.csv 가
+        #  되어, 나중에 로그만 보고는 어느 경로로 달렸는지 알 수 없다.
+        #  보조로 /drive_event 에도 '주행 시작 [<파일명>]' 을 낸다(_note_route_event).
+        self.pub_cmd_name = self.create_publisher(String, '/drive_cmd', 10)
         #  ★record 가 이 시험도 기록하게 한다★ 그쪽은 /drive_state 가 DRIVE_* 일 때만
         #  켜지므로, 이 노드도 같은 이름을 쓴다(BRAKETEST_* 를 새로 만들지 않는다).
         self.pub_done = self.create_publisher(Bool, '/braketest_done', 10)
@@ -334,6 +377,13 @@ class BrakeTestNode(Node):
         self.wp_idx = 0
         self._wp_prev = 0
         self.route_name = ''
+
+        #  ★조향·LFD 평활 상태 [2026-09-09]★ (상단 '조향 안정화' 절)
+        self._lfd_lpf = LFD_MAX_M
+        self._lfd_out = LFD_MAX_M
+        self._lfd_t = 0.0
+        self._steer_out = 0.0
+        self._steer_t = 0.0
 
         self.brake_now = BRAKE_NONE
         self._brake_out = -1
@@ -408,7 +458,9 @@ class BrakeTestNode(Node):
             return False
 
         self.raw_wps, self.route_name = wps, name
-        self.event(f"📁 경로 {name} — WP {len(wps)}개 "
+        #  ★'경로 선택' 은 record.py 의 ROUTE_EVENT_HINTS 다★ 문구를 바꾸지 말 것 —
+        #  바꾸면 기록 파일명이 조용히 unknown 이 된다.
+        self.event(f"📁 경로 선택: {name} — WP {len(wps)}개 "
                    f"(terrain 열은 보지 않는다 — 정지는 라이다 또는 종점이다)")
         return True
 
@@ -566,13 +618,24 @@ class BrakeTestNode(Node):
             best = best_ahead
         self.wp_idx = max(self.wp_idx, min(best, self.wp_idx + WP_MAX_ADVANCE))
 
-    def lookahead_m(self):
-        """LFD = v·√2/ω_n. ★속도에 비례한다★ (driving.lookahead_m 과 같은 설계식)"""
+    def lookahead_m(self, now):
+        """LFD = v·√2/ω_n → ★저역통과 + 레이트 제한★ (driving.lookahead_m 과 같은 설계)
+
+        ★평활이 없으면 사행한다★ 속도가 조금만 흔들려도 LFD 가 같이 널뛰고, 그러면
+        목표점이 앞뒤로 움직여 조향이 진동한다. driving.py 가 같은 이유로 LPF 와
+        레이트 제한을 두고 있는데 종전 braketest 에는 그것이 통째로 빠져 있었다.
+        """
         v = self.speed_ms()
         if v is None or not math.isfinite(v):
             v = self.nominal_ms if math.isfinite(self.nominal_ms) else 3.0
-        lfd = v * math.sqrt(2.0) / LFD_OMEGA_N
-        return max(LFD_MIN_M, min(LFD_MAX_M, lfd))
+        target = max(LFD_MIN_M, min(LFD_MAX_M, v * math.sqrt(2.0) / LFD_OMEGA_N))
+        dt = (now - self._lfd_t) if self._lfd_t > 0.0 else (1.0 / CONTROL_HZ)
+        dt = max(1e-3, min(0.2, dt))
+        self._lfd_t = now
+        self._lfd_lpf += LFD_LPF_ALPHA * (target - self._lfd_lpf)
+        self._lfd_out = min(self._lfd_out + LFD_RATE_UP * dt,
+                            max(self._lfd_out - LFD_RATE_DOWN * dt, self._lfd_lpf))
+        return max(LFD_MIN_M, min(LFD_MAX_M, self._lfd_out))
 
     def pure_pursuit(self, lfd):
         """목표점 = wp_idx 이후 LFD 이상 떨어진 첫 앞쪽 WP → 도로휠각 [deg, +좌]."""
@@ -597,18 +660,46 @@ class BrakeTestNode(Node):
             return 0.0
         # 차체기준 방위 (왼쪽 +)
         alpha = math.atan2(-dx * sh + dy * ch, dx * ch + dy * sh)
-        return math.degrees(math.atan2(2.0 * WHEELBASE_M * math.sin(alpha), d))
+        #  ★denom 하한 = LFD/2★ driving.pure_pursuit_steer 와 같다. 목표점이 가까워
+        #  잡히는 순간(경로 끝·튐) 분모가 작아져 조향이 튀는 것을 막는다 —
+        #  종전 braketest 는 dist 를 그대로 써서 그 보호가 없었다.
+        denom = max(lfd * 0.5, d)
+        return math.degrees(math.atan2(2.0 * WHEELBASE_M * math.sin(alpha), denom))
 
     def steer_command(self, road_deg, v_ms):
-        """도로휠각 → B보드 pot 지령. ★부호가 여기서 한 번만 뒤집힌다 (− 좌 / + 우)★"""
+        """도로휠각 → B보드 pot 지령. ★부호가 여기서 한 번만 뒤집힌다 (− 좌 / + 우)★
+
+        ★언더스티어 항의 속도를 UNDERSTEER_V_MAX_MS 로 자른다★ 그 항은 v² 로 자라는
+        전방향 보정이고 ★4펄스 이하에서 맞춘 값★ 이다(상단 '조향 안정화' 절).
+        10펄스에 그대로 쓰면 1° 요구가 실제 5.5° 꺾임이 되어 사행한다.
+        모델을 캘리브레이션 바깥으로 외삽하지 않는 것이 이 한 줄의 전부다.
+        """
         d = abs(road_deg)
         if d < 1e-6:
             return 0.0
         v = v_ms if (v_ms is not None and math.isfinite(v_ms)) else 0.0
+        v = min(abs(v), UNDERSTEER_V_MAX_MS)          # ★외삽 금지★
         pot = (STEER_PLANT_GAIN * d
                + STEER_UNDERSTEER * v * v * math.tan(math.radians(d)) / WHEELBASE_M)
-        pot = min(STEER_MAX_DEG, pot)
+        #  ★직선 전용 상한★ B보드 상한(40°)보다 훨씬 낮게 자른다.
+        pot = min(self.steer_limit, min(STEER_MAX_DEG, pot))
         return -math.copysign(pot, road_deg)
+
+    def smooth_steer(self, pot, now):
+        """조향 지령에 ★저역통과 + 슬루 제한★ 을 건다 [2026-09-09].
+
+        GPS 코스로 만든 헤딩은 5Hz 로 갱신되므로 틱마다 계단이 생긴다. 그 계단을
+        그대로 내보내면 B보드 PD 가 매번 새 목표로 달려가 핸들이 떤다
+        (mppi 의 cmd.steer_lpf_alpha / cmd.steer_slew_deg_s 와 같은 문제·같은 값).
+        """
+        dt = (now - self._steer_t) if self._steer_t > 0.0 else (1.0 / CONTROL_HZ)
+        dt = max(1e-3, min(0.2, dt))
+        self._steer_t = now
+        want = self._steer_out + STEER_LPF * (pot - self._steer_out)
+        lim = STEER_SLEW_DEG_S * dt
+        self._steer_out += max(-lim, min(lim, want - self._steer_out))
+        self._steer_out = max(-self.steer_limit, min(self.steer_limit, self._steer_out))
+        return self._steer_out
 
     def signed_cte(self):
         """경로에서 벗어난 측방거리 [m]. + = 차가 경로 왼쪽."""
@@ -736,10 +827,15 @@ class BrakeTestNode(Node):
 
         self.wp_idx = self._wp_prev = best
         self.heading = self.seed_heading(best)
+        #  ★기록 파일명을 여기서 못 박는다★ load_route 의 이벤트는 __init__ 에서
+        #  나가므로 record 가 아직 구독을 붙이기 전일 수 있다. 여기는 출발 직전이라
+        #  record 가 확실히 떠 있고, /drive_state 가 DRIVE_RUN 이 되기 ★한 틱 전★
+        #  이라 세션이 열릴 때 이름이 이미 잡혀 있다.
+        self.pub_cmd_name.publish(String(data=self.route_name))
         self.enter(S_RUN,
-                   f"▶ ★출발★ — WP {best}/{len(self.waypoints)} "
-                   f"(경로에서 {off:.2f}m), 출발 방위 {self.heading:+.1f}° "
-                   f"(경로에서 빌림). 지금부터 ★{self.cmd_kind}★")
+                   f"▶ ★주행 시작★ [{self.route_name}] — WP {best}/"
+                   f"{len(self.waypoints)} (경로에서 {off:.2f}m), 출발 방위 "
+                   f"{self.heading:+.1f}° (경로에서 빌림). 지금부터 ★{self.cmd_kind}★")
 
     def seed_heading(self, idx):
         """출발 방위를 ★경로의 진행방위★ 에서 빌린다 [2026-09-09].
@@ -807,10 +903,11 @@ class BrakeTestNode(Node):
             self.begin_brake(WHY_GOAL, now)
             return
 
-        lfd = self.lookahead_m()
+        lfd = self.lookahead_m(now)
         road = self.pure_pursuit(lfd)
         v = self.speed_ms()
-        steer = self.steer_command(road, v if v is not None else self.nominal_ms)
+        steer = self.smooth_steer(
+            self.steer_command(road, v if v is not None else self.nominal_ms), now)
         self.send(self.cmd_value, steer, control=True)
         self.throttle(
             f"🅑 주행 중 — WP {self.wp_idx}/{len(self.waypoints)}, "
