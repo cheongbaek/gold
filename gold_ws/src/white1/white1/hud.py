@@ -16,7 +16,7 @@ hud.py ― kasa 차량 상태 HUD  [white1]
     중앙   상면도 차체 + 앞바퀴 조향 + 모서리 원형 게이지 4개
              차 앞 = 라이다 AEB 범위(cone_lidar ROI). 거리 없으면 안 그림
              FL 스로틀%   FR PWM%   RL 브레이크   RR 펄스 라벨
-    우측   속도 km/h (/encoder × 3.18, lidar 와 동일) · PWM · 펄스
+    우측   속도 km/h ★/gps_fused[8] 원시 fix 변위속도★ (폴백 IMU→ENC) · PWM · 펄스
            NAV 미니맵
              nav_mode=gps  (기본) 매핑 CSV(북쪽 위) + 실시간 GPS. 경로 없으면 NONE
              nav_mode=mppi 차량 기준 2D 탑뷰 — 코스트맵 장애물 + 롤아웃 + IMU 기준선
@@ -80,6 +80,12 @@ PWM_MAX = 255
 PULSE_MAX = 15
 STEER_MAX = 40
 KMH_PER_PULSE = 3.18
+#  ★[2026-09-09] /encoder 는 좌+우 ★합★ 이다 — 바퀴 하나 기준으로 접어야 한다★
+#  종전 큰 숫자는 `enc * 3.18` 이라 ★실제의 2배★ 를 찍고 있었다(합에 바퀴 하나
+#  기준 환산을 그대로 곱했다). 지금 큰 숫자는 GPS 라 이 상수는 폴백에만 쓰이지만,
+#  틀린 채로 두면 GPS 가 끊긴 구간에서 다시 2배가 된다.
+#  (nxde/master.py · white1/driving.py 의 ENC_SUM_TO_PULSE 와 같은 값·같은 이유)
+ENC_SUM_TO_PULSE = 0.5
 STALE_S = 1.5
 UI_MS = 50
 EARTH_R = 6378137.0
@@ -1098,14 +1104,37 @@ class HudApp:
         n = self.n
         enc = n.encoder.get(stale)
         imu = n.speed.get(stale)
-        # ★엔코더 우선★ lidar HUD 와 같다. /speed(IMU 적분)는 절대속도를 못 믿어서
-        #   큰 숫자에는 쓰지 않는다. 엔코더가 끊겼을 때만 IMU 로 내려간다.
-        if enc is not None:
-            sp = enc * KMH_PER_PULSE
-            src = 'ENC'
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★[2026-09-09] 큰 숫자를 ★GPS 속도★ 로 바꿨다 (종전: 엔코더)★
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★왜★ 엔코더는 이 차에서 절대속도의 기준이 못 된다:
+        #    · A보드 기동 블랭킹 구간에서 ★허수 카운트★ 를 뱉는다 — 실측으로 지령
+        #      0~1펄스인데 중앙 16, 최대 34 까지 튀었다(정상 구간 4~5).
+        #    · 저속에서 위로 튀는 성질이라 '섰는데 빠르게 보이는' 방향으로 틀린다.
+        #  driving.py 도 2026-08-12 에 같은 이유로 속도 1순위를 GPS 로 옮겼고
+        #  (measured_kmh), 코너 제동은 아예 "GPS 를 못 읽으면 제동하지 않는다" 다.
+        #  ★화면의 큰 숫자만 다른 기준을 쓰고 있을 이유가 없다.★
+        #
+        #  출처 : /gps_fused[8] = 원시 fix 변위 속도 [km/h] (gps.py 가 계산해 싣는다.
+        #         DR 로 메운 구간은 NaN 이 아니라 마지막 원시값이 유지된다)
+        #  폴백 순서 : GPS → IMU 적분(/speed) → 엔코더.  ENC 는 맨 아래로 내렸다 —
+        #  없애지는 않는다(GPS 두절 구간에서 '아주 없음' 보다는 낫다).
+        fused = n.fused.get(stale)
+        gps_kmh = None
+        if fused is not None and len(fused) > 8:
+            v = fused[8]
+            if v == v and v >= 0.0:          # NaN 이 아니고 음수가 아니면
+                gps_kmh = float(v)
+        if gps_kmh is not None:
+            sp = gps_kmh
+            src = 'GPS'
         elif imu is not None:
             sp = imu
             src = 'IMU'
+        elif enc is not None:
+            #  ★바퀴 하나 기준으로 접는다★ /encoder 는 좌+우 ★합★ 이다.
+            sp = enc * ENC_SUM_TO_PULSE * KMH_PER_PULSE
+            src = 'ENC'
         else:
             sp = None
             src = ''

@@ -46,6 +46,9 @@ setup(
             #   ★driving 이 헤딩·상태기계·추종을 맡는다★ 구 white 의 gps_imu 노드는 없고,
             #   위치는 [2026-08-18] 부터 gps 노드가 만든다.
             'driving = white1.driving:main',
+            #  ★[2026-09-09] 브레이크 제동거리 측정 전용★ driving 과 배타다 —
+            #  braketest.launch.py 가 driving 대신 이것을 띄운다.
+            'braketest = white1.braketest:main',
             'mapping = white1.mapping:main',    # /fix 만 보고 경로 수집
             'prompt  = white1.prompt:main',     # CLI (경로 선택·상태 표시)
             #  ★[2026-08-14] prompt_g(tkinter GUI)를 삭제했다★ 화면이 둘이면 각자

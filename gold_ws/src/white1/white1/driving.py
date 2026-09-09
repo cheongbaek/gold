@@ -875,6 +875,44 @@ LFD_RATE_UP     = 0.9          # [m/s] LFD 증가 상한 — 코너 탈출 후 �
 LFD_RATE_DOWN   = 2.0          # [m/s] LFD 감소 상한 — 코너 보호는 즉각
 
 # ── 헤딩 초기화 ──
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-09] IMU 를 ★어떻게 붙여도★ 되게 한다 — 중력축 투영 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 필요한가 — 2026-09-08 실차가 이것 때문에 경로이탈로 섰다★
+#  로그 route_20260908_203042-20260908_203234.csv 의 반경 5.5m 좌 171° U턴에서:
+#      실제 회전 (GPS 변위)   +177.2°
+#      추정 회전 (ego_heading) +136.7°   ← ★23% 부족, 40.5° 손실★
+#      iAHRS 쿼터니언 yaw     +173.6°   ← 센서는 정답을 알고 있었다
+#  원인은 ★IMU 장착 기울기★ 다. 정지 중 가속도가 (−8.44, 0.58, 5.06), |a|=9.855 로
+#  ★IMU z축이 수직에서 59.1° 누워 있었다★ — 중력이 대부분 −X 에 실려 있다.
+#  그런데 cb_imu 는 `angular_velocity.z` ★한 축만★ 적분했다. 차량 yaw 가 세 축에
+#  분산되어 있는데 한 축만 읽으니 구조적으로 과소적분한다.
+#  헤딩이 뒤처지자 순수추종은 "목표가 더 왼쪽에 있다"로 읽어 조향을 −40°(포화)로
+#  냈고, 차는 선회 안쪽으로 파고들어 CTE 가 2.0m 를 넘었다.
+#
+#  ★고치는 방법 — 축을 '재는' 것이지 '맞춰 다는' 것이 아니다★
+#  차량의 ★수직축★ 은 중력이 알려준다. 정지·등속 구간의 가속도 평균이 곧 중력이고,
+#  그 반대 방향이 차량의 '위' 다. 요레이트는 그 축의 성분이다:
+#        ω_yaw = ω⃗ · û      (û = −ĝ, 단위벡터)
+#  실측 검산 : 같은 U턴 구간을 이 식으로 적분하면 ★174.0°★ 가 나온다(실제 177.2°,
+#  오차 1.8%). z축 단독은 같은 계산에서 93° 밖에 안 나온다.
+#  → ★IMU 를 어느 방향으로 붙여도 된다★ 는 것이 이 절의 목적이다.
+#
+#  ★언제 재나 — 헤딩 초기화 구간에서 함께 잰다★ (사용자 지시)
+#  그 구간은 ①차가 곧게 굴러 ②조향이 0 이고 ③속도가 거의 일정하다. 즉 원심가속도와
+#  횡가속도가 없어 ★가속도계가 거의 중력만 본다★ — 축을 재기에 가장 좋은 구간이고,
+#  마침 헤딩이 필요한 바로 그 순간이다. 진행방향을 수평으로 간주한다는 것이 곧
+#  '그때 재는 중력방향을 수직으로 삼는다' 는 뜻이다.
+#  ★진입 직후 정지 구간부터 모은다★ MODE_SETTLE_S 동안은 펄스 0 이라 종·횡가속도가
+#  아예 없다 — 그 표본이 제일 깨끗하다.
+IMU_AXIS_MIN_SAMPLES = 20     # 이만큼은 모여야 축을 확정한다(20Hz → 1초)
+#  ★|a| 가 중력에서 이만큼 벗어난 표본은 버린다★ 가·감속이나 요철이 섞인 순간이다.
+#  중력만 보고 있으면 |a| ≈ 9.81 이다.
+IMU_AXIS_G_TOL   = 1.2        # [m/s²] |‖a‖ − 9.81| 이 이보다 크면 버린다
+IMU_G = 9.80665
+#  ★못 재면 z축으로 떨어진다★ 가속도계가 없거나 표본이 안 쌓이면 종전 거동 그대로다.
+#  조용히 틀리는 것보다 '예전과 같다' 가 낫고, 그 사실을 event 로 말한다.
+
 HEAD_MIN_DIST_M   = 1.0      # 이보다 짧으면 판정하지 않는다
 HEAD_MAX_DIST_M   = 5.0      # 여기까지 가면 최선의 추정으로 확정하고 넘어간다
 HEAD_MIN_SAMPLES  = 4        # 직진성을 보려면 최소 4점
@@ -1369,7 +1407,14 @@ class DrivingNode(Node):
         self._gps_q_logged = None         # 품질 변화 이벤트 중복 방지
 
         self.heading = None               # [deg] 확정 전에는 None
-        self.gyro_z = 0.0                 # [rad/s] CCW +
+        self.gyro_z = 0.0                 # [rad/s] ★차량 수직축 성분★ (아래 imu_up)
+        self.gyro_raw = (0.0, 0.0, 0.0)   # [rad/s] IMU 원시 3축 (x, y, z)
+        # ── IMU 축 보정 [2026-09-09] (상단 '중력축 투영' 절) ──
+        #   imu_up = 차량의 '위' 단위벡터를 IMU 좌표로 적은 것. None = 아직 못 쟀다.
+        self.imu_up = None
+        self._imu_acc_sum = [0.0, 0.0, 0.0]
+        self._imu_acc_n = 0
+        self._imu_axis_logged = False
         self.imu_time = 0.0
 
         self.enc_pulse = 0.0              # 바퀴 하나 기준 현재 펄스(중앙값 필터 후)
@@ -1643,14 +1688,65 @@ class DrivingNode(Node):
                        f"추종오차가 좌표오차에 묻힐 수 있다")
 
     def cb_imu(self, msg: Imu):
+        """자이로를 ★차량 수직축에 투영해서★ 적분한다 [2026-09-09].
+
+        종전에는 `angular_velocity.z` 한 축만 적분했다. IMU 가 기울어 붙어 있으면
+        차량 yaw 가 세 축에 분산되므로 그 한 축은 요레이트가 아니다 — 2026-09-08
+        실차에서 U턴 한 번에 40° 를 잃고 경로이탈로 섰다(상단 '중력축 투영' 절).
+        지금은 헤딩 초기화 때 잰 imu_up 으로 투영한다. ★못 쟀으면 z 로 떨어진다★
+        (종전 거동 — 조용히 다르게 도는 것보다 낫다).
+        """
         now = time.time()
         if self.imu_time > 0.0 and self.heading is not None:
             dt = now - self.imu_time
             if 0.0 < dt < 0.5:
-                # 자이로 z(CCW +)를 그대로 적분한다. 절대 기준은 초기화가 잡아준다.
+                # 직전 표본을 그 구간에 적용한다(1샘플 홀드) — 종전과 같은 규칙이다.
                 self.heading = wrap180(self.heading + math.degrees(self.gyro_z) * dt)
-        self.gyro_z = float(msg.angular_velocity.z)
+
+        w = (float(msg.angular_velocity.x),
+             float(msg.angular_velocity.y),
+             float(msg.angular_velocity.z))
+        self.gyro_raw = w
+        #  ★여기 한 줄이 이번 수정의 전부다★ 나머지는 축을 재는 코드다.
+        self.gyro_z = (w[2] if self.imu_up is None
+                       else w[0] * self.imu_up[0]
+                          + w[1] * self.imu_up[1]
+                          + w[2] * self.imu_up[2])
         self.imu_time = now
+
+        #  ── 축 보정용 가속도 누적 (헤딩 초기화 중에만) ──
+        #    ★|a| 가 중력에서 벗어난 표본은 버린다★ 가·감속·요철이 섞인 순간이다.
+        if self.imu_up is None and self.state in (S_MAP_HEADING, S_DRIVE_HEADING):
+            a = (float(msg.linear_acceleration.x),
+                 float(msg.linear_acceleration.y),
+                 float(msg.linear_acceleration.z))
+            n = math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+            if abs(n - IMU_G) <= IMU_AXIS_G_TOL:
+                for i in range(3):
+                    self._imu_acc_sum[i] += a[i]
+                self._imu_acc_n += 1
+
+    def solve_imu_axis(self):
+        """모아 둔 가속도 평균에서 차량 '위' 단위벡터를 낸다. 됐으면 True.
+
+        ★중력의 반대가 위다★ 그 이상은 없다. 진행방향(앞)은 요레이트 계산에
+        필요하지 않으므로 재지 않는다 — 필요한 것은 회전축 하나뿐이다.
+        """
+        if self._imu_acc_n < IMU_AXIS_MIN_SAMPLES:
+            return False
+        g = [v / self._imu_acc_n for v in self._imu_acc_sum]
+        n = math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
+        if n < 1.0:
+            return False
+        #  가속도계는 정지 시 ★위쪽(+)★ 을 가리킨다(중력의 반력). 그래서 그대로가 '위'다.
+        self.imu_up = (g[0] / n, g[1] / n, g[2] / n)
+        return True
+
+    def imu_tilt_deg(self):
+        """IMU z축이 차량 수직축에서 얼마나 기울어져 있나 [deg] (진단·로그용)."""
+        if self.imu_up is None:
+            return float('nan')
+        return math.degrees(math.acos(max(-1.0, min(1.0, abs(self.imu_up[2])))))
 
     def cb_encoder(self, msg: Int32):
         """★중앙값 3점 필터★ A보드 기동 블랭킹 구간의 허수 카운트를 죽인다 —
@@ -2331,6 +2427,11 @@ class DrivingNode(Node):
         if new_state in (S_MAP_HEADING, S_DRIVE_HEADING):
             self.head_est.reset()
             self.heading = None
+            #  ★축도 매번 다시 잰다★ IMU 를 옮겨 달았거나 브래킷이 틀어졌을 수 있고,
+            #  다시 재는 비용이 0 이다(어차피 헤딩 초기화를 하는 구간이다).
+            self.imu_up = None
+            self._imu_acc_sum = [0.0, 0.0, 0.0]
+            self._imu_acc_n = 0
             if new_state == S_DRIVE_HEADING and not self.build_waypoints():
                 self.enter(S_IDLE, "❌ GPS 원점이 없어 경로를 세울 수 없다")
                 return
@@ -2537,6 +2638,11 @@ class DrivingNode(Node):
         if not (good or forced):
             return
 
+        #  ★[2026-09-09] 헤딩과 ★같은 순간★ IMU 축도 확정한다★
+        #  이 구간은 곧게·조향 0·거의 등속이라 가속도계가 중력만 본다(상단 절).
+        #  실패해도 주행은 막지 않는다 — z축 단독으로 떨어질 뿐이고, 그 사실을 말한다.
+        axis_ok = self.solve_imu_axis()
+
         self.heading = heading
         self._last_fuse_pt = (self.x, self.y)
         # 진단 : 확정 조건을 숫자로 남긴다. 이후 매 행에 그대로 붙으므로
@@ -2548,6 +2654,19 @@ class DrivingNode(Node):
         mark = "" if good else "  ⚠️(최대거리 도달 — 정확도 미달인 채 확정)"
         self.event(f"🧭 헤딩 확정 {heading:+.1f}° "
                    f"(±{sigma:.1f}°, {dist:.2f}m, {n}점, 잔차 {resid*100:.1f}cm){mark}")
+        if axis_ok:
+            tilt = self.imu_tilt_deg()
+            self.event(
+                f"📐 IMU 축 확정 — z축이 수직에서 {tilt:.1f}° 기울어져 있다 "
+                f"(위 = [{self.imu_up[0]:+.3f}, {self.imu_up[1]:+.3f}, "
+                f"{self.imu_up[2]:+.3f}], 표본 {self._imu_acc_n}개). "
+                f"요레이트는 이 축에 투영해서 적분한다 — ★장착 방향과 무관하다★")
+        else:
+            self.event(
+                f"⚠️ IMU 축을 못 쟀다 (쓸 만한 가속도 표본 {self._imu_acc_n}개 < "
+                f"{IMU_AXIS_MIN_SAMPLES}) — ★자이로 z축 단독으로 적분한다(종전 거동)★. "
+                f"IMU 가 기울어 붙어 있으면 회전을 과소적분한다 "
+                f"(2026-09-08 실차: U턴에서 40° 손실 → 경로이탈)")
         self.enter(next_state)
 
     def align_start_wp(self):
@@ -3988,7 +4107,11 @@ class DrivingNode(Node):
             float(goal_d),                     # goal_dist_m
             float(self._diag_course),          # gps_course_deg
             float(self._diag_fuse),            # fuse_corr_deg
-            float(math.degrees(self.gyro_z)),  # gyro_z_dps
+            #  ★[2026-09-09] 이 열은 이제 '★차량 수직축에 투영한★ 요레이트' 다★
+            #  (축을 못 쟀으면 종전대로 IMU z축 원값). 즉 ★실제로 적분한 값★ 이라
+            #  로그에서 heading 변화율과 바로 비교된다 — 종전에는 원시 z 라서
+            #  둘이 안 맞아도 그것이 정상인지 이상인지 구별할 수 없었다.
+            float(math.degrees(self.gyro_z)),  # gyro_z_dps (= 투영된 요레이트)
             # brake_latched — [2026-08-11] 래치 개념이 사라져(감속 정책 삭제) 지금은
             #   '리니어가 물려 있나(=DRIVE_DONE)'를 싣는다. record.py 의 열 이름과
             #   의미가 호환되고 열 개수(13)도 그대로다.

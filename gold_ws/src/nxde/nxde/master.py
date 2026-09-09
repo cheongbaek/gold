@@ -136,15 +136,43 @@ from geometry_msgs.msg import Twist
 
 from nxde.proc_guard import watch_parent
 
-# ── 프로토콜 한계 (kasa_0730_A.ino / kasa_0804_B.ino, arduino.py 와 같은 값) ──
-PULSE_MAX = 15          # A보드 단일값 입력 상한
+# ── 프로토콜 한계 (kasa_0904_A.ino / kasa_0904_B.ino, arduino.py 와 같은 값) ──
+PULSE_MAX = 15          # A보드 단일값 입력 상한 (TARGET_MAX)
 STEER_MAX = 40          # B보드 STEER_ANGLE_MAX
 ADC_MAX   = 1023
 
-BRAKE_LEVEL_MAX = 2     # ★브레이크 단계 0/1/2★ (kasa_0804_B.ino — 0~255 PWM 이 아니다)
-#   0 = 기본위치(놓음) / 1 = 행정의 1/3 (83카운트) / 2 = 풀브레이킹 (250카운트)
+BRAKE_LEVEL_MAX = 2     # ★브레이크 단계 0/1/2★ (kasa_0904_B.ino — 0~255 PWM 이 아니다)
 BRAKE_LABELS = {0: "놓음", 1: "약(1/3)", 2: "풀"}
 KEYBOARD_BRAKE_STEP = 1     # PageUp/PageDown 1회당 브레이크 단계 증감
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-08] 브레이크 단계는 '시간표' 가 아니라 ★가변저항 절대위치★ 다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  이 파일에는 0804 시절 주석이 남아 있었다 — "1 = 행정의 1/3(83카운트) / 2 = 풀
+#  브레이킹(250카운트)". 그건 리니어를 ★엔코더 실측 시간표★ 로 밟던 때의 값이다.
+#  [0813-1] 부터 B보드는 리니어 위치를 ★A5 가변저항 절대값★ 으로 읽고 그 값까지
+#  움직인다(증분 엔코더는 사이클마다 기본위치가 −37~−55카운트씩 밀려 매번 재영점이
+#  필요했고, 그 재영점이 어긋나면 이동량이 통째로 흔들렸다).
+#      1단 = A5 raw ★600★   /   2단 = A5 raw ★850★
+#  ★그래서 이제 '시켰다' 와 '실제로 밟혔다' 를 구별할 수 있다★ — 그 값이 /brake_pot 다.
+BRAKE_POT_RAW = {0: 0, 1: 600, 2: 850}   # 단계별 A5 목표 raw (kasa_0904_B.ino)
+BRAKE_POT_TOL = 60                       # 목표와 이 안이면 '도달' 로 본다
+#  ★A5 >= 350 이면 B보드가 D11 제동등을 켠다★ (kasa_0904_B.ino BRAKELIGHT_ON_RAW.
+#  0821 초판 400 → 실차에서 350). 브레이크 단계도 주행모드도 E-stop 도 보지 않고
+#  이 값 하나로만 판정하므로, 화면에 그대로 비춰 주면 배선 확인이 눈으로 끝난다.
+BRAKELIGHT_ON_RAW = 350
+
+
+def brake_stage_from_pot(raw):
+    """A5 raw → 가장 가까운 브레이크 단계. ★사람 발도 같은 값을 움직인다★
+
+    수동조종에서는 arduino 가 브레이크를 항상 0 으로 보내므로(그 불변식은 그대로다)
+    이 값이 움직였다면 그것은 ★사람이 페달을 밟은 것★ 이다. 자율에서는 리니어가
+    시킨 대로 갔는지를 이 값으로 확인한다. 두 경우를 같은 칸에서 읽을 수 있다.
+    """
+    if raw is None:
+        return None
+    return min(BRAKE_POT_RAW, key=lambda lv: abs(BRAKE_POT_RAW[lv] - raw))
 
 # 실차 실측 (kasa_ws master.py / PULSE_SPEED.md 와 동일)
 KMH_PER_PULSE = 3.18    # 1펄스 = 3.18 km/h → 15펄스 = 47.7 km/h
@@ -233,6 +261,16 @@ class MasterNode(Node):
         self.create_subscription(Int32, '/steer_angle_measured', self._cb_steer, 10)
         self.create_subscription(Int32, '/drive_pulse_cmd', self._cb_drive_pulse, 10)
         self.create_subscription(Int32, '/throttle_pedal', self._cb_throttle, 10)
+        #  ★[2026-09-08] 0821·0825 에 생긴 두 토픽을 이제 본다★
+        #  /brake_pot   : B보드 A5 raw — ★리니어의 실제 위치★ (단계가 아니라 값)
+        #                 "시켰는데 갔나" 와 "사람이 발로 밟았나" 를 구별하는 유일한 값.
+        #  /drive_pwm_cmd : A보드로 ★실제로 나간 직접 PWM★ (16~255).
+        #                 ★수동조종에서 차를 굴리는 값이 이것이다★ — one_launch 의
+        #                 manual_use_pwm 기본이 true 라(2026-09-04), /drive_pulse_cmd 는
+        #                 그 구간에서 ★라벨 전용★ 이다. 종전에는 그 라벨만 보고 있어서
+        #                 페달 검증이 실제 경로를 못 보고 있었다.
+        self.create_subscription(Int32, '/brake_pot', self._cb_brake_pot, 10)
+        self.create_subscription(Int32, '/drive_pwm_cmd', self._cb_drive_pwm, 10)
         self.create_subscription(Bool, '/vehicle_mode', self._cb_mode, 10)
         self.create_subscription(Bool, '/estop', self._cb_estop, 10)
         self.create_subscription(String, '/board_status', self._cb_status, 10)
@@ -252,6 +290,10 @@ class MasterNode(Node):
         self.steer_measured = 0     # /steer_angle_measured (− 좌 / + 우, 명령과 같은 부호)
         self.drive_pulse_cmd = 0    # /drive_pulse_cmd (자율=계획값 / 수동=페달 환산값)
         self.throttle_raw = 0       # /throttle_pedal (A0 raw)
+        #  None = 아직 못 받았다. ★0 으로 가정하지 않는다★ — 0 은 '놓음' 이라는
+        #  실측값이고, 미수신은 'B보드 링크가 없다' 라 뜻이 전혀 다르다.
+        self.brake_pot = None       # /brake_pot (B보드 A5 raw 0~1023)
+        self.drive_pwm_cmd = 0      # /drive_pwm_cmd (수동조종 직접 PWM 16~255, 그 외 0)
         # B보드 D5 주행모드. None = /vehicle_mode 를 아직 못 받아 모름.
         #   ★ None 을 '자율'로 가정하지 않는다 ★ 모드를 모르는 상태에서 마우스 명령을
         #     내보내면 수동조종 중인 차에 자율 명령을 쏘는 셈이 된다 → 레버를 잠근다.
@@ -272,6 +314,8 @@ class MasterNode(Node):
     def _cb_steer(self, msg):          self.steer_measured = int(msg.data)
     def _cb_drive_pulse(self, msg):    self.drive_pulse_cmd = int(msg.data)
     def _cb_throttle(self, msg):       self.throttle_raw = int(msg.data)
+    def _cb_brake_pot(self, msg):      self.brake_pot = int(msg.data)
+    def _cb_drive_pwm(self, msg):      self.drive_pwm_cmd = int(msg.data)
     def _cb_estop(self, msg):          self.estop = bool(msg.data)
     def _cb_status(self, msg):         self.board_status = msg.data
 
@@ -536,24 +580,37 @@ class MasterGui:
     def _build_value_table(self, root):
         table = tk.Frame(root, bg=BG)
         table.pack(pady=(10, 6))
-        headers = ("", "주행 펄스", "속도", "조향각")
+        #  ★[2026-09-08] '리니어(A5)' 칸을 넣었다★ 종전 3칸(펄스·속도·조향)에는
+        #  ★제동을 확인할 칸이 아예 없었다★ — 레버가 무엇을 시켰는지만 보이고
+        #  리니어가 실제로 갔는지는 화면에 없었다. 하드웨어 검증 도구에서 그건
+        #  구멍이다(/brake_pot 이 [2026-08-21] 에 생겼는데 이 창이 안 보고 있었다).
+        headers = ("", "주행 펄스", "속도", "조향각", "리니어(A5)")
         for col, text in enumerate(headers):
             tk.Label(table, text=text, bg=BG, fg=TEXT,
                      font=("Consolas", 9, "bold")).grid(row=0, column=col, padx=14)
 
-        self.measured_vars = [tk.StringVar(value="0") for _ in range(3)]
-        self.command_vars = [tk.StringVar(value="0") for _ in range(3)]
+        self.measured_vars = [tk.StringVar(value="0") for _ in range(4)]
+        self.command_vars = [tk.StringVar(value="0") for _ in range(4)]
         tk.Label(table, text="실측값", bg=BG, fg=TEXT, font=("Consolas", 9)).grid(row=1, column=0)
         tk.Label(table, text="명령값", bg=BG, fg=TEXT, font=("Consolas", 9)).grid(row=2, column=0)
-        for col in range(3):
-            tk.Label(table, textvariable=self.measured_vars[col], bg=BG, fg=HANDLE_COLOR,
-                     font=("Consolas", 10)).grid(row=1, column=col + 1)
+        #  ★[2026-09-08] 이 라벨들에는 config() 를 걸지 않는다 — 실측으로 배웠다★
+        #  리니어 칸 색을 매 틱 config(fg=...) 로 바꾸게 했더니 Tk 가
+        #  `Tcl_Release couldn't find reference for 0x…` 로 ★프로세스를 abort★ 시켰다
+        #  (창이 뜨자마자 죽는다. HEAD 판은 안 죽으므로 그 config 가 원인이다).
+        #  이 창의 다른 라벨들은 text= 로 만들어 config 해도 멀쩡한데, 값 표만
+        #  textvariable= 이라 성질이 다르다. → 상태는 ★StringVar 문자열로★ 넣는다.
+        #  StringVar.set 은 문제가 없고, 담을 수 있는 정보도 색보다 많다.
+        for col in range(4):
+            tk.Label(table, textvariable=self.measured_vars[col], bg=BG,
+                     fg=HANDLE_COLOR, font=("Consolas", 10)).grid(row=1, column=col + 1)
             tk.Label(table, textvariable=self.command_vars[col], bg=BG, fg=OK_COLOR,
                      font=("Consolas", 10)).grid(row=2, column=col + 1)
         tk.Label(table, text="실측 주행펄스는 ★양 바퀴 평균★(1펄스=3.18km/h, 명령값과 같은 단위)"
-                             " · 조향각은 가변저항 실측 · 부호 − 좌 / + 우",
-                 bg=BG, fg=DISABLED_TEXT, font=("Consolas", 8)).grid(
-                     row=3, column=0, columnspan=4, pady=(6, 0))
+                             " · 조향각은 가변저항 실측 · 부호 − 좌 / + 우\n"
+                             "리니어는 ★A5 가변저항 절대위치★ (1단 600 / 2단 850, "
+                             "● = 제동등 점등 ≥350, ~ = 이동 중) — 사람이 페달을 밟아도 같은 값이 움직인다",
+                 bg=BG, fg=DISABLED_TEXT, font=("Consolas", 8), justify='center').grid(
+                     row=3, column=0, columnspan=5, pady=(6, 0))
 
     def _build_conn_status(self, root):
         row = tk.Frame(root, bg=BG)
@@ -719,10 +776,15 @@ class MasterGui:
         if manual:
             # ── 수동조종 : 레버가 '실측을 비추는 계기판'이 된다 ──
             #   엑셀 = 페달 환산 목표펄스, 조향 = 가변저항 실측 각도(같은 부호라 그대로)
-            #   브레이크는 arduino.py 의 래치가 정하므로 이 창은 값을 모른다 → 0 으로 둔다.
+            #   ★[2026-09-08] 브레이크도 이제 실측을 비춘다★ 종전 주석은 "arduino.py 의
+            #   래치가 정하므로 이 창은 값을 모른다 → 0 으로 둔다" 였는데, /brake_pot
+            #   (B보드 A5 raw)이 [2026-08-21] 에 생겨 ★알 수 있게 되었다★. 수동조종에서
+            #   arduino 는 브레이크를 항상 0 으로 보내므로, 이 값이 움직였다면 그것은
+            #   ★사람이 페달을 밟은 것★ 이다 — 그걸 레버로 비춰 주는 편이 맞다.
             self.throttle.set_value(self.node.drive_pulse_cmd)
             self.steering.set_value(self.node.steer_measured)
-            self.brake.set_value(0)
+            meas_stage = brake_stage_from_pot(self.node.brake_pot)
+            self.brake.set_value(0 if meas_stage is None else meas_stage)
             pulse_cmd = 0
             angle_cmd = self.node.steer_measured   # 전환 직후 급조향 방지
             brake_cmd = 0
@@ -772,8 +834,19 @@ class MasterGui:
         else:
             self.mode_box.config(text="자율주행 모드" + suffix,
                                  bg=AUTO_BOX_BG, fg=BOX_FG, activebackground=AUTO_BOX_BG)
-        self.pedal_label.config(
-            text=f"페달 A0:{self.node.throttle_raw:4d} → {self.node.drive_pulse_cmd}펄스")
+        #  ★[2026-09-08] 수동조종에서는 ★실제로 나간 직접 PWM★ 을 함께 보여준다★
+        #  one_launch 의 manual_use_pwm 기본이 true(2026-09-04) 라, 수동조종에서
+        #  /drive_pulse_cmd 는 ★라벨 전용★ 이고 차를 굴리는 값은 /drive_pwm_cmd 다.
+        #  라벨만 보이면 "페달을 밟았는데 표시는 3펄스인데 왜 안 가지" 가 된다.
+        if manual:
+            self.pedal_label.config(
+                text=f"페달 A0:{self.node.throttle_raw:4d} → 라벨 "
+                     f"{self.node.drive_pulse_cmd}펄스 · ★실제 PWM "
+                     f"{self.node.drive_pwm_cmd}★")
+        else:
+            self.pedal_label.config(
+                text=f"페달 A0:{self.node.throttle_raw:4d} → {self.node.drive_pulse_cmd}"
+                     f"펄스 (자율: A보드로 나간 값)")
         self.throttle_kmh.config(text=f"{pulse_cmd * KMH_PER_PULSE:.1f} km/h")
 
         # ── 값 표 ──
@@ -785,6 +858,23 @@ class MasterGui:
         self.command_vars[0].set(str(pulse_cmd))
         self.command_vars[1].set(f"{pulse_cmd * KMH_PER_PULSE:.1f} km/h")
         self.command_vars[2].set(f"{angle_cmd}°")
+
+        # ── 리니어(A5) 칸 [2026-09-08] ──
+        #   명령 : 이번에 낸 단계와 그 단계의 목표 raw
+        #   실측 : B보드가 읽은 A5 raw + 도달 여부 + 제동등 점등 여부
+        self.command_vars[3].set(f"{brake_cmd}단 → {BRAKE_POT_RAW[brake_cmd]}")
+        pot = self.node.brake_pot
+        if pot is None:
+            self.measured_vars[3].set("미수신")
+        else:
+            #   ★상태를 색이 아니라 문자로 적는다★ (이유는 _build_value_table 주석)
+            #     ● = 제동등 점등 문턱(A5 350) 이상 — B보드가 D11 을 켠 상태
+            #     ~ = 목표 raw 까지 아직 가는 중
+            #   자율에서 명령이 0단인데 값이 크면 = ★사람이 페달을 밟고 있다★.
+            want = BRAKE_POT_RAW[brake_cmd]
+            mark = "●" if pot >= BRAKELIGHT_ON_RAW else "○"
+            moving = "~" if abs(pot - want) > BRAKE_POT_TOL else ""
+            self.measured_vars[3].set(f"{pot:4d}{mark}{moving}")
 
         # ── 연결 상태 ──
         flags = {}

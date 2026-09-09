@@ -904,6 +904,29 @@ class Arduino(Node):
         #   런치가 문자열 'false' 를 넘기므로 bool() 로 받지 않는다(_as_bool).
         self.manual_use_pwm = _as_bool(
             self.declare_parameter('manual_use_pwm', True).value, True)
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★★ [2026-09-09] 자율 구간 직접 PWM — ★기본 꺼짐★ (auto_direct_pwm) ★★
+        # ══════════════════════════════════════════════════════════════════════
+        #  A보드 handleLine 규약 :
+        #    · 단일값       → ★무조건 펄스 모드, 0~15 만★ 받고 그 밖은 무시한다
+        #    · "vL,vR" 콤마 → v≤15 는 펄스, 16~255 는 ★직접 PWM★
+        #  그래서 자율에서 PWM 을 직접 주려면 콤마 2값을 써야 하는데, 이 파일은
+        #  종전에 수동조종 분기에서만 콤마를 냈다("파일에서 콤마 2값이 나오는 유일한 곳").
+        #
+        #  ★이것은 무보호 경로다★ 직접 PWM 은 A보드에서 PID·슬루레이트·폭주감지·
+        #  기동 블랭킹이 ★전부 빠진다★(applySide 의 DRIVE_PWM 분기 — 그 자리에
+        #  `launching[idx] = false` 가 있다). 듀티를 준 대로 물린다.
+        #  → ★기본값 False 로 잠가 둔다.★ braketest.launch.py 처럼 '제동거리를 재려고
+        #    일부러 고정 듀티를 물리는' 용도에서만 런치 인자로 연다.
+        #  → 켜져 있어도 /cmd_vel_raw 의 linear.x 가 0~15 면 종전과 완전히 같다.
+        #    16~255 를 실었을 때만 콤마 2값으로 나간다.
+        self.auto_direct_pwm = _as_bool(
+            self.declare_parameter('auto_direct_pwm', False).value, False)
+        if self.auto_direct_pwm:
+            self.get_logger().warn(
+                "★auto_direct_pwm=True★ 자율 구간에서 linear.x 16~255 를 A보드 직접 "
+                "PWM 으로 내보낸다 — PID·슬루·폭주감지·기동블랭킹이 전부 빠지는 "
+                "무보호 경로다. 제동거리 측정 같은 전용 용도에서만 쓸 것")
         # ══════════════════════════════════════════════════════════════
         #  ★[2026-08-25] AEB 비상정지 (/aeb_stop)★ 헤더 (1-1) 분기가 쓴다
         # ══════════════════════════════════════════════════════════════
@@ -1270,8 +1293,11 @@ class Arduino(Node):
         ★ linear.x 는 m/s 가 아니다 ★ 환산은 white/kasa_units.py 가 발행 전에 끝낸다.
         ★ angular.z 부호는 이미 보드 규약과 같다 ★ 여기서 뒤집지 않는다(헤더 규약 2).
         후진은 없으므로 음수는 0 으로 클램프한다(A보드가 음수를 받지 않는다)."""
-        pulse = _round_half_away(float(msg.linear.x))
-        self.cmd_pulse = max(PULSE_MIN, min(PULSE_MAX, pulse))
+        v = _round_half_away(float(msg.linear.x))
+        #  ★[2026-09-09] auto_direct_pwm 이 켜져 있을 때만 16~255 를 통과시킨다★
+        #  꺼져 있으면 종전대로 0~15 로 자른다(= 16 이상은 15 가 된다).
+        hi = PWM_DIRECT_MAX if self.auto_direct_pwm else PULSE_MAX
+        self.cmd_pulse = max(PULSE_MIN, min(hi, v))
 
         angle = _round_half_away(float(msg.angular.z))
         self.cmd_angle = max(-STEER_DEG_MAX, min(STEER_DEG_MAX, angle))
@@ -1617,6 +1643,14 @@ class Arduino(Node):
         #    이 줄은 camera_judgment 처럼 ★주행 중에 브레이크를 요청하는 다른
         #    발행자★ 가 있을 때 실제로 일을 한다.)
         pulse = 0 if brake > 0 else self.cmd_pulse
+        #  ★[2026-09-09] 직접 PWM 대역이면 콤마 2값으로 낸다★ (auto_direct_pwm 절 참고)
+        #  A보드는 단일값을 0~15 로만 받으므로, 16~255 를 단일값으로 보내면
+        #  ★그 줄이 통째로 무시되어 차가 직전 값으로 계속 간다★ — 조용히 위험해진다.
+        #  라벨(/drive_pulse_cmd)에는 0~15 스케일을 유지해야 하므로 상한으로 접는다.
+        if pulse > PULSE_MAX:
+            return (f'{pulse},{pulse}',
+                    f'{self.to_board_angle(self.cmd_angle)},{brake}',
+                    PULSE_MAX)
         return str(pulse), f'{self.to_board_angle(self.cmd_angle)},{brake}', pulse
 
     def on_tx_timer(self):
