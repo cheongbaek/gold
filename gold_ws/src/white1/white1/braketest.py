@@ -5,6 +5,10 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
 ════════════════════════════════════════════════════════════════════════════════
     ros2 launch white1 braketest.launch.py
 
+  ★런치 = 출발★ D5 가 자율주행이고 GPS 가 서면 ★그 자리에서 지정속도로 굴러간다★.
+  헤딩 초기화 구간이 없다 — 직선 경로라 출발 방위를 경로에서 빌려 오고, 굴러가면
+  GPS 코스로 갈아탄다(아래 '헤딩' 절). 자이로를 쓰지 않는다.
+
   직선(또는 직선에 가까운) 매핑 경로를 GPS 로 추종하면서 ★고정 속도★ 로 달리다가,
   ★둘 중 먼저 오는 것★ 에서 리니어 2단을 물고 완전정지한다:
 
@@ -73,12 +77,14 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
   · E-STOP 은 언제든 듣는다(하드웨어. B보드가 직접 문다).
   · D5 스위치를 수동조종으로 내리면 즉시 손을 뗀다.
   · 경로에서 CTE_ABORT_M 이상 벗어나면 스스로 2단을 물고 끝낸다.
+  · 출발 전 차가 경로에서 START_MAX_OFFSET_M 이상 떨어져 있으면 출발하지 않는다.
 
 ════════════════════════════════════════════════════════════════════════════════
  ★★ 속도 지령 — 파일 상단 두 값이 전부다 ★★
 ════════════════════════════════════════════════════════════════════════════════
     DRIVE_PULSE = 10     ← ★기본★ A보드 목표펄스(0~15). 보드 PID 가 이 속도를 맞춘다
     DRIVE_PWM   = 0      ← 0 이 아니면 ★이쪽이 이긴다★ A보드 직접 PWM(16~255)
+    ROUTE       = '...'  ← 주행할 gps_data 파일명. 비우면 최신 route_*.csv
 
   ★왜 둘인가★ 제동거리는 '어떤 속도로 진입했는가' 가 전부인데, 두 경로는 진입
   속도를 만드는 방식이 다르다:
@@ -123,7 +129,6 @@ import rclpy.executors
 from rclpy.node import Node
 
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Float64MultiArray, Int32, String
 
 from white1 import paths
@@ -134,19 +139,34 @@ from white1.gps import GPS_FUSED_TOPIC, Q_LABEL, Q_NONE
 # ══════════════════════════════════════════════════════════════════════════════
 DRIVE_PULSE = 10          # A보드 목표펄스 0~15. ★10펄스 = 31.8 km/h★
 DRIVE_PWM   = 0           # 0 아니면 이쪽이 이긴다. A보드 직접 PWM 16~255
-#   ※ 둘 다 런치 인자로도 덮을 수 있다: drive_pulse:=8  /  drive_pwm:=140
+#  ★주행할 경로★ gps_data 안의 파일명. 빈 문자열이면 가장 최신 route_*.csv 를 쓴다.
+#  ★직선(또는 직선에 가까운) 경로여야 한다★ — 이 노드는 코너 감속을 하지 않는다.
+ROUTE = 'route_20210606_012345.csv'
+#   ※ 셋 다 런치 인자로도 덮을 수 있다:
+#      drive_pulse:=8  /  drive_pwm:=140  /  route:=route_20260908_203042.csv
 
 # ── 그 밖의 상수 (건드릴 일이 드물다) ──
 CONTROL_HZ    = 20.0      # driving.py 와 같은 주기 (A보드 텔레메트리도 20Hz)
-HEADING_PULSE = 3         # 헤딩 초기화 구간 속도 ≈ 9.5 km/h
-#   ★헤딩이 잡히기 전에는 절대 가속하지 않는다★ 방위를 모르는 채로 31.8 km/h 를
-#   내면 순수추종이 아무 방향이나 겨눈다. driving.py 와 같은 절차를 쓴다.
-HEAD_MIN_DIST_M   = 1.0
-HEAD_MAX_DIST_M   = 5.0
-HEAD_MIN_SAMPLES  = 4
-HEAD_TARGET_SIGMA = 3.0
-HEAD_SIGMA_FLOOR  = 0.02
-HEAD_MAX_RESID_M  = 0.15
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-09] 헤딩 — ★초기화 구간을 없앴다★ (사용자 지시: 바로 출발) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  종전에는 driving.py 처럼 3펄스로 1~5 m 곧게 굴려 GPS 변위로 헤딩을 확정한 뒤에야
+#  가속했다. 이 시험에서는 그 구간이 통째로 군더더기다:
+#    · 경로가 ★직선★ 이라 출발 방위를 이미 알고 있다 — 경로가 알려준다.
+#    · 사람이 차를 경로 위에 올려 두고 시작하므로 그 방위가 곧 차의 방위다.
+#    · 자이로 적분도 필요 없다 — 직선에서는 GPS 코스가 훨씬 정확하고 드리프트가 없다
+#      (2026-09-08 U턴 사고의 원인이 자이로였다. 여기서는 그 경로를 아예 안 쓴다).
+#
+#  ★그래서 헤딩은 두 단계로만 만든다★
+#    ① 출발 전 : ★경로의 진행방위★ 를 그대로 쓴다 (아래 seed_heading)
+#    ② 굴러가면 : ★GPS 코스★ (/gps_fused[9]) 로 갈아탄다. 10펄스면 5Hz fix 사이에
+#       1.77 m 를 가므로 RTK 에서 코스 오차가 1° 안쪽이다 — 자이로보다 낫다.
+HEADING_COURSE_MIN_KMH = 2.0   # 이 위로 구르면 GPS 코스를 헤딩으로 쓴다
+HEADING_LPF = 0.35             # 코스 잡음 완화 (1.0 = 그대로 따라감)
+#  ★출발 전 위치 확인★ 경로에서 이보다 멀리 떨어져 있으면 출발하지 않는다.
+#  방위를 경로에서 빌려 오므로, 차가 경로 위에 있지 않으면 그 전제가 깨진다.
+START_MAX_OFFSET_M = 2.0
 
 WHEELBASE_M        = 1.25     # 축거 (순수추종 기하)
 STEER_PLANT_GAIN   = 1.26     # pot 지령 / 도로휠각
@@ -213,8 +233,9 @@ DONE_LINGER_S = 2.0           # 결과를 찍고 이만큼 뒤에 런치를 내�
 #  정지 사유 (결과 표에 그대로 찍는다)
 WHY_LIDAR, WHY_GOAL = '라이다 장애물', '종점 도달'
 
-S_WAIT, S_HEADING, S_RUN, S_BRAKE, S_RELEASE, S_DONE = (
-    'WAIT', 'HEADING', 'RUN', 'BRAKE', 'RELEASE', 'DONE')
+#  ★HEADING 이 없다★ 런치 = 출발이다(위 '헤딩' 절).
+S_WAIT, S_RUN, S_BRAKE, S_RELEASE, S_DONE = (
+    'WAIT', 'RUN', 'BRAKE', 'RELEASE', 'DONE')
 
 EARTH_R = 6378137.0
 
@@ -229,52 +250,8 @@ def latlon_to_xy(lat, lon, lat0, lon0):
     return x, y
 
 
-class HeadingEstimator:
-    """출발 직진 구간의 GPS 점들에 직선을 맞춰 초기 방위를 낸다.
-
-    ★driving.py 의 같은 이름 클래스와 같은 방법이다★ 자이로는 절대 기준이 없어서
-    누군가 한 번은 '지금 북쪽이 어디인가' 를 말해 줘야 하고, 그 답을 곧게 굴러가는
-    동안의 GPS 변위가 준다. 여기서는 그 코드를 ★그대로 옮기지 않고 최소한만★ 뒀다.
-    """
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.pts = []
-
-    def add(self, x, y):
-        if self.pts:
-            px, py = self.pts[-1]
-            if math.hypot(x - px, y - py) < 0.05:
-                return
-        self.pts.append((x, y))
-
-    def distance(self):
-        if len(self.pts) < 2:
-            return 0.0
-        (x0, y0), (x1, y1) = self.pts[0], self.pts[-1]
-        return math.hypot(x1 - x0, y1 - y0)
-
-    def solve(self):
-        n = len(self.pts)
-        if n < 2:
-            return None
-        dist = self.distance()
-        if dist <= 1e-6:
-            return None
-        (x0, y0), (x1, y1) = self.pts[0], self.pts[-1]
-        heading = math.degrees(math.atan2(y1 - y0, x1 - x0))
-        # 직선 잔차 RMS — '곧게 갔는가' 를 본다(곡선이면 방위를 믿을 수 없다)
-        ch, sh = math.cos(math.radians(heading)), math.sin(math.radians(heading))
-        acc = 0.0
-        for (px, py) in self.pts:
-            dx, dy = px - x0, py - y0
-            acc += (-dx * sh + dy * ch) ** 2
-        resid = math.sqrt(acc / n)
-        # 방위 표준편차 ≈ 측방오차 / 이동거리
-        sigma = math.degrees(math.atan2(max(resid, HEAD_SIGMA_FLOOR), dist))
-        return heading, sigma, resid, n, dist
+# ★HeadingEstimator 를 두지 않는다★ 직선 경로에서는 경로 방위 + GPS 코스가
+# 자이로 적분보다 정확하고 드리프트도 없다(상단 '헤딩' 절).
 
 
 class BrakeTestNode(Node):
@@ -284,10 +261,9 @@ class BrakeTestNode(Node):
         super().__init__('braketest_node')
 
         self.declare_parameter('data_dir', '')
-        self.declare_parameter('route', '')
+        self.declare_parameter('route', ROUTE)
         self.declare_parameter('drive_pulse', DRIVE_PULSE)
         self.declare_parameter('drive_pwm', DRIVE_PWM)
-        self.declare_parameter('heading_pulse', HEADING_PULSE)
         self.declare_parameter('cte_abort_m', CTE_ABORT_M)
         #  ★자동 출발★ 런치를 띄우면 준비되는 대로 곧바로 굴러간다(사용자 지시).
         #    false 로 두면 /braketest_go 에 true 가 올 때까지 기다린다 — 실차에서
@@ -297,7 +273,6 @@ class BrakeTestNode(Node):
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
         self.drive_pulse = int(self.get_parameter('drive_pulse').value)
         self.drive_pwm = int(self.get_parameter('drive_pwm').value)
-        self.heading_pulse = int(self.get_parameter('heading_pulse').value)
         self.cte_abort = float(self.get_parameter('cte_abort_m').value)
         self.auto_start = bool(self.get_parameter('auto_start').value)
 
@@ -325,7 +300,6 @@ class BrakeTestNode(Node):
         # ── 구독 ──
         self.create_subscription(Float64MultiArray, GPS_FUSED_TOPIC,
                                  self.cb_gps, 10)
-        self.create_subscription(Imu, '/imu', self.cb_imu, 10)
         self.create_subscription(Int32, '/encoder', self.cb_encoder, 10)
         self.create_subscription(Bool, '/vehicle_mode', self.cb_mode, 10)
         self.create_subscription(Bool, '/estop', self.cb_estop, 10)
@@ -345,9 +319,8 @@ class BrakeTestNode(Node):
         self.gps_kmh = None
         self.gps_quality = Q_NONE
         self.gps_sigma = float('nan')
-        self.heading = None
-        self.gyro_z = 0.0
-        self.imu_time = 0.0
+        self.heading = None          # 출발 시 경로에서 빌리고, 구르면 GPS 코스로 간다
+        self.gps_course = float('nan')  # /gps_fused[9]
         self.enc_pulse = 0.0
         self._enc_buf = []
         self.auto_mode = None
@@ -357,7 +330,6 @@ class BrakeTestNode(Node):
         self.aeb_stop = False
         self.lidar_dist = float('nan')
 
-        self.head_est = HeadingEstimator()
         self.waypoints = []
         self.wp_idx = 0
         self._wp_prev = 0
@@ -401,7 +373,9 @@ class BrakeTestNode(Node):
         바뀌었다. 'S' 가 적혀 있어도 무시하고, 없어도 아무 문제가 없다.
         """
         import csv as _csv
-        name = str(self.get_parameter('route').value or '').strip()
+        #  런치가 빈 값을 주면 ★파일 상단 ROUTE★ 로 떨어지고, 그것도 비면 최신이다.
+        name = (str(self.get_parameter('route').value or '').strip()
+                or str(ROUTE or '').strip())
         try:
             names = sorted(f for f in os.listdir(self.data_dir)
                            if f.startswith('route_') and f.endswith('.csv'))
@@ -463,35 +437,38 @@ class BrakeTestNode(Node):
     #  구독 콜백
     # ══════════════════════════════════════════════════════════════════════════
     def cb_gps(self, msg: Float64MultiArray):
+        """/gps_fused 배열. ★인덱스는 gps.py 헤더의 '배열 규약' 이 계약이다★
+
+        ⚠️ [2026-09-09 버그 수정] 종전에 [5][6][7] 을 quality·sigma·pos_ok 로 읽었는데
+        그 자리는 ★is_raw · raw_age_s · dr_dist_m★ 이다. 그래서 fix_ok 가 사실상
+        `dr_dist_m > 0.5` 가 되어 ★영원히 false★ 였고, braketest 가 출발하지 못한 채
+        "GPS 품질 대기 — NO_FIX" 만 찍었다(실차 로그로 잡았다).
+            [0] lat  [1] lon  [2] quality  [3] sigma_m  [4] pos_ok
+            [5] is_raw  [6] raw_age_s  [7] dr_dist_m  [8] gps_kmh  [9] course_deg
+        """
         d = list(msg.data)
-        if len(d) < 9:
+        if len(d) < 10:
             return
         lat, lon = d[0], d[1]
         if not (math.isfinite(lat) and math.isfinite(lon)):
             return
-        self.gps_quality = int(d[5]) if math.isfinite(d[5]) else Q_NONE
-        self.gps_sigma = d[6]
-        self.fix_ok = bool(d[7] > 0.5) if len(d) > 7 else True
-        v = d[8]
-        self.gps_kmh = float(v) if math.isfinite(v) else None
+        self.gps_quality = int(d[2]) if math.isfinite(d[2]) else Q_NONE
+        self.gps_sigma = d[3]
+        self.fix_ok = bool(d[4] > 0.5)          # gps.py 의 min_quality 판정 결과
+        self.gps_kmh = float(d[8]) if math.isfinite(d[8]) else None
+        self.gps_course = float(d[9]) if math.isfinite(d[9]) else float('nan')
         if self.lat0 is None:
             self.lat0, self.lon0 = lat, lon
         self.x, self.y = latlon_to_xy(lat, lon, self.lat0, self.lon0)
         self.fix_time = time.time()
-        if self.state == S_HEADING and self.fix_ok:
-            self.head_est.add(self.x, self.y)
 
-    def cb_imu(self, msg: Imu):
-        now = time.time()
-        if self.imu_time > 0.0 and self.heading is not None:
-            dt = now - self.imu_time
-            if 0.0 < dt < 0.5:
-                self.heading = wrap180(self.heading + math.degrees(self.gyro_z) * dt)
-        #  ★직선 시험이라 자이로 축 보정을 두지 않는다★ 이 노드는 사실상 직진만
-        #  하므로 요 적분의 누적오차가 문제 되는 구간이 없다(driving.py 는 U턴에서
-        #  40° 를 잃어 중력축 투영이 필요했다 — 거기는 그 코드가 들어가 있다).
-        self.gyro_z = float(msg.angular_velocity.z)
-        self.imu_time = now
+        #  ★굴러가면 헤딩을 GPS 코스로 갈아탄다★ (상단 '헤딩' 절)
+        #  10펄스면 5Hz fix 사이 1.77 m — RTK 에서 코스 오차가 1° 안쪽이다.
+        if (self.heading is not None and math.isfinite(self.gps_course)
+                and self.gps_kmh is not None
+                and self.gps_kmh >= HEADING_COURSE_MIN_KMH):
+            self.heading = wrap180(
+                self.heading + HEADING_LPF * wrap180(self.gps_course - self.heading))
 
     def cb_encoder(self, msg: Int32):
         self._enc_buf.append(float(msg.data))
@@ -555,9 +532,8 @@ class BrakeTestNode(Node):
 
     def publish_state(self):
         #  record 가 켜지도록 DRIVE_* 이름을 쓴다(헤더 참고).
-        name = {S_WAIT: 'IDLE', S_HEADING: 'DRIVE_HEADING', S_RUN: 'DRIVE_RUN',
-                S_BRAKE: 'DRIVE_RUN', S_RELEASE: 'DRIVE_DONE',
-                S_DONE: 'DRIVE_DONE'}[self.state]
+        name = {S_WAIT: 'IDLE', S_RUN: 'DRIVE_RUN', S_BRAKE: 'DRIVE_RUN',
+                S_RELEASE: 'DRIVE_DONE', S_DONE: 'DRIVE_DONE'}[self.state]
         self.pub_dstate.publish(String(data=name))
 
     def enter(self, new_state, msg=''):
@@ -715,8 +691,6 @@ class BrakeTestNode(Node):
 
         if self.state == S_WAIT:
             self.run_wait(now)
-        elif self.state == S_HEADING:
-            self.run_heading(now)
         elif self.state == S_RUN:
             self.run_follow(now)
         elif self.state == S_BRAKE:
@@ -731,50 +705,58 @@ class BrakeTestNode(Node):
             self.event(text)
 
     def run_wait(self, now):
+        """출발 게이트. ★통과하면 그 자리에서 지정속도로 굴러간다★ (S_HEADING 없음)"""
         self.send(0, 0.0, control=True)
         if not (self.auto_start or self.go):
             self.throttle("⏸️ 출발 대기 — `ros2 topic pub -1 /braketest_go "
-                          "std_msgs/Bool '{data: true}'` 로 시작")
+                          "std_msgs/msg/Bool '{data: true}'` 로 시작")
             return
         if not self.fix_ok:
-            self.throttle(f"⏸️ GPS 품질 대기 — {Q_LABEL.get(self.gps_quality, '?')}"
-                          f"(σ={self.gps_sigma:.2f}m)")
+            #  ★사유를 정확히 말한다★ pos_ok 는 gps 노드의 min_quality 판정 결과다.
+            self.throttle(
+                f"⏸️ GPS 품질 대기 — {Q_LABEL.get(self.gps_quality, '?')} "
+                f"(σ={self.gps_sigma:.2f}m). gps 노드의 min_quality 문턱 미달이다 — "
+                f"낮추려면 런치 인자 min_quality:=1")
             return
         if not self.build_waypoints():
             self.throttle("⏸️ GPS 원점 대기")
             return
-        self.head_est.reset()
-        self.heading = None
-        self.enter(S_HEADING,
-                   f"▶ 출발 — 헤딩 초기화({self.heading_pulse}펄스로 곧게). "
-                   f"확정되면 {self.cmd_kind} 로 가속한다")
 
-    def run_heading(self, now):
-        #  ★진입 직후 잠깐은 굴리지 않는다★ (driving.py 와 같은 이유)
-        if now - self.state_t0 < MODE_SETTLE_S:
-            self.send(0, 0.0, control=True)
-            return
-        self.send(self.heading_pulse, 0.0, control=True)
-        sol = self.head_est.solve()
-        if sol is None:
-            return
-        heading, sigma, resid, n, dist = sol
-        if dist < HEAD_MIN_DIST_M:
-            return
-        good = (n >= HEAD_MIN_SAMPLES and sigma <= HEAD_TARGET_SIGMA
-                and resid <= HEAD_MAX_RESID_M)
-        if not (good or dist >= HEAD_MAX_DIST_M):
-            return
-        self.heading = heading
-        # 가장 가까운 WP 로 포인터를 맞춘다 (출발점이 경로 중간일 수 있다)
+        # ── 출발 WP + 경로에서 얼마나 떨어져 있나 ──
         best = min(range(len(self.waypoints)),
                    key=lambda i: math.dist(self.waypoints[i], (self.x, self.y)))
+        off = math.dist(self.waypoints[best], (self.x, self.y))
+        if off > START_MAX_OFFSET_M:
+            #  ★방위를 경로에서 빌려 오므로 차가 경로 위에 있어야 한다★
+            self.throttle(
+                f"⏸️ 차가 경로에서 {off:.2f}m 떨어져 있다 (한계 "
+                f"{START_MAX_OFFSET_M:.1f}m) — 경로 위로 옮기고 다시 시작할 것. "
+                f"이 노드는 ★출발 방위를 경로에서 빌려 온다★")
+            return
+
         self.wp_idx = self._wp_prev = best
-        mark = "" if good else "  ⚠️(최대거리 도달 — 정확도 미달)"
+        self.heading = self.seed_heading(best)
         self.enter(S_RUN,
-                   f"🧭 헤딩 확정 {heading:+.1f}° (±{sigma:.1f}°, {dist:.2f}m, "
-                   f"{n}점){mark} — WP {best}/{len(self.waypoints)} 에서 "
-                   f"★{self.cmd_kind}★ 로 주행 시작")
+                   f"▶ ★출발★ — WP {best}/{len(self.waypoints)} "
+                   f"(경로에서 {off:.2f}m), 출발 방위 {self.heading:+.1f}° "
+                   f"(경로에서 빌림). 지금부터 ★{self.cmd_kind}★")
+
+    def seed_heading(self, idx):
+        """출발 방위를 ★경로의 진행방위★ 에서 빌린다 [2026-09-09].
+
+        ★왜 이래도 되는가★ 이 노드는 직선 경로 전용이고, 사람이 차를 그 경로 위에
+        올려 두고 시작한다. 그러면 경로의 방위가 곧 차의 방위다 — 굴려서 재는
+        (driving.py 의 HeadingEstimator) 것보다 빠르고, 이 조건에서는 더 정확하다.
+        굴러가기 시작하면 곧바로 GPS 코스로 갈아탄다(cb_gps).
+        """
+        n = len(self.waypoints)
+        j = min(idx + 4, n - 1)
+        k = max(j - 8, 0)
+        ax, ay = self.waypoints[k]
+        bx, by = self.waypoints[j]
+        if math.hypot(bx - ax, by - ay) < 1e-6:
+            return 0.0
+        return math.degrees(math.atan2(by - ay, bx - ax))
 
     def run_follow(self, now):
         if self.heading is None or not self.waypoints:

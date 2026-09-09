@@ -46,7 +46,10 @@ braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [wh
   2. ★차 앞을 비운다.★ 기본 10펄스(31.8 km/h)에서 S 지점 뒤로 13~20 m 를 더 간다
      (braketest.py 헤더의 안전절 계산). ★S 뒤 최소 30 m 가 필요하다.★
   3. D5 스위치를 ★자율주행★ 으로, E-STOP 을 해제한다.
-  4. 런치를 띄운다. GPS 품질이 서면 ★스스로 헤딩을 잡고 출발한다.★
+  4. 런치를 띄운다. GPS 품질이 서면 ★그 자리에서 지정속도로 출발한다★
+     (헤딩 초기화 구간이 없다 — 출발 방위를 경로에서 빌린다).
+     ⚠️ 차를 ★경로 위에, 경로 방향으로★ 세워 둘 것. 경로에서 2 m 이상 떨어져
+        있으면 출발하지 않는다.
      → 확인하고 출발시키고 싶으면 `auto_start:=false` 로 띄우고,
        `ros2 topic pub -1 /braketest_go std_msgs/msg/Bool '{data: true}'`
   5. 달리는 동안 ★둘 중 먼저 오는 것★ 에서 선다 —
@@ -164,7 +167,6 @@ def _setup(context, *args, **kwargs):
             'route':         cfg('route'),
             'drive_pulse':   cfg('drive_pulse'),
             'drive_pwm':     cfg('drive_pwm'),
-            'heading_pulse': cfg('heading_pulse'),
             'cte_abort_m':   cfg('cte_abort_m'),
             'auto_start':    cfg('auto_start'),
         }],
@@ -245,7 +247,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'route', default_value='',
-            description='주행할 매핑 CSV 파일명. 비우면 ★gps_data 의 최신 route_*.csv★. '
+            description='주행할 매핑 CSV 파일명. ★비우면 braketest.py 상단의 ROUTE★ '
+                        '(그것도 비면 gps_data 의 최신 route_*.csv). '
                         '★직선 또는 직선에 가까운 경로여야 한다★ — 이 노드는 코너 '
                         '감속을 하지 않고 고정 속도로 달린다. '
                         'terrain 열에 ★S★ 가 있어야 하고, 없으면 시작하지 않는다'),
@@ -258,9 +261,7 @@ def generate_launch_description():
             description='0 이 아니면 ★이쪽이 이긴다★ — A보드 직접 PWM 16~255. '
                         'PID·슬루·폭주감지·기동블랭킹이 전부 빠지는 무보호 경로다. '
                         '구동계 개입 없는 순수 관성 상태로 제동에 들어가고 싶을 때만'),
-        DeclareLaunchArgument(
-            'heading_pulse', default_value='3',
-            description='헤딩 초기화 구간 속도 [펄스]. ★확정 전에는 가속하지 않는다★'),
+
         DeclareLaunchArgument(
             'cte_abort_m', default_value='3.0',
             description='경로에서 이만큼 벗어나면 스스로 2단을 물고 시험을 접는다'),
