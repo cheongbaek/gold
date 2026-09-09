@@ -761,8 +761,42 @@ ros2 launch white1 braketest.launch.py drive_pulse:=8
 ros2 launch white1 braketest.launch.py drive_pwm:=140      # ★직접 PWM★
 ```
 
-직선 경로를 **고정 속도**로 달리다가 매핑 CSV `terrain` 열의 **`S`** 를 지나는 즉시
-**리니어 2단** 을 물고, 완전정지하면 결과를 찍고 **런치가 스스로 내려간다.**
+직선 경로를 **고정 속도**로 달리다가 **둘 중 먼저 오는 것**에서 **리니어 2단** 을
+물고, 완전정지하면 결과를 찍고 **리니어를 풀고** 런치가 스스로 내려간다.
+
+| 트리거 | 무엇 |
+|---|---|
+| **① 라이다 장애물** | `cone_lidar_node` 의 `/cone_lidar_node/stop_signal` 확정 판정 |
+| **② 종점 도달** | 그런 일 없이 경로 끝에 닿았을 때 (반경 1.5 m 또는 통과 판정) |
+
+> **[2026-09-09] 정지 트리거가 `terrain` `'S'` 에서 라이다로 바뀌었다.**
+> `terrain` 열은 **이제 보지 않는다** — `'S'` 가 있든 없든 무시한다.
+> (`driving.py` 의 `'S'` 일시정지는 그대로다 — 그쪽과 무관한 변경이다.)
+
+**라이다 정지는 `lidar one_launch.py` 의 그 시스템을 그대로 쓴다**
+
+```
+ouster 드라이버 ─/ouster/points─▶ cone_lidar_node ─/…/stop_signal─▶ braketest
+                                                                        │
+                                                                 /brake_level 2단
+```
+
+`braketest.launch.py` 가 **`lidar/launch/aeb.launch.py` 를 통째로 include** 한다
+(= `ouster.launch.py` + `cone_lidar_node`). 감지 설정은 `lidar/config/cone_lidar.yaml`
+**한 곳이 소유**하고 braketest 는 그 Bool 판정을 그대로 받는다 — **문턱을 다시 두지
+않는다.** `cone_lidar_node` 는 차를 움직이지 않고, 제동은 받는 쪽이 한다.
+
+- **`use_lidar:=false`** → 종점 정지로만 (장애물 보호 없음)
+- **`require_lidar:=true`** → 라이다 판정이 살아 있을 때까지 출발하지 않는다(기본 false)
+- **신선도는 fail-open** — 판정이 1.0 s 넘게 끊기면 경고만 하고 계속 간다.
+  종점 정지가 어차피 세우므로, 여기서 멈추면 "라이다가 잠깐 끊겨 시험이 안 끝났다"
+  가 된다(`pedal_drive_node` 와 같은 판단).
+
+> ⚠️ **라이다 ROI 는 전방 2.0~6.0 m 인데 10펄스 2단 정지거리가 12.9~20.4 m 다.**
+> **보고 나서 서기에는 원리적으로 부족하다** — 이 시험은 "얼마나 못 서는가" 를
+> 재는 것이지 "설 수 있는가" 를 보는 것이 아니다. **사람·부술 물건을 장애물로
+> 쓰지 말 것.** 결과 표에 `장애물까지 남은 여유` 가 음수로 찍히면 그것이
+> "들이받았을 거리" 다.
 
 - **`driving` 을 쓰지 않는다** — 코너 감속·종점 접근제동·CTE 적분·라이다 이양이
   전부 '제동거리를 재는 일' 에 개입한다. **재려는 것 하나만 남긴 노드**가
@@ -771,6 +805,9 @@ ros2 launch white1 braketest.launch.py drive_pwm:=140      # ★직접 PWM★
   (`auto_start:=false` → `/braketest_go` 를 기다린다).
 - 속도는 **`braketest.py` 상단 두 값**이 전부다 : `DRIVE_PULSE = 10` /
   `DRIVE_PWM = 0`. 런치 인자가 이긴다.
+- **완전정지하면 리니어를 푼다**(`BRAKE_RELEASE_WAIT_S = 1.5 s` 기다린 뒤 종료).
+  물린 채로 런치를 내리면 arduino 가 없어져 D5 를 내렸다 올리는 것 말고는 풀
+  방법이 없다.
 
 > ### ⚠️ 안전 — 기본 10펄스는 **31.8 km/h** 다
 >
@@ -784,11 +821,10 @@ ros2 launch white1 braketest.launch.py drive_pwm:=140      # ★직접 PWM★
 > 가속 구간이 더 붙는다. `braketest` 가 시작 전에 S 뒤 잔여거리를 재서 30 m
 > 미만이면 경고한다(진행은 막지 않는다).
 >
-> **`terrain` 에 `S` 가 없으면 아예 시작하지 않는다** — 제동을 걸 지점이 없으면
-> 차는 경로 끝까지 31.8 km/h 로 달린다. 그건 사고다.
 
-**재는 값** : 체결 시 속도 `v0`(GPS 변위속도), 제동거리 `d`, 제동시간 `t`,
-평균 감속도를 **두 가지 방법**(`v0/t` 와 `v0²/2d`)으로, 그리고 **S 초과거리**.
+**재는 값** : **정지 사유**, 체결 시 속도 `v0`(GPS 변위속도), **체결 시 장애물거리**
+(라이다 정지일 때), 제동거리 `d`, 제동시간 `t`, 평균 감속도를 **두 가지
+방법**(`v0/t` 와 `v0²/2d`)으로, 그리고 **트리거 초과거리**.
 두 감속도가 크게 다르면 대개 '완전정지' 판정 시각이 늦은 것이다.
 정지 판정은 **GPS 와 엔코더를 둘 다** 요구한다 — 엔코더 단독은 기동 블랭킹의
 허수 카운트(실측 중앙 16, 최대 34)에 끌려간다.
@@ -864,6 +900,7 @@ ros2 launch white1 braketest.launch.py drive_pwm:=140      # ★직접 PWM★
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
 | IMU 중력축 투영 (4.7절) [2026-09-09] | `driving.py cb_imu` · `solve_imu_axis` |
 | 브레이크 제동거리 측정 (5.1절) [2026-09-09] | `braketest.py` · `braketest.launch.py` |
+| braketest 정지 트리거를 ★라이다+종점★ 으로 (terrain 무시) [2026-09-09] | `braketest.py` · `aeb.launch.py` include |
 | 자율 직접 PWM 게이트 `auto_direct_pwm` [2026-09-09] | `nxde/arduino.py` |
 | `from white import ports` → `from white1` | `iahrs.py` |
 

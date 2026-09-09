@@ -6,9 +6,37 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
     ros2 launch white1 braketest.launch.py
 
   직선(또는 직선에 가까운) 매핑 경로를 GPS 로 추종하면서 ★고정 속도★ 로 달리다가,
-  매핑 CSV 의 `terrain` 열에 ★S★ 를 적어 둔 행을 지나가는 즉시 ★리니어 2단★ 을
-  물고 완전정지한다. 그 사이의 거리·시간·감속도를 재서 로그와 화면에 남기고,
+  ★둘 중 먼저 오는 것★ 에서 리니어 2단을 물고 완전정지한다:
+
+      ① 라이다가 전방 장애물을 확정했을 때  (/cone_lidar_node/stop_signal)
+      ② 그런 일 없이 ★종점에 도달했을 때★
+
+  완전정지하면 그 사이의 거리·시간·감속도를 재서 남기고, ★리니어를 풀고★
   런치를 스스로 내린다.
+
+  ★[2026-09-09] 정지 트리거가 terrain 'S' 에서 라이다로 바뀌었다★
+  `terrain` 열은 ★이제 보지 않는다★ — 'S' 가 있든 없든 무시한다.
+  사람이 한 칸을 손으로 적어 두는 대신, 실제 장애물을 라이다가 보고 세운다.
+
+════════════════════════════════════════════════════════════════════════════════
+ 라이다 정지 — ★lidar one_launch.py 의 그 시스템을 그대로 쓴다★
+════════════════════════════════════════════════════════════════════════════════
+      ouster 드라이버 ─/ouster/points─▶ cone_lidar_node ─/…/stop_signal─▶ ★이 노드★
+                                                                            │
+                                                                     /brake_level 2단
+
+  · `braketest.launch.py` 가 **`lidar/launch/aeb.launch.py` 를 통째로 include** 한다
+    (= ouster.launch.py + cone_lidar_node). 감지 설정은 `lidar/config/cone_lidar.yaml`
+    한 곳이 소유하며 이 노드는 ★그 판정을 그대로 받아 쓴다★ — 문턱을 다시 두지 않는다.
+  · `cone_lidar_node` 는 ★차를 움직이지 않는다★. 제동은 그 신호를 받은 쪽(= 이 노드)이
+    `/brake_level` 로 한다. `lidar` 의 주행 노드들과 같은 구조다.
+  · ROI 는 전방 2.0~6.0 m (라이다 원점 기준 = 범퍼 앞 0.8~4.8 m), AGL 0.25~0.75 m.
+    ⚠️ ★`roi_x_min = 2.0` 이라 그보다 가까운 것은 못 본다★ — 사각지대다.
+
+  ★신선도★ stop_signal 이 LIDAR_STALE_S 넘게 안 오면 '라이다 보호 없음' 으로 보고
+  ★경고만 하고 계속 간다★. 종점 정지가 어차피 차를 세우기 때문이다 — 여기서 멈춰
+  버리면 "라이다가 잠깐 끊겨서 시험이 안 끝났다" 가 되고, 그쪽이 더 나쁘다.
+  (`pedal_drive_node` 의 fail-open 과 같은 판단이다.)
 
   ★driving.py 를 쓰지 않는다★ 그쪽은 코너 감속·종점 접근·CTE 적분·라이다 이양·
   신호등까지 얹힌 3600줄짜리 주행기이고, 그 장치들이 전부 '제동거리를 재는 일'에
@@ -25,11 +53,14 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
         a = 2.2 (하한)  →  17.8 m      a = 3.8 (호조건)  →  10.3 m
         + 판정·행정 지연 0.30s × 8.84 =  2.7 m
         ────────────────────────────────────────────────
-        ★S 지점 뒤로 13 ~ 20 m 를 더 간다★
+        ★트리거 지점 뒤로 13 ~ 20 m 를 더 간다★
 
   거기에 ①헤딩 초기화 구간(1~2m) ②10펄스까지 가속하는 구간이 앞에 붙는다.
-  ★S 지점 뒤 최소 30 m 는 비어 있어야 한다.★ 경로가 S 에서 끝나면 안 된다 —
-  이 노드는 S 를 지나 ★멈출 때까지 계속 달린다★.
+  ★차는 종점을 지나 13~20 m 를 더 간다★ — 경로 끝 뒤로 그만큼이 비어 있어야 한다.
+  장애물 시험이라면 ★장애물 뒤★ 로 그만큼이 필요하다(차가 못 서면 들이받는다).
+  ⚠️ 라이다 ROI 가 전방 2.0~6.0 m 인데 10펄스 2단 정지거리가 12.9~20.4 m 다 —
+  ★장애물을 보고 나서 서기에는 원리적으로 부족하다.★ 이 시험은 '얼마나 못 서는가'
+  를 재는 것이지 '설 수 있는가' 를 보는 것이 아니다. 사람·물건을 쓰지 말 것.
 
   · E-STOP 은 언제든 듣는다(하드웨어. B보드가 직접 문다).
   · D5 스위치를 수동조종으로 내리면 즉시 손을 뗀다.
@@ -60,11 +91,14 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
 ════════════════════════════════════════════════════════════════════════════════
  측정하는 것
 ════════════════════════════════════════════════════════════════════════════════
+    정지 사유               라이다 장애물 / 종점 도달
     체결 시점 속도 v0        GPS 변위속도 (/gps_fused[8]) — ★엔코더를 쓰지 않는다★
+    체결 시 장애물거리       라이다 정지면 그때의 obstacle_distance [m]
     제동거리 d               체결 지점 ~ 완전정지 지점의 GPS 직선거리
     제동시간 t               체결 ~ 완전정지
     평균 감속도 a = v0 / t   그리고 에너지식 v0²/(2d) 도 함께 낸다
-    S 지점 초과거리          S 를 얼마나 지나서 섰는가 (실무에서 제일 궁금한 값)
+    트리거 초과거리          트리거 지점을 얼마나 지나서 섰는가 (제일 궁금한 값)
+                            ★라이다 정지면 = 장애물에 얼마나 다가갔는가★
 
   ★엔코더로 재지 않는 이유★ A보드 기동 블랭킹의 허수 카운트가 저속에서 위로
   튄다(실측 중앙 16, 최대 34 / 정상 4~5). '완전정지' 판정이 그것 때문에 늦어지면
@@ -127,7 +161,25 @@ WP_AHEAD_MARGIN_M = 2.0
 WP_AHEAD_PENALTY_M = 1.2
 CTE_WINDOW_WP     = 60
 
-STOP_ZONE_CHARS = ('S', 's')  # driving.py 와 같은 규약
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★라이다 정지 — cone_lidar_node 의 판정을 그대로 받는다★ [2026-09-09]
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★문턱을 여기 두지 않는다★ ROI·높이·거리 판정은 전부 lidar/config/cone_lidar.yaml
+#  이 소유하고 cone_lidar_node 가 확정해서 Bool 하나로 준다. 이 노드가 거리를 다시
+#  해석하면 소유자가 둘이 되어, 한쪽만 고치는 사고가 반드시 난다.
+#  (obstacle_distance 는 ★기록용★ 으로만 받는다 — 판정에 쓰지 않는다)
+LIDAR_STOP_TOPIC = '/cone_lidar_node/stop_signal'
+LIDAR_DIST_TOPIC = '/cone_lidar_node/obstacle_distance'
+#  ★신선도 : fail-open★ 이보다 낡으면 '라이다 보호 없음' 으로 보고 경고만 하고
+#  계속 간다. 종점 정지가 어차피 차를 세우므로, 여기서 멈추면 "라이다가 잠깐
+#  끊겨 시험이 안 끝났다" 가 된다 — pedal_drive_node 와 같은 판단이다.
+LIDAR_STALE_S = 1.0
+
+#  ★종점 도달 판정★ 10펄스면 한 틱에 0.44 m 를 가므로 반경을 넉넉히 둔다.
+#  driving.py 의 WP_REACH_M(0.9) 은 4펄스 기준이라 여기서는 놓칠 수 있다.
+GOAL_REACH_M    = 1.5         # 마지막 WP 를 이 안에 들면 도달
+GOAL_PASS_MAX_M = 6.0         # '지나쳤다' 를 인정하는 최대 이격
+
 CTE_ABORT_M     = 3.0         # 이보다 벗어나면 시험을 접고 2단으로 세운다
 GPS_TIMEOUT_S   = 2.0
 MODE_SETTLE_S   = 0.7
@@ -144,10 +196,18 @@ ENC_SUM_TO_PULSE = 0.5
 ENC_MEDIAN_N  = 3
 
 BRAKE_MAX_S   = 15.0          # 이 시간 안에 못 서면 굳지 않게 끝낸다(이상 상황)
+#  ★완전정지 뒤 리니어를 푼다★ (사용자 지시) 물린 채로 런치를 내리면 다음 사람이
+#  차를 밀 수 없고, arduino 가 내려간 뒤에는 풀 방법이 D5 를 내리는 것뿐이다.
+#  arduino 의 해제유예(BRAKE_RELEASE_HOLD_S 0.5s)와 B보드 0단 복귀(BRAKE_HOME_MS
+#  1000ms)가 있으므로, 0 을 내고 ★실제로 빠질 시간★ 을 준 뒤에 종료한다.
+BRAKE_RELEASE_WAIT_S = 1.5
 DONE_LINGER_S = 2.0           # 결과를 찍고 이만큼 뒤에 런치를 내린다
 
-S_WAIT, S_HEADING, S_RUN, S_BRAKE, S_DONE = (
-    'WAIT', 'HEADING', 'RUN', 'BRAKE', 'DONE')
+#  정지 사유 (결과 표에 그대로 찍는다)
+WHY_LIDAR, WHY_GOAL = '라이다 장애물', '종점 도달'
+
+S_WAIT, S_HEADING, S_RUN, S_BRAKE, S_RELEASE, S_DONE = (
+    'WAIT', 'HEADING', 'RUN', 'BRAKE', 'RELEASE', 'DONE')
 
 EARTH_R = 6378137.0
 
@@ -226,6 +286,10 @@ class BrakeTestNode(Node):
         #    false 로 두면 /braketest_go 에 true 가 올 때까지 기다린다 — 실차에서
         #    "차 앞을 비웠는지" 를 한 번 더 확인하고 싶을 때 쓴다.
         self.declare_parameter('auto_start', True)
+        #  ★true 면 라이다 판정이 살아 있을 때까지 출발하지 않는다★
+        #  기본 false — 라이다 없이 '종점 정지만' 재는 것도 정당한 시험이고,
+        #  ouster 가 붙는 데 시간이 걸려 출발이 하염없이 밀리는 것이 더 나쁘다.
+        self.declare_parameter('require_lidar', False)
 
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
         self.drive_pulse = int(self.get_parameter('drive_pulse').value)
@@ -233,6 +297,7 @@ class BrakeTestNode(Node):
         self.heading_pulse = int(self.get_parameter('heading_pulse').value)
         self.cte_abort = float(self.get_parameter('cte_abort_m').value)
         self.auto_start = bool(self.get_parameter('auto_start').value)
+        self.require_lidar = bool(self.get_parameter('require_lidar').value)
 
         #  ★지령값을 한 번만 정해 둔다★ 주행 중에 바뀌지 않는다 — 그게 이 시험의 전제다.
         if self.drive_pwm > 0:
@@ -263,6 +328,10 @@ class BrakeTestNode(Node):
         self.create_subscription(Bool, '/vehicle_mode', self.cb_mode, 10)
         self.create_subscription(Bool, '/estop', self.cb_estop, 10)
         self.create_subscription(Bool, '/braketest_go', self.cb_go, 10)
+        #  ★라이다 정지 — cone_lidar_node 의 확정 판정을 그대로 받는다★
+        from std_msgs.msg import Float32 as _F32
+        self.create_subscription(Bool, LIDAR_STOP_TOPIC, self.cb_lidar_stop, 5)
+        self.create_subscription(_F32, LIDAR_DIST_TOPIC, self.cb_lidar_dist, 5)
 
         # ── 상태 ──
         self.state = S_WAIT
@@ -282,13 +351,16 @@ class BrakeTestNode(Node):
         self.auto_mode = None
         self.estop = False
         self.go = False
+        #  라이다 (판정은 stop_signal 하나. dist 는 기록용)
+        self.lidar_stop = False
+        self.lidar_stop_t = 0.0
+        self.lidar_dist = float('nan')
+        self._lidar_warned = False
 
         self.head_est = HeadingEstimator()
         self.waypoints = []
-        self.wp_zone = []
         self.wp_idx = 0
         self._wp_prev = 0
-        self.stop_idx = []
         self.route_name = ''
 
         self.brake_now = BRAKE_NONE
@@ -297,6 +369,8 @@ class BrakeTestNode(Node):
         self._last_steer = 0.0
 
         # 측정
+        self.why = ''
+        self.hit_dist = float('nan')
         self.s_hit_idx = None
         self.s_hit_xy = None
         self.brake_t0 = 0.0
@@ -322,8 +396,8 @@ class BrakeTestNode(Node):
     def load_route(self):
         """route 파라미터가 가리키는 CSV 를 읽는다. 비었으면 ★최신★ route_*.csv.
 
-        ★S 가 없으면 거부한다★ 이 시험은 S 에서만 제동을 건다 — 없으면 차는
-        경로 끝까지 10펄스로 달리고 아무도 세우지 않는다. 그건 사고다.
+        ★[2026-09-09] terrain 열은 보지 않는다★ 정지 트리거가 라이다와 종점으로
+        바뀌었다. 'S' 가 적혀 있어도 무시하고, 없어도 아무 문제가 없다.
         """
         import csv as _csv
         name = str(self.get_parameter('route').value or '').strip()
@@ -343,7 +417,7 @@ class BrakeTestNode(Node):
             self.event(f"❌ 경로 파일 없음: {path}")
             return False
 
-        wps, zone = [], []
+        wps = []
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 for row in _csv.DictReader(f):
@@ -351,7 +425,6 @@ class BrakeTestNode(Node):
                         wps.append((float(row['latitude']), float(row['longitude'])))
                     except (KeyError, ValueError, TypeError):
                         continue
-                    zone.append(str(row.get('terrain', '') or '').strip())
         except Exception as e:            # noqa: BLE001
             self.event(f"❌ 경로 읽기 실패: {e}")
             return False
@@ -359,18 +432,9 @@ class BrakeTestNode(Node):
             self.event(f"❌ 웨이포인트 부족({len(wps)}개): {name}")
             return False
 
-        self.raw_wps, self.raw_zone, self.route_name = wps, zone, name
-        self.stop_idx = [i for i, z in enumerate(zone) if z in STOP_ZONE_CHARS]
-        if not self.stop_idx:
-            self.event(
-                f"❌ {name} 의 terrain 열에 ★S 가 없다★ — 제동을 걸 지점이 없으므로 "
-                f"시작하지 않는다. 제동을 시작할 행의 terrain 을 'S' 로 고칠 것 "
-                f"(경로 {len(wps)}점 / S 뒤로 30m 이상 여유가 있어야 한다)")
-            return False
-
-        # 직선성 · S 뒤 여유거리를 미리 말해 준다 (굴리기 전에 알아야 하는 값이다)
-        self.event(f"📁 경로 {name} — WP {len(wps)}개, S {len(self.stop_idx)}곳 "
-                   f"(WP {', '.join(str(i) for i in self.stop_idx)})")
+        self.raw_wps, self.route_name = wps, name
+        self.event(f"📁 경로 {name} — WP {len(wps)}개 "
+                   f"(terrain 열은 보지 않는다 — 정지는 라이다 또는 종점이다)")
         return True
 
     def build_waypoints(self):
@@ -378,19 +442,18 @@ class BrakeTestNode(Node):
             return False
         self.waypoints = [latlon_to_xy(la, lo, self.lat0, self.lon0)
                           for (la, lo) in self.raw_wps]
-        self.wp_zone = list(self.raw_zone[:len(self.waypoints)])
-        self.wp_zone += [''] * (len(self.waypoints) - len(self.wp_zone))
-        # ★S 뒤 남은 거리를 재서 경고한다★ 헤더 안전절의 그 값이다.
-        first_s = self.stop_idx[0]
-        run_out = 0.0
-        for i in range(first_s, len(self.waypoints) - 1):
-            run_out += math.dist(self.waypoints[i], self.waypoints[i + 1])
-        need = 30.0
-        msg = (f"📏 첫 S(WP {first_s}) 뒤 경로 잔여 {run_out:.1f}m")
-        if run_out < need:
-            msg += (f" — ⚠️★{need:.0f}m 미만이다★ 10펄스면 S 뒤로 13~20m 를 더 간다. "
-                    f"경로가 모자라면 차는 경로 밖에서 선다. 그래도 진행한다")
-        self.event(msg)
+        #  경로 총길이를 알려 준다 — 가속 구간이 충분한지 눈으로 보게.
+        total = sum(math.dist(self.waypoints[i], self.waypoints[i + 1])
+                    for i in range(len(self.waypoints) - 1))
+        v = (self.cmd_value * MS_PER_PULSE if self.drive_pwm <= 0
+             else float('nan'))
+        note = ""
+        if math.isfinite(v) and v > 0:
+            #  2단 실측 하한 2.2 로 잡은 보수적 값 + 판정·행정 지연 0.30s
+            d_stop = v * 0.30 + v * v / (2.0 * 2.2)
+            note = (f" / 이 속도의 2단 정지거리 ≈ {d_stop:.1f}m — "
+                    f"★종점 뒤로 그만큼이 비어 있어야 한다★")
+        self.event(f"📏 경로 총길이 {total:.1f}m{note}")
         self.wp_idx = 0
         self._wp_prev = 0
         return True
@@ -446,6 +509,18 @@ class BrakeTestNode(Node):
         if bool(msg.data):
             self.go = True
 
+    def cb_lidar_stop(self, msg: Bool):
+        self.lidar_stop = bool(msg.data)
+        self.lidar_stop_t = time.time()
+
+    def cb_lidar_dist(self, msg):
+        self.lidar_dist = float(msg.data)
+
+    def lidar_fresh(self):
+        """판정이 살아 있나. ★끊겨도 멈추지 않는다★ (헤더 '신선도' 절)"""
+        return (self.lidar_stop_t > 0.0
+                and (time.time() - self.lidar_stop_t) <= LIDAR_STALE_S)
+
     # ══════════════════════════════════════════════════════════════════════════
     #  출력
     # ══════════════════════════════════════════════════════════════════════════
@@ -485,7 +560,8 @@ class BrakeTestNode(Node):
     def publish_state(self):
         #  record 가 켜지도록 DRIVE_* 이름을 쓴다(헤더 참고).
         name = {S_WAIT: 'IDLE', S_HEADING: 'DRIVE_HEADING', S_RUN: 'DRIVE_RUN',
-                S_BRAKE: 'DRIVE_RUN', S_DONE: 'DRIVE_DONE'}[self.state]
+                S_BRAKE: 'DRIVE_RUN', S_RELEASE: 'DRIVE_DONE',
+                S_DONE: 'DRIVE_DONE'}[self.state]
         self.pub_dstate.publish(String(data=name))
 
     def enter(self, new_state, msg=''):
@@ -649,6 +725,8 @@ class BrakeTestNode(Node):
             self.run_follow(now)
         elif self.state == S_BRAKE:
             self.run_brake(now)
+        elif self.state == S_RELEASE:
+            self.run_release(now)
 
     def throttle(self, text, period=2.0):
         t = time.time()
@@ -666,14 +744,21 @@ class BrakeTestNode(Node):
             self.throttle(f"⏸️ GPS 품질 대기 — {Q_LABEL.get(self.gps_quality, '?')}"
                           f"(σ={self.gps_sigma:.2f}m)")
             return
+        if self.require_lidar and not self.lidar_fresh():
+            self.throttle(f"⏸️ 라이다 판정 대기 — {LIDAR_STOP_TOPIC} 가 아직 없다 "
+                          f"(ouster 드라이버·cone_lidar_node 확인). "
+                          f"라이다 없이 종점 정지만 재려면 require_lidar:=false")
+            return
         if not self.build_waypoints():
             self.throttle("⏸️ GPS 원점 대기")
             return
         self.head_est.reset()
         self.heading = None
+        lid = ("라이다 보호 ON" if self.lidar_fresh()
+               else "★라이다 보호 없음 — 종점 정지로만 선다★")
         self.enter(S_HEADING,
                    f"▶ 출발 — 헤딩 초기화({self.heading_pulse}펄스로 곧게). "
-                   f"확정되면 {self.cmd_kind} 로 가속한다")
+                   f"확정되면 {self.cmd_kind} 로 가속한다. {lid}")
 
     def run_heading(self, now):
         #  ★진입 직후 잠깐은 굴리지 않는다★ (driving.py 와 같은 이유)
@@ -706,20 +791,43 @@ class BrakeTestNode(Node):
         if self.heading is None or not self.waypoints:
             self.send(0, 0.0, control=True)
             return
-        prev = self._wp_prev
         self.advance_wp()
         self._wp_prev = self.wp_idx
 
-        # ── S 통과 판정 ── ★'같은가' 가 아니라 지나온 구간을 훑는다★
-        #    10펄스면 한 틱에 0.44m — WP 간격 0.25m 면 두 칸씩 건너뛴다.
-        #    단일 행을 '같은가' 로 보면 그 틱에 조용히 사라진다.
-        hit = None
-        for i in range(prev + 1, self.wp_idx + 1):
-            if 0 <= i < len(self.wp_zone) and self.wp_zone[i] in STOP_ZONE_CHARS:
-                hit = i
-                break
-        if hit is not None:
-            self.begin_brake(hit, now)
+        # ══════════════════════════════════════════════════════════════════════
+        #  ① 라이다 장애물 — ★cone_lidar_node 의 확정 판정을 그대로 쓴다★
+        # ══════════════════════════════════════════════════════════════════════
+        #  거리를 다시 해석하지 않는다(상수절 참고). Bool 하나가 곧 판정이다.
+        if self.lidar_stop and self.lidar_fresh():
+            self.begin_brake(WHY_LIDAR, now)
+            return
+        #  ★끊겨도 멈추지 않는다 — 경고만 한다★ (헤더 '신선도' 절)
+        if not self.lidar_fresh() and not self._lidar_warned:
+            self._lidar_warned = True
+            self.event(
+                f"⚠️ 라이다 판정({LIDAR_STOP_TOPIC})이 {LIDAR_STALE_S:.1f}s 넘게 "
+                f"오지 않는다 — ★장애물 보호 없이 달린다★. 종점 정지는 그대로 "
+                f"동작한다. cone_lidar_node 와 ouster 드라이버를 확인할 것")
+        elif self.lidar_fresh() and self._lidar_warned:
+            self._lidar_warned = False
+            self.event("✅ 라이다 판정 복구 — 장애물 보호가 다시 산다")
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  ② 종점 도달 — 반경 또는 통과, 둘 중 먼저 되는 쪽
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★반경만 보면 놓친다★ 10펄스는 한 틱에 0.44m 를 가고 GPS 도 튄다.
+        #  driving.py 와 같이 '지나쳤다' 를 독립 조건으로 둔다 — 한 번 지나가면
+        #  반드시 성립하므로 종점 질주의 마지막 방벽이 된다.
+        gx, gy = self.waypoints[-1]
+        d2goal = math.hypot(gx - self.x, gy - self.y)
+        if d2goal <= GOAL_REACH_M:
+            self.begin_brake(WHY_GOAL, now)
+            return
+        ch = math.cos(math.radians(self.heading))
+        sh = math.sin(math.radians(self.heading))
+        if ((gx - self.x) * ch + (gy - self.y) * sh < 0.0
+                and d2goal <= GOAL_PASS_MAX_M):
+            self.begin_brake(WHY_GOAL, now)
             return
 
         # ── 경로이탈 ──
@@ -731,12 +839,9 @@ class BrakeTestNode(Node):
             self.finish(f"경로이탈 {cte:+.2f}m (한계 {self.cte_abort:.1f}m)")
             return
 
-        # ── 경로 끝 ──
+        # ── 포인터가 끝에 닿았는데 위 종점 판정이 안 섰다 (경로가 짧거나 GPS 이상) ──
         if self.wp_idx >= len(self.waypoints) - 1:
-            self.set_brake(BRAKE_FULL)
-            self.publish_brake(force=True)
-            self.send(0, self._last_steer, control=True)
-            self.finish("★S 를 만나기 전에 경로가 끝났다★ — terrain 열 확인")
+            self.begin_brake(WHY_GOAL, now)
             return
 
         lfd = self.lookahead_m()
@@ -749,9 +854,14 @@ class BrakeTestNode(Node):
             f"{'?' if self.gps_kmh is None else f'{self.gps_kmh:.1f}'}km/h, "
             f"CTE {cte:+.2f}m, LFD {lfd:.1f}m", period=1.0)
 
-    def begin_brake(self, idx, now):
-        """S 통과 — ★즉시 리니어 2단★. 여기서부터가 측정 구간이다."""
-        self.s_hit_idx = idx
+    def begin_brake(self, why, now):
+        """정지 트리거 — ★즉시 리니어 2단★. 여기서부터가 측정 구간이다.
+
+        why 는 WHY_LIDAR / WHY_GOAL 이다. 결과 표에 그대로 찍힌다.
+        """
+        self.why = why
+        self.hit_dist = self.lidar_dist if why == WHY_LIDAR else float('nan')
+        self.s_hit_idx = self.wp_idx
         self.s_hit_xy = (self.x, self.y)
         self.brake_xy = (self.x, self.y)
         self.brake_t0 = now
@@ -764,23 +874,51 @@ class BrakeTestNode(Node):
         self.send(self.cmd_value, self._last_steer, control=True)
         v0kmh = (float('nan') if not math.isfinite(self.brake_v0)
                  else self.brake_v0 * 3.6)
+        extra = (f", 장애물 {self.hit_dist:.2f}m"
+                 if math.isfinite(self.hit_dist) else "")
         self.enter(S_BRAKE,
-                   f"🛑 S 통과(WP {idx}) — ★리니어 2단 체결★ "
-                   f"진입속도 {v0kmh:.2f} km/h ({self.brake_v0:.3f} m/s)")
+                   f"🛑 ★{why}★ (WP {self.wp_idx}/{len(self.waypoints)}{extra}) — "
+                   f"리니어 2단 체결. 진입속도 {v0kmh:.2f} km/h "
+                   f"({self.brake_v0:.3f} m/s)")
 
     def run_brake(self, now):
         self.send(self.cmd_value, self._last_steer, control=True)
         held = now - self.brake_t0
         if self.stopped(now):
             self.report(now, held)
+            self.begin_release(now)
             return
         if held >= BRAKE_MAX_S:
             self.report(now, held, note="★시간 초과★ 완전정지를 확인하지 못했다")
+            self.begin_release(now)
             return
         self.throttle(
             f"🛑 제동 중 {held:.2f}s — "
             f"{'?' if self.gps_kmh is None else f'{self.gps_kmh:.2f}'}km/h, "
             f"ENC {self.enc_pulse:.1f}펄스", period=0.5)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  완전정지 뒤 리니어 해제 [2026-09-09 사용자 지시]
+    # ══════════════════════════════════════════════════════════════════════════
+    def begin_release(self, now):
+        """★물린 채로 런치를 내리지 않는다★
+
+        arduino 가 내려간 뒤에는 /brake_level 로 풀 방법이 없어져, 차를 밀려면
+        D5 를 내렸다 올리는 수밖에 없다. 그래서 여기서 0 을 내고 ★실제로 빠질
+        시간★ 을 준 뒤에 종료한다 — arduino 해제유예 0.5s + B보드 0단 복귀
+        BRAKE_HOME_MS 1000ms 를 합쳐 BRAKE_RELEASE_WAIT_S 로 잡았다.
+        """
+        self.set_brake(BRAKE_NONE)
+        self.publish_brake(force=True)      # ★0 은 평소 재확인하지 않는다★
+        self.enter(S_RELEASE,
+                   f"🟢 완전정지 확인 — 리니어 해제(0단). "
+                   f"{BRAKE_RELEASE_WAIT_S:.1f}초 뒤 런치를 내린다")
+
+    def run_release(self, now):
+        self.send(0, self._last_steer, control=True)
+        if now - self.state_t0 >= BRAKE_RELEASE_WAIT_S:
+            self._done_t = now
+            self.enter(S_DONE)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  결과
@@ -801,34 +939,52 @@ class BrakeTestNode(Node):
             "═" * 66,
             f"  경로            {self.route_name}",
             f"  지령            {self.cmd_kind}",
-            f"  S 지점          WP {self.s_hit_idx}",
+            f"  ★정지 사유★     {self.why}",
+            f"  트리거 지점     WP {self.s_hit_idx}/{len(self.waypoints)}",
+        ]
+        if math.isfinite(self.hit_dist):
+            #  ★라이다 정지일 때만★ 그 순간 본 거리. ROI 가 2.0~6.0 m 라 그 안이다.
+            lines.append(
+                f"  체결 시 장애물  {self.hit_dist:.2f} m      "
+                f"← cone_lidar_node 가 그 순간 본 최근접 거리")
+        lines += [
             f"  체결 시 속도 v0 {v0:.3f} m/s ({v0 * 3.6:.2f} km/h)",
             f"  제동시간 t      {held:.2f} s",
             f"  제동거리 d      {d:.2f} m        ← 체결 지점부터 잰 GPS 직선거리",
-            f"  S 초과거리      {s_over:.2f} m        ← S 를 이만큼 지나서 섰다",
+            f"  트리거 초과거리 {s_over:.2f} m        ← 트리거를 이만큼 지나서 섰다",
             f"  평균 감속도     {a_t:.2f} m/s²  (v0/t)",
             f"                  {a_d:.2f} m/s²  (v0²/2d)",
             "═" * 66,
             "  ※ BRAKING.md 실측 : 2단 2.2~3.8 m/s² / 1단 0.62~1.05 / 코스트 0.29~0.54",
         ]
+        if self.why == WHY_LIDAR and math.isfinite(self.hit_dist):
+            reach = self.hit_dist - s_over
+            lines.append(
+                f"  ※ 장애물까지 남은 여유 ≈ {reach:+.2f} m  "
+                + ("(★들이받았을 거리다★)" if reach < 0 else "(멈춰 섰다)"))
         if note:
             lines.append(f"  ⚠️ {note}")
         for ln in lines:
             self.get_logger().info(ln)
         self.pub_event.publish(String(data=(
-            f"🅑 제동 결과 — v0 {v0 * 3.6:.2f}km/h, d {d:.2f}m, t {held:.2f}s, "
-            f"a {a_t:.2f}/{a_d:.2f} m/s², S 초과 {s_over:.2f}m{'  ' + note if note else ''}")))
+            f"🅑 제동 결과 [{self.why}] — v0 {v0 * 3.6:.2f}km/h, d {d:.2f}m, "
+            f"t {held:.2f}s, a {a_t:.2f}/{a_d:.2f} m/s², 초과 {s_over:.2f}m"
+            f"{'  ' + note if note else ''}")))
         self._reported = True
-        self._done_t = now
-        self.enter(S_DONE)
+        #  ★여기서 DONE 으로 가지 않는다★ 해제 단계(begin_release)가 리니어를 풀고
+        #  실제로 빠질 시간을 준 뒤에 DONE 으로 넘긴다.
 
     def finish(self, why):
-        """측정 없이 끝낸다(중단·이상). ★리니어는 물린 채로 두지 않는다★"""
+        """측정 없이 끝낸다(중단·이상). ★리니어는 물린 채로 두지 않는다★
+
+        2단으로 세운 뒤 해제 단계를 거쳐 나간다 — 중단이라고 물린 채로 두면
+        차를 밀 수 없다(begin_release 참고).
+        """
         self.set_brake(BRAKE_FULL)
         self.publish_brake(force=True)
         self._reported = True
-        self._done_t = time.time()
-        self.enter(S_DONE, f"⛔ 시험 중단 — {why}. 리니어 2단")
+        self.event(f"⛔ 시험 중단 — {why}. 리니어 2단")
+        self.begin_release(time.time())
 
     def destroy_node(self):
         try:

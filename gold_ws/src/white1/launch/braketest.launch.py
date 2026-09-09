@@ -9,6 +9,9 @@ braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [wh
     ros2 launch white1 braketest.launch.py drive_pwm:=140      # ★직접 PWM★
 
   띄우는 것 (one_launch.py 에서 ★측정에 필요한 것만★ 남겼다):
+      lidar/aeb.launch.py   ★라이다 정지 시스템 그대로★ (통째로 include)
+                            = ouster.launch.py(OS1-32 드라이버) + cone_lidar_node
+                            → /cone_lidar_node/stop_signal 을 braketest 가 받는다
       nxde/arduino          A/B 2보드 시리얼 브리지  ★없으면 아무것도 안 움직인다★
       white1/iahrs          6축 IMU → /imu
       white1/speed          /imu 적분 속도계 → /speed
@@ -23,11 +26,20 @@ braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [wh
       mapping   — 시험 중에 경로를 쓸 이유가 없다.
       prompt    — ★런치 = 출발★ 이다(아래). 고를 것이 없다.
       hud       — 띄워도 되지만 기본은 끈다(use_hud:=true 로 켤 수 있다).
-      라이다·카메라·신호등 — 제동거리와 무관하고, /cmd_vel_raw 발행자만 늘린다.
+      drive_lidar_node · drive_gps_node · pedal_drive_node
+                — lidar 패키지의 ★주행★ 노드들이다. /cmd_vel_raw 발행자가 겹친다.
+                  우리가 필요한 것은 ★인지(cone_lidar_node)뿐★ 이라 aeb.launch.py
+                  만 include 한다(lidar/one_launch.py 도 같은 조각을 쓴다).
+      카메라·신호등 — 제동거리와 무관하고, /cmd_vel_raw 발행자만 늘린다.
 
 ════════════════════════════════════════════════════════════════════════════════
  ⚠️ 실행 절차 — ★런치 = 출발★ 이다
 ════════════════════════════════════════════════════════════════════════════════
+  0. ★라이다가 붙었는지 먼저 본다★ — 유선 LAN 이다(USB 아님).
+        ip -br addr show eno1     # 192.168.6.100/24 여야 한다
+        ping -c2 192.168.6.11
+     인지만 따로 확인하려면 : ros2 launch lidar aeb.launch.py use_rviz:=true
+        차 앞 3 m 에 사람 → /cone_lidar_node/obstacle_distance 가 3.0 이면 맞다
   1. `ros2 run nxde check` 로 A/B보드·GPS·IMU 연결을 먼저 확인한다.
   2. ★차 앞을 비운다.★ 기본 10펄스(31.8 km/h)에서 S 지점 뒤로 13~20 m 를 더 간다
      (braketest.py 헤더의 안전절 계산). ★S 뒤 최소 30 m 가 필요하다.★
@@ -35,19 +47,28 @@ braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [wh
   4. 런치를 띄운다. GPS 품질이 서면 ★스스로 헤딩을 잡고 출발한다.★
      → 확인하고 출발시키고 싶으면 `auto_start:=false` 로 띄우고,
        `ros2 topic pub -1 /braketest_go std_msgs/msg/Bool '{data: true}'`
-  5. 완전정지하면 결과를 찍고 ★런치가 스스로 내려간다★.
+  5. 달리는 동안 ★둘 중 먼저 오는 것★ 에서 리니어 2단을 문다 —
+     ① 라이다 장애물 확정  ② 종점 도달
+     완전정지하면 결과를 찍고 ★리니어를 풀고★ 런치가 스스로 내려간다.
+
+  ⚠️ 라이다 ROI 는 전방 2.0~6.0 m 인데 10펄스 2단 정지거리가 12.9~20.4 m 다 —
+     ★보고 나서 서기에는 원리적으로 부족하다.★ 이 시험은 '얼마나 못 서는가' 를
+     재는 것이다. 사람·부술 수 있는 물건을 장애물로 쓰지 말 것.
 
   언제든 세우는 방법 : E-STOP(하드웨어) · D5 를 수동조종으로 · Ctrl-C
 """
 
 import os
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, EmitEvent, OpaqueFunction,
+from launch.actions import (DeclareLaunchArgument, EmitEvent,
+                            IncludeLaunchDescription, OpaqueFunction,
                             RegisterEventHandler)
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -134,6 +155,7 @@ def _setup(context, *args, **kwargs):
             'heading_pulse': cfg('heading_pulse'),
             'cte_abort_m':   cfg('cte_abort_m'),
             'auto_start':    cfg('auto_start'),
+            'require_lidar': cfg('require_lidar'),
         }],
     )
 
@@ -150,6 +172,27 @@ def _setup(context, *args, **kwargs):
         condition=IfCondition(cfg('use_hud')),
     )
 
+    # ═══════════════════════════════════════════════════════════════════
+    #  [인지] 라이다 정지 시스템 — ★lidar/aeb.launch.py 를 통째로 include★
+    # ═══════════════════════════════════════════════════════════════════
+    #  = ouster.launch.py(OS1-32 드라이버) + cone_lidar_node
+    #  ★그 조각을 그대로 쓴다★ lidar/one_launch.py 도 같은 것을 include 한다 —
+    #  여기서 노드를 다시 선언하면 감지 파라미터의 소유자가 둘이 되어, 한쪽만
+    #  고치는 사고가 난다(cone_lidar.yaml 이 유일한 소유자여야 한다).
+    #
+    #  ⚠️ ★인자 이름이 params_file 이면 안 된다★ IncludeLaunchDescription 은 부모의
+    #  LaunchConfiguration 을 자식에게 물려준다 — ouster.launch.py 의 같은 이름
+    #  인자를 덮어써서 드라이버가 cone_lidar.yaml 을 읽고 죽는다(2026-08-25 실제).
+    #  aeb.launch.py 가 그래서 cone_params_file 로 이름을 갈라 두었고, 우리는
+    #  ★그 인자를 아예 넘기지 않아★ 자식 기본값을 쓰게 둔다.
+    lidar_pkg = get_package_share_directory('lidar')
+    aeb = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(lidar_pkg, 'launch', 'aeb.launch.py')),
+        condition=IfCondition(cfg('use_lidar')),
+        launch_arguments={'use_rviz': cfg('use_lidar_rviz')}.items(),
+    )
+
     # ★braketest 가 끝나면 런치 전체를 내린다★ (사용자 지시: 완전정지하면 종료)
     #   braketest.py 는 결과를 찍고 DONE_LINGER_S 뒤에 SystemExit 로 빠진다.
     shutdown_on_done = RegisterEventHandler(
@@ -157,7 +200,7 @@ def _setup(context, *args, **kwargs):
                       on_exit=[EmitEvent(event=Shutdown(
                           reason='braketest 완료 — 런치를 내린다'))]))
 
-    return [arduino, iahrs, speed, nmea, gps, braketest, record, hud,
+    return [aeb, arduino, iahrs, speed, nmea, gps, braketest, record, hud,
             shutdown_on_done]
 
 
@@ -188,6 +231,19 @@ def generate_launch_description():
             'auto_start', default_value='true',
             description='true = ★런치 = 출발★ 준비되는 대로 스스로 굴러간다. '
                         'false 면 /braketest_go 에 true 가 올 때까지 기다린다'),
+        DeclareLaunchArgument(
+            'use_lidar', default_value='true',
+            description='★라이다 정지 시스템(lidar/aeb.launch.py)을 함께 띄운다★ '
+                        '= ouster 드라이버 + cone_lidar_node. false 로 두면 '
+                        '★종점 도달로만 정지한다★ (장애물 보호 없음)'),
+        DeclareLaunchArgument(
+            'use_lidar_rviz', default_value='false',
+            description='RViz 로 라이다 ROI 를 보면서 돌린다'),
+        DeclareLaunchArgument(
+            'require_lidar', default_value='false',
+            description='true 면 라이다 판정이 살아 있을 때까지 ★출발하지 않는다★. '
+                        'false(기본)면 판정이 없어도 출발하고, 끊기면 경고만 하고 '
+                        '종점 정지로 끝낸다'),
         DeclareLaunchArgument(
             'min_quality', default_value='2',
             description='gps 노드 품질 문턱 (1=SPS 2=DGPS 3=FLOAT 4=FIXED)'),
