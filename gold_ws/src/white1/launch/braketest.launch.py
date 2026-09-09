@@ -264,10 +264,12 @@ def generate_launch_description():
                         '구동계 개입 없는 순수 관성 상태로 제동에 들어가고 싶을 때만'),
 
         DeclareLaunchArgument(
-            'steer_limit_deg', default_value='5.0',
+            'steer_limit_deg', default_value='3.0',
             description='★조향 pot 지령 절대 상한 [deg]★ 직선 전용 안정화. '
-                        '5° → 도로휠 3.97° → 10펄스 횡가속도 4.34 m/s². '
-                        'B보드 상한 40° 보다 훨씬 낮게 잘라 급선회를 원천 차단한다'),
+                        'B보드 상한 40° 보다 훨씬 낮게 잘라 급선회를 원천 차단한다. '
+                        '[2026-09-09 밤] 5.0 → 3.0 : 5° 는 이 속도에서 권한이 과해 '
+                        '헤딩이 ±9.3° 로 진동했다(braketest.py 상단 검증). '
+                        '되돌리려면 steer_limit_deg:=5.0'),
         DeclareLaunchArgument(
             'cte_abort_m', default_value='3.0',
             description='경로에서 이만큼 벗어나면 스스로 2단을 물고 시험을 접는다'),

@@ -8,7 +8,9 @@ braketest.py ― ★브레이크 제동거리 측정 전용 노드★ [white1 / 
   ★런치 = 출발★ D5 가 자율주행이고 GPS 가 서면 ★그 자리에서 지정속도로 굴러간다★.
   그리고 ★직선 매핑임을 그대로 이용한다★ (아래 '직선 전용 조준' 절):
       ① 출발 직후  : ★조향 무조건 0°★ — 곧게 굴러 GPS 코스로 헤딩을 세운다
-      ② 헤딩 확정 후 : ★CSV 의 마지막 점★ 하나만 겨눈다
+      ② 헤딩 확정 후 : ★CSV 의 마지막 점★ 으로 방향을 잡고,
+                       ★스탠리 횡오차항 + CTE 적분★ 으로 가운데에 붙인다
+                       (아래 '횡오차 보정' 절 — 끝점 조준만으로는 못 붙는다)
   헤딩 초기화를 위해 따로 서행하는 구간이 없고, 자이로도 쓰지 않는다.
 
   직선(또는 직선에 가까운) 매핑 경로를 GPS 로 추종하면서 ★고정 속도★ 로 달리다가,
@@ -186,14 +188,22 @@ HEADING_LOCK_N = 5
 #   ② 헤딩을 잡은 뒤 : ★CSV 의 마지막 점★ 을 겨눈다. 목표가 고정이라 계단이 없고,
 #      멀리 있어서 각도 변화가 완만하다(= 이득이 낮다 = 안정하다).
 #
-#  ★가까워지면 이득이 커진다 — 그래서 분모에 바닥을 둔다★
-#  δ = atan(2·L·sin α / d) 에서 d 가 작아지면 같은 횡오차가 큰 각이 된다.
-#  종점 부근에서 그것이 튀지 않게 d 를 AIM_MIN_DIST_M 아래로 내려가지 않게 한다
-#  (driving.pure_pursuit_steer 의 `denom = max(lfd·0.5, dist)` 과 같은 장치다).
+#  ★[2026-09-09 밤] 이 절의 결론은 반만 맞았다★ 사행은 실제로 멎었다. 그런데 같은
+#  이유로 ★가운데로 돌아오지도 못했다★ — 이득이 낮은 정도가 아니라 0 이었다.
+#  ★끝점을 겨눈다는 원칙은 그대로 두되, 겨눈 결과를 순수추종식(2L/d 로 24분의 1이
+#  된다)이 아니라 ★방위오차 그대로★ 쓰도록 바꿨다. 아래 '횡오차 보정' 절이 전부다.
+#
+#  ★[2026-09-09 밤] 조준식이 바뀌었다★ 아래 값은 이제 순수추종의 분모 하한이
+#  아니라 ★끝점 방위를 계산할 최소 기선★ 이다 — 남은 거리가 이보다 짧아지면 두 점이
+#  붙어 방위가 튀므로 마지막 값을 얼린다(goal_bearing). 직선이라 잃는 것이 없다.
 AIM_MIN_DIST_M = 10.0
 #  ★출발 전 위치 확인★ 경로에서 이보다 멀리 떨어져 있으면 출발하지 않는다.
 #  방위를 경로에서 빌려 오므로, 차가 경로 위에 있지 않으면 그 전제가 깨진다.
-START_MAX_OFFSET_M = 2.0
+#  ★[2026-09-09 밤] 2.0 → 1.0★ 검증에서 ★2.0m 벗어나 출발하면 72.5m 안에 못 돌아온다★
+#  (둔한 플랜트 기준 후반에도 1.68~2.22m 가 남는다 — 상한을 5°로 열어도 마찬가지다).
+#  조향으로 메울 수 없는 오차는 애초에 출발시키지 않는 편이 맞다. 실제 지난 주행도
+#  0.26m 에서 출발했으니 1.0m 는 넉넉하다.
+START_MAX_OFFSET_M = 1.0
 
 WHEELBASE_M        = 1.25     # 축거 (순수추종 기하)
 STEER_PLANT_GAIN   = 1.26     # pot 지령 / 도로휠각
@@ -229,9 +239,91 @@ STEER_MAX_DEG      = 40       # B보드 수용 상한
 #      pot 5° → 도로휠 3.97° → 10펄스 횡가속도 4.34 m/s² — 72.5m 직선을 잡기에 충분.
 #   ③ 저역통과 + 슬루 제한으로 틱 단위 떨림을 없앤다(mppi 의 cmd.steer_* 와 같은 값).
 UNDERSTEER_V_MAX_MS = 3.536   # = 4펄스. ★언더스티어 항에 쓰는 속도의 상한★
-STEER_LIMIT_DEG     = 5.0     # pot 지령 절대 상한 (런치 steer_limit_deg)
+#  ★[2026-09-09 밤] 5.0 → 3.0 으로 더 조인다★ 사용자가 지시한 값은 ±5° 였다.
+#  그런데 방향항을 제대로 넣고 검증해 보니 ★5° 는 이 속도에서 권한이 과하다★ —
+#  플랜트가 예민한 쪽(U=0)이면 pot 5° 가 도로휠 3.97° = 요레이트 28°/s 라, 0.25s
+#  작동지연과 불감대 계전기가 겹쳐 헤딩이 ±9.3° 로 진동한다(폭이 커지는 진동이다).
+#  3.0° 로 조이면 같은 조건에서 ★±5.7°★ 로 내려가고 잔류 CTE 도 0.52m → 0.32m 다.
+#  둔한 쪽(U=5.17)에서 잃는 것은 0.08m → 0.21m 뿐이다. ★사용자 지시보다 더 보수적인
+#  방향이라 그대로 적용했고, 런치 인자 steer_limit_deg 로 언제든 5.0 으로 되돌린다.★
+STEER_LIMIT_DEG     = 3.0     # pot 지령 절대 상한 (런치 steer_limit_deg)
 STEER_LPF           = 0.35    # 조향 저역통과 (mppi cmd.steer_lpf_alpha 와 같다)
 STEER_SLEW_DEG_S    = 28.0    # 조향 슬루 [pot deg/s] (mppi cmd.steer_slew_deg_s)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-09 밤] 횡오차 보정 — 끝점 조준만으로는 ★가운데로 못 온다★ ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ros2bag/route_20210606_012345-20260909_231545.csv 의 결과다. 사행은 멎었는데
+#  이번에는 ★진행방향 오른쪽으로 계속 밀렸다★ — CTE −0.26 → −0.35 → −0.63 → −1.17m
+#  가 단조증가하는 동안 발행한 조향은 −0.86°~+0.04°, 실측 조향각은 ★내내 그대로★.
+#  즉 ★핸들이 한 번도 움직이지 않았다.★
+#
+#  ★왜 그런가 — 끝점 조준은 위치 되먹임이 사실상 0 이다★
+#      δ = atan(2·L·sin α / max(d, 10))  에서 끝점은 60~72m 앞에 있다.
+#      CTE 0.26m → α 0.21° → δ 0.007° → pot 0.009°
+#      CTE 1.17m → α 1.12° → δ 0.047° → pot 0.059°
+#  B보드 조향 불감대는 STEER_TOLERANCE_EXIT 6카운트 = ★pot 1.78°★ 다. 위 값들은
+#  그 30분의 1 이라 B보드 PD 가 아예 깨어나지 않는다. 선행거리 d 가 분모에 있으니
+#  ★목표가 멀수록 이득이 0 으로 간다★ — 끝점 조준은 '방향' 기준으로는 훌륭하지만
+#  ('계단 없는 목표' 라는 원래 목적은 달성했다) ★'위치' 를 잡는 능력이 원리적으로
+#  없다.★ 사용자가 말한 "미세조향이 부족했다" 가 정확히 이것이다.
+#
+#  ★★더 큰 문제는 '방향' 쪽에도 있었다★★
+#  이번 이탈의 실제 모습은 '경로에서 밀려났다' 가 아니라 ★헤딩이 1.3° 틀어진 채
+#  그대로 직진했다★ 이다(CTE 기울기 −0.20 m/s ÷ 8.84 m/s = sin 1.3°). 그런데
+#  순수추종식은 헤딩오차마저 ★2L/d = 2.5/60 = 24분의 1★ 로 눌러서 내보낸다.
+#  즉 방향 되먹임도 위치 되먹임도 사실상 없는, ★열린 루프★ 였다.
+#
+#  ★고치는 방법 — 스탠리 정석 두 항으로 간다★
+#      도로휠각 = HEADING_K · ψ_err  +  atan(CTE_K · e / v)
+#                 └ 방향항 (감쇠)       └ 위치항 (수렴)
+#  ψ_err = 차 헤딩 − ★CSV 마지막 점을 향하는 방위★. 끝점을 겨눈다는 원칙은 그대로고,
+#  겨눈 결과를 ★24로 나누지 않고 그대로 쓴다★ 는 것만 달라졌다.
+#  ★방향항이 없으면 발산한다★ 조향→헤딩→횡위치는 2중적분이라 위치항만으로는
+#  감쇠가 없다. 아래 검증에서 HEADING_K=0 이면 최대 CTE 8.0m 로 발산했고,
+#  1.0 을 넣자 0.6m 로 잡혔다 — ★이 항 하나가 안정성을 통째로 결정한다.★
+#
+#  ★게인은 책상 검증으로 골랐다 (플랜트 불확실성을 넣고 훑었다)★
+#  B보드 조향은 슈미트 서보다(err>6카운트에서 움직여 3카운트에서 멈춘다) — 즉
+#  ★계전기(relay)★ 라 선형 해석만으로는 부족하다. 그래서 20Hz 이산 + 불감대
+#  6/3카운트 + 0.25s 작동지연 + GPS 잡음 6cm 를 모두 넣고,
+#  ★플랜트 이득을 모르는 채로★ (아래 '모르는 것' 참고) 양극단에서 함께 훑었다.
+#      채택 : CTE_K 0.4 / HEADING_K 1.0 / 상한 3° / CTE_KI 0.8
+#      결과 : ★실제 코드를 그대로 불러★ 이 경로(291점 72.5m)를 다시 굴린 값이다.
+#             2초 이후 최대 |CTE| / 최대 |방위오차|
+#               로그재현(e −0.26m, ψ −1.3°)  예민 0.32m·5.7° / 둔함 0.21m·1.8°
+#               중앙 출발                    양쪽 모두 0.00m·0.0°
+#               e +1.0m ψ0                  예민 0.40m·5.9° / 둔함 0.55m·3.2°
+#             지난 주행의 ★−1.17m 단조 이탈(조향 0)★ 과 비교할 것.
+#
+#  ★★모르는 것 — 실차에서 반드시 확인할 것★★
+#  전달계 모델 pot = 1.26·δ + 5.17·v²·tan δ/L 은 ★4펄스(3.54 m/s) 이하에서만★
+#  맞춘 값이다. 10펄스(8.84 m/s)에서 v² 가 6.25배라, 이 모델이 그대로 맞다면
+#  pot 5° 가 실제로는 도로휠 0.72° 밖에 안 되고(= 아주 둔하다), 반대로 언더스티어가
+#  실제로는 그만큼 없다면 pot 5° 가 도로휠 3.97° 다(= 아주 예민하다). ★8배 차이다.★
+#  위 게인은 ★예민한 쪽(U=0)에서 안정하도록★ 골랐다 — 둔한 쪽이면 그냥 느려질 뿐
+#  발산하지 않는다(둔한 쪽 최악 0.37m). 어느 쪽인지는 이번 시험의 ros2bag
+#  steer_measured_deg 와 cte_m 을 같이 보면 바로 나온다.
+HEADING_K  = 1.0      # [도로휠 deg / 방위오차 deg] ★0 이면 발산한다★
+CTE_K      = 0.4      # [1/s] 스탠리 횡오차 게인. ★키우면 사행이 돌아온다★
+CTE_V_MIN  = 3.0      # [m/s] atan 분모 하한. 저속에서 이 항이 발산하는 것만 막는다
+
+#  ★정상편차는 적분이 지운다 — driving.apply_cte_integral 이식★
+#  driving.py 가 같은 불감대를 상대로 쓰는 장치를 그대로 가져왔다(부호반전 소프트
+#  감쇠 / 불감대 감쇠 / 이중 클램프 / 정차 중 동결). ★게인만 이 시험에 맞춰 키웠다★:
+#  driving.py 는 CTE_KI 0.30 으로 ★30초에 걸쳐★ 불감대를 넘기는데, 이 시험은 전체
+#  주행이 72.5m / ★8초★ 라 그 속도로는 끝나 버린다.
+#  ★기여는 크지 않다 — 정직하게 적어 둔다★ 위 두 항이 붙은 뒤에는 적분이 있든
+#  (후반 최대 |CTE| 평균 0.40m) 없든(0.44m) 큰 차이가 없다. 남겨 두는 이유는
+#  휠얼라인먼트 같은 ★진짜 정상편차★ 를 지우는 것이 이 항의 본래 일이기 때문이고,
+#  이번 시험처럼 8초짜리 주행에서는 그 일을 할 시간이 애초에 없어서다.
+CTE_KI            = 0.8    # [deg(도로휠)/(m·s)]  ★driving.py 의 0.30 이 아니다★
+CTE_I_CLAMP       = 3.0    # [m·s] 적분값 클램프 (8초 주행에 8.0 은 무의미하게 크다)
+CTE_I_MAX_DEG     = 1.2    # [deg] 적분 기여 상한. pot 기준 1.5°
+CTE_I_DEADBAND_M  = 0.05   # 이 안이면 적분하지 않고 감쇠 (노이즈 적분 방지)
+CTE_I_DECAY_PER_S = 0.5    # [1/s] 불감대 안에서의 감쇠율
+CTE_I_FLIP_SCALE  = 0.35   # 부호반전 시 소프트 감쇠 (완전 리셋 아님)
+CTE_I_MIN_PULSE   = 0.3    # 실측이 이 밑이면 ★동결★ (안 구르는 차에 쌓지 않는다)
 
 MS_PER_PULSE  = 0.884
 KMH_PER_PULSE = 3.182
@@ -357,6 +449,12 @@ class BrakeTestNode(Node):
         #  ★record 가 이 시험도 기록하게 한다★ 그쪽은 /drive_state 가 DRIVE_* 일 때만
         #  켜지므로, 이 노드도 같은 이름을 쓴다(BRAKETEST_* 를 새로 만들지 않는다).
         self.pub_done = self.create_publisher(Bool, '/braketest_done', 10)
+        #  ★진단 [2026-09-09 밤]★ record.py 의 /drive_diag 열을 채운다.
+        #  이걸 안 내서 ros2bag 의 cte_m 이 통째로 비어 있었다 — 이번 사고의
+        #  원인(CTE 는 커지는데 조향은 0)을 이벤트 문자열에서 손으로 긁어
+        #  읽어야 했다. 다음 시험부터는 표에서 바로 보인다.
+        self.pub_diag = self.create_publisher(
+            Float64MultiArray, '/drive_diag', 10)
 
         # ── 구독 ──
         self.create_subscription(Float64MultiArray, GPS_FUSED_TOPIC,
@@ -401,6 +499,13 @@ class BrakeTestNode(Node):
         #  ★조향 평활 상태 [2026-09-09]★ (상단 '조향 안정화' 절)
         self._steer_out = 0.0
         self._steer_t = 0.0
+        self._steer_sat = False      # 지난 틱에 pot 이 ±steer_limit 에 물렸나
+
+        #  ★CTE 적분 상태 [2026-09-09 밤]★ (상단 '횡오차 보정' 절)
+        self._cte_i = 0.0            # [m·s] 적분값
+        self._cte_i_term = 0.0       # [deg] 이번 틱의 적분 기여(도로휠각)
+        self._cte_prev = 0.0         # 부호반전 판정용
+        self._goal_brg = 0.0         # 끝점 방위 (종점 근처에서 얼려 쓴다)
 
         self.brake_now = BRAKE_NONE
         self._brake_out = -1
@@ -648,31 +753,113 @@ class BrakeTestNode(Node):
             best = best_ahead
         self.wp_idx = max(self.wp_idx, min(best, self.wp_idx + WP_MAX_ADVANCE))
 
-    def aim_at_goal(self):
-        """★CSV 의 마지막 점★ 을 겨누는 도로휠각 [deg, +좌]  [2026-09-09]
+    def goal_bearing(self):
+        """★CSV 마지막 점★ 을 향하는 절대방위 [deg].  [2026-09-09 밤]
 
-        직선 경로 전용이다(상단 '직선 전용 조준' 절). 목표가 고정이라 웨이포인트를
-        차례로 겨눌 때 생기던 계단·잡음·LFD 변동이 통째로 사라진다.
+        ★원점이 차가 아니라 '경로 위의 현재 웨이포인트' 다★ 차를 원점으로 잡으면
+        횡오차가 이 방위에 섞여 들어가 방향항과 위치항이 서로를 갉는다. 경로 위의
+        점에서 재면 순수하게 ★경로가 가야 할 방향★ 만 나온다.
 
-            δ = atan(2·L·sin α / max(d, AIM_MIN_DIST_M))
-
-        ★분모에 바닥을 두는 이유★ 종점에 가까워지면 d 가 작아져 같은 횡오차가 큰
-        각이 된다 — 그대로 두면 마지막 몇 미터에서 조향이 튄다.
-        (driving.pure_pursuit_steer 의 denom 하한과 같은 장치다.)
+        ★종점 근처에서는 얼린다★ 남은 거리가 AIM_MIN_DIST_M 밑으로 떨어지면 두 점이
+        붙어 방위가 튄다 — 마지막으로 성립했던 값을 그대로 쓴다. 직선 경로라
+        방위가 원래 변하지 않으므로 잃는 것이 없다(이 경로는 291점 전 구간에서
+        접선방위가 −9.18° 로 일정하다. 직선에서 벗어난 양이 최대 0.001m 다).
         """
+        n = len(self.waypoints)
         gx, gy = self.waypoints[-1]
-        dx, dy = gx - self.x, gy - self.y
-        ch = math.cos(math.radians(self.heading))
-        sh = math.sin(math.radians(self.heading))
-        lx = dx * ch + dy * sh          # 전방
-        ly = -dx * sh + dy * ch         # 왼쪽 +
-        d = math.hypot(lx, ly)
-        if d < 1e-3 or lx <= 0.0:
-            #  종점을 이미 지났거나 등 뒤다 — 겨눌 것이 없다. 곧게 간다.
+        px, py = self.waypoints[min(self.wp_idx, n - 1)]
+        if math.hypot(gx - px, gy - py) >= AIM_MIN_DIST_M:
+            self._goal_brg = math.degrees(math.atan2(gy - py, gx - px))
+        return self._goal_brg
+
+    def heading_err_deg(self):
+        """★방향항★ 차 헤딩이 끝점 방위에서 얼마나 틀어졌나 → 도로휠각 [deg].
+        ★− 좌 / + 우★  [2026-09-09 밤]
+
+        ★부호★ 반환 psi_err 가 + = 차가 목표방위보다 ★왼쪽★ 을 향한다 → 오른쪽으로
+        꺾어야 한다 → HEADING_K 를 그대로 곱해 + 를 낸다(뒤집지 않는다).
+
+        ★이 항이 안정성을 결정한다★ 조향→헤딩→횡위치는 2중적분이라, 위치항(횡오차)
+        만으로는 감쇠가 전혀 없어 발산한다. 검증에서 HEADING_K=0 은 최대 CTE 8.0m,
+        1.0 은 0.6m 였다(상단 '횡오차 보정' 절).
+
+        ★예전의 순수추종식이 진 빚★ δ = atan(2L·sin α/d) 는 같은 헤딩오차를
+        2L/d = 2.5/60 = ★24분의 1★ 로 눌러서 내보냈다. 그래서 1.3° 틀어진 채로
+        8초를 직진해도 조향지령이 pot 0.06° 였다 — B보드 불감대(1.78°)의 30분의 1.
+        """
+        return wrap180(self.heading - self.goal_bearing())
+
+    def cross_track_deg(self, cte, v_ms):
+        """★스탠리 횡오차항★ → 도로휠각 [deg]. ★− 좌 / + 우★  [2026-09-09 밤]
+
+            δ_e = atan(CTE_K · e / max(v, CTE_V_MIN))
+
+        ★부호★ cte + = 차가 경로 ★왼쪽★ → 오른쪽으로 꺾어야 한다 → + 를 낸다.
+        signed_cte() 의 부호를 그대로 쓰면 된다(뒤집지 않는다).
+
+        ★v 로 나누는 이유★ 같은 횡오차를 지우는 데 필요한 ★곡률★ 은 속도가 빠를수록
+        작다. v 로 나누면 선형화된 폐루프가 ė = −k·e 가 되어 ★속도와 무관하게★ 같은
+        시정수로 수렴한다 — 4펄스 시험과 10펄스 시험을 같은 게인으로 돌릴 수 있다.
+        분모의 바닥(CTE_V_MIN)은 출발 직후 v 가 작을 때 이 항이 발산하는 것만 막는다.
+        """
+        if not math.isfinite(cte):
             return 0.0
-        alpha = math.atan2(ly, lx)
-        return math.degrees(
-            math.atan2(2.0 * WHEELBASE_M * math.sin(alpha), max(d, AIM_MIN_DIST_M)))
+        v = v_ms if (v_ms is not None and math.isfinite(v_ms)) else 0.0
+        v = max(abs(v), CTE_V_MIN)
+        return math.degrees(math.atan(CTE_K * cte / v))
+
+    def apply_cte_integral(self, road_deg, cte, saturated):
+        """도로휠각에 ★CTE 적분항★ 을 더한다 (Ki 단독, P·D 없음).
+        [2026-09-09 밤 driving.apply_cte_integral 이식 — 근거는 상단 '횡오차 보정' 절]
+
+        스탠리 항이 불감대(pot 1.78°) 아래로 내려가는 ±0.27m 구간을 이것이 메운다.
+        driving.py 의 와인드업 방어를 같은 순서로 옮겼다:
+          ① 부호반전 → ×CTE_I_FLIP_SCALE (완전 리셋이 아니라 소프트 감쇠)
+          ② 불감대 안 → 적분하지 않고 감쇠 / 밖 → 적분
+          ③ 적분값 클램프(CTE_I_CLAMP)   ④ 기여 클램프(CTE_I_MAX_DEG)
+          ⑤ 차가 안 구르면 동결(CTE_I_MIN_PULSE)
+        ★여기에만 있는 방어 ⑥★ pot 지령이 ±STEER_LIMIT_DEG 에 물려 있는 동안에는
+        오차를 키우는 방향으로 적분하지 않는다. driving.py 의 상한은 40° 라 실질
+        포화가 없지만 이 시험은 ★5° 로 자른다★ — 포화 중 적분은 전형적 와인드업이다.
+
+        ★부호★ cte + = 경로 왼쪽 = 우조향(+) 필요 → 그대로 더한다(뒤집지 않는다).
+        """
+        if not math.isfinite(cte) or CTE_KI <= 0.0:
+            self._cte_i_term = 0.0
+            return road_deg
+
+        dt = 1.0 / CONTROL_HZ
+        moving = self.enc_pulse > CTE_I_MIN_PULSE
+
+        # ① 부호반전 — 불감대 밖에서 실제로 넘어갔을 때만 본다(노이즈 반전 무시)
+        if (cte * self._cte_prev) < 0.0 \
+                and abs(cte) > CTE_I_DEADBAND_M \
+                and abs(self._cte_prev) > CTE_I_DEADBAND_M:
+            self._cte_i *= CTE_I_FLIP_SCALE
+        self._cte_prev = cte
+
+        # ⑥ 포화 중 같은 방향 적분 금지 (안티와인드업)
+        blocked = saturated and (cte * self._cte_i >= 0.0)
+
+        # ⑤ 동결 — 안 구르는 동안은 쌓지도, 줄이지도 않는다
+        if moving:
+            if abs(cte) < CTE_I_DEADBAND_M:
+                # ② 불감대 안 : 서서히 놓아준다
+                self._cte_i -= self._cte_i * min(1.0, CTE_I_DECAY_PER_S * dt)
+            elif not blocked:
+                self._cte_i += cte * dt
+            self._cte_i = max(-CTE_I_CLAMP, min(CTE_I_CLAMP, self._cte_i))   # ③
+
+        i_term = max(-CTE_I_MAX_DEG, min(CTE_I_MAX_DEG, CTE_KI * self._cte_i))  # ④
+        self._cte_i_term = i_term
+        return road_deg + i_term
+
+    def reset_cte_integral(self):
+        """적분 상태를 지운다. ★주행에 들어갈 때 부른다★ — 대기 중 누적이 출발 첫
+        틱에 실리면 그만큼 그대로 튄다(driving.reset_cte_integral 과 같은 이유)."""
+        self._cte_i = 0.0
+        self._cte_i_term = 0.0
+        self._cte_prev = 0.0
 
     def steer_command(self, road_deg, v_ms):
         """도로휠각 → B보드 pot 지령. ★부호가 여기서 한 번만 뒤집힌다 (− 좌 / + 우)★
@@ -691,7 +878,9 @@ class BrakeTestNode(Node):
                + STEER_UNDERSTEER * v * v * math.tan(math.radians(d)) / WHEELBASE_M)
         #  ★직선 전용 상한★ B보드 상한(40°)보다 훨씬 낮게 자른다.
         pot = min(self.steer_limit, min(STEER_MAX_DEG, pot))
-        return -math.copysign(pot, road_deg)
+        #  ★부호를 여기서 뒤집지 않는다★ road_deg 가 이미 '− 좌 / + 우' 다
+        #  (heading_err_deg / cross_track_deg 주석 — driving.steer_command 와 같다).
+        return math.copysign(pot, road_deg)
 
     def smooth_steer(self, pot, now):
         """조향 지령에 ★저역통과 + 슬루 제한★ 을 건다 [2026-09-09].
@@ -730,6 +919,34 @@ class BrakeTestNode(Node):
             return float('nan')
         ux, uy = (bx - ax) / seg, (by - ay) / seg
         return -(self.x - ax) * uy + (self.y - ay) * ux
+
+    def pub_diag_now(self, cte, psi_err, d2goal, steer_pot):
+        """/drive_diag 를 record.py 의 열 순서대로 낸다 [2026-09-09 밤].
+
+        ★앞 18개만 채운다★ 뒤쪽(goal_phase·cb_state·lidar_zone·rejoin 등)은
+        driving.py 전용 상태라 이 노드에 없다. record._array 가 모자란 만큼 빈칸으로
+        채워 주므로 ★열이 밀리지 않는다★ — 없는 값을 0 으로 채워 '있는 척' 하는 것보다
+        빈칸이 정직하다.
+        """
+        n = float('nan')
+        self.pub_diag.publish(Float64MultiArray(data=[
+            float(cte),                                   # cte_m
+            float(psi_err),                               # heading_err_deg (끝점 방위오차)
+            float(len(self.waypoints) - 1),               # target_idx (항상 끝점)
+            float(d2goal),                                # target_dist_m
+            float(d2goal),                                # goal_dist_m
+            float(self.gps_course),                       # gps_course_deg (nan 가능)
+            n,                                            # fuse_corr_deg (IMU 융합 없음)
+            n,                                            # gyro_z_dps
+            float(self.brake_now),                        # brake_latched
+            float(self.heading if self.heading is not None else n),  # head_init_deg
+            n, n, n,                                      # head_sigma/resid/dist
+            float(self.cmd_value),                        # ref_pulse
+            float(self.cmd_value),                        # out_pulse (감속 로직 없음)
+            float(self.enc_pulse),                        # meas_pulse
+            float(self._cte_i),                           # cte_integral [m·s]
+            float(self._cte_i_term),                      # cte_i_term_deg [도로휠]
+        ]))
 
     def speed_ms(self):
         return None if self.gps_kmh is None else self.gps_kmh / 3.6
@@ -840,6 +1057,13 @@ class BrakeTestNode(Node):
         #  record 가 확실히 떠 있고, /drive_state 가 DRIVE_RUN 이 되기 ★한 틱 전★
         #  이라 세션이 열릴 때 이름이 이미 잡혀 있다.
         self.pub_cmd_name.publish(String(data=self.route_name))
+        self.reset_cte_integral()   # 대기 중 누적을 출발 첫 틱에 싣지 않는다
+        self._steer_sat = False
+        #  ★끝점 방위를 여기서 한 번 세운다★ goal_bearing() 의 '얼린 값' 이 첫 틱에
+        #  0.0 인 채로 쓰이는 일이 없게 한다(경로가 AIM_MIN_DIST_M 보다 짧은 경우).
+        gx, gy = self.waypoints[-1]
+        px, py = self.waypoints[best]
+        self._goal_brg = math.degrees(math.atan2(gy - py, gx - px))
         self.enter(S_RUN,
                    f"▶ ★주행 시작★ [{self.route_name}] — WP {best}/"
                    f"{len(self.waypoints)} (경로에서 {off:.2f}m), 출발 방위 "
@@ -917,6 +1141,8 @@ class BrakeTestNode(Node):
             #  경로에서 빌린 방위는 '대략 맞다' 일 뿐이라, 그것으로 조향하면 틀린
             #  만큼 그대로 꺾는다. 곧게 굴러 GPS 코스가 서기를 기다리는 편이 낫다.
             self._steer_out = 0.0
+            self.reset_cte_integral()   # 조향 0° 구간의 오차를 나중에 싣지 않는다
+            self.pub_diag_now(cte, 0.0, d2goal, 0.0)
             self.send(self.cmd_value, 0.0, control=True)
             self.throttle(
                 f"🅑 곧게 가는 중(조향 0°) — 헤딩 확정 대기 "
@@ -925,15 +1151,31 @@ class BrakeTestNode(Node):
                 f"CTE {cte:+.2f}m", period=0.5)
             return
 
-        #  ★② 헤딩을 잡았다 — CSV 마지막 점을 겨눈다★
-        road = self.aim_at_goal()
-        steer = self.smooth_steer(
-            self.steer_command(road, v if v is not None else self.nominal_ms), now)
+        #  ══════════════════════════════════════════════════════════════════════
+        #  ★② 헤딩을 잡았다 — 방향은 끝점이, 위치는 횡오차가 맡는다★
+        #  ══════════════════════════════════════════════════════════════════════
+        #      도로휠각 = 끝점 조준  +  스탠리 횡오차항  +  CTE 적분항
+        #  셋 다 '− 좌 / + 우' 로 통일돼 있어 그냥 더한다(상단 '횡오차 보정' 절).
+        #  끝점 조준만 쓰던 [2026-09-09 낮] 판은 오른쪽으로 1.17m 밀리는 동안
+        #  pot 0.06° 밖에 내지 못해 ★핸들이 아예 움직이지 않았다.★
+        vv = v if v is not None else self.nominal_ms
+        psi_err = self.heading_err_deg()
+        aim = HEADING_K * psi_err
+        xtrk = self.cross_track_deg(cte, vv)
+        road = self.apply_cte_integral(aim + xtrk, cte, self._steer_sat)
+        pot = self.steer_command(road, vv)
+        #  다음 틱의 적분이 볼 포화 여부. steer_command 가 이미 self.steer_limit 로
+        #  잘랐으므로 '상한에 닿았나' 만 보면 된다.
+        self._steer_sat = abs(pot) >= self.steer_limit - 1e-6
+        steer = self.smooth_steer(pot, now)
+        self.pub_diag_now(cte, psi_err, d2goal, steer)
         self.send(self.cmd_value, steer, control=True)
         self.throttle(
             f"🅑 주행 중 — 종점까지 {d2goal:.1f}m, "
             f"{'?' if self.gps_kmh is None else f'{self.gps_kmh:.1f}'}km/h, "
-            f"CTE {cte:+.2f}m, 조향 {steer:+.1f}°", period=1.0)
+            f"CTE {cte:+.2f}m, 조향 {steer:+.1f}° "
+            f"(방위오차 {psi_err:+.2f}° → {aim:+.2f} + 횡오차 {xtrk:+.2f} + 적분 "
+            f"{self._cte_i_term:+.2f} 도로휠)", period=1.0)
 
     def begin_brake(self, why, now, own_brake=True):
         """정지 트리거 — 여기서부터가 측정 구간이다.
