@@ -870,6 +870,47 @@ GOAL_KICK_MAX_N  = 3      # 이만큼 시도해도 못 움직이면 구동을 �
 #     CTE ≤ 약 K/8 = 0.19m 를 보장한다. ★코너에서 조향 권한을 되찾는 장치이기도 하다★
 #     (LFD 가 짧아지면 순수추종이 낼 수 있는 최대 도로휠각 atan(2L/LFD) 가 커진다)
 LFD_CURVE_CAP_K = 1.5
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-10] 고속 안전 감속 두 가지 — 구 white/driving.py 에서 복구 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 지금 필요한가★ 종전 white1 의 감속은 ★경로의 곡률★ 하나만 봤다(corner_speed
+#  (a)(b)(b2)). 그것은 '지도가 굽어 있으니 줄인다' 이고, ★차가 실제로 어떻게 가고
+#  있는가★ 는 보지 않는다. 6펄스(19 km/h)로 올리면 그 구멍이 그대로 위험이 된다:
+#    · 경로는 직선인데 차가 벗어나 있으면 → 큰 조향으로 복귀하며 그 속도 그대로 간다
+#    · 경로는 직선인데 조향이 흔들리면(사행) → 아무도 속도를 안 줄인다
+#  구 white 는 이 둘을 각각 CTE_RECOVER_CAPS · STEER_SPEED_CAPS 로 막았다.
+#
+#  ★비율로 옮긴다★ 구 white 의 표는 상한 SPEED_TUNED_REF=2.8 m/s 기준의 절대속도라
+#  그대로 쓰면 이 차(4펄스 3.54 / 6펄스 5.30 m/s)에서 뜻이 달라진다. ★상한 대비
+#  비율★ 로 옮기면 drive_pulse 를 바꿔도 따라온다 — 이 파일이 LFD 를 표가 아니라
+#  설계식으로 옮긴 것과 같은 이유다.
+#      구 white 2.2/1.7/1.2 ÷ 2.8 = 0.786 / 0.607 / 0.429
+#      구 white 2.3/1.8/1.3 ÷ 2.8 = 0.821 / 0.643 / 0.464
+#
+#  ── (c) CTE 회복 감속 ────────────────────────────────────────────────────
+#  경로에서 벗어난 만큼 속도를 깎는다. ★벗어남 자체가 '지금 뭔가 안 맞는다' 는
+#  신호★ 이고, 그 상태로 빨리 가면 복귀 궤적이 더 크게 흔들린다.
+#  CTE_DEVIATION_M(2.0m) 안전정지보다 한참 앞에서 부드럽게 듣는다.
+CTE_RECOVER_START_M = 0.38     # 이 밑이면 손대지 않는다 (정상 추종 범위)
+CTE_RECOVER_CAPS    = ((0.48, 0.786), (0.62, 0.607), (0.80, 0.429))
+#
+#  ── (d) 조향 반응 감속 ★직선에서만★ ───────────────────────────────────────
+#  ★코너에서는 쓰지 않는다 — 이중감속이 되기 때문이다★ 코너는 이미 (a)(b) 가
+#  곡률로 줄이고 있고, 거기에 '조향이 크다'로 또 줄이면 두 번 깎인다. 구 white 도
+#  is_straight 게이트를 그래서 뒀다(그 파일 (d) 주석: "코너 진입엔 전혀 개입 안 함").
+#  ★직선인데 조향이 크다★ 는 것은 곡률이 아니라 ★사행·복귀·헤딩오차★ 라는 뜻이고,
+#  그때는 속도를 줄이는 것이 유일하게 맞는 대응이다.
+#  ★단위는 도로휠각[deg]★ 구 white 의 7/10/13 은 pot 지령(±40 클램프) 기준이었다.
+#  두 차의 링키지비가 다르므로 ★권한 대비 비율★ 로 옮긴다 : 7/10/13 ÷ 40 =
+#  17.5/25/32.5% → 이 차 road_max(31.7°) 의 같은 비율 = 5.5 / 7.9 / 10.3°.
+#  (pot 으로 재면 안 된다 — steer_command 의 언더스티어 항이 v² 로 커져서, 고속에서는
+#   같은 곡률에도 pot 이 훨씬 커진다. 그러면 직선에서도 문턱을 넘어 계속 감속한다.)
+STEER_DECEL_START_DEG = 5.5
+STEER_DECEL_CAPS      = ((5.5, 0.821), (7.9, 0.643), (10.3, 0.464))
+#  '직선' 판정 — 근거리 요구 도로휠각이 이보다 작으면 곡률 감속이 안 듣는 구간이다.
+#  STEER_FULL_SLOWDOWN_DEG(15°)의 1/3 로, (a) 가 실질적으로 개입하기 전 영역이다.
+STEER_DECEL_STRAIGHT_DEG = 5.0
 LFD_LPF_ALPHA   = 0.40         # LFD 급변 완화 (시상수 ≈95ms @20Hz)
 LFD_RATE_UP     = 0.9          # [m/s] LFD 증가 상한 — 코너 탈출 후 완만하게
 LFD_RATE_DOWN   = 2.0          # [m/s] LFD 감소 상한 — 코너 보호는 즉각
@@ -918,6 +959,43 @@ HEAD_MAX_DIST_M   = 5.0      # 여기까지 가면 최선의 추정으로 확정
 HEAD_MIN_SAMPLES  = 4        # 직진성을 보려면 최소 4점
 HEAD_TARGET_SIGMA = 3.0      # [deg] 추정 오차가 이 밑이면 확정
 HEAD_SIGMA_FLOOR  = 0.02     # [m] RTK Fixed 수평 노이즈 하한 — 낙관을 막는 바닥값
+#  ★[2026-09-10] 이 바닥값만으로는 부족했다 — 실측으로 드러났다★
+#  ros2bag route_20260908_213404-20260908_213641 에서 ★2점 / 8.79m / "±0.1°"★ 로
+#  확정된 기록이 있다. 그 주행은 DGPS(σ=0.25m, 한때 SPS σ=9.36m)였고 8.79m 는
+#  실제 주행이 아니라 ★GPS 가 튄 거리★ 였다. 그런데 σ 식이
+#      sigma = atan(max(resid_rms, 0.02) / d)
+#  라 d 가 크면 무조건 작게 나온다 — ★전체 로그에서 가장 자신 있어 보이는 숫자가
+#  가장 못 믿을 추정에 붙었다.★ (2점은 잔차가 구조적으로 0 이라 직진성 검증도 불가.)
+#  DGPS σ=0.25m 기준 실제 각도 잡음은 atan(0.25·√2/8.79) ≈ 2.3° — 보고값의 18배다.
+#  → 바닥값을 ★그때의 GPS σ★ 로 올린다(HeadingEstimator.solve 의 sigma_floor 인자).
+#    같은 파일의 _fuse_gps_course 는 이미 문턱을 6σ 로 비례시키고 있었다 —
+#    ★한쪽만 GPS 품질을 보고 있던 것을 맞춘다.★
+#  → 그리고 '최대거리 도달' 강제확정에도 최소 표본을 요구한다(아래).
+HEAD_FORCED_MIN_SAMPLES = 3  # 강제확정에도 최소 이만큼. 2점은 직진성 검증이 불가능하다
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-10] 자이로 바이어스 학습 — 구 white/gps_imu.py 에서 복구 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★없어서 실제로 흘렀다★ ros2bag route_20210606_012345-20260909_224254 의 S 정지
+#  구간(차가 완전히 서 있는 4초)에서:
+#      t=18.0 ego_heading −11.025°  →  t=22.0 −10.405°   = ★+0.155°/s 드리프트★
+#      그 구간 gyro_z 평균 +0.1549°/s (0 이어야 정상)
+#  ★정지 중에는 _fuse_gps_course 가 돌지 않는다★ (0.30m 이동을 요구한다). 즉
+#  서 있는 동안 바이어스가 ★무보정으로 쌓인다★:
+#      S 일시정지(3.5s + 부대시간 ≈ 6s) → 약 0.9°
+#      신호등 대기 20초                 → 약 ★3.1°★
+#  구 white 는 이 상황을 위해 GYRO_BIAS_* 를 갖고 있었다 — 그것을 되살린다.
+#
+#  ★금색차에 맞춘 것 두 가지★
+#   ① 정지 판정을 ★엔코더★ 로 한다. 구 white 는 current_speed_ms(<0.10)를 봤는데,
+#      이 차는 /encoder 가 좌우 합이고 완전정지에서 정확히 0 이라 더 확실하다
+#      (같은 판정을 _goal_stopped·run_stop_zone 이 이미 쓴다 — 문턱을 새로 만들지 않는다).
+#   ② 학습 대상이 ★중력축에 투영된 요레이트★ 다. 구 white 는 z축 단독이었다.
+#      이 차는 IMU 가 58° 기울어 있어 z 단독 바이어스와 투영 바이어스가 다르다.
+#      투영값을 그대로 쓰는 곳(적분)에서 빼야 하므로 투영 뒤에 학습·차감한다.
+GYRO_BIAS_MAX_DPS      = 2.0    # [deg/s] 이보다 크게 돌고 있으면 학습하지 않는다
+GYRO_BIAS_LPF_ALPHA    = 0.002  # 표본당 학습률. iAHRS 20Hz 기준 시정수 ≈ 25s
+GYRO_BIAS_CLAMP_DPS    = 5.0    # [deg/s] 추정 바이어스 절대 상한 (폭주 방어)
 HEAD_MAX_RESID_M  = 0.15     # 직선 잔차 RMS 상한(곧게 갔는가)
 MODE_SETTLE_S     = 0.7      # 스위치 엣지 직후 이만큼은 굴리지 않는다(빠른 토글 대비)
 # ★[2026-08-21] E-STOP 해제 후 재개까지의 유예 [s]★
@@ -933,6 +1011,12 @@ ESTOP_RESUME_GRACE_S = 1.5
 FUSE_GAIN          = 0.05    # GPS 코스헤딩으로 끌어당기는 비율(상보필터)
 FUSE_MIN_STEP_M    = 0.30    # 이만큼 움직였을 때만 GPS 코스헤딩을 신뢰한다
 FUSE_SIGMA_K       = 6.0
+#  ★[2026-09-10] 회전 게이트 — 구 white 의 DRIFT_CORRECT_GYRO_MAX(12°/s) ·
+#  CONT_CORRECT_MAX_GYRO(10°/s) 를 하나로 복구한다★ 근거는 _fuse_gps_course 안에.
+#  10°/s 는 이 차의 4펄스(3.54 m/s)에서 도로휠 ★3.5°★ 에 해당한다
+#  (ψ̇ = v·tanδ/L). 즉 '거의 직선' 일 때만 보정한다는 뜻이고, 그보다 굽은 구간은
+#  헤딩을 자이로에 맡긴다 — 자이로는 짧은 시간 동안은 정확하다.
+FUSE_MAX_GYRO_DPS  = 10.0
 #  ★★ 문턱을 σ 에 비례시킨다 — gps.py 의 min_quality 하향과 한 짝이다 [2026-08-18] ★★
 #  0.30m 는 ★RTK Fixed(σ 2cm) 기준★ 값이다. gps.py 의 min_quality 가 2(DGPS)로 내려가면
 #  이 함수가 DGPS(σ 0.10~0.16m) 좌표로도 돌기 시작하는데, 그때 0.30m 스텝의 방위는
@@ -1298,8 +1382,14 @@ class HeadingEstimator:
         (x0, y0), (x1, y1) = self.pts[0], self.pts[-1]
         return math.hypot(x1 - x0, y1 - y0)
 
-    def solve(self):
-        """→ (heading_deg, sigma_deg, resid_rms, n, dist). 표본 부족이면 None."""
+    def solve(self, sigma_floor_m=HEAD_SIGMA_FLOOR):
+        """→ (heading_deg, sigma_deg, resid_rms, n, dist). 표본 부족이면 None.
+
+        ★sigma_floor_m 은 '그때의 GPS 수평 잡음' 이다 [2026-09-10]★ 종전에는
+        RTK Fixed 기준 고정값(2cm)이라, DGPS 로 튄 거리를 주행으로 읽고 ±0.1° 를
+        보고한 기록이 있다(상단 HEAD_SIGMA_FLOOR 주석의 실측). 부르는 쪽이
+        max(2cm, gps_sigma_m) 을 넘긴다.
+        """
         n = len(self.pts)
         if n < 2:
             return None
@@ -1321,7 +1411,7 @@ class HeadingEstimator:
 
         # 방향 오차 추정. 잔차가 0 이어도 GPS 노이즈 바닥값(2cm)은 깔고 본다 —
         # 표본이 두 점뿐이면 잔차가 구조적으로 0 이라 그대로 믿으면 안 된다.
-        sigma = math.degrees(math.atan2(max(resid_rms, HEAD_SIGMA_FLOOR), d))
+        sigma = math.degrees(math.atan2(max(resid_rms, sigma_floor_m), d))
         return heading, sigma, resid_rms, n, d
 
 
@@ -1444,6 +1534,12 @@ class DrivingNode(Node):
 
         self.heading = None               # [deg] 확정 전에는 None
         self.gyro_z = 0.0                 # [rad/s] ★차량 수직축 성분★ (아래 imu_up)
+        #  ★자이로 바이어스 [2026-09-10]★ 정지 중에 학습해 위 값에서 뺀다.
+        #  실측 +0.155°/s (상단 '자이로 바이어스 학습' 절). 주행 사이에도
+        #  들고 간다 — 온도로 천천히 변할 뿐 매 주행 새로 배울 이유가 없다.
+        self.gyro_bias_dps = 0.0          # [deg/s]
+        self._last_road_deg = 0.0         # 직전 틱의 도로휠각 (조향 반응 감속용)
+        self._cte_last = float('nan')     # 이번 틱의 signed_cte (감속이 재사용)
         self.gyro_raw = (0.0, 0.0, 0.0)   # [rad/s] IMU 원시 3축 (x, y, z)
         # ── IMU 축 보정 [2026-09-09] (상단 '중력축 투영' 절) ──
         #   imu_up = 차량의 '위' 단위벡터를 IMU 좌표로 적은 것. None = 아직 못 쟀다.
@@ -1744,10 +1840,21 @@ class DrivingNode(Node):
              float(msg.angular_velocity.z))
         self.gyro_raw = w
         #  ★여기 한 줄이 이번 수정의 전부다★ 나머지는 축을 재는 코드다.
-        self.gyro_z = (w[2] if self.imu_up is None
-                       else w[0] * self.imu_up[0]
-                          + w[1] * self.imu_up[1]
-                          + w[2] * self.imu_up[2])
+        raw_yaw = (w[2] if self.imu_up is None
+                   else w[0] * self.imu_up[0]
+                      + w[1] * self.imu_up[1]
+                      + w[2] * self.imu_up[2])
+        #  ★[2026-09-10] 바이어스 학습·차감★ (상단 '자이로 바이어스 학습' 절)
+        #  ★차가 서 있으면 요레이트는 0 이어야 한다★ — 그때 읽히는 값이 곧 바이어스다.
+        #  ★투영 뒤에 학습한다★ 적분에 들어가는 값이 투영값이므로 그 값의 바이어스를
+        #  빼야 한다(z축 단독 바이어스와 다르다 — 이 차는 IMU 가 58° 기울어 있다).
+        dps = math.degrees(raw_yaw)
+        if (self.enc_pulse <= ENC_STOP_EPS
+                and abs(dps - self.gyro_bias_dps) < GYRO_BIAS_MAX_DPS):
+            self.gyro_bias_dps += GYRO_BIAS_LPF_ALPHA * (dps - self.gyro_bias_dps)
+            self.gyro_bias_dps = max(-GYRO_BIAS_CLAMP_DPS,
+                                     min(GYRO_BIAS_CLAMP_DPS, self.gyro_bias_dps))
+        self.gyro_z = math.radians(dps - self.gyro_bias_dps)
         self.imu_time = now
 
         #  ── 축 보정용 가속도 누적 (헤딩 초기화 중에만) ──
@@ -2597,6 +2704,40 @@ class DrivingNode(Node):
             need = max(need, FUSE_SIGMA_K * self.gps_sigma_m)
         if math.hypot(dx, dy) < need:
             return
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★회전 중에는 보정하지 않는다 [2026-09-10 — 구 white 에서 복구]★
+        # ══════════════════════════════════════════════════════════════════════
+        #  ★변위 방위는 '두 점을 잇는 현(弦)의 방위' 다★ 그 구간이 휘어 있으면 그것은
+        #  차의 방위가 아니라 ★호의 평균 방위★ 이고, 지금 헤딩과 원리적으로 다르다.
+        #  구 white 는 이것 때문에 DRIFT_CORRECT_GYRO_MAX(12°/s)·CONT_CORRECT_MAX_GYRO
+        #  (10°/s) 게이트를 두어 ★직선에 가까울 때만★ 보정했다. white1 은 이식 때
+        #  그 게이트가 빠져 있었다 — 코너에서도 그대로 당기고 있었다.
+        #
+        #  ★이 차에는 이유가 하나 더 있다 — GPS 가 앞차축 위에 있다★
+        #  자전거 모델의 순간회전중심은 뒷차축이므로, 앞차축의 속도벡터는 헤딩이 아니라
+        #  ★헤딩 + 도로휠각 δ★ 를 향한다. 즉 코너에서 course − heading 이 δ 만큼
+        #  구조적으로 벌어지고, 게이트가 없으면 헤딩을 그쪽으로 끌고 간다.
+        #  (구 white 는 안테나를 뒷차축으로 투영해 이 항을 없앴다. 이 차는 투영을
+        #   하지 않으므로 ★게이트로 막는 것이 그 자리를 대신한다.★)
+        #
+        #  ⚠️ ★건너뛸 때 기준점을 갱신한다★ 그냥 return 하면 기준점이 코너 이전에
+        #  남아, 코너를 다 돌고 난 뒤 ★코너를 가로지르는 현★ 으로 보정하게 된다 —
+        #  게이트를 두는 의미가 통째로 사라진다.
+        #  ⚠️ ★축을 못 쟀으면 게이트를 걸지 않는다★ [2026-09-10]
+        #  이 게이트가 안전한 것은 ★중력축 투영 덕에 자이로가 코너를 제대로 도는★
+        #  경우뿐이다. imu_up 이 없으면 z축 단독으로 떨어지고, 이 차는 IMU 가 58°
+        #  기울어 있어 요레이트를 cos58° = 53% 만 잡는다 — 그 상태에서 코너 보정까지
+        #  끊으면 헤딩이 코너마다 절반씩 뒤처진 채 아무도 되돌리지 않는다.
+        #  ★실측이 그 위험을 보여 준다★ 투영 이전 U턴 로그(20260908_203234)에서
+        #  10°/s 게이트가 막았을 보정의 누적이 ★+184.6°★ 였다 — 그 주행에서 융합은
+        #  '자이로가 못 돈 만큼' 을 메우고 있었다(그 자이로는 177° 중 137° 만 잡았다).
+        #  투영이 살아 있으면 그럴 일이 없고, 죽어 있으면 그 보정이 생명줄이다.
+        #  → 축이 없으면 종전 거동(항상 보정)으로 떨어진다. 안전한 쪽으로 틀린다.
+        if (self.imu_up is not None
+                and abs(math.degrees(self.gyro_z)) > FUSE_MAX_GYRO_DPS):
+            self._last_fuse_pt = (self.x, self.y)
+            self._diag_fuse = 0.0
+            return
         course = math.degrees(math.atan2(dy, dx))
         corr = FUSE_GAIN * wrap180(course - self.heading)
         self.heading = wrap180(self.heading + corr)
@@ -2738,7 +2879,11 @@ class DrivingNode(Node):
                 f"{max(1, self.gps_quality)}  (또는 require_rtk:=false)")
             return
 
-        sol = self.head_est.solve()
+        #  ★σ 바닥값을 지금 GPS 품질로 준다 [2026-09-10]★ (상수절 주석의 실측 근거)
+        floor = HEAD_SIGMA_FLOOR
+        if math.isfinite(self.gps_sigma_m):
+            floor = max(floor, self.gps_sigma_m)
+        sol = self.head_est.solve(floor)
         if sol is None:
             return
         heading, sigma, resid, n, dist = sol
@@ -2749,7 +2894,17 @@ class DrivingNode(Node):
         good = (n >= HEAD_MIN_SAMPLES
                 and sigma <= HEAD_TARGET_SIGMA
                 and resid <= HEAD_MAX_RESID_M)
-        forced = dist >= HEAD_MAX_DIST_M
+        #  ★강제확정에도 최소 표본을 요구한다 [2026-09-10]★ 2점은 두 끝점이 곧 직선
+        #  이라 잔차가 구조적으로 0 이고, 그러면 '곧게 갔는가' 를 아예 못 본다.
+        #  표본이 그것도 안 쌓이면 GPS 가 죽은 것이지 거리가 모자란 것이 아니다 —
+        #  그때는 확정하지 말고 위 fix_ok 안내가 계속 나가게 둔다.
+        forced = dist >= HEAD_MAX_DIST_M and n >= HEAD_FORCED_MIN_SAMPLES
+        if dist >= HEAD_MAX_DIST_M and n < HEAD_FORCED_MIN_SAMPLES:
+            self.throttle_event(
+                f"⚠️ {dist:.1f}m 를 갔는데 헤딩 표본이 {n}개뿐이다 "
+                f"(최소 {HEAD_FORCED_MIN_SAMPLES}) — GPS 가 거의 안 들어오고 있다. "
+                f"품질 {Q_LABEL.get(self.gps_quality, '?')}(σ={self.gps_sigma_m:.2f}m). "
+                f"★이 상태로 확정하면 헤딩이 통째로 틀린다★ — 확정하지 않고 기다린다")
 
         if not (good or forced):
             return
@@ -3102,6 +3257,9 @@ class DrivingNode(Node):
             self.reset_cte_integral()
         else:
             road = self.apply_cte_integral(road, cte)
+        #  ★다음 틱의 조향 반응 감속이 볼 값★ (corner_speed (d)) — pot 이 아니라
+        #  ★도로휠각★ 이다. 이유는 상수절 STEER_DECEL_CAPS 주석에 있다.
+        self._last_road_deg = float(road)
         steer = self.steer_command(road, pulse * MS_PER_PULSE)
         self.send(pulse, steer, control=True)
 
@@ -3470,6 +3628,28 @@ class DrivingNode(Node):
 
         # (c) 종점 선행제동은 ★없다★ [2026-08-12 제거] — 위 '종점 감속은 두지 않는다'
         #     절 참고. 정지는 DRIVE_DONE 의 리니어 2단이 전담한다.
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  (c) CTE 회복 감속 · (d) 조향 반응 감속  [2026-09-10 구 white 에서 복구]
+        # ══════════════════════════════════════════════════════════════════════
+        #  위 (a)(b)(b2) 는 전부 ★경로의 곡률★ 만 본다. 아래 둘은 ★차가 실제로 어떻게
+        #  가고 있는가★ 를 본다(상수절 '고속 안전 감속' 절에 근거).
+        #  ★낮추는 방향으로만 작용한다★ — min() 이므로 곡률 감속을 되돌리지 않는다.
+        #  ★같은 틱에 run_follow 가 이미 잰 값을 쓴다★ signed_cte 는 창을 훑으므로
+        #  한 틱에 네 번 부를 이유가 없다(경로이탈 판정이 이 함수보다 먼저 돈다).
+        cte = abs(self._cte_last)
+        if math.isfinite(cte) and cte > CTE_RECOVER_START_M:
+            for thr, ratio in CTE_RECOVER_CAPS:
+                if cte >= thr:
+                    v_target = min(v_target, self.max_speed_ms * ratio)
+
+        #  ★직선에서만★ — 코너는 이미 곡률이 줄이고 있다(이중감속 금지)
+        if near_for_speed < STEER_DECEL_STRAIGHT_DEG:
+            road_mag = abs(self._last_road_deg)
+            if road_mag > STEER_DECEL_START_DEG:
+                for thr, ratio in STEER_DECEL_CAPS:
+                    if road_mag >= thr:
+                        v_target = min(v_target, self.max_speed_ms * ratio)
 
         v_target = max(self.min_speed_ms, min(self.max_speed_ms, v_target))
         # 정수 펄스로 환산(구 kasa_units.ms_to_pulse 와 같은 반올림).
@@ -4169,6 +4349,9 @@ class DrivingNode(Node):
     def signed_cte(self):
         """경로에서 얼마나 벗어나 있는가. ★+ 왼쪽 / − 오른쪽★ (경로 진행방향 기준)
 
+        ★결과를 _cte_last 에 남긴다 [2026-09-10]★ corner_speed 의 CTE 회복 감속이
+        같은 틱의 이 값을 다시 계산하지 않고 쓴다(창을 훑는 함수다).
+
         [2026-08-11] ★제어가 읽는 유일한 CTE 용도는 안전정지뿐이다★ run_follow()
         가 |CTE| > CTE_DEVIATION_M 이면 조향과 무관하게 즉시 정지한다. 그 밖의
         조향 계산은 여전히 목표점 방위만 보고 하므로(순수추종 기하 없음), 이 값이
@@ -4181,7 +4364,8 @@ class DrivingNode(Node):
         """
         n = len(self.waypoints)
         if n < 2:
-            return float('nan')
+            self._cte_last = float('nan')
+            return self._cte_last
         lo = max(0, self.wp_idx - CTE_WINDOW_WP)
         hi = min(n - 1, self.wp_idx + CTE_WINDOW_WP)
         best_d, best_signed = float('inf'), float('nan')
@@ -4200,6 +4384,7 @@ class DrivingNode(Node):
                 # 외적 z = v × e. 진행방향 v 기준으로 e 가 반시계(왼쪽)면 +
                 best_d = d
                 best_signed = math.copysign(d, vx * ey - vy * ex)
+        self._cte_last = best_signed
         return best_signed
 
     def tl_permit_now(self):
