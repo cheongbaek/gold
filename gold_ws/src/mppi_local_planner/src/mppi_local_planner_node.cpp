@@ -15,6 +15,7 @@
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
 
@@ -124,6 +125,24 @@ public:
     //  driving 이 조종권을 회수하면(E-STOP·GPS 두절) 경로가 그대로여도 '0' 이 온다.
     //  ★/lstatus 가 끊기면 침묵한다★ (lstatus_stale_s). driving 이 죽었을 때
     //  마지막 True 를 붙들고 계속 몰지 않기 위해서다 — 신선도가 곧 허락이다.
+    //  ★실측 펄스 [2026-09-11]★ 저속 기동 보정이 볼 유일한 값이다.
+    //  ★/encoder 는 좌+우 ★합★ 이다★ — 소비측이 ×0.5 로 바퀴 하나 기준으로
+    //  되돌린다(white1 ENC_SUM_TO_PULSE 와 같은 규약. 한쪽만 고치지 말 것).
+    //  ★중앙값 3점★ A보드 기동 블랭킹 구간에 허수 카운트가 쏟아진다(실측 중앙 16,
+    //  최대 34 — 정상 4~5). 그걸 그대로 믿으면 '이미 구르고 있다' 로 읽어 킥이
+    //  걸리지 않는다. white1 cb_encoder 와 같은 필터를 쓴다.
+    encoder_sub_ = create_subscription<std_msgs::msg::Int32>(
+      get_parameter("cmd.encoder_topic").as_string(), rclcpp::QoS(10),
+      [this](const std_msgs::msg::Int32::ConstSharedPtr & m) {
+        std::lock_guard<std::mutex> lk(enc_mutex_);
+        enc_buf_[enc_i_ % 3] = static_cast<double>(m->data);
+        ++enc_i_;
+        double a = enc_buf_[0], b = enc_buf_[1], c = enc_buf_[2];
+        const double med = std::max(std::min(a, b), std::min(std::max(a, b), c));
+        enc_pulse_.store(med * 0.5, std::memory_order_relaxed);   // 합 → 바퀴 하나
+        enc_t_.store(nowSeconds(), std::memory_order_relaxed);
+      });
+
     lstatus_sub_ = create_subscription<std_msgs::msg::String>(
       lstatus_topic_, rclcpp::QoS(10),
       [this](const std_msgs::msg::String::ConstSharedPtr & m) {
@@ -258,6 +277,39 @@ private:
     declare_parameter<double>("cmd.steer_slew_deg_s", 28.0);
     declare_parameter<double>("cmd.steer_deadband_deg", 0.0);
     declare_parameter<double>("cmd.dodge_steer_deg", 6.0);
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★[2026-09-11] 회피 중 펄스를 1 → 2 로 (사용자 지시)★
+    // ══════════════════════════════════════════════════════════════════════
+    //  종전에는 |조향| > dodge_steer_deg 이면 ★1펄스★ 로 떨어뜨렸다(원본 1/5카의
+    //  '회피 중 서행 3km/h' 를 그대로 옮긴 값). 그런데 금색차는 ★1펄스에서 거의
+    //  안 움직인다★ — 실차 확인. 인휠 FF 테이블이 1펄스에 PWM 60 이고, 그 아래로는
+    //  정지마찰을 못 이긴다. 게다가 A보드 PID 의 적분 누적 조건(|err|<4)과 겹쳐
+    //  1펄스 지령은 제어 자체가 성립하지 않는다.
+    //  → 회피 중에도 2펄스를 낸다. 라바콘 사이는 원래 서행 구간이라 2펄스(6.4km/h)
+    //    면 충분하고, '움직이지 않는 것' 보다 훨씬 안전하다.
+    declare_parameter<int>("cmd.dodge_pulse", 2);
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★[2026-09-11] 저속 기동 보정(킥) — white1 low_speed_trim 이식★
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★같은 문제를 white1 은 이미 풀어 놓았다★ 저속 지령은 이 차에서 '지령대로
+    //  구르지 않는' 구간이라, driving.py 가 실측을 보고 REF 를 밀어 준다:
+    //      out = REF + clamp(REF − 실측펄스, −2, +2),  0 ≤ out ≤ 15
+    //  예) REF 2 인데 실측 0 → out 4 로 밀어 굴리기 시작하고, 실측이 2 가 되는
+    //      순간 보정이 0 이 되어 out 2 로 돌아간다(속도 유지).
+    //  mppi 는 순항이 2펄스라 ★항상 이 구간에서 논다★ — 그래서 더 필요하다.
+    //
+    //  ★20Hz 로 매 틱 다시 계산하면 채터링이 난다★ 보정은 속도가 따라올 시간을
+    //  줘야 하므로 hold 주기로만 다시 판단한다(white1 과 같은 0.3s).
+    //  ★출력 상한은 max_pulse 를 넘는다★ 킥은 '순항 천장' 이 아니라 '기동 가산'
+    //  이라 성격이 다르다(driveRaw 가 그래서 있다). white1 의 REF_TRIM_OUT_MAX 와
+    //  같은 이유이고, 여기서는 순항 2 + 보정 2 = 4펄스가 실효 상한이다.
+    declare_parameter<bool>("cmd.trim_enable", true);
+    declare_parameter<int>("cmd.trim_max_pulse", 2);     // 보정량 상한 ±2펄스
+    declare_parameter<int>("cmd.trim_ref_max", 3);       // REF 가 이 이하일 때만
+    declare_parameter<int>("cmd.trim_out_max", 6);       // 보정 출력 절대 상한
+    declare_parameter<double>("cmd.trim_hold_s", 0.3);
+    declare_parameter<std::string>("cmd.encoder_topic", "/encoder");
 
     // 장착 (cone_lidar.yaml / drive_lidar.yaml 2026-08-25 실측)
     declare_parameter<double>("sensor_height_m", 1.17);
@@ -403,6 +455,18 @@ private:
     steer_slew_deg_s_ = std::max(5.0, get_parameter("cmd.steer_slew_deg_s").as_double());
     steer_deadband_deg_ = std::max(0.0, get_parameter("cmd.steer_deadband_deg").as_double());
     dodge_steer_deg_ = std::max(0.0, get_parameter("cmd.dodge_steer_deg").as_double());
+    //  ★as_int() 는 int64_t 다★ int 멤버에 먼저 담고 나서 클램프한다
+    //  (std::clamp 는 인자 타입이 같아야 추론된다 — cruise_pulse_ 와 같은 방식).
+    dodge_pulse_     = static_cast<int>(get_parameter("cmd.dodge_pulse").as_int());
+    dodge_pulse_     = std::max(1, dodge_pulse_);
+    trim_enable_     = get_parameter("cmd.trim_enable").as_bool();
+    trim_max_pulse_  = static_cast<int>(get_parameter("cmd.trim_max_pulse").as_int());
+    trim_max_pulse_  = std::max(0, trim_max_pulse_);
+    trim_ref_max_    = static_cast<int>(get_parameter("cmd.trim_ref_max").as_int());
+    trim_ref_max_    = std::max(0, trim_ref_max_);
+    trim_out_max_    = static_cast<int>(get_parameter("cmd.trim_out_max").as_int());
+    trim_out_max_    = std::clamp(trim_out_max_, 0, lidar::kasa::PULSE_PROTOCOL_MAX);
+    trim_hold_s_     = std::max(0.0, get_parameter("cmd.trim_hold_s").as_double());
 
     sensor_height_m_ = get_parameter("sensor_height_m").as_double();
     roi_agl_min_ = get_parameter("roi_agl_min").as_double();
@@ -639,7 +703,9 @@ private:
     }
   }
 
-  void publishDrive(double v_ms, double road_deg)
+  /// ★[2026-09-11] 인자가 m/s 에서 ★펄스★ 로 바뀌었다★ 저속 기동 보정(킥)이
+  /// max_pulse 를 넘겨야 하는데, m/s 로 넘기면 msToPulse 가 거기서 잘라 버린다.
+  void publishDrive(int pulse, double road_deg)
   {
     if (brake_enable_ && actuator_->brakeStage() > lidar::kasa::BRAKE_OFF) {
       actuator_->releaseBrake();
@@ -658,10 +724,44 @@ private:
     // 리니어가 아직 최소 물림 중이면 구동을 내지 않는다 — 구동과 제동이
     // 서로 미는 상태가 된다(drive_lidar_node 와 같은 이유).
     const bool braking = actuator_->brakeStage() > lidar::kasa::BRAKE_OFF;
-    const double v_out = braking ? 0.0 : v_ms;
-    actuator_->drive(v_out, braking ? 0.0 : road_deg, /*control_enable=*/true);
+    const int p_out = braking ? 0 : pulse;
+    actuator_->driveRaw(p_out, braking ? 0.0 : road_deg, /*control_enable=*/true);
     last_commanded_v_.store(
       lidar::kasa::pulseToMs(actuator_->lastPulse()), std::memory_order_relaxed);
+  }
+
+  /// 저속에서 실측을 보고 REF 를 밀어 준다 → 이번 틱에 실제로 낼 펄스.
+  /// [2026-09-11 white1 low_speed_trim 이식 — 근거는 cmd.trim_* 선언부]
+  ///
+  ///     out = REF + clamp(REF − 실측펄스, −trim_max, +trim_max)
+  ///
+  /// ★동작 조건이 좁다★ 1 ≤ REF ≤ trim_ref_max 일 때만이다.
+  ///   · REF 0 에서는 절대 걸지 않는다 — 세우려는 지시를 보정이 뒤집으면 안 된다.
+  ///   · 엔코더가 낡았으면(노드 사망) 보정하지 않는다 — 모르면 밀지 않는다.
+  /// ★hold 주기로만 다시 판단한다★ 20Hz 로 매 틱 계산하면 속도가 따라오기 전에
+  /// 보정이 널뛴다. REF 가 바뀌면 그 자리에서 즉시 다시 본다.
+  int lowSpeedTrim(int ref)
+  {
+    if (!trim_enable_ || ref <= 0 || ref > trim_ref_max_) {
+      trim_ = 0;
+      trim_ref_ = ref;
+      return ref;
+    }
+    const double now = nowSeconds();
+    const double enc_age = now - enc_t_.load(std::memory_order_relaxed);
+    if (enc_t_.load(std::memory_order_relaxed) <= 0.0 || enc_age > 1.0) {
+      trim_ = 0;                      // 실측을 모르면 밀지 않는다
+      trim_ref_ = ref;
+      return ref;
+    }
+    if (ref != trim_ref_ || (now - trim_t_) >= trim_hold_s_) {
+      const double meas = enc_pulse_.load(std::memory_order_relaxed);
+      const int err = static_cast<int>(std::lround(ref - meas));
+      trim_ = std::clamp(err, -trim_max_pulse_, trim_max_pulse_);
+      trim_t_ = now;
+      trim_ref_ = ref;
+    }
+    return std::clamp(ref + trim_, 0, trim_out_max_);
   }
 
   void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -1039,17 +1139,21 @@ private:
       return;
     }
 
-    // 직진은 순항 펄스(2). 회피 중(|조향| 큼)에는 원본 3params 와 같이 ~3 km/h.
+    // 직진은 순항 펄스(2). 회피 중(|조향| 큼)에도 ★2펄스★ — 1펄스는 이 차가
+    // 거의 움직이지 않는다(cmd.dodge_pulse 선언부의 근거).
     const double steer_deg = filterSteer(result.control.delta * 180.0 / M_PI);
     const int cruise = std::max(1, actuator_->maxPulse());
-    const int pulse = (std::abs(steer_deg) > dodge_steer_deg_) ? 1 : cruise;
-    const double v_cmd = lidar::kasa::pulseToMs(pulse);
-    publishDrive(v_cmd, steer_deg);
+    const int ref = (std::abs(steer_deg) > dodge_steer_deg_)
+                      ? std::min(dodge_pulse_, cruise) : cruise;
+    const int out = lowSpeedTrim(ref);
+    publishDrive(out, steer_deg);
 
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 1000,
-      "drive v=%.2f m/s (%d pulse)  mppi_steer=%.1f → out=%.1f deg  avg_cost=%.0f",
-      v_cmd, actuator_->lastPulse(),
+      "drive ref=%d → out=%d pulse (%.2f m/s, enc %.1f)  "
+      "mppi_steer=%.1f → out=%.1f deg  avg_cost=%.0f",
+      ref, actuator_->lastPulse(), lidar::kasa::pulseToMs(actuator_->lastPulse()),
+      enc_pulse_.load(std::memory_order_relaxed),
       result.control.delta * 180.0 / M_PI, steer_deg, avg_cost);
 
     publishRolloutPath();
@@ -1159,6 +1263,21 @@ private:
   double steer_slew_deg_s_ = 28.0;
   double steer_deadband_deg_ = 0.0;
   double dodge_steer_deg_ = 6.0;
+  int    dodge_pulse_     = 2;      // ★회피 중 펄스 (1 은 이 차가 안 움직인다)★
+  bool   trim_enable_     = true;   // 저속 기동 보정 [2026-09-11]
+  int    trim_max_pulse_  = 2;
+  int    trim_ref_max_    = 3;
+  int    trim_out_max_    = 6;
+  double trim_hold_s_     = 0.3;
+  int    trim_            = 0;      // 지금 얹고 있는 보정량
+  int    trim_ref_        = -1;     // 그 보정을 정할 때의 REF
+  double trim_t_          = 0.0;
+  std::atomic<double> enc_pulse_{0.0};   // 실측 [펄스, 바퀴 하나 기준]
+  std::atomic<double> enc_t_{0.0};
+  std::mutex enc_mutex_;
+  double enc_buf_[3] = {0.0, 0.0, 0.0};
+  unsigned enc_i_ = 0;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr encoder_sub_;
   double steer_filt_deg_ = 0.0;
   double last_pub_steer_deg_ = 0.0;
   std::mutex odom_mutex_;

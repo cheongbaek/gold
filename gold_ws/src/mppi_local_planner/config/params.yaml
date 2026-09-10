@@ -98,7 +98,24 @@ mppi_local_planner_node:
     cmd.steer_lpf_alpha: 0.35    # MPPI 각이 필터에서 죽지 않게
     cmd.steer_slew_deg_s: 28.0   # 도로휠 deg/s
     cmd.steer_deadband_deg: 0.0  # SW 불감대 끔. B보드 1.41° 가 이미 있다
-    cmd.dodge_steer_deg: 6.0     # |조향|이 이보다 크면 1펄스로 회피 (원본 ~3 km/h)
+    cmd.dodge_steer_deg: 6.0     # |조향|이 이보다 크면 회피 펄스로 내린다
+    # ★[2026-09-11] 회피 펄스 1 → 2 (사용자 지시)★
+    #   종전 1펄스는 원본 1/5카의 '회피 중 ~3 km/h' 를 그대로 옮긴 값인데,
+    #   ★금색차는 1펄스에서 거의 안 움직인다★(실차 확인). 인휠 FF 가 1펄스에
+    #   PWM 60 이라 정지마찰을 못 이기고, A보드 PID 적분 조건(|err|<4)과도 겹친다.
+    #   라바콘 사이는 원래 서행 구간이라 2펄스(6.4 km/h)로 충분하다.
+    cmd.dodge_pulse: 2
+    # ★[2026-09-11] 저속 기동 보정(킥) — white1 low_speed_trim 과 같은 장치★
+    #   out = REF + clamp(REF − 실측펄스, ±trim_max),  0 ≤ out ≤ trim_out_max
+    #   mppi 는 순항이 2펄스라 ★항상 이 구간에서 논다★ — 그래서 더 필요하다.
+    #   실효 상한은 순항 2 + 보정 2 = 4펄스이고, ★max_pulse 를 일부러 넘는다★
+    #   (킥은 '순항 천장' 이 아니라 '기동 가산' 이다 — driveRaw 가 그래서 있다).
+    cmd.trim_enable: true
+    cmd.trim_max_pulse: 2        # 보정량 상한 ±2펄스
+    cmd.trim_ref_max: 3          # REF 가 이 이하일 때만 (0 에는 절대 안 건다)
+    cmd.trim_out_max: 6          # 보정 출력 절대 상한
+    cmd.trim_hold_s: 0.3         # 이 주기로만 다시 판단 (매 틱이면 채터링)
+    cmd.encoder_topic: /encoder  # ★좌+우 합★ — 소비측이 ×0.5 (white1 과 같은 규약)
 
     # 액추에이터 상한 — ★실제로 차를 묶는 값★. cruise_pulse 에서 유도되므로
     #   여기 적지 않는다(적으면 그쪽이 이겨 cruise_pulse 와 갈라진다).

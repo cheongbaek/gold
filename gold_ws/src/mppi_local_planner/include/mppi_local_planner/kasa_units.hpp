@@ -292,6 +292,33 @@ public:
     state_pub_->publish(st);                 //   구독자를 놓친다 — QoS volatile)
   }
 
+  /// ★펄스를 직접 준다★ — 저속 기동 보정(킥)이 max_pulse_ 를 넘겨야 하기 때문이다.
+  /// [2026-09-11] drive() 와 같은 일을 하되 ① m/s→펄스 환산과 ② max_pulse_ 클램프를
+  /// 건너뛴다. 그 둘이 바로 킥을 막는 것들이다:
+  ///   · msToPulse 는 max_pulse_(=cruise_pulse, 보통 2)로 자른다 → 킥이 2 로 잘린다
+  ///   · 킥은 '기준속도의 천장' 이 아니라 ★기동을 위한 일시적 가산★ 이라 성격이 다르다
+  /// white1 이 같은 이유로 REF_TRIM_OUT_MAX(15) 를 MAX_PULSE_LIMIT(4) 와 따로 둔다.
+  /// ★pot 환산에 쓰는 속도는 '지금 내는 펄스' 다★ 언더스티어 항이 v² 로 들어가므로
+  /// 킥으로 올린 펄스를 그대로 넣어야 조향이 실제 속도와 맞는다.
+  void driveRaw(int pulse, double road_deg, bool control_enable) {
+    const int p = std::clamp(pulse, 0, PULSE_PROTOCOL_MAX);
+    const double clamped_road =
+        std::clamp(road_deg, -steer_road_max_deg_, steer_road_max_deg_);
+    const double pot_left_positive = roadWheelToPotDeg(clamped_road, pulseToMs(p));
+
+    geometry_msgs::msg::Twist msg;
+    msg.linear.x  = static_cast<double>(p);
+    msg.angular.z = -pot_left_positive;      // ★+좌 → 보드 규약(− 좌 / + 우)★
+    cmd_pub_->publish(msg);
+
+    last_pulse_ = p;
+    last_pot_deg_ = msg.angular.z;
+
+    std_msgs::msg::Bool st;
+    st.data = control_enable;
+    state_pub_->publish(st);
+  }
+
   /// 정지 지령 — 펄스 0, 조향은 마지막 값 유지(정면 급조향 방지).
   /// ★리니어를 여기서 만지지 않는다★ 제동은 brake() 로 명시적으로만 건다.
   void hold(bool control_enable = false) {
