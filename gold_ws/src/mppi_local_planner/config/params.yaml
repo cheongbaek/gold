@@ -48,6 +48,22 @@ mppi_local_planner_node:
       active_topic: "/lidar_active"     # 나 → driving : "나 살아 있다" (매 틱)
       require_lstatus: true
       lstatus_stale_s: 1.0              # 이보다 낡으면 침묵 (driving 은 20Hz)
+      # ══════════════════════════════════════════════════════════════════
+      #  ★[2026-09-11] GPS 기준선 — 추측항법을 대체한다★
+      # ══════════════════════════════════════════════════════════════════
+      #  ★종전에는 기준선이 '인계 시점 IMU 헤딩으로 그은 가상의 직선' 이었고,
+      #  횡위치는 ★지령 속도로 적분한 추측항법★ 이라 바로잡을 방법이 없었다.★
+      #  실측(route_20260910_212627-20260910_220129): 지령 1.26 m/s / 실제
+      #  0.76 m/s = 1.65배 → 9.4m 를 가며 15.6m 를 갔다고 믿었고, CTE 가
+      #  −0.23 → ★−4.54m★ 로 벌어졌다. 비용함수의 y² 와 |y|>1.2m 벽이
+      #  ★그 y 가 틀리면 서 있지 않은 것과 같다.★
+      #  이제 driving 이 매핑 중심선 기준의 CTE·방위오차를 20Hz 로 주고,
+      #  odom.y / odom.yaw 를 그것으로 덮는다 → 기준선 = ★실제 매핑 중심선★.
+      #  라바콘이 중심선 좌우로 번갈아 놓이므로, 중심선이 정확해야 S자가 된다.
+      #  배열 규약의 소유자는 white1/white1/driving.py 의 '/lidar_ref' 절이다.
+      ref_topic: "/lidar_ref"           # driving → 나 : [cte, heading_err, valid, zone_left]
+      ref_stale_s: 0.5                  # 이보다 낡으면 추측항법으로 떨어진다
+      use_gps_ref: true                 # ★false 로 두면 종전 거동(추측항법)★
 
     # 장착 (lidar cone_lidar.yaml / drive_lidar.yaml 2026-08-25 실측)
     sensor_height_m: 1.17

@@ -1156,6 +1156,46 @@ CTE_DEVIATION_M = 2.0
 LIDAR_ZONE_CHARS = ('L', 'l')   # terrain 열이 이 값이면 라이다 구간. 그 외는 전부 GPS
 LIDAR_ZONE_COLUMN = 'terrain'   # 읽는 열 이름 (mapping.py 가 늘 '0' 을 쓰는 미사용 열)
 LIDAR_ACTIVE_TOPIC = '/lidar_active'   # mppi → 이 노드 : "나 살아 있다"
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-11] /lidar_ref — mppi 에게 ★GPS 기준선★ 을 준다 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★실측 — 인계는 성공했는데 궤적이 4.5m 벌어졌다★
+#  ros2bag route_20260910_212627-20260910_220129 :
+#      t=16.0  인계 (CTE −0.23m, 헤딩 −7.09°)   ← L 구간 방위 −8.12°, 차이 1.03°
+#      t=16.4~19.6  mppi 가 pot +20 → +36°(거의 풀락) 을 냈다
+#      헤딩 −7° → −67°,  CTE −0.23 → ★−4.54m★
+#  ★기준선이 틀려서가 아니다★ 인계 시점 기준선은 실제 경로와 1.03° 차이였고,
+#  그 L 구간은 13m 직선이다(직선 이탈 0.027m). 문제는 ★인계 뒤에 그 기준선을
+#  붙잡아 줄 것이 아무것도 없다★ 는 것이다.
+#
+#  ★mppi 는 자기 위치를 이렇게 안다 (그 파일 874행)★
+#      odom.yaw = IMU 절대방위 − 인계 시점 방위        (절대 — 괜찮다)
+#      odom.x  += v·cos(yaw)·dt     ★v = 지령 펄스★
+#      odom.y  += v·sin(yaw)·dt     ★v = 지령 펄스★
+#  즉 횡위치가 ★지령속도로 적분한 추측항법★ 이고, 그것을 바로잡을 절대 관측이
+#  하나도 없다. 같은 로그에서 지령 평균 1.26 m/s 인데 실제는 0.76 m/s —
+#  ★1.65배★ 다(9.4m 를 가면서 15.6m 를 갔다고 믿는다). 그 오차가 그대로 쌓인다.
+#  mppi 의 비용함수는 y² 에 weight_path, |y|>1.2m 에 weight_lateral_wall(12) 을
+#  걸어 두었는데, ★그 y 자체가 틀리면 벽이 서 있지 않은 것과 같다.★
+#
+#  ★그래서 y 와 yaw 를 GPS 로 준다★ 이 노드는 매핑 경로를 들고 있으므로 '경로에서
+#  얼마나 벗어났고(CTE) 얼마나 틀어졌는가(방위오차)' 를 정확히 안다 — mppi 가
+#  추측으로 만들던 바로 그 두 값이다. 그것을 20Hz 로 넘기면 mppi 의 기준선이
+#  ★인계 시점 헤딩으로 그은 가상의 직선★ 에서 ★실제 매핑 중심선★ 으로 바뀐다.
+#  라바콘이 그 중심선 좌우로 번갈아 놓이므로(사용자), 중심선이 정확해야 S자
+#  회피가 성립한다 — 기준선이 흘러가면 S 가 아니라 한쪽으로 밀린다.
+#
+#  ★배열 규약 — 이 주석이 소유자다★ (mppi handover.ref_topic 이 같은 순서로 읽는다)
+#    [0] cte_m          경로에서 벗어난 횡거리 [m]  ★+ 왼쪽★ (signed_cte 와 같은 부호)
+#    [1] heading_err_deg 차 헤딩 − 경로 방위 [deg]  ★+ 왼쪽★
+#    [2] valid          1 = 위 둘을 믿어도 된다 (GPS 품질·경로·헤딩 모두 성립)
+#    [3] zone_left_m    지금 L 구간이 끝날 때까지 남은 호길이 [m] (없으면 NaN)
+LIDAR_REF_TOPIC  = '/lidar_ref'
+LIDAR_REF_FIELDS = 4
+#  경로 방위를 재는 창 [WP]. 간격이 0.25~0.4m 라 ±6점이면 3~5m 기선이다 —
+#  ★한 점 차분은 GPS 양자화에 흔들리고, 너무 길면 곡선 구간에서 실제 방위와 어긋난다.★
+PATH_BEARING_WIN = 6
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-07] /lidar_permit → ★/lstatus★ 로 대체 (사용자 지시) ★★
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1717,6 +1757,9 @@ class DrivingNode(Node):
         #  노드가 죽으면 값이 끊겨 mppi 가 스스로 손을 뗀다.
         #  ★[2026-09-07] /lidar_permit(Bool) → /lstatus(String) 로 대체★ 상수절 참고.
         self.pub_lstatus = self.create_publisher(String, LSTATUS_TOPIC, 10)
+        #  ★GPS 기준선 → mppi [2026-09-11]★ 배열 규약은 상단 '/lidar_ref' 절.
+        self.pub_lidar_ref = self.create_publisher(
+            Float64MultiArray, LIDAR_REF_TOPIC, 10)
         self.pub_event = self.create_publisher(String, '/drive_event',      10)
         self.pub_ego   = self.create_publisher(Float64MultiArray, '/ego_state', 10)
         # ★[2026-08-08] 추종 진단 — record 전용, 제어는 이 값을 읽지 않는다★
@@ -2037,6 +2080,48 @@ class DrivingNode(Node):
     # ══════════════════════════════════════════════════════════════════════════
     #  /lstatus — ★이 토픽이 조종권이다★ [2026-09-07]
     # ══════════════════════════════════════════════════════════════════════════
+    def path_bearing_deg(self, idx=None):
+        """wp_idx 부근 ★경로의 진행 방위★ [deg]. 표본이 모자라면 NaN.
+
+        ★차 위치가 아니라 경로 점들로만 잰다★ 차의 횡오차가 이 방위에 섞이면
+        '경로가 어느 쪽을 향하는가' 가 아니라 '차가 어디로 가는가' 가 되어,
+        heading_err 이 자기 자신을 참조하게 된다.
+        """
+        n = len(self.waypoints)
+        if n < 2:
+            return float('nan')
+        i = self.wp_idx if idx is None else idx
+        a = max(0, min(n - 1, i - PATH_BEARING_WIN))
+        b = max(0, min(n - 1, i + PATH_BEARING_WIN))
+        if b - a < 1:
+            a, b = max(0, n - 2), n - 1
+        (ax, ay), (bx, by) = self.waypoints[a], self.waypoints[b]
+        if math.hypot(bx - ax, by - ay) < 1e-6:
+            return float('nan')
+        return math.degrees(math.atan2(by - ay, bx - ax))
+
+    def publish_lidar_ref(self):
+        """mppi 에게 ★GPS 기준선★ 을 준다. (상단 '/lidar_ref' 절이 규약 소유자)
+
+        ★매 틱 낸다 — L 구간이 아니어도★ mppi 는 인계 순간부터 이 값이 필요하고,
+        구독자가 늦게 떠도 놓치지 않아야 한다(/lstatus·/control_state 와 같은 이유).
+        valid=0 을 내는 것도 정보다 — mppi 는 그때 종전처럼 추측항법으로 떨어진다.
+        """
+        cte = self._cte_last
+        brg = self.path_bearing_deg()
+        ok = (self.state == S_DRIVE_RUN
+              and self.heading is not None
+              and self.fix_ok
+              and math.isfinite(cte) and math.isfinite(brg))
+        herr = wrap180(self.heading - brg) if ok else float('nan')
+        left = self.lidar_zone_left_m() if ok else float('nan')
+        msg = Float64MultiArray()
+        msg.data = [float(cte) if ok else float('nan'),
+                    float(herr) if ok else float('nan'),
+                    1.0 if ok else 0.0,
+                    float(left) if (ok and math.isfinite(left)) else float('nan')]
+        self.pub_lidar_ref.publish(msg)
+
     def lstatus_now(self):
         """지금 내보낼 구간 문자. ★terrain 원값이 아니라 '내가 실제로 손을 놓았는가'★
 
@@ -4517,6 +4602,8 @@ class DrivingNode(Node):
         #   ⚠️ ★구간을 벗어나면 즉시 False 다 (사용자 결정)★ 그래서 T 는 정지선 뒤로
         #   정지거리만큼 더 이어져 있어야 하고, select_route 가 그것을 재서 경고한다.
         self.pub_tl_permit.publish(Bool(data=self.tl_permit_now()))
+        #  ★GPS 기준선 [2026-09-11]★ mppi 의 추측항법을 대체한다.
+        self.publish_lidar_ref()
         # ★라이다 허락 [2026-09-01]★ /tl_permit 과 같은 규약이다 — True/False 를 매 틱
         #   계속 내므로 ★신선도가 곧 허락★ 이고, 이 노드가 죽으면 값이 끊겨 mppi 가
         #   스스로 손을 뗀다(그쪽 permit_stale_s). 그래서 False 도 계속 내보낸다.

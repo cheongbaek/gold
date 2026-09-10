@@ -16,6 +16,7 @@
 #include <nav_msgs/msg/path.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/int32.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
 
@@ -143,6 +144,40 @@ public:
         enc_t_.store(nowSeconds(), std::memory_order_relaxed);
       });
 
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★[2026-09-11] GPS 기준선 — 추측항법을 대체한다 (사용자 지시)★
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★왜 필요한가★ 이 노드의 odom.y 는 ★지령 속도로 적분한 추측항법★ 이고
+    //  (updateOdom 참고) 그것을 바로잡을 절대 관측이 하나도 없었다. 실측에서
+    //  지령 1.26 m/s / 실제 0.76 m/s — 1.65배라 9.4m 를 가며 15.6m 를 갔다고
+    //  믿었다. 비용함수가 y² 와 |y|>1.2m 벽으로 중심선을 지키게 되어 있는데
+    //  ★그 y 가 틀리면 벽이 서 있지 않은 것과 같다★ — 실제로 CTE 가 −0.23 →
+    //  −4.54m 로 벌어졌다(ros2bag route_20260910_212627-20260910_220129).
+    //
+    //  white1/driving 은 매핑 경로를 들고 있으므로 그 두 값을 정확히 안다.
+    //  받아서 odom.y / odom.yaw 를 ★덮어쓴다★ — 그러면 이 노드의 기준선이
+    //  '인계 시점 헤딩으로 그은 가상의 직선' 에서 ★실제 매핑 중심선★ 이 된다.
+    //  라바콘이 그 중심선 좌우로 번갈아 놓이므로 중심선이 정확해야 S자가 된다.
+    //
+    //  ★부호가 그대로 맞는다★ driving 의 CTE 는 '+ = 차가 경로 왼쪽', 이 노드의
+    //  odom.y 도 '+ = 기준선 왼쪽'(y += v·sin(yaw)) 이다. yaw 도 '기준방위 대비
+    //  + = 왼쪽' 이라 heading_err 과 같다. 뒤집지 않는다.
+    ref_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+      ref_topic_, rclcpp::QoS(10),
+      [this](const std_msgs::msg::Float64MultiArray::ConstSharedPtr & m) {
+        if (m->data.size() < 3) return;
+        const double cte = m->data[0], herr = m->data[1];
+        const bool ok = (m->data[2] > 0.5) && std::isfinite(cte) && std::isfinite(herr);
+        std::lock_guard<std::mutex> lock(odom_mutex_);
+        ref_valid_ = ok;
+        ref_t_ = nowSeconds();
+        if (!ok) return;
+        ref_cte_ = cte;
+        ref_herr_ = herr * M_PI / 180.0;
+        ref_zone_left_ = (m->data.size() > 3) ? m->data[3]
+                                              : std::numeric_limits<double>::quiet_NaN();
+      });
+
     lstatus_sub_ = create_subscription<std_msgs::msg::String>(
       lstatus_topic_, rclcpp::QoS(10),
       [this](const std_msgs::msg::String::ConstSharedPtr & m) {
@@ -233,6 +268,10 @@ private:
     // ── 조종권 계약 [2026-09-01] (위 생성자의 상자 참고) ──
     declare_parameter<std::string>("handover.lstatus_topic", "/lstatus");
     declare_parameter<std::string>("handover.active_topic", "/lidar_active");
+    //  ★GPS 기준선 [2026-09-11]★ 배열 규약의 소유자는 white1/driving.py 다.
+    declare_parameter<std::string>("handover.ref_topic", "/lidar_ref");
+    declare_parameter<double>("handover.ref_stale_s", 0.5);
+    declare_parameter<bool>("handover.use_gps_ref", true);
     //  ★false 로 두면 종전처럼 '런치 = 출발' 이다★ 라이다 단독 시험용. 실차에서
     //  white1 one_launch 로 띄울 때는 반드시 true 여야 한다 — 아니면 이 노드가
     //  GPS 추종 구간에서도 /cmd_vel_raw 를 내며 driving.py 와 다툰다.
@@ -422,6 +461,9 @@ private:
     costmap_topic_ = get_parameter("costmap_topic").as_string();
     path_topic_ = get_parameter("path_topic").as_string();
     reference_path_topic_ = get_parameter("reference_path_topic").as_string();
+    ref_topic_    = get_parameter("handover.ref_topic").as_string();
+    ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
+    use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
     active_topic_ = get_parameter("handover.active_topic").as_string();
     require_lstatus_ = get_parameter("handover.require_lstatus").as_bool();
@@ -870,9 +912,34 @@ private:
       }
       odom_pose_.yaw = wrapAngle(odom_pose_.yaw + wz * dt);
     }
-    const double v = last_commanded_v_.load(std::memory_order_relaxed);
+    //  ★x 는 여전히 추측항법이다★ 전방 진행거리는 코스트맵 조회에만 쓰이고
+    //  절대 기준이 필요 없다. ★속도는 실측(엔코더)을 쓴다★ — 지령으로 적분하면
+    //  1.65배 부풀려진다(실측). 엔코더가 없으면 종전대로 지령으로 떨어진다.
+    const double enc_age = nowSeconds() - enc_t_.load(std::memory_order_relaxed);
+    const double v_meas = enc_pulse_.load(std::memory_order_relaxed)
+                          * lidar::kasa::MS_PER_PULSE;
+    const double v = (enc_t_.load(std::memory_order_relaxed) > 0.0 && enc_age <= 1.0)
+                       ? v_meas
+                       : last_commanded_v_.load(std::memory_order_relaxed);
     odom_pose_.x += v * std::cos(odom_pose_.yaw) * dt;
-    odom_pose_.y += v * std::sin(odom_pose_.yaw) * dt;
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★y·yaw 는 GPS 기준선이 있으면 그것으로 덮는다 [2026-09-11]★
+    // ══════════════════════════════════════════════════════════════════════
+    //  추측항법의 y 는 누적오차를 바로잡을 방법이 없다(위 ref_sub_ 주석의 실측).
+    //  driving 이 매핑 중심선 기준의 CTE·방위오차를 20Hz 로 주므로 그대로 쓴다.
+    //  ★신선하지 않으면 종전 거동으로 떨어진다★ — driving 이 죽었거나 GPS 품질이
+    //  나쁘면 valid=0 이 오고, 그때는 추측항법이 그래도 없는 것보다 낫다.
+    if (use_gps_ref_ && ref_valid_ &&
+        (nowSeconds() - ref_t_) <= ref_stale_s_)
+    {
+      odom_pose_.y   = ref_cte_;    // + = 중심선 왼쪽 (driving 과 같은 부호)
+      odom_pose_.yaw = ref_herr_;   // + = 중심선보다 왼쪽을 향함
+      gps_ref_live_ = true;
+    } else {
+      gps_ref_live_ = false;
+      odom_pose_.y += v * std::sin(odom_pose_.yaw) * dt;
+    }
   }
 
   // Max cost in the forward corridor used for reference-reset decisions.
@@ -947,7 +1014,11 @@ private:
         blocked_ahead_seconds_ = 0.0;
         // Rising-edge re-anchor only if held on path (not a one-frame blip
         // between zigzag cones) and interval allows.
-        if (path_returned && hold_ok && canResetNow(t_now)) {
+        //  ★GPS 기준선이 살아 있으면 재설정하지 않는다 [2026-09-11]★
+        //  이 재설정은 ★추측항법 드리프트를 털어내려고★ 있는 장치다. 기준선이
+        //  실제 매핑 중심선일 때 같은 일을 하면 ★진짜 횡오차를 0 으로 지워★
+        //  차가 벗어난 자리를 새 중심선으로 삼는다 — 정확히 반대 효과다.
+        if (!gps_ref_live_ && path_returned && hold_ok && canResetNow(t_now)) {
           applyReferenceReset(odom_pose_);
           last_reference_reset_time_ = t_now;
           RCLCPP_INFO_THROTTLE(
@@ -980,7 +1051,7 @@ private:
         blocked_ahead_seconds_ = 0.0;
         // Soft re-anchor is OFF by default. When enabled, still only applies
         // applyReferenceReset (preserve yaw/y unless explicitly disabled).
-        if (reference_reset_soft_enable_ &&
+        if (!gps_ref_live_ && reference_reset_soft_enable_ &&
             path_returned && hold_ok && canResetNow(t_now))
         {
           applyReferenceReset(odom_pose_);
@@ -1151,10 +1222,13 @@ private:
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 1000,
       "drive ref=%d → out=%d pulse (%.2f m/s, enc %.1f)  "
-      "mppi_steer=%.1f → out=%.1f deg  avg_cost=%.0f",
+      "mppi_steer=%.1f → out=%.1f deg  avg_cost=%.0f  "
+      "| 기준선 %s y=%.2f m yaw=%.1f deg",
       ref, actuator_->lastPulse(), lidar::kasa::pulseToMs(actuator_->lastPulse()),
       enc_pulse_.load(std::memory_order_relaxed),
-      result.control.delta * 180.0 / M_PI, steer_deg, avg_cost);
+      result.control.delta * 180.0 / M_PI, steer_deg, avg_cost,
+      gps_ref_live_ ? "★GPS★" : "추측항법",
+      current_pose.y, current_pose.yaw * 180.0 / M_PI);
 
     publishRolloutPath();
     publishReferencePath(current_pose);
@@ -1278,6 +1352,15 @@ private:
   double enc_buf_[3] = {0.0, 0.0, 0.0};
   unsigned enc_i_ = 0;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr encoder_sub_;
+  //  ★GPS 기준선 [2026-09-11]★ (odom_mutex_ 가 지킨다)
+  std::string ref_topic_ = "/lidar_ref";
+  double ref_stale_s_ = 0.5;
+  bool   use_gps_ref_ = true;
+  bool   ref_valid_ = false;
+  bool   gps_ref_live_ = false;
+  double ref_t_ = 0.0, ref_cte_ = 0.0, ref_herr_ = 0.0;
+  double ref_zone_left_ = std::numeric_limits<double>::quiet_NaN();
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr ref_sub_;
   double steer_filt_deg_ = 0.0;
   double last_pub_steer_deg_ = 0.0;
   std::mutex odom_mutex_;
