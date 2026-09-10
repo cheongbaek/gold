@@ -128,7 +128,8 @@ double MPPIController::rolloutCost(
     const double y_odom = current_odom_pose.y + s.x * sin_o + s.y * cos_o;
     const double yaw_odom = wrapAngle(current_odom_pose.yaw + s.yaw);
 
-    const double cross_track = y_odom;
+    //  ★비켜 갈 자리를 기준으로 잰다★ (lateral_target 주석 — 없으면 0 = 중심선)
+    const double cross_track = y_odom - params_.lateral_target;
     // Snappy Stanley return: when offset left (y>0), point right to close the S.
     const double target_yaw = -std::atan2(cross_track, L_stan);
     const double heading_err = wrapAngle(yaw_odom - target_yaw);
@@ -156,7 +157,9 @@ double MPPIController::rolloutCost(
     cost += params_.weight_heading * path_scale * heading_err * heading_err;
 
     // Soft lateral wall: discourage permanent side-lane after first dodge.
-    const double y_abs = std::abs(cross_track);
+    //  ★여기만 절대 y 다★ 목표가 어디로 옮겨가든 '중심선에서 이 이상은 안 된다'
+    //  는 뜻은 변하지 않는다(lateral_target 주석).
+    const double y_abs = std::abs(y_odom);
     if (y_abs > params_.max_lateral_offset) {
       const double over = y_abs - params_.max_lateral_offset;
       cost += params_.weight_lateral_wall * over * over;
@@ -173,7 +176,10 @@ double MPPIController::rolloutCost(
 
   // Terminal: end of horizon must sit back on the IMU line (complete the S).
   {
-    const double y_f = current_odom_pose.y + s.x * sin_o + s.y * cos_o;
+    //  ★종단도 같은 기준이다★ 중심선으로 되돌리라고 하면 비켜 가는 궤적 자체가
+    //  종단 비용에 벌점을 먹어, 플래너가 '비키지 않는 쪽' 을 고르게 된다.
+    const double y_f = current_odom_pose.y + s.x * sin_o + s.y * cos_o
+                       - params_.lateral_target;
     const double yaw_f = wrapAngle(current_odom_pose.yaw + s.yaw);
     const double target_yaw_f = -std::atan2(y_f, L_stan);
     const double h_f = wrapAngle(yaw_f - target_yaw_f);

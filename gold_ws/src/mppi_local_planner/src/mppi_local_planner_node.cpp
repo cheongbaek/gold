@@ -281,6 +281,10 @@ private:
     //  ★GPS 기준선 [2026-09-11]★ 배열 규약의 소유자는 white1/driving.py 다.
     declare_parameter<std::string>("handover.ref_topic", "/lidar_ref");
     declare_parameter<std::string>("diag_topic", "/lidar_diag");
+    //  ★회피 방향 결정 [2026-09-11]★ (updateLateralTarget)
+    declare_parameter<double>("avoid.range_m", 5.0);      // 이 안의 장애물만 본다
+    declare_parameter<double>("avoid.cone_half_m", 0.20); // 라바콘 반폭
+    declare_parameter<double>("avoid.margin_m", 0.25);    // 그 위 안전여유
     declare_parameter<double>("handover.ref_stale_s", 0.5);
     declare_parameter<bool>("handover.use_gps_ref", true);
     //  ★false 로 두면 종전처럼 '런치 = 출발' 이다★ 라이다 단독 시험용. 실차에서
@@ -474,6 +478,9 @@ private:
     reference_path_topic_ = get_parameter("reference_path_topic").as_string();
     ref_topic_    = get_parameter("handover.ref_topic").as_string();
     diag_topic_   = get_parameter("diag_topic").as_string();
+    lat_target_range_ = get_parameter("avoid.range_m").as_double();
+    lat_cone_half_    = get_parameter("avoid.cone_half_m").as_double();
+    lat_margin_       = get_parameter("avoid.margin_m").as_double();
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
@@ -718,6 +725,8 @@ private:
       odom_pose_ = OdomPose{};              // x = y = yaw = 0
     }
     corridor_clear_latched_ = false;
+    lat_latched_ = false;              // 회피 방향 래치도 푼다 [2026-09-11]
+    mppi_params_.lateral_target = 0.0;
     corridor_cost_ema_ = 0.0;
     corridor_cost_ema_init_ = false;
     clear_ahead_seconds_ = 0.0;
@@ -1189,6 +1198,8 @@ private:
 
     // One lock-free snapshot for the whole planning cycle.
     const CostmapSnapshot snap = costmap_->snapshot();
+    //  ★비켜 갈 쪽을 먼저 정한다★ (updateLateralTarget 주석의 실측 근거)
+    updateLateralTarget(snap);
     if (!snap.valid) {
       publishStop(/*apply_brake=*/false);
       return;
@@ -1308,6 +1319,69 @@ private:
     path_pub_->publish(path);
   }
 
+  /// ★비켜 갈 자리를 정한다★ → mppi_params_.lateral_target [m, + 왼쪽]
+  /// [2026-09-11 신설 — 사용자 지시 '궤적 기준 살짝만 틀어진다']
+  ///
+  /// ★왜 필요한가 (실측)★ route_20260910_102050-20260910_231626 :
+  ///   인계 시 차 y −0.36(중심선 오른쪽), 장애물 4.1m ★정면★
+  ///   → 플래너가 ★왼쪽★ 으로 +1.4 → +18.2° (장애물 쪽으로!)
+  /// 비용함수에 '어느 쪽으로 비킬까' 라는 개념이 없어서, 좌우가 대칭일 때
+  /// ★경로항(y 를 0 으로 당기는 힘)이 타이브레이커★ 가 된다. 차가 오른쪽에
+  /// 있으면 그 힘이 왼쪽이라 장애물 쪽으로 먼저 꺾는다.
+  ///
+  /// ★규칙 — 중심선에서 제일 덜 벗어나는 쪽으로 비킨다★
+  ///   여유 clear = 차 반폭 + 콘 반폭 + 여유
+  ///   오른쪽 통과 : y = obs_y − clear     왼쪽 통과 : y = obs_y + clear
+  ///   → |y| 가 작은 쪽을 고른다. 라바콘이 왼쪽(+)이면 오른쪽 통과가 자동으로
+  ///     선택된다. ★사용자가 말한 'S자' 가 이 규칙 하나에서 나온다★ —
+  ///     콘이 좌우로 번갈아 놓이면 목표도 좌우로 번갈아 잡힌다.
+  ///
+  /// ★정면일 때(좌우 대칭)는 차가 이미 있는 쪽으로 간다★ 그래야 장애물 앞을
+  /// 가로지르지 않는다. 위 실측이 정확히 이 경우였고, 이 한 줄이 그것을 고친다.
+  ///
+  /// ★한 번 정하면 그 장애물을 지날 때까지 유지한다★ 매 틱 다시 고르면 콘이
+  /// 좌우 경계에 있을 때 목표가 왕복해 조향이 떨린다(래치).
+  void updateLateralTarget(const CostmapSnapshot & snap)
+  {
+    double ox, oy;
+    nearestObstacle(snap, ox, oy);
+    const bool seen = std::isfinite(ox) && ox <= lat_target_range_;
+
+    if (!seen) {
+      //  ★장애물이 사라졌다 = 지나갔다★ 래치를 풀고 중심선으로 돌아간다.
+      lat_latched_ = false;
+      mppi_params_.lateral_target = 0.0;
+      return;
+    }
+    if (lat_latched_) {
+      //  같은 장애물을 계속 보고 있다 — 정한 쪽을 지킨다.
+      return;
+    }
+    const double clear = 0.5 * vehicle_params_.track_width
+                         + lat_cone_half_ + lat_margin_;
+    const double cand_r = oy - clear;      // 오른쪽으로 비킨다
+    const double cand_l = oy + clear;      // 왼쪽으로 비킨다
+    double target;
+    if (std::abs(std::abs(cand_r) - std::abs(cand_l)) < 1e-3) {
+      //  좌우 대칭(장애물이 정면) — ★차가 이미 있는 쪽★ 으로. 앞을 가로지르지 않는다.
+      target = (odom_pose_.y >= 0.0) ? cand_l : cand_r;
+    } else {
+      target = (std::abs(cand_r) <= std::abs(cand_l)) ? cand_r : cand_l;
+    }
+    target = std::clamp(target, -mppi_params_.max_lateral_offset,
+                        mppi_params_.max_lateral_offset);
+    mppi_params_.lateral_target = target;
+    lat_latched_ = true;
+    RCLCPP_INFO(
+      get_logger(),
+      "🛞 회피 방향 결정 — 장애물 x=%.2f y=%+.2f m (중심선 %s) → "
+      "★콘의 %s 으로 통과★ 목표 y=%+.2f m (콘과 %.2f m, 필요 %.2f m)",
+      ox, oy, oy >= 0.0 ? "왼쪽" : "오른쪽",
+      //  ★'어느 쪽 통과' 는 목표의 부호가 아니라 ★콘 대비★ 로 판정한다★
+      //  콘이 +1.0 이고 목표가 +0.01 이면 목표는 양수지만 콘의 '오른쪽' 이다.
+      target < oy ? "오른쪽" : "왼쪽", target, std::abs(target - oy), clear);
+  }
+
   /// 전방 코리도 안에서 ★가장 가까운 장애물★ 을 찾는다 → (x, y). 없으면 NaN.
   /// 회피가 잘 됐는지는 결국 '무엇을 얼마나 비켜 갔나' 이므로 이 둘이 핵심이다.
   void nearestObstacle(const CostmapSnapshot & snap, double & ox, double & oy) const
@@ -1422,6 +1496,9 @@ private:
   double ref_zone_left_ = std::numeric_limits<double>::quiet_NaN();
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr ref_sub_;
   std::string diag_topic_ = "/lidar_diag";
+  //  ★회피 방향 결정 [2026-09-11]★
+  double lat_target_range_ = 5.0, lat_cone_half_ = 0.20, lat_margin_ = 0.25;
+  bool   lat_latched_ = false;   // 이 장애물에 대해 쪽을 정했나
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr diag_pub_;
   double steer_filt_deg_ = 0.0;
   double last_pub_steer_deg_ = 0.0;
