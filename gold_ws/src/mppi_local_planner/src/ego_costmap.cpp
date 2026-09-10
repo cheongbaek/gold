@@ -158,14 +158,25 @@ void EgoCostmap::clearEgoOccupancy(std::vector<float> & grid) const
   const double res = params_.resolution;
   const int ix0 = std::max(0, worldToIndex(params_.ego_clear_x_min, params_.size_x, res));
   const int ix1 = std::min(cells_x_ - 1, worldToIndex(params_.ego_clear_x_max, params_.size_x, res));
-  const int iy0 = std::max(0, worldToIndex(-params_.ego_clear_y_half, params_.size_y, res));
-  const int iy1 = std::min(cells_y_ - 1, worldToIndex(params_.ego_clear_y_half, params_.size_y, res));
+  //  ★훑는 범위는 둘 중 넓은 쪽★ 안 그러면 passed 쪽 넓은 반폭이 잘려 나간다.
+  const double y_scan = std::max(params_.ego_clear_y_half,
+                                 params_.ego_clear_y_half_passed);
+  const int iy0 = std::max(0, worldToIndex(-y_scan, params_.size_y, res));
+  const int iy1 = std::min(cells_y_ - 1, worldToIndex(y_scan, params_.size_y, res));
   for (int iy = iy0; iy <= iy1; ++iy) {
     for (int ix = ix0; ix <= ix1; ++ix) {
       const double wx = -params_.size_x / 2.0 + (ix + 0.5) * res;
       const double wy = -params_.size_y / 2.0 + (iy + 0.5) * res;
+      //  ★앞차축 뒤에서는 더 넓게 지운다 [2026-09-11]★ (헤더 주석의 실측 근거)
+      //  지나친 콘은 조향으로 피할 대상이 아닌데, 남아 있으면 ★복귀하는 쪽★
+      //  롤아웃만 비용을 먹어 차가 영영 돌아오지 못한다.
+      const bool passed = (params_.ego_clear_pass_x > 0.0 &&
+                           params_.ego_clear_y_half_passed > params_.ego_clear_y_half &&
+                           wx <= params_.ego_clear_pass_x);
+      const double y_half = passed ? params_.ego_clear_y_half_passed
+                                   : params_.ego_clear_y_half;
       if (wx >= params_.ego_clear_x_min && wx <= params_.ego_clear_x_max &&
-          std::abs(wy) <= params_.ego_clear_y_half)
+          std::abs(wy) <= y_half)
       {
         grid[static_cast<size_t>(iy) * static_cast<size_t>(cells_x_) +
              static_cast<size_t>(ix)] = 0.0f;

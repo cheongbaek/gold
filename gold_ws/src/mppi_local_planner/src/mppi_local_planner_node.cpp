@@ -288,6 +288,8 @@ private:
     declare_parameter<double>("avoid.cone_half_m", 0.20); // 라바콘 반폭
     declare_parameter<double>("avoid.margin_m", 0.25);    // 그 위 안전여유
     declare_parameter<double>("avoid.max_offset_m", 1.25); // ★회피 목표 상한★
+    //  ★이보다 가까운 콘은 "지나쳤다" 로 본다 [2026-09-11]★ 앞차축 1.25 m.
+    declare_parameter<double>("avoid.pass_x_m", 1.30);
     //  ★코스트맵 팽창반경을 여기서도 안다★ 회피 목표가 팽창 경계 안에 앉으면
     //  플래너가 목표에서도 비용을 보고 밖으로 달아난다(updateLateralTarget).
     declare_parameter<double>("avoid.inflation_m", 0.40);
@@ -398,6 +400,10 @@ private:
     declare_parameter<double>("costmap.ego_clear_x_min", -0.45);
     declare_parameter<double>("costmap.ego_clear_x_max", 1.95);
     declare_parameter<double>("costmap.ego_clear_y_half", 0.85);
+    //  ★지나친 콘이 복귀를 막지 않게 [2026-09-11]★ (ego_costmap.hpp 주석의 실측)
+    //  앞차축(1.25) 뒤에서는 더 넓게 지운다 — 그 뒤는 조향으로 피할 대상이 아니다.
+    declare_parameter<double>("costmap.ego_clear_pass_x", 1.30);
+    declare_parameter<double>("costmap.ego_clear_y_half_passed", 1.60);
     declare_parameter<double>("costmap.ego_cost_clear_radius", 1.00);
 
     declare_parameter<int>("mppi.horizon_steps", 60);
@@ -494,6 +500,7 @@ private:
     lat_margin_       = get_parameter("avoid.margin_m").as_double();
     lat_max_offset_   = get_parameter("avoid.max_offset_m").as_double();
     lat_inflation_    = get_parameter("avoid.inflation_m").as_double();
+    lat_pass_x_       = get_parameter("avoid.pass_x_m").as_double();
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
@@ -595,6 +602,10 @@ private:
     costmap_params_.ego_clear_x_min = cx_min;
     costmap_params_.ego_clear_x_max = cx_max;
     costmap_params_.ego_clear_y_half = cy_half;
+    costmap_params_.ego_clear_pass_x =
+      get_parameter("costmap.ego_clear_pass_x").as_double();
+    costmap_params_.ego_clear_y_half_passed =
+      get_parameter("costmap.ego_clear_y_half_passed").as_double();
     costmap_params_.ego_cost_clear_radius =
       get_parameter("costmap.ego_cost_clear_radius").as_double();
 
@@ -1365,10 +1376,29 @@ private:
   {
     double ox, oy;
     nearestObstacle(snap, ox, oy);
-    const bool seen = std::isfinite(ox) && ox <= lat_target_range_;
+    //  ══════════════════════════════════════════════════════════════════
+    //  ★지나친 콘은 판단에서 뺀다 [2026-09-11 — 사용자 지시]★
+    //  ══════════════════════════════════════════════════════════════════
+    //  "라바콘을 지나치는 ★즉시★ 그 반대쪽으로 꺾는다. 그대로 벗어나지 말고."
+    //  ★앞차축(1.25 m)을 지난 콘은 조향으로 피할 대상이 아니다★ — 앞바퀴가
+    //  이미 지나갔다. 그런데 종전에는 그 콘이 사거리(8 m) 안이라는 이유로
+    //  ★계속 래치를 붙들고 있어서★, 차가 목표를 한참 넘어 나가도 목표가
+    //  갱신되지 않았다. 실측(20260911_001017)에서 목표 −0.39 인데 −2.31 까지
+    //  갔고, 그 콘이 costmap 에 남아 복귀 방향 롤아웃만 비용을 먹었다.
+    //  → 앞쪽에 있는 콘만 본다. 지나친 순간 래치가 풀리고, 다음 콘(반대쪽)이나
+    //    중심선으로 목표가 ★그 틱에 바로★ 바뀐다.
+    const bool ahead = std::isfinite(ox) && ox >= lat_pass_x_;
+    const bool seen = ahead && ox <= lat_target_range_;
 
     if (!seen) {
-      //  ★장애물이 사라졌다 = 지나갔다★ 래치를 풀고 중심선으로 돌아간다.
+      //  ★지나갔다 — 즉시 반대쪽(복귀)으로★ 다음 콘이 아직 안 보이면 중심선이다.
+      //  다음 콘이 보이면 아래에서 그 콘 기준으로 새 목표가 잡힌다.
+      if (lat_latched_) {
+        RCLCPP_INFO(
+          get_logger(),
+          "🛞 콘 통과 — 래치 해제, 목표를 %+.2f → 0.00 m 로 (즉시 복귀)",
+          mppi_params_.lateral_target);
+      }
       lat_latched_ = false;
       mppi_params_.lateral_target = 0.0;
       return;
@@ -1546,6 +1576,7 @@ private:
   double lat_target_range_ = 8.0, lat_cone_half_ = 0.20, lat_margin_ = 0.25;
   double lat_max_offset_ = 1.25;  // 회피 목표 상한 (횡벽과 ★다른 값★)
   double lat_inflation_ = 0.40;   // 코스트맵 팽창반경 (같은 값을 두 곳에 둔다)
+  double lat_pass_x_ = 1.30;      // 이보다 가까우면 "지나쳤다" (앞차축 1.25)
   int    lat_last_side_ = 0;      // 직전 콘을 어느 쪽으로 지났나 (−1 우 / +1 좌)
   bool   lat_latched_ = false;   // 이 장애물에 대해 쪽을 정했나
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr diag_pub_;
