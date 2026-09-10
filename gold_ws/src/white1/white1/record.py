@@ -317,11 +317,15 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #    ld_gps_ref=0 인 구간은 기준선이 추측항법이라 ld_y 를 믿을 수 없다.
     TopicSpec('/lidar_diag', Float64MultiArray,
               ('ld_y', 'ld_yaw_deg', 'ld_road_deg', 'ld_pot_deg', 'ld_pulse',
-               'ld_avg_cost', 'ld_gps_ref', 'ld_obs_x', 'ld_obs_y'),
-              _array(9), hold=False,
+               'ld_avg_cost', 'ld_gps_ref', 'ld_obs_x', 'ld_obs_y',
+               'ld_target_y', 'ld_n_cones'),
+              _array(11), hold=False,
               note='mppi 가 ★모는 동안에만★ 낸다 = L 구간 전용. y·yaw 는 '
                    '★기준선(매핑 중심선) 대비★ 이고 + 가 왼쪽. pot 만 보드 규약'
-                   '(− 좌 / + 우)이다. obs_x/y 는 코리도 안 최근접 장애물'),
+                   '(− 좌 / + 우)이다. obs_x/y 는 ★군집으로 분리한 콘의 중심★ '
+                   '(팽창 가장자리가 아니다). ld_target_y 는 지금 겨누는 횡목표, '
+                   'ld_n_cones 는 앞에 보이는 콘 개수 — 0 이면 복귀 구간이다. '
+                   '★ld_y 가 ld_target_y 를 따라가는지★ 가 회피가 되는지의 판정'),
     TopicSpec('/lstatus', String, ('lstatus',), _scalar,
               note="구간 문자 0=GPS추종 / L=라이다(mppi) / S=일시정지. "
                    "★driving → mppi 조종권★ (terrain 열을 정규화한 값)"),

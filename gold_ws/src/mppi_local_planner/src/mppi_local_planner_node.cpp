@@ -289,7 +289,18 @@ private:
     declare_parameter<double>("avoid.margin_m", 0.25);    // 그 위 안전여유
     declare_parameter<double>("avoid.max_offset_m", 1.25); // ★회피 목표 상한★
     //  ★이보다 가까운 콘은 "지나쳤다" 로 본다 [2026-09-11]★ 앞차축 1.25 m.
-    declare_parameter<double>("avoid.pass_x_m", 1.30);
+    declare_parameter<double>("avoid.pass_x_m", 0.90);
+    //  ★기하 조향 [2026-09-11]★ false 면 종전 MPPI 조향으로 되돌아간다.
+    declare_parameter<bool>("avoid.geometric_steer", true);
+    declare_parameter<double>("avoid.k_psi", 1.0);    // 방향항 (감쇠)
+    declare_parameter<double>("avoid.k_cte", 0.6);    // 위치항 (수렴)
+    declare_parameter<double>("avoid.v_min", 1.0);    // atan 분모 하한 [m/s]
+    //  ★붙들고 있던 콘보다 이만큼 멀어지면 "다음 콘" 으로 본다★
+    declare_parameter<double>("avoid.new_cone_dx_m", 1.5);
+    //  ★콘 군집 판정★ 치사 셀이 이만큼 안 모이면 잡음으로 본다.
+    //  콘 하나의 치사 원반(반경 0.63 m)은 0.1 m 격자에서 ≈124 셀이다.
+    declare_parameter<int>("avoid.cone_min_cells", 20);
+    declare_parameter<double>("avoid.cone_y_max_m", 3.0);  // 이보다 옆은 무시
     //  ★코스트맵 팽창반경을 여기서도 안다★ 회피 목표가 팽창 경계 안에 앉으면
     //  플래너가 목표에서도 비용을 보고 밖으로 달아난다(updateLateralTarget).
     declare_parameter<double>("avoid.inflation_m", 0.40);
@@ -501,6 +512,13 @@ private:
     lat_max_offset_   = get_parameter("avoid.max_offset_m").as_double();
     lat_inflation_    = get_parameter("avoid.inflation_m").as_double();
     lat_pass_x_       = get_parameter("avoid.pass_x_m").as_double();
+    geometric_steer_  = get_parameter("avoid.geometric_steer").as_bool();
+    geo_k_psi_        = get_parameter("avoid.k_psi").as_double();
+    geo_k_cte_        = get_parameter("avoid.k_cte").as_double();
+    geo_v_min_        = get_parameter("avoid.v_min").as_double();
+    lat_new_cone_dx_  = get_parameter("avoid.new_cone_dx_m").as_double();
+    cone_min_cells_   = static_cast<int>(get_parameter("avoid.cone_min_cells").as_int());
+    cone_y_max_       = get_parameter("avoid.cone_y_max_m").as_double();
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
@@ -757,6 +775,7 @@ private:
     corridor_clear_latched_ = false;
     lat_latched_ = false;              // 회피 방향 래치도 푼다 [2026-09-11]
     lat_last_side_ = 0;                // 교대 기억도 지운다
+    lat_locked_ox_ = 0.0;
     mppi_params_.lateral_target = 0.0;
     corridor_cost_ema_ = 0.0;
     corridor_cost_ema_init_ = false;
@@ -1273,7 +1292,34 @@ private:
 
     // 직진은 순항 펄스(2). 회피 중(|조향| 큼)에도 ★2펄스★ — 1펄스는 이 차가
     // 거의 움직이지 않는다(cmd.dodge_pulse 선언부의 근거).
-    const double steer_deg = filterSteer(result.control.delta * 180.0 / M_PI);
+    //  ══════════════════════════════════════════════════════════════════
+    //  ★[2026-09-11] 조향을 ★기하로 직접★ 만든다 (사용자 지시)★
+    //  ══════════════════════════════════════════════════════════════════
+    //  ★왜 MPPI 를 안 쓰는가 — 세 번 고쳤는데 세 번 다 같은 실패였다★
+    //  20260910_234828 / 20260911_001017 / 20260911_001853 이 전부 같다:
+    //    콘을 지나 차 옆에 붙는 순간 ld_y −1.5 → −2.5, yaw −34° → −43°,
+    //    ★road 가 0 으로 죽고★ cost 가 3000 을 넘어 정지 래치까지 걸린다.
+    //  원인은 매번 같다 — ★되돌아가는 롤아웃만 충돌비용을 먹는다.★ 콘이 차
+    //  왼쪽에 있으면 왼쪽으로 도는 궤적이 차체를 그 콘 쪽으로 쓸고 지나가기
+    //  때문이다. costmap 클리어를 넓혀도 ★팽창(inflation)은 남아서★ 같은 일이
+    //  반복된다. 앞을 더 넓게 지우면 이번엔 피해야 할 콘까지 지운다.
+    //
+    //  ★그런데 이 문제는 애초에 최적화기를 쓸 문제가 아니다★
+    //   · 기준선을 정확히 안다 (/lidar_ref — GPS 매핑 중심선)
+    //   · 콘의 위치를 안다 (nearestObstacle)
+    //   · 해야 할 동작이 정해져 있다 — "콘의 반대쪽 1 m 로 지나고, 지나치는
+    //     즉시 기준선으로 돌아온다"(사용자). 고를 것이 없다.
+    //  → ★목표 횡위치 y_t 를 기하로 정하고(updateLateralTarget), 거기로
+    //    스탠리로 붙인다.★ braketest.py 가 같은 식으로 직선을 따라가고 있고
+    //    실차에서 검증됐다(±0.4 m). MPPI 는 ★비상정지 판정★ 으로만 남는다
+    //    (stop latch — 정말 막혔으면 그쪽이 세운다).
+    //
+    //  ★avoid.geometric_steer:=false 로 종전(MPPI 조향)으로 되돌릴 수 있다.★
+    double raw_steer_deg = result.control.delta * 180.0 / M_PI;
+    if (geometric_steer_) {
+      raw_steer_deg = geometricSteerDeg(current_pose);
+    }
+    const double steer_deg = filterSteer(raw_steer_deg);
     const int cruise = std::max(1, actuator_->maxPulse());
     const int ref = (std::abs(steer_deg) > dodge_steer_deg_)
                       ? std::min(dodge_pulse_, cruise) : cruise;
@@ -1374,8 +1420,21 @@ private:
   /// 좌우 경계에 있을 때 목표가 왕복해 조향이 떨린다(래치).
   void updateLateralTarget(const CostmapSnapshot & snap)
   {
-    double ox, oy;
-    nearestObstacle(snap, ox, oy);
+    //  ★콘을 하나씩 분리해 ★거리 순★ 으로 본다★ (detectCones 주석의 근거)
+    //  앞쪽(pass_x 이상)에 있는 것 중 ★가장 가까운 콘★ 이 지금 상대다.
+    //  #1 을 지나면 목록에서 빠지고 #2 가 자동으로 첫 번째가 된다.
+    const std::vector<ConeObs> cones = detectCones(snap);
+    double ox = std::numeric_limits<double>::quiet_NaN();
+    double oy = std::numeric_limits<double>::quiet_NaN();
+    for (const auto & c : cones) {
+      if (c.x < lat_pass_x_ || std::abs(c.y) > cone_y_max_) continue;
+      ox = c.x; oy = c.y; break;                 // 이미 x 오름차순이다
+    }
+    n_cones_ahead_ = 0;
+    for (const auto & c : cones) {
+      if (c.x >= lat_pass_x_ && c.x <= lat_target_range_ &&
+          std::abs(c.y) <= cone_y_max_) ++n_cones_ahead_;
+    }
     //  ══════════════════════════════════════════════════════════════════
     //  ★지나친 콘은 판단에서 뺀다 [2026-09-11 — 사용자 지시]★
     //  ══════════════════════════════════════════════════════════════════
@@ -1387,8 +1446,7 @@ private:
     //  갔고, 그 콘이 costmap 에 남아 복귀 방향 롤아웃만 비용을 먹었다.
     //  → 앞쪽에 있는 콘만 본다. 지나친 순간 래치가 풀리고, 다음 콘(반대쪽)이나
     //    중심선으로 목표가 ★그 틱에 바로★ 바뀐다.
-    const bool ahead = std::isfinite(ox) && ox >= lat_pass_x_;
-    const bool seen = ahead && ox <= lat_target_range_;
+    const bool seen = std::isfinite(ox) && ox <= lat_target_range_;
 
     if (!seen) {
       //  ★지나갔다 — 즉시 반대쪽(복귀)으로★ 다음 콘이 아직 안 보이면 중심선이다.
@@ -1403,9 +1461,44 @@ private:
       mppi_params_.lateral_target = 0.0;
       return;
     }
+    //  ══════════════════════════════════════════════════════════════════
+    //  ★래치는 '이 콘' 에 대한 것이다 — 콘이 바뀌면 다시 정한다 [2026-09-11]★
+    //  ══════════════════════════════════════════════════════════════════
+    //  ★종전 버그★ 해제 조건이 '앞에 콘이 하나도 없을 때' 였다. 그런데 콘 간격이
+    //  5~8 m 이고 사거리가 8 m 라 ★항상 다음 콘이 보인다★ — 래치가 영영 안 풀린다.
+    //  시뮬레이션(콘 3개, 6.5 m 간격 좌우 교대)에서 첫 콘 목표 −0.59 를 슬라럼
+    //  내내 붙들고, 두 번째 콘(y −0.50)을 ★같은 쪽으로 지나갔다.★
+    //  실차에서 "지나쳐도 안 돌아온다" 로 보이던 것의 정체가 이것이다.
+    //
+    //  ★콘이 바뀐 것을 어떻게 아는가★ 다가가는 동안 ox 는 계속 ★줄어든다.★
+    //  그것이 ★늘어나면★ 보고 있던 콘을 지나쳐 다음 콘을 새로 잡은 것이다.
+    //  (GPS·라이다 잡음으로 조금 늘 수 있으므로 문턱을 둔다.)
     if (lat_latched_) {
-      //  같은 장애물을 계속 보고 있다 — 정한 쪽을 지킨다.
-      return;
+      if (ox <= lat_locked_ox_ + lat_new_cone_dx_) {
+        lat_locked_ox_ = std::min(lat_locked_ox_, ox);
+        //  ══════════════════════════════════════════════════════════════
+        //  ★쪽만 고정한다 — 목표 크기는 매 틱 다시 잰다 [2026-09-11]★
+        //  ══════════════════════════════════════════════════════════════
+        //  ★왜★ cone_y = y + ox·sin(ψ) + oy·cos(ψ) 에서 ★ox 가 지렛대★ 다.
+        //  8 m 앞 콘을 헤딩오차 5° 로 보면 위치가 0.70 m 틀린다. 그런데 래치를
+        //  값까지 걸면 ★제일 멀 때(= 제일 부정확할 때) 정한 값을 끝까지 쓴다.★
+        //  시뮬에서 콘 #2 목표가 +0.59 여야 하는데 +0.46 으로 나와 여유가
+        //  1.09 → 0.96 m 로 깎였다.
+        //  → 좌/우 ★결정★ 만 유지하고(그것이 왕복을 막는 목적이다), 목표
+        //    위치는 콘이 가까워질수록 ★계속 정확해지게★ 다시 계산한다.
+        const double clear2 = 0.5 * vehicle_params_.track_width
+                              + std::max(lat_cone_half_, lat_inflation_) + lat_margin_;
+        const double so2 = std::sin(odom_pose_.yaw), co2 = std::cos(odom_pose_.yaw);
+        const double cone_y2 = odom_pose_.y + ox * so2 + oy * co2;
+        mppi_params_.lateral_target = std::clamp(
+          cone_y2 + lat_last_side_ * clear2, -lat_max_offset_, lat_max_offset_);
+        return;                       // 같은 콘 — 정한 쪽을 지킨다
+      }
+      RCLCPP_INFO(
+        get_logger(),
+        "🛞 다음 콘 — %.2f m 에서 %.2f m 로 멀어졌다(이전 콘 통과). 방향을 다시 정한다",
+        lat_locked_ox_, ox);
+      lat_latched_ = false;           // 새 콘이다 — 아래에서 다시 정한다
     }
     //  ══════════════════════════════════════════════════════════════════
     //  ★여유는 ★비용함수가 요구하는 값★ 에서 유도한다 [2026-09-11 수정]★
@@ -1422,9 +1515,27 @@ private:
     //  둘 중 큰 쪽만 센다(이중계산 방지).
     const double clear = 0.5 * vehicle_params_.track_width
                          + std::max(lat_cone_half_, lat_inflation_) + lat_margin_;
-    const double cand_r = oy - clear;      // 오른쪽으로 비킨다
-    const double cand_l = oy + clear;      // 왼쪽으로 비킨다
+    //  ══════════════════════════════════════════════════════════════════
+    //  ★콘을 ★기준선 좌표★ 로 옮긴 뒤에 판정한다 [2026-09-11 — 프레임 버그]★
+    //  ══════════════════════════════════════════════════════════════════
+    //  detectCones 의 (ox, oy) 는 ★차체 기준★ 이다(코스트맵이 ego 중심).
+    //  그런데 lateral_target 은 ★기준선 기준★ 으로 쓰인다
+    //  (컨트롤러: cross_track = y_odom − lateral_target). 종전에는 차체 기준
+    //  oy 로 좌우를 골라 놓고 그 값을 기준선 목표로 썼다 — ★차가 중심선에서
+    //  벗어나 있을수록 판정이 틀어진다.★
+    //  실측 상황 그대로의 예: 콘 #2 가 기준선 −0.50, 차가 −0.57 일 때
+    //     차체 기준 : r −1.02 / l +1.16 → |r| 작다 → ★오른쪽(틀림)★
+    //     기준선 기준: r −1.59 / l +0.59 → |l| 작다 → ★왼쪽(맞음)★
+    //  왼쪽으로 가야 S 가 되는데 오른쪽을 골라 계속 같은 쪽으로 밀려 나갔다.
+    //
+    //  ★변환★ 차체 (ox, oy) → 기준선 횡좌표. 컨트롤러가 롤아웃을 옮길 때
+    //  쓰는 식과 ★같은 식★ 이다 (y_odom = odom.y + s.x·sin + s.y·cos).
+    const double so = std::sin(odom_pose_.yaw), co = std::cos(odom_pose_.yaw);
+    const double cone_y = odom_pose_.y + ox * so + oy * co;   // ★기준선 기준★
+    const double cand_r = cone_y - clear;      // 콘의 오른쪽으로 비킨다
+    const double cand_l = cone_y + clear;      // 콘의 왼쪽으로 비킨다
     double target;
+    //  ★|목표| 가 작은 쪽 = 중심선에서 제일 덜 벗어나는 쪽★ (둘 다 기준선 기준)
     if (std::abs(std::abs(cand_r) - std::abs(cand_l)) < 1e-3) {
       //  ★좌우가 같다(콘이 정면) — 이때만 다른 근거가 필요하다★
       //  ① 직전 콘을 지난 반대쪽 : 사용자가 말한 배치 그대로다 —
@@ -1447,15 +1558,106 @@ private:
     target = std::clamp(target, -lat_max_offset_, lat_max_offset_);
     mppi_params_.lateral_target = target;
     lat_latched_ = true;
-    lat_last_side_ = (target < oy) ? -1 : +1;   // 콘 대비 어느 쪽으로 지나는가
+    lat_locked_ox_ = ox;                        // 이 콘을 붙들었다 (멀어지면 새 콘)
+    lat_last_side_ = (target < cone_y) ? -1 : +1;  // 콘 대비 어느 쪽으로 지나는가
     RCLCPP_INFO(
       get_logger(),
-      "🛞 회피 방향 결정 — 장애물 x=%.2f y=%+.2f m (중심선 %s) → "
+      "🛞 회피 방향 결정 — 콘 %.2f m 앞, 기준선 y=%+.2f m (중심선 %s) → "
       "★콘의 %s 으로 통과★ 목표 y=%+.2f m (콘과 %.2f m, 필요 %.2f m)",
-      ox, oy, oy >= 0.0 ? "왼쪽" : "오른쪽",
+      ox, cone_y, cone_y >= 0.0 ? "왼쪽" : "오른쪽",
       //  ★'어느 쪽 통과' 는 목표의 부호가 아니라 ★콘 대비★ 로 판정한다★
       //  콘이 +1.0 이고 목표가 +0.01 이면 목표는 양수지만 콘의 '오른쪽' 이다.
-      target < oy ? "오른쪽" : "왼쪽", target, std::abs(target - oy), clear);
+      target < cone_y ? "오른쪽" : "왼쪽", target, std::abs(target - cone_y), clear);
+  }
+
+  /// ★목표 횡위치로 붙이는 기하 조향★ → 도로휠각 [deg, + = 좌]
+  /// [2026-09-11 신설 — 사용자 지시. 근거는 controlLoop 의 호출부 주석]
+  ///
+  ///     e       = y − y_target        (+ = 목표보다 왼쪽)
+  ///     ψ_err   = yaw                 (+ = 기준선보다 왼쪽을 향함)
+  ///     δ(+우)  = K_psi·ψ_err + atan(K_cte·e / max(v, v_min))
+  ///     δ(+좌)  = −δ(+우)
+  ///
+  /// ★braketest.py 와 같은 식이다★ 그쪽은 실차에서 검증됐다(직선 ±0.4 m).
+  /// 방향항(ψ)이 감쇠를, 위치항(e)이 수렴을 맡는다 — 위치항만 두면 조향→헤딩→
+  /// 횡위치가 2중적분이라 감쇠가 없어 발산한다(braketest 에서 실측으로 확인).
+  ///
+  /// ★저속이라 스탠리 항이 세게 먹는다 — 그것이 여기서는 맞다★
+  /// v ≈ 1.77 m/s 에서 e = 1.0 m 면 atan(0.6·1.0/1.77) = 18.7°.
+  /// "지나치는 즉시 반대쪽으로 획 꺾는다"(사용자)가 이 항 하나에서 나온다.
+  double geometricSteerDeg(const OdomPose & pose) const
+  {
+    const double v = std::max(geo_v_min_,
+                              lidar::kasa::pulseToMs(std::max(1, actuator_->maxPulse())));
+    const double e = pose.y - mppi_params_.lateral_target;   // + = 목표보다 왼쪽
+    const double psi_deg = pose.yaw * 180.0 / M_PI;          // + = 기준선보다 왼쪽
+    const double right_deg = geo_k_psi_ * psi_deg
+                             + std::atan(geo_k_cte_ * e / v) * 180.0 / M_PI;
+    const double max_deg = vehicle_params_.max_steering_angle * 180.0 / M_PI;
+    return std::clamp(-right_deg, -max_deg, max_deg);        // + = 좌
+  }
+
+  struct ConeObs { double x, y; int cells; };
+
+  /// ★라바콘을 하나씩 분리해서 각자의 거리를 낸다★ (x 오름차순)
+  /// [2026-09-11 신설 — 사용자 지적: "거리는 안 보고 있다/없다만 보면 근본적인
+  ///  부정확함을 해결하지 못한다"]
+  ///
+  /// ★종전 nearestObstacle 의 결함★ 그것은 '비용이 붙은 가장 가까운 ★셀★' 을
+  /// 돌려줬다. 그런데 inflate() 가 콘 하나를 반경 0.63 m 치사 원반 + 0.40 m
+  /// 감쇠링으로 부풀리므로, 그 셀은 ★콘의 위치가 아니라 팽창 가장자리★ 다.
+  /// 실측(20260911_001853)에서 obs 가 (0.3, +1.0) 으로 잡혔는데, 그것은 훨씬
+  /// 바깥에 있던 콘의 팽창이었다 — 그 값으로 목표를 정하니 맞을 수가 없다.
+  ///
+  /// ★치사 셀만 묶으면 콘 위치가 정확히 나온다★ 치사 원반은 콘을 중심으로
+  /// 대칭이므로 ★군집의 무게중심 = 콘의 중심★ 이다. 인접(8-이웃) 치사 셀을
+  /// 묶어 군집마다 무게중심을 낸다.
+  ///
+  /// ★이것이 있어야 '콘마다 따로' 가 성립한다★ 콘 #1 과 #2 가 각자의 x 를
+  /// 가지므로, #1 을 지나면 목록에서 빠지고 #2 가 자동으로 첫 번째가 된다 —
+  /// '있다/없다' 가 아니라 ★거리 순서★ 로 다음 콘이 정해진다.
+  std::vector<ConeObs> detectCones(const CostmapSnapshot & snap) const
+  {
+    std::vector<ConeObs> out;
+    if (!snap.valid || snap.cells_x <= 0 || snap.cells_y <= 0) return out;
+    const double res = snap.resolution;
+    const double thr = EgoCostmap::kLethalCost * 0.99;   // ★치사 셀만★
+    const size_t n = static_cast<size_t>(snap.cells_x) * static_cast<size_t>(snap.cells_y);
+    std::vector<uint8_t> seen(n, 0);
+    std::vector<int> stack;
+    auto idx = [&](int ix, int iy) {
+      return static_cast<size_t>(iy) * static_cast<size_t>(snap.cells_x) +
+             static_cast<size_t>(ix);
+    };
+    for (int iy = 0; iy < snap.cells_y; ++iy) {
+      for (int ix = 0; ix < snap.cells_x; ++ix) {
+        const size_t i0 = idx(ix, iy);
+        if (seen[i0] || snap.cost[i0] < thr) continue;
+        //  8-이웃 flood fill — 한 콘의 치사 원반이 한 군집이 된다
+        double sx = 0.0, sy = 0.0; int cnt = 0;
+        stack.clear(); stack.push_back(static_cast<int>(i0)); seen[i0] = 1;
+        while (!stack.empty()) {
+          const int cur = stack.back(); stack.pop_back();
+          const int cx = cur % snap.cells_x, cy = cur / snap.cells_x;
+          sx += -snap.size_x / 2.0 + (cx + 0.5) * res;
+          sy += -snap.size_y / 2.0 + (cy + 0.5) * res;
+          ++cnt;
+          for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+              const int nx = cx + dx, ny = cy + dy;
+              if (nx < 0 || nx >= snap.cells_x || ny < 0 || ny >= snap.cells_y) continue;
+              const size_t ni = idx(nx, ny);
+              if (seen[ni] || snap.cost[ni] < thr) continue;
+              seen[ni] = 1; stack.push_back(static_cast<int>(ni));
+            }
+          }
+        }
+        if (cnt >= cone_min_cells_) out.push_back({sx / cnt, sy / cnt, cnt});
+      }
+    }
+    std::sort(out.begin(), out.end(),
+              [](const ConeObs & a, const ConeObs & b) { return a.x < b.x; });
+    return out;
   }
 
   /// 전방 코리도 안에서 ★가장 가까운 장애물★ 을 찾는다 → (x, y). 없으면 NaN.
@@ -1484,17 +1686,30 @@ private:
   ///   [5] avg_cost MPPI 평균 비용 (정지 게이트 임계와 비교해서 읽는다)
   ///   [6] gps_ref  1 = 기준선이 GPS, 0 = 추측항법
   ///   [7] obs_x    최근접 장애물 전방거리 [m] (라이다 원점 기준). 없으면 NaN
-  ///   [8] obs_y    그 장애물의 횡위치 [m] + 왼쪽. ★부호가 곧 '어느 쪽 라바콘인가'★
+  ///   [8] obs_y    그 콘의 횡위치 [m] + 왼쪽. ★부호가 곧 '어느 쪽 라바콘인가'★
+  ///   [9] target_y ★지금 겨누는 횡목표★ [m] + 왼쪽 (updateLateralTarget)
+  ///  [10] n_cones  앞에 보이는 콘 개수 — 0 이면 복귀 구간이다
   void publishDiag(const OdomPose & pose, double road_deg, double avg_cost,
                    const CostmapSnapshot & snap)
   {
-    double ox, oy;
-    nearestObstacle(snap, ox, oy);
+    //  ★진단도 군집 중심을 쓴다 [2026-09-11]★ 종전 nearestObstacle 은 팽창
+    //  가장자리를 돌려줘서, 기록된 obs_x/obs_y 가 콘의 실제 위치가 아니었다
+    //  (실측 20260911_001853 의 (0.3,+1.0) 이 그것이다 — 훨씬 바깥 콘의 팽창).
+    double ox = std::numeric_limits<double>::quiet_NaN();
+    double oy = std::numeric_limits<double>::quiet_NaN();
+    {
+      const std::vector<ConeObs> cs = detectCones(snap);
+      for (const auto & c : cs) {
+        if (std::abs(c.y) > cone_y_max_) continue;
+        ox = c.x; oy = c.y; break;              // x 오름차순 — 가장 가까운 콘
+      }
+    }
     std_msgs::msg::Float64MultiArray m;
     m.data = {
       pose.y, pose.yaw * 180.0 / M_PI, road_deg,
       actuator_->lastPotDeg(), static_cast<double>(actuator_->lastPulse()),
-      avg_cost, gps_ref_live_ ? 1.0 : 0.0, ox, oy};
+      avg_cost, gps_ref_live_ ? 1.0 : 0.0, ox, oy,
+      mppi_params_.lateral_target, static_cast<double>(n_cones_ahead_)};
     diag_pub_->publish(m);
   }
 
@@ -1576,9 +1791,16 @@ private:
   double lat_target_range_ = 8.0, lat_cone_half_ = 0.20, lat_margin_ = 0.25;
   double lat_max_offset_ = 1.25;  // 회피 목표 상한 (횡벽과 ★다른 값★)
   double lat_inflation_ = 0.40;   // 코스트맵 팽창반경 (같은 값을 두 곳에 둔다)
-  double lat_pass_x_ = 1.30;      // 이보다 가까우면 "지나쳤다" (앞차축 1.25)
+  double lat_pass_x_ = 0.90;      // 이보다 가까우면 "지나쳤다"
+  bool   geometric_steer_ = true; // ★조향을 기하로 만든다 [2026-09-11]★
+  double geo_k_psi_ = 1.0, geo_k_cte_ = 0.6, geo_v_min_ = 1.0;
   int    lat_last_side_ = 0;      // 직전 콘을 어느 쪽으로 지났나 (−1 우 / +1 좌)
   bool   lat_latched_ = false;   // 이 장애물에 대해 쪽을 정했나
+  double lat_locked_ox_ = 0.0;   // 붙들고 있는 콘까지의 거리 (늘면 새 콘)
+  double lat_new_cone_dx_ = 1.5; // 이만큼 멀어지면 다른 콘으로 본다
+  int    cone_min_cells_ = 20;   // 군집 최소 셀 수 (잡음 제거)
+  double cone_y_max_ = 3.0;      // 이보다 옆의 콘은 무시
+  int    n_cones_ahead_ = 0;     // 진단용 — 앞에 콘이 몇 개 보이나
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr diag_pub_;
   double steer_filt_deg_ = 0.0;
   double last_pub_steer_deg_ = 0.0;
