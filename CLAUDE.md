@@ -756,7 +756,7 @@ ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때
 use_arduino:=true  use_record:=true  use_mapping:=true  use_sound:=true  use_hud:=true
 use_camera:=?      use_lidar:=true   use_lidar_rviz:=false  flip_lidar_xy:=true
 tl_record_video:=true  ← ★인지 디버그 화면을 주행 내내 mp4 로 (5.2절)★
-tl_show_window:=false  ← ★[2026-09-10] 기본이 false 다★ 볼 때만 true
+tl_show_window:=true   ← 화면 없는 SSH 면 false (5.2절)
 drive_pulse:=4     heading_pulse:=3  wheelbase_m:=1.25
 lidar_pulse:=2     ← ★L 구간 순항 [펄스]. 이것 하나만 고치면 된다 (6.4②)★
 lfd_omega_n:=0.97  lfd_min_m:=2.3
@@ -933,16 +933,18 @@ ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
 **★창과 녹화는 완전히 독립이다★**
 
 ```
-tl_show_window   창을 띄운다      ← ★기본 false★ (2026-09-10 에 true 에서 내렸다)
+tl_show_window   창을 띄운다      ← ★기본 true★ (한때 false 였다가 2026-09-10 되돌렸다)
 tl_record_video  파일로 적는다    ← ★기본 true★
 ```
 
-**같은 캔버스다** — 창을 껐다고 정보가 줄지 않는다. 실차에서 창을 끄는 이유는
-① 화면 없는 터미널에서는 애초에 못 열고 ② 열려도 창 합성이 메인 스레드를 잡기
-때문이다. **눈으로 ROI·색 임계를 맞출 때만 `tl_show_window:=true`.**
+**같은 캔버스다** — 창을 껐다고 정보가 줄지 않는다. 처음엔 "녹화가 있으니 창은
+필요 없다"고 보고 기본을 껐었는데, 화면이 있는 실차에서는 매번 `:=true` 를 붙이는
+쪽이 더 불편해서 **기본을 다시 켬으로 되돌렸다** — 둘 다 켜 둬도 서로 방해하지
+않는다. **화면 없는 터미널(SSH)일 때만 `tl_show_window:=false`** — 안 그러면 cv2
+가 창을 못 열어 에러를 남긴다.
 
 ```bash
-ros2 launch white1 one_launch.py tl_show_window:=true      # 창까지 보면서
+ros2 launch white1 one_launch.py tl_show_window:=false     # 화면 없는 SSH
 ros2 launch white1 one_launch.py tl_video_scale:=0.5       # 용량·CPU 를 1/4 로
 ros2 launch white1 one_launch.py tl_record_video:=false    # 녹화 끄기
 ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없는 원본

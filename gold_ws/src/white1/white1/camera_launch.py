@@ -29,8 +29,15 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
 그런데 인지 결과 창(cv2 imshow)은 실차에서 켜 두기 나쁘다 — 화면이 없는 터미널에서는
 아예 못 열고, 열리더라도 창 합성이 메인 스레드를 잡는다. 그래서 둘을 갈랐다:
 
-    tl_show_window   창을 띄운다 (★기본 false★ — 사람이 볼 때만 true)
+    tl_show_window   창을 띄운다 (★기본 true★ [2026-09-10 재조정] — 아래 참고)
     tl_record_video  같은 그림을 파일로 적는다 (★기본 true★ — 항상 남긴다)
+
+    ⚠️ [2026-09-10] 처음엔 tl_show_window 기본을 false 로 내렸었다 — "녹화가 있으니
+    창은 필요 없다" 는 논리였다. 그런데 실제로 화면을 보며 튜닝하는 자리에서는
+    ★매번 :=true 를 붙이는 것 자체가 불편하고★, 창을 못 켜는 헤드리스 환경(SSH)만
+    false 로 내리면 되므로 ★기본은 다시 true 로 되돌렸다★. 녹화(tl_record_video)는
+    그와 무관하게 항상 켜져 있으니 둘 다 켜 두는 쪽이 아무것도 잃지 않는다 —
+    화면이 있는 실차에서는 창이 뜨는 것이 기본, 없으면 tl_show_window:=false.
 
 ★같은 캔버스다.★ traffic_light 의 _draw() 가 그린 한 장(YOLO 박스·ROI 음영·BEV
 사다리꼴·정지선·게이지 패널·한글 HUD 3줄)을 창에도 띄우고 토픽으로도 낸다 —
@@ -199,13 +206,14 @@ def declare_args(cam_dev):
                         '(평상시 비용 0). ★튜닝할 때는 크게 준다★ — 신호등 없이 정지선만 '
                         '보고 싶으면 sl_gate_red_s:=99999 로 상시 추론시킨다(todo 9-1)'),
         DeclareLaunchArgument(
-            'tl_show_window', default_value='false',
-            description='인지 결과 창(OpenCV)을 띄울지. ★[2026-09-10] 기본을 true → '
-                        'false 로 내렸다★ — 같은 그림이 tl_record_video 로 파일에 '
-                        '남으므로 실차에서 창을 켤 이유가 없어졌다(화면 없는 터미널에서는 '
-                        '애초에 못 열고, 열려도 창 합성이 메인 스레드를 잡는다). '
-                        '★볼 때만 tl_show_window:=true★ — ROI·근접도·색 임계를 눈으로 '
-                        '잡는 자리에서는 그렇게 켠다. 녹화와 완전히 독립이다'),
+            'tl_show_window', default_value='true',
+            description='인지 결과 창(OpenCV)을 띄울지. ★기본 true★ [2026-09-10 재조정 — '
+                        '한때 false 였다가 되돌렸다]. 녹화(tl_record_video)가 같은 그림을 '
+                        '파일로도 남기므로 창을 꼭 켜야 하는 것은 아니지만, 화면이 있는 '
+                        '실차에서 매번 :=true 를 붙이는 것이 더 불편해 ★기본을 다시 켬으로 '
+                        '뒀다★ — 녹화와 완전히 독립이라 둘 다 켜 둬도 서로 방해하지 않는다. '
+                        '★화면 없는 터미널(SSH)이면 tl_show_window:=false★ — 안 그러면 '
+                        'cv2 가 창을 못 열어 에러를 남긴다'),
         DeclareLaunchArgument(
             'tl_record_video', default_value='true',
             description='★인지 디버그 화면을 주행 내내 mp4 로 적는다 [2026-09-10]★ '
