@@ -277,9 +277,25 @@ class VideoNode(Node):
         KeyboardInterrupt → finally). 그때 get_logger() 로 찍으면 내용은 콘솔에 나오지만
         'Failed to publish log message to rosout: publisher's context is invalid' 가
         따라붙어 ★저장이 실패한 것처럼 보인다★. 컨텍스트가 죽었으면 print 로 낸다.
+
+        ★★ info 와 warn 을 ★한 줄에서★ 부르면 안 된다 [2026-09-10] ★★
+        rclpy 의 rcutils_logger 는 로그 설정을 ★호출한 줄★ 단위로 캐시하고
+        (CallerId = 파일·함수·줄번호), 같은 줄에서 심각도가 바뀌면
+            ValueError: Logger severity cannot be changed between calls.
+        를 ★던진다★. 종전 코드는 삼항식으로 `.warn` 과 `.info` 를 한 줄에 두어
+        정확히 그 조건이었다 — 그래서 close() 가 '✅ 저장 완료'(info) 뒤에
+        '⚠️ 벽시계와 영상 길이가 다르다'(warn)를 낼 때마다 터졌다.
+        ★파일은 이미 닫힌 뒤라 영상은 멀쩡했지만★, 신호 핸들러 안에서 터지는
+        예외라 종료가 트레이스백으로 끝나고 종료코드가 1 이 됐다 — 런치 로그에서
+        '녹화가 실패했다' 로 읽히는 모습이다(실측으로 확인했다).
+        → ★두 줄로 나눠 호출 위치를 가른다.★ 줄을 합치지 말 것.
         """
         if rclpy.ok():
-            (self.get_logger().warn if warn else self.get_logger().info)(text)
+            log = self.get_logger()
+            if warn:
+                log.warn(text)      # ★아래 info 와 반드시 다른 줄이어야 한다★
+            else:
+                log.info(text)
         else:
             print(('[WARN] ' if warn else '[INFO] ') + text, flush=True)
 

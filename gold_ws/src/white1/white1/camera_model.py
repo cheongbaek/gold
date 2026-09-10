@@ -66,16 +66,23 @@ CALIB_FILE_NAME = 'usb_cam_calibration.yaml'
 #  ★cam_testbed 가 준 값이다★ (구 white 이름으로는 perception.py 의 ipm_src_pts).
 #  종전 유도값 [750,560, 1170,560, 1920,1080, 0,1080] 과 두 곳이 다르다:
 #    · 상단 y = 560 → ★650★    담는 깊이가 그만큼 얕아진다 — 1단 예비제동 문턱
-#      (sl_brake1_px)이 이 사다리꼴 안에 들어오는지 반드시 다시 확인한다.
+#      (sl_trigger_bev_y)이 이 사다리꼴 안에 들어오는지 반드시 다시 확인한다.
 #    · 밑변 x = 0/1920 → ★200/1720★  화면 좌우 끝(차체·연석이 걸리는 자리)을 뺀 폭이다.
 #    · 상단 x = 750/1170 → ★730/1190★
-#  ⚠️ ★사다리꼴을 바꾸면 픽셀의 뜻이 통째로 바뀐다★ sl_brake1_px · sl_brake2_px ·
+#  ⚠️ ★사다리꼴을 바꾸면 픽셀의 뜻이 통째로 바뀐다★ sl_trigger_bev_y ·
 #     bev_bumper_y_px 는 전부 재실측 대상이다(STOPLINE_TEST.md 단계 2·3).
 #
 #  ★[2026-08-25] 이 사다리꼴로 기하를 실측했다★ 아래 bev_bumper_y_px · bev_px_to_m
 #  의 값이 그 결과다. 요약하면 ★밑변(원본행 1080) = 카메라 앞 1.49 m★ 이고
 #  ★윗변(원본행 650) = 카메라 앞 6.46 m★ 이라 담는 깊이가 4.98 m 다.
-BEV_SRC_PTS_DEFAULT = [730.0, 650.0, 1190.0, 650.0, 1720.0, 1080.0, 200.0, 1080.0]
+#
+#  ★[2026-09-07] cam_testbed 재실측으로 교체★ 위 2026-08-25 계산(과 아래
+#  bev_bumper_y_px=645 · bev_px_to_m=0.0082 표)은 이 사다리꼴 기준이었다 —
+#  사다리꼴이 바뀌었으니 ★둘 다 무효다★. bev_bumper_y_px 는 아직 새로 안 잡혔고,
+#  sl_brake1_px(470.0)·sl_brake2_px(300.0) 은 [2026-09-08] 발화선
+#  sl_trigger_bev_y(=BEV 행 440) 하나로 대체됐다 — 그 값은 bev_bumper_y_px 를 타지
+#  않으므로, 아래 범퍼행이 무효인 채로도 판정은 성립한다(traffic_light.py 헤더).
+BEV_SRC_PTS_DEFAULT = [640.0, 620.0, 1280.0, 620.0, 1920.0, 1080.0, 0.0, 1080.0]
 
 BEV_W_DEFAULT = 640
 BEV_H_DEFAULT = 480
@@ -174,7 +181,12 @@ def declare_params(node):
     #      로그가 `1단 ≤240px(1.44m) → 2단 ≤60px(0.36m)` 로 찍혔는데, 실제로는 그
     #      두 문턱이 ★둘 다 도달 불가★ 였다(bev_bumper_y_px 주석 참고).
     #   ★사다리꼴을 다시 잡으면 이 값도 다시 재야 한다★
-    d('bev_px_to_m', 0.0082)
+    #
+    #   ★[2026-09-07] 0.0082 → 0.006160 — cam_testbed 재실측(위 BEV_SRC_PTS_DEFAULT
+    #   교체와 한 벌)★ 위 표는 옛 사다리꼴 기준이라 더는 맞지 않는다. 표시 전용값이라
+    #   판정에는 영향 없지만, HUD·로그의 참고 미터를 다시 믿으려면 새 사다리꼴로 표를
+    #   다시 뽑을 것.
+    d('bev_px_to_m', 0.006160)
 
 
 class CameraModel:
@@ -378,18 +390,29 @@ class CameraModel:
         """BEV 의 y 행에서 ★앞범퍼까지의 픽셀 거리★. 음수 = 이미 지나쳤다."""
         return float(self.bumper_y) - float(y_bev)
 
-    def nearest_dist_px(self, pts):
-        """폴리곤에서 ★차에 가장 가까운 점★ 까지의 픽셀 거리를 돌려준다.
+    def nearest_bev_y(self, pts):
+        """폴리곤에서 ★차에 가장 가까운 점의 BEV 행★ 을 돌려준다.
 
-        돌려주는 것 : (dist_px, bev_pts) — 쓸 수 있는 점이 하나도 없으면 (None, None).
+        돌려주는 것 : (y_bev, dist_px, bev_pts) — 쓸 수 있는 점이 없으면 (None, None, None).
         가장 가까운 점 = BEV 에서 y 가 가장 큰 점(BEV 는 아래로 갈수록 차 쪽이다).
+
+        ★[2026-09-08] y_bev 를 함께 낸다 — 이제 이쪽이 판정값이다★
+          종전 판정값은 dist_px(= bumper_y − y_bev) 하나였는데, 그 계산은
+          ★bev_bumper_y_px 를 타고 있다★. 그 상수는 2026-08-25 의 옛 사다리꼴에서
+          잰 값이라 2026-09-07 재실측 뒤로 ★무효★ 다(위 BEV_SRC_PTS_DEFAULT 주석).
+          정지선 발화를 BEV 행 자체로 판정하면(traffic_light.sl_trigger_bev_y)
+          그 무효 상수가 ★판정 경로에서 통째로 빠진다★ — y_bev 는 사다리꼴만으로
+          정해지는 값이기 때문이다. dist_px 는 계속 함께 돌려주지만 이제
+          ★HUD·CSV 기록 전용★ 이다.
         """
         bev, ok = self.poly_to_bev(pts)
         if not np.any(ok):
-            return None, None
+            return None, None, None
         y_near = float(np.max(bev[ok, 1]))
         d = self.bumper_dist_px(y_near)
-        return float(np.clip(d, -BEV_FAR_CLAMP_PX, BEV_FAR_CLAMP_PX)), bev
+        return (y_near,
+                float(np.clip(d, -BEV_FAR_CLAMP_PX, BEV_FAR_CLAMP_PX)),
+                bev)
 
     def m_txt(self, px):
         """픽셀 거리에 참고 미터를 붙인 문자열. bev_px_to_m 이 0 이면 빈 문자열."""

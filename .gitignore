@@ -33,7 +33,10 @@ Thumbs.db
 #     조용히 도는데, 안내가 필요하면 `ros2 run nxde tts` 로 다시 만들면 된다.
 *.mp3
 
-# 녹화 영상 (nxde/video/*.mp4 — ros2 run nxde video 산출물)
+# 녹화 영상 (nxde video 노드 산출물)
+#   · white1/video/tl-<시각>.mp4  ★신호등 인지 디버그 화면★ — one_launch·master.launch
+#     가 주행 내내 자동으로 적는다(tl_record_video, 기본 켜짐). ★그래서 제일 빨리 쌓인다★
+#   · nxde/video/cam-<시각>.mp4   `ros2 run nxde video` 로 손수 적는 원본 화면
 #   CSV·스크린샷과 같은 이유다. 1080p 가 ★분당 20~60MB★ 라 몇 번만 돌려도 GB 가 되고,
 #   git 이력에 들어가면 되돌릴 수 없다. 파일은 작업트리에 그대로 남는다.
 #   ※ 남겨야 하는 장면이면 잘라서 별도로 보관하고, 판정 근거는 문서에 수치로 적는다.

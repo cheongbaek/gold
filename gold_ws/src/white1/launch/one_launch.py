@@ -20,6 +20,11 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
         ★DRIVE_RUN 중에만 개입한다★ 빨간불이 사라지거나 초록불이면 즉시 풀고,
         driving 이 계속 내던 목표펄스가 그대로 통해 스스로 재출발한다.
         카메라를 안 꽂았으면 use_camera:=false (usb_cam 이 respawn 루프를 돈다)
+    nxde/video          ★인지 디버그 화면을 주행 내내 mp4 로★     (tl_record_video)
+        traffic_light 의 /tl/debug_image(창과 똑같은 그림 — YOLO 박스·ROI·BEV·HUD)를
+        받아 <src>/white1/video/tl-<날짜>_<시각>.mp4 로 적는다. 런치가 뜬 순간부터
+        내려갈 때까지다. ★그래서 인지 결과 창은 기본으로 안 띄운다★
+        (tl_show_window 기본 false) — 볼 때만 tl_show_window:=true 로 켠다.
     white1/hud          차량 상면도 HUD (구독 전용)               (use_hud)
     ouster_ros/os_driver  OS1-32 라이다 → /ouster/points           (use_lidar)
     mppi_local_planner  ★라바콘 회피 — CSV terrain 열이 'L' 인 구간만★ (use_lidar)

@@ -350,7 +350,7 @@ gold_ws/src/
       traffic_light.py 신호등 인지 → 빨간불이면 리니어 2단
       camera_model.py / camera_launch.py / ports.py / paths.py
     launch/one_launch.py    통합 런치
-    gps_data/  ros2bag/  sound/  calibration/
+    gps_data/  ros2bag/  video/  sound/  calibration/
     BOARD_B.md  BRAKING.md  GPS_HEADING.md  STOPLINE_TEST.md  CHANGELOG.md
 
   nxde/       아두이노 계층 (런치파일 없음, 전부 ros2 run)
@@ -358,7 +358,8 @@ gold_ws/src/
     master.py    마우스·키보드 GUI 조종 (하드웨어 검증용)
     joystick.py  조이스틱 조종 (자율모드 한정 + 영점→SWA)
     sound.py     음성 안내 (구독 전용). 음원의 주인은 white1/sound/
-    video.py     /image_raw → mp4 녹화
+    video.py     ★아무 Image 토픽이나 mp4 녹화★ (원본 /image_raw 도, 인지 디버그
+                 화면 /tl/debug_image 도 — 후자를 one_launch 가 자동으로 띄운다)
     check.py     ★런치 전 하드웨어 점검★ 보고하고 종료
     kill.py      돌고 있는 ROS2 를 한 번에 끝낸다 + 포트 초기화
     tts.py       안내 음성 mp3 제작 도구
@@ -465,8 +466,20 @@ S_IDLE ──MAP_START──▶ S_MAP_HEADING ──헤딩 확정──▶ S_MAP
 ### 3.4 데이터 — 파일 위치와 CSV 양식
 
 **`paths.py` 가 저장 위치의 단일 소유자다.** 해석 순서:
-① 명시 파라미터 → ② 환경변수 `WHITE1_*_DIR` → ③ **소스트리 `<ws>/src/white1/{gps_data,ros2bag,sound}`**
+① 명시 파라미터 → ② 환경변수 `WHITE1_*_DIR` → ③ **소스트리 `<ws>/src/white1/{gps_data,ros2bag,video,sound}`**
 → ④ 설치 share → ⑤ `~/white1/...`
+
+| 함수 | 폴더 | 쓰는 노드 |
+|---|---|---|
+| `data_dir()` | `gps_data/` | `mapping` 이 쓰고 `driving`·`prompt` 가 읽는다 |
+| `record_dir()` | `ros2bag/` | `record` (주행 CSV) |
+| **`video_dir()`** [2026-09-10] | **`video/`** | **`nxde/video`** (신호등 인지 디버그 mp4) |
+| `sound_dir()` | `sound/` | `nxde/sound`·`prompt` 가 읽는다 |
+
+> **`video_dir()` 은 런치가 미리 풀어서 넘긴다** — 받는 쪽이 `nxde` 의 노드라
+> `white1/paths.py` 를 모른다(`sound_dir` 과 같은 처리다). `nxde/video.py` 의 자체
+> 폴백에 맡기면 안 된다 — 그것은 `--symlink-install` 을 전제한 것이라, 이 워크스페이스
+> (0.4절에서 금지)에서는 **언제나** `~/nxde_video` 로 떨어진다.
 
 > ### ★★ `--symlink-install` 은 이제 쓰지 않는다 ★★
 >
@@ -742,6 +755,8 @@ ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때
 ```
 use_arduino:=true  use_record:=true  use_mapping:=true  use_sound:=true  use_hud:=true
 use_camera:=?      use_lidar:=true   use_lidar_rviz:=false  flip_lidar_xy:=true
+tl_record_video:=true  ← ★인지 디버그 화면을 주행 내내 mp4 로 (5.2절)★
+tl_show_window:=false  ← ★[2026-09-10] 기본이 false 다★ 볼 때만 true
 drive_pulse:=4     heading_pulse:=3  wheelbase_m:=1.25
 lidar_pulse:=2     ← ★L 구간 순항 [펄스]. 이것 하나만 고치면 된다 (6.4②)★
 lfd_omega_n:=0.97  lfd_min_m:=2.3
@@ -898,6 +913,59 @@ ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
 > - ⚠️ **무보호 경로다** — A보드에서 PID·슬루레이트·폭주감지·**기동 블랭킹**이
 >   전부 빠진다(`applySide` 의 `DRIVE_PWM` 분기에 `launching[idx] = false` 가 있다).
 > - `one_launch.py` 는 이 값을 켜지 않는다.
+
+### 5.2 신호등 인지 디버그 영상 녹화 [2026-09-10 신설]
+
+**`one_launch.py`·`master.launch.py` 가 주행 내내 인지 화면을 mp4 로 적는다.**
+켜고 끄는 것은 `tl_record_video`(기본 **켜짐**) 하나다.
+
+```
+<src>/white1/video/tl-<YYYYMMDD>_<HHMMSS>.mp4      ← paths.video_dir()
+```
+
+| | |
+|---|---|
+| **무엇이 적히나** | `traffic_light._draw()` 가 그린 캔버스 **그대로** — YOLO 박스·ROI 음영·BEV 사다리꼴·정지선 폴리곤·게이지 패널·한글 HUD 3줄 |
+| **언제부터 언제까지** | **런치가 뜬 순간부터 내려갈 때까지.** 주행 구간만 고르지 않는다 — '언제부터 적을지' 를 판단하는 로직이 없어야 그 로직이 틀릴 일도 없다 |
+| **크기** | 캔버스는 원본(1920×1080)이 아니라 `tl_window_width` 기준. 기본 960 → **1248×610**, 분당 **15~25 MB** |
+| **끝맺음** | 런치 종료(SIGINT/SIGTERM)에서 `nxde/video` 가 파일을 정상으로 닫는다. **mp4 는 닫아야 재생된다** |
+
+**★창과 녹화는 완전히 독립이다★**
+
+```
+tl_show_window   창을 띄운다      ← ★기본 false★ (2026-09-10 에 true 에서 내렸다)
+tl_record_video  파일로 적는다    ← ★기본 true★
+```
+
+**같은 캔버스다** — 창을 껐다고 정보가 줄지 않는다. 실차에서 창을 끄는 이유는
+① 화면 없는 터미널에서는 애초에 못 열고 ② 열려도 창 합성이 메인 스레드를 잡기
+때문이다. **눈으로 ROI·색 임계를 맞출 때만 `tl_show_window:=true`.**
+
+```bash
+ros2 launch white1 one_launch.py tl_show_window:=true      # 창까지 보면서
+ros2 launch white1 one_launch.py tl_video_scale:=0.5       # 용량·CPU 를 1/4 로
+ros2 launch white1 one_launch.py tl_record_video:=false    # 녹화 끄기
+ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없는 원본
+```
+
+> ### ★스위치가 하나인 이유★
+> 녹화는 **두 노드의 협업**이다 — `traffic_light` 가 `tl_publish_debug` 로
+> `/tl/debug_image` 를 내고, `nxde/video` 가 그것을 받아 적는다. 둘을 따로 열면
+> 짝이 어긋나 **"발행 안 하는 토픽을 녹화" = 0바이트 파일**이 나온다.
+> `tl_record_video` 한 인자가 **둘을 함께** 켠다(`camera_launch.py`).
+
+> ⚠️ **새 녹화 코드를 쓰지 않았다.** `nxde/video.py` 가 이미 그 일의 단일 소유자다 —
+> fps 를 실측해서 열고(재생 속도가 맞아야 `record` CSV 와 시각을 맞출 수 있다),
+> 남은 디스크가 **500 MB** 밑이면 스스로 끝내고, SIGTERM·SIGINT·atexit 어느
+> 경로로 죽어도 파일을 닫는다. `camera_launch` 가 한 일은 **그 노드를
+> `/tl/debug_image` 에 붙이고 저장 위치를 못 박은 것뿐**이다.
+
+> ⚠️ **`video/` 는 빠르게 쌓인다.** `.gitignore` 가 `*.mp4`·`*.avi` 를 막아 이력에는
+> 안 들어가지만 **작업트리에는 그대로 남는다** — 가끔 비운다.
+
+> ⚠️ **인지 FPS 가 눈에 띄게 떨어지면** 녹화를 끄기 전에 `tl_video_scale:=0.5` 를
+> 먼저 써 본다. 토픽 부하는 캔버스 기준 68 MB/s 인데, `/image_raw` 가 이미
+> 187 MB/s 흐르고 있으므로 그 위에 +36% 다.
 
 ---
 
@@ -2035,7 +2103,8 @@ ping -c2 192.168.6.11
 | B보드 텔레메트리 필드 수 | `arduino.py parse_b()` **+** 상태변수/퍼블리셔 **+** `record.py RECORD_TOPICS` |
 | `KEEPALIVE_S`(ROS) | A보드 `RX_TIMEOUT_MS`(3000) — **한 쌍이다** |
 | `/gps_fused` 배열 | `gps.py GPS_FUSED_FIELDS` **+** `driving.py cb_gps_fused` **+** `record.py _array(n)` |
-| 저장 경로 | `paths.py` 하나가 소유자 — 다른 곳에 리터럴을 적지 말 것 |
+| 저장 경로 | `paths.py` 하나가 소유자 — 다른 곳에 리터럴을 적지 말 것. **받는 쪽이 `nxde` 노드면 런치가 미리 풀어서 넘긴다**(`sound_dir`·`tl_video_dir`) |
+| 인지 디버그 녹화 | **`tl_record_video` 하나가 `traffic_light` 의 `tl_publish_debug`(발행) 와 `nxde/video` 노드(수신) 를 함께 켠다** — 따로 열면 0바이트 파일이 나온다(5.2절) |
 | `terrain` 규약 | `driving.py:963` **+** `one_launch.py` 헤더 **+** `lidar/README.md` **+** 이 문서 |
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |

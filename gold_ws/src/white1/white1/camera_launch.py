@@ -15,9 +15,46 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
                   ★[2026-08-24] 인지 결과 창이 계기판이 됐다★ 한글 HUD 3줄 + 우측
                   BEV·게이지 패널. tl_window_width 는 이제 '창 폭' 이 아니라
                   ★카메라 뷰 폭★ 이다(자세한 것은 traffic_light.py 헤더).
-                  ★[2026-08-19] 정지선이 보이면 2단계로 선다★ 1단 예비제동으로 줄이다
-                  정지선 앞에서 2단 확정 정지 (sl_brake1_px · sl_brake2_px).
-                  정지선이 안 보이면 종전대로 그 자리에서 즉시 2단.
+                  ★[2026-09-08] 판단을 단순화했다 — 근거 둘, 단계 하나★
+                  BEV 발화선(sl_trigger_bev_y)에 정지선이 닿거나, 신호등 박스가
+                  tl_solo_stop_min_height 를 넘거나 — ★먼저 성립하는 쪽★ 에서
+                  풀브레이크. 1단 예비제동과 대기 상한은 없앴다.
+    tl_video      ★[2026-09-10] 인지 디버그 화면을 주행 내내 mp4 로 적는다★
+                  nxde 의 video 노드를 /tl/debug_image 에 붙인 것이다(아래 절).
+
+────────────────────────────────────────────────────────────────────────────────
+ ★디버그 녹화 — 창을 안 띄우고도 '무엇을 보고 판단했나' 가 남는다 [2026-09-10]★
+────────────────────────────────────────────────────────────────────────────────
+실차에서 신호등이 왜 섰는지/왜 안 섰는지는 ★그 순간 화면★ 이 없으면 못 따진다.
+그런데 인지 결과 창(cv2 imshow)은 실차에서 켜 두기 나쁘다 — 화면이 없는 터미널에서는
+아예 못 열고, 열리더라도 창 합성이 메인 스레드를 잡는다. 그래서 둘을 갈랐다:
+
+    tl_show_window   창을 띄운다 (★기본 false★ — 사람이 볼 때만 true)
+    tl_record_video  같은 그림을 파일로 적는다 (★기본 true★ — 항상 남긴다)
+
+★같은 캔버스다.★ traffic_light 의 _draw() 가 그린 한 장(YOLO 박스·ROI 음영·BEV
+사다리꼴·정지선·게이지 패널·한글 HUD 3줄)을 창에도 띄우고 토픽으로도 낸다 —
+즉 ★녹화 영상에 창과 똑같은 것이 들어 있다★. 창을 껐다고 정보가 줄지 않는다.
+
+  · 발행 : traffic_light 의 tl_publish_debug → /tl/debug_image (BEST_EFFORT)
+  · 녹화 : nxde 의 video 노드가 그 토픽을 구독해 mp4 로 적는다
+  · 위치 : white1/paths.py 의 video_dir() = <src>/white1/video/tl-<날짜>_<시각>.mp4
+
+★스위치가 ★하나★ 인 이유 (tl_record_video)★ 발행과 녹화를 따로 열면 짝이 어긋나
+'발행 안 하는 토픽을 녹화' = ★0바이트 파일★ 이 나온다. 한 인자가 둘을 함께 켠다.
+
+★범위★ — 런치가 뜬 순간부터 내려갈 때까지다(주행 구간만 고르지 않는다). 주행 전
+대기·헤딩 초기화까지 통째로 들어가는 편이 사후 판정에 낫고, 무엇보다 '언제부터
+적을지' 를 판단하는 로직이 없어야 그 로직이 틀릴 일도 없다. 런치가 SIGTERM 을
+보내면 video 노드가 파일을 정상으로 닫는다(nxde/video.py 의 신호 처리).
+
+⚠️ ★비용★ 캔버스는 원본(1920x1080)이 아니라 tl_window_width 기준이다 —
+   기본 960 이면 ★1248x610★ (2.28MB/프레임, 30fps 에서 68MB/s · 파일 분당 15~25MB).
+   /image_raw 가 이미 187MB/s 흐르고 있으므로 그 위에 +36% 다. 인지 FPS 가 눈에 띄게
+   떨어지면 tl_video_scale:=0.5 (용량·인코딩 비용 약 1/4) 로 내린다.
+⚠️ ★디스크★ video 노드는 남은 용량이 500MB 밑이면 ★스스로 녹화를 끝낸다★(파일은
+   정상으로 닫는다). 그래도 <src>/white1/video 는 주행할수록 쌓이므로 가끔 비운다.
+   .gitignore 가 *.mp4 · *.avi 를 막고 있어 이력에는 안 들어간다.
 
 ────────────────────────────────────────────────────────────────────────────────
  ★카메라 기하는 camera_params() 한 벌로 나간다 [2026-08-19]★
@@ -42,8 +79,11 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
 
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import AndSubstitution, LaunchConfiguration
 from launch_ros.actions import Node
+
+#  ★저장 위치는 paths.py 가 소유한다★ 여기에 리터럴을 적지 않는다(CLAUDE.md 7절).
+from white1 import paths
 
 #  카메라 해상도 — ports.resolve_camera_format() 이 '이 해상도에서 실제로 나오는
 #  포맷'을 보고 pixel_format 을 정하므로, 이 값을 바꾸면 포맷도 따라 바뀐다.
@@ -90,34 +130,39 @@ def declare_args(cam_dev):
                         '리니어가 왕복한다. 1.0 이면 히스테리시스 없음'),
         DeclareLaunchArgument(
             'sl_enable', default_value='true',
-            description='★정지선 앞 2단계 정지★ 켜면 빨간불이 확정돼도 정지선이 보이는 '
-                        '동안은 1단 예비제동으로 줄이다가 정지선 앞에서 2단으로 선다. '
-                        '정지선을 못 보면 종전대로 즉시 2단 — 즉 인지가 안 되는 날은 이 '
-                        '인자가 아무 일도 하지 않는다. false 면 정지선 추론 자체를 안 돌린다'),
+            description='★정지선 앞 정지★ 켜면 빨간불이 확정돼도 정지선이 보이는 동안은 '
+                        '개입하지 않고, 정지선이 BEV 발화선(sl_trigger_bev_y)에 닿을 때 '
+                        '풀브레이크로 선다. 정지선을 못 보면 신호등 단독 문턱'
+                        '(tl_solo_stop_min_height)만 남는다. false 면 정지선 추론 자체를 '
+                        '안 돌린다 — 그때는 신호등 크기 하나로만 판단한다'),
         DeclareLaunchArgument(
-            'sl_brake1_px', default_value='470.0',
-            description='★1단 예비제동 문턱★ BEV 에서 정지선→앞범퍼 거리가 이 픽셀 이하가 '
-                        '되면 리니어 1단으로 부드럽게 줄이기 시작한다. '
-                        '★[2026-08-25] 240.0 → 470.0 — cam_testbed 실측값을 받았다★ '
-                        '범퍼 앞 4.03m 이고, 접근 1.92m/s 에서 1단 정지거리 2.47m '
-                        '(램프 0.55초 + 1.30 m/s², BRAKING.md 4절)에 1.5m 여유다. '
-                        '종전 240.0 은 근거 없는 값인 데다 ★물리적으로 도달 불가★ 였다 — '
-                        '차체가 BEV 행 400 아래를 가려 검출 실효 하한이 sl_px≈285 다. '
-                        '크게 잡으면 멀리서부터 기어가다 정지선 전에 멈춰 선다. '
-                        '⚠️ bev_src_pts · bev_bumper_y_px 를 바꾸면 이 값도 같이 무효다'),
-        DeclareLaunchArgument(
-            'sl_brake2_px', default_value='300.0',
-            description='★2단 확정 정지 문턱★ 같은 거리가 이 픽셀 이하면 2단으로 세운다. '
-                        '★[2026-08-25] 60.0 → 300.0 — cam_testbed 실측값을 받았다★ '
-                        '범퍼 앞 2.34m 이고, 검출 하한(범퍼 앞 2.2m = sl_px 285) 직전에 문다. '
-                        '종전 60.0 은 BEV 밑변(sl_px 165)보다도 낮아 ★영영 발화하지 않았다★. '
-                        '★반드시 sl_brake1_px 보다 작아야 한다★. '
-                        '⚠️ 여기서 더 낮추면 검출이 먼저 끊겨 「정지선 놓침」 경로로 떨어지는데, '
-                        '그 경로는 sl_stale_s(0.5초)를 기다리므로 1.92m/s 에서 0.96m 를 더 '
-                        '간다 — 늦게 서려다 오히려 정지선을 밟는다. '
-                        '⚠️ 값에 ★소수점을 붙여야 한다★(300 이 아니라 300.0) — 런치 인자는 '
+            'sl_trigger_bev_y', default_value='40.0',
+            description='★정지선 발화선★ BEV 에서 정지선 최근접점의 행이 이 값에 닿으면 '
+                        '★풀브레이크★ 다. 정지선은 BEV 를 위에서 아래로 지나가므로'
+                        '(멀면 y 가 작고 사다리꼴 윗변보다 더 멀면 음수다), 40 은 '
+                        '★정지선이 BEV 상단에 잡히는 순간★ 을 뜻한다. '
+                        '★[2026-09-08] 440.0 → 40.0 — 디버그 영상을 보고 사람이 정했다★ '
+                        '440(=BEV 밑변 480 바로 위, 범퍼 앞 1.2m)은 전수 시험에서 거의 '
+                        '안 쓰였다 — 가까워지면 등기구가 ROI 위로 벗어나 RED 확정이 먼저 '
+                        '풀리거나 신호등 단독 문턱이 먼저 걸렸다(접근 16회 중 정지선 앞 '
+                        '정지 1회). 40 이면 정지선이 보이기 시작하는 순간 판정이 선다. '
+                        '⚠️ bev_src_pts 를 바꾸면 이 값도 같이 무효다 — 행의 뜻이 바뀐다. '
+                        '⚠️ 값에 ★소수점을 붙여야 한다★(40 이 아니라 40.0) — 런치 인자는 '
                         '문자열을 그대로 형변환하므로 정수로 주면 노드 선언 타입(double)과 '
                         '어긋나 기동에 실패한다(tl_conf 등 기존 인자와 같은 성질이다)'),
+        DeclareLaunchArgument(
+            'tl_solo_stop_min_height', default_value='30.0',
+            description='★신호등 단독 정지 문턱★ 빨간 박스 높이가 이 픽셀 이상이면 '
+                        '풀브레이크다. ★정지선을 보고 있든 아니든 본다(OR 조건)★ — '
+                        '정지선이 발화선에 닿는 것과 이 문턱 중 ★먼저 성립하는 쪽★ 이 문다. '
+                        '★[2026-09-08] 신설★ 종전에는 정지선을 못 보면 RED 확정 즉시 섰는데, '
+                        '그 시점을 정하는 tl_red_stop_min_height 는 「이게 빨간불이 맞는가」를 '
+                        '가르는 인지 게이트이지 「설 만큼 가까운가」가 아니다. '
+                        '★30.0 은 실측값이다★ — cam_record_video 5편(64,800프레임·접근 16회)의 '
+                        '박스높이 최대치 27·27·35·36·38·42×5·43×2·44×2·45×2·46·53px 에서 '
+                        '14/16 이 닿는 값이다. ⚠️ ★올리면 안 서는 접근이 늘고, 내리면 정지선 '
+                        '앞에 서기 전에 신호등 쪽이 먼저 무는 접근이 는다★ — 그 균형점이다. '
+                        '0 이면 단독 정지를 끈다(정지선에 전적으로 의존 — 실차 금지)'),
         DeclareLaunchArgument(
             'cam_undistort', default_value='true',
             description='★어안 왜곡보정★ 카메라 인지 노드가 프레임을 받은 뒤 보정한다. '
@@ -126,16 +171,15 @@ def declare_args(cam_dev):
                         '걸면 직선이 휜 채로 펴진다. /image_raw 원본은 어느 쪽이든 그대로다'),
         DeclareLaunchArgument(
             'bev_src_pts',
-            default_value='[730.0, 650.0, 1190.0, 650.0, 1720.0, 1080.0, 200.0, 1080.0]',
+            default_value='[640.0, 620.0, 1280.0, 620.0, 1920.0, 1080.0, 0.0, 1080.0]',
             description='★BEV 사다리꼴★ 보정된 화면에서 노면 직사각형에 해당하는 네 점 '
-                        '(좌상,우상,우하,좌하). ★[2026-08-25] cam_testbed 가 준 값으로 '
-                        '갱신했다★ 종전 [750,560,1170,560,1920,1080,0,1080] 은 구 white '
-                        '마운트에서 유도한 것이었다. 밑변(원본행 1080)이 카메라 앞 1.49m, '
-                        '윗변(원본행 650)이 6.46m 라 담는 깊이가 4.98m 다. 밑변 x 를 '
-                        '0/1920 → 200/1720 으로 좁힌 것은 차체·연석이 걸리는 화면 좌우 끝을 '
-                        '뺀 것이다. ⚠️ ★이걸 바꾸면 픽셀의 뜻이 통째로 바뀐다★ — '
-                        'bev_bumper_y_px · sl_brake1_px · sl_brake2_px · bev_px_to_m 이 '
-                        '전부 재실측 대상이다(camera_model.py 의 해당 주석 참고)'),
+                        '(좌상,우상,우하,좌하). ★[2026-09-07] cam_testbed 재실측값으로 '
+                        '갱신했다★ 종전 [730,650,1190,650,1720,1080,200,1080](2026-08-25) '
+                        '은 이 값으로 대체됐다. ⚠️ ★이걸 바꾸면 픽셀의 뜻이 통째로 바뀐다★ — '
+                        'bev_bumper_y_px 는 옛 사다리꼴 기준이라 ★지금은 무효★ 이고, '
+                        '그래서 [2026-09-08] 부터 ★판정에는 안 쓴다★ — 정지선 발화는 '
+                        'sl_trigger_bev_y(BEV 행)로 한다. bev_px_to_m 은 갱신됐다'
+                        '(camera_model.py). ⚠️ 사다리꼴을 바꾸면 sl_trigger_bev_y 도 무효다'),
         DeclareLaunchArgument(
             'bev_bumper_y_px', default_value='645.0',
             description='★앞범퍼가 BEV 의 몇 번째 행인가 = 거리 0 의 기준★ 범퍼가 사다리꼴 '
@@ -155,9 +199,50 @@ def declare_args(cam_dev):
                         '(평상시 비용 0). ★튜닝할 때는 크게 준다★ — 신호등 없이 정지선만 '
                         '보고 싶으면 sl_gate_red_s:=99999 로 상시 추론시킨다(todo 9-1)'),
         DeclareLaunchArgument(
-            'tl_show_window', default_value='true',
-            description='인지 결과 창(OpenCV)을 띄울지. ★기본 true★ — ROI·근접도·색 '
-                        '임계는 눈으로 봐야 잡는다. 화면 없는 터미널(ssh)이면 false'),
+            'tl_show_window', default_value='false',
+            description='인지 결과 창(OpenCV)을 띄울지. ★[2026-09-10] 기본을 true → '
+                        'false 로 내렸다★ — 같은 그림이 tl_record_video 로 파일에 '
+                        '남으므로 실차에서 창을 켤 이유가 없어졌다(화면 없는 터미널에서는 '
+                        '애초에 못 열고, 열려도 창 합성이 메인 스레드를 잡는다). '
+                        '★볼 때만 tl_show_window:=true★ — ROI·근접도·색 임계를 눈으로 '
+                        '잡는 자리에서는 그렇게 켠다. 녹화와 완전히 독립이다'),
+        DeclareLaunchArgument(
+            'tl_record_video', default_value='true',
+            description='★인지 디버그 화면을 주행 내내 mp4 로 적는다 [2026-09-10]★ '
+                        '창(tl_show_window)과 ★같은 캔버스★ 다 — YOLO 박스·ROI 음영·'
+                        'BEV 사다리꼴·정지선·게이지·한글 HUD 가 전부 들어 있다. '
+                        '★이 인자 하나가 둘을 함께 켠다★ : traffic_light 의 '
+                        'tl_publish_debug(→ /tl/debug_image) 와 그것을 받아 적는 '
+                        'nxde video 노드. 따로 열면 짝이 어긋나 ★0바이트 파일★ 이 '
+                        '나오므로 스위치를 하나로 뒀다. 런치가 뜬 순간부터 내려갈 '
+                        '때까지 적고(주행 구간만 고르지 않는다), 런치 종료 SIGTERM 에서 '
+                        '파일을 정상으로 닫는다. ⚠️ 인지 FPS 가 떨어지면 끄지 말고 '
+                        '먼저 tl_video_scale 을 내려 볼 것'),
+        DeclareLaunchArgument(
+            'tl_video_dir', default_value=paths.video_dir(),
+            description='녹화 mp4 저장 폴더. 기본값은 white1/paths.py 의 video_dir() '
+                        '= <소스트리>/src/white1/video 다. ★여기서 미리 풀어서 넘긴다★ — '
+                        '받는 쪽이 nxde 의 노드라 white1/paths.py 를 모르기 때문이다'
+                        '(one_launch 가 sound_dir 을 넘기는 방식과 같다). '
+                        '★nxde/video.py 의 자체 기본값에 맡기지 않는 이유★ 그 노드는 '
+                        '설치본에서 돌면 ~/nxde_video 로 폴백하는데, 이 워크스페이스는 '
+                        '--symlink-install 금지라 ★언제나★ 그쪽으로 떨어진다'
+                        '(CLAUDE.md 0.4절) — 즉 영상이 소스트리에서 멀리 쌓인다. '
+                        '환경변수 WHITE1_VIDEO_DIR 로도 바꿀 수 있다'),
+        DeclareLaunchArgument(
+            'tl_video_scale', default_value='1.0',
+            description='녹화 배율(0.05~1.0). 1.0 = 캔버스 그대로. 0.5 면 가로세로 절반 '
+                        '= 용량·인코딩 비용 약 1/4. ★판정은 이 값과 무관하다★ — 녹화만 '
+                        '줄인다. 캔버스는 원본 1920x1080 이 아니라 tl_window_width 기준'
+                        '(960 → 1248x610)이므로 대개 1.0 으로 충분하다'),
+        DeclareLaunchArgument(
+            'tl_video_topic', default_value='/tl/debug_image',
+            description='녹화할 이미지 토픽. 기본은 인지 디버그 화면이다. '
+                        '★/image_raw 로 바꾸면 오버레이 없는 원본이 적힌다★ — 어안 '
+                        '왜곡이 남아 있는 카메라 원본이고, 그때 tl_record_video 는 '
+                        'tl_publish_debug 도 함께 켜지만 아무도 안 보므로 무해하다 '
+                        '(정확히 말하면 그 발행이 낭비이니, 원본만 필요하면 '
+                        '`ros2 run nxde video` 를 따로 띄우는 편이 낫다)'),
         DeclareLaunchArgument(
             'tl_window_width', default_value='960',
             description='인지 결과 창의 ★카메라 뷰★ 가로폭[px]. 창은 이보다 크다 — '
@@ -178,6 +263,14 @@ def declare_args(cam_dev):
             description='★기본 false★ 정지 중 조향 0 을 낼지. true 로 켜면 arduino 의 '
                         '명령 캐시를 0 으로 덮어써서 ★해제 뒤 원래 명령이 되살아나지 '
                         '않는다★(master 로 몰 때 특히 곤란하다) — traffic_light.py 헤더 참고'),
+        DeclareLaunchArgument(
+            'tl_hsv_red_h2_low', default_value='160',
+            description='★적색 hue 밴드 하단(고H쪽) [2026-09-08 신설]★ 노드 기본값도 '
+                        '160 이다 — 사례 A(0908_112649_run 06:07~06:10 RED 인지 끊김) '
+                        '오프라인 재현에서 램프 hue 가 H160~169 대(종전 문턱 170 을 '
+                        '스치는 값)로 관측돼 내렸다. 옛 동작으로 되돌리려면 이 인자를 '
+                        '170 으로 준다. cam_testbed 전수 회귀(오탐 유무)로 확정 전까지는 '
+                        '이 인자로 두 값을 나란히 돌려 비교한다'),
     ]
 
 
@@ -191,8 +284,9 @@ def camera_params():
 
     ⚠️ 여기 없는 것(bev_w·bev_h·bev_px_to_m)은 camera_model 의 기본값을 그대로 쓴다.
        런치 인자로 노출하지 않은 이유는 ★자주 바꿀 값이 아니고★, 바꾸면 두 문턱
-       (sl_brake*_px)의 뜻이 같이 달라지기 때문이다. 필요하면 -p 로 직접 준다.
-       ※ bev_px_to_m 은 [2026-08-25] 실측으로 0.0 → 0.0082 가 되었다(camera_model.py).
+       (sl_trigger_bev_y)의 뜻이 같이 달라지기 때문이다. 필요하면 -p 로 직접 준다.
+       ※ bev_px_to_m 은 [2026-09-07] cam_testbed 재실측으로 0.0082 → 0.006160 이
+         되었다(camera_model.py).
          ★표시 전용이라 판정은 안 흔들린다★ — HUD·로그의 참고 미터에만 쓴다.
     """
     return {
@@ -203,10 +297,16 @@ def camera_params():
 
 
 def actions(package_name, cam_format, node_env, respawn_delay):
-    """usb_cam · v4l2 보정 · traffic_light 세 액션. 전부 use_camera 로 묶인다."""
+    """usb_cam · v4l2 보정 · traffic_light · tl_video 네 액션.
+
+    전부 use_camera 로 묶이고, 녹화는 거기에 tl_record_video 를 ★AND★ 로 더 건다 —
+    카메라를 안 띄우면 /tl/debug_image 가 아예 안 나오므로 녹화만 살아 있으면
+    '프레임을 못 받는다' 경고만 5초마다 찍는 노드가 남는다.
+    """
     use_camera   = LaunchConfiguration('use_camera')
     video_device = LaunchConfiguration('video_device')
     cam_exposure = LaunchConfiguration('cam_exposure')
+    rec_video    = LaunchConfiguration('tl_record_video')
 
     # ── usb_cam → /image_raw ──
     #   ★camera_info_url 을 주지 않는다 [2026-08-19 근거 갱신]★ 왜곡보정을 안 해서가
@@ -309,21 +409,56 @@ def actions(package_name, cam_format, node_env, respawn_delay):
             'tl_red_stop_min_height': LaunchConfiguration('tl_red_stop_min_height'),
             'tl_near_release_ratio':  LaunchConfiguration('tl_near_release_ratio'),
             'sl_enable':              LaunchConfiguration('sl_enable'),
-            'sl_brake1_px':           LaunchConfiguration('sl_brake1_px'),
-            'sl_brake2_px':           LaunchConfiguration('sl_brake2_px'),
+            'sl_trigger_bev_y':       LaunchConfiguration('sl_trigger_bev_y'),
+            'tl_solo_stop_min_height': LaunchConfiguration('tl_solo_stop_min_height'),
             'sl_conf':                LaunchConfiguration('sl_conf'),
             'sl_gate_red_s':          LaunchConfiguration('sl_gate_red_s'),
             'show_window':            LaunchConfiguration('tl_show_window'),
+            # ★녹화 스위치가 발행도 켠다 [2026-09-10]★ 창과 독립이다 — 창을 꺼도
+            #   _draw() 는 돌고(그쪽 `if show_window or publish_debug`), 그 캔버스가
+            #   /tl/debug_image 로 나가 아래 tl_video 가 받아 적는다.
+            'tl_publish_debug':       rec_video,
             'window_width':           LaunchConfiguration('tl_window_width'),
             'stop_latch':             LaunchConfiguration('tl_stop_latch'),
             'publish_cmd_vel':        LaunchConfiguration('tl_publish_cmd_vel'),
+            'hsv_red_h2_low':         LaunchConfiguration('tl_hsv_red_h2_low'),
             # ★카메라 기하는 한 벌로 받는다★ 차선 인지가 붙으면 같은 dict 를 넘긴다.
             **camera_params(),
         }],
         condition=IfCondition(use_camera),
     )
 
-    return [usb_cam, usb_cam_ctrl, traffic_light]
+    # ── 인지 디버그 화면 녹화 [2026-09-10] ──
+    #   ★새 녹화 코드를 쓰지 않는다★ nxde/video.py 가 이미 '아무 Image 토픽이나 mp4 로
+    #   적는' 일의 단일 소유자다 — fps 를 실측해서 열고(재생 속도가 맞아야 CSV 와 시각을
+    #   맞출 수 있다), 남은 디스크가 500MB 밑이면 스스로 끝내고, SIGTERM·SIGINT·atexit
+    #   어느 경로로 죽어도 파일을 닫는다(mp4 는 닫아야 재생된다). 여기서 하는 일은
+    #   ★그 노드를 /tl/debug_image 에 붙이고 저장 위치를 못 박는 것뿐★ 이다.
+    #
+    #   ★respawn 을 걸지 않는다★ traffic_light 와 같은 이유다. 녹화가 실패하는 상황은
+    #   대개 디스크가 없거나 코덱이 없는 것이라, 되살려 봐야 같은 실패를 반복하며
+    #   로그만 덮는다. ★녹화 도구가 주행에 영향을 주는 일은 없어야 한다.★
+    #
+    #   fps 를 0(실측)으로 둔다 — 실측 구간(약 1초)은 파일에 안 들어가지만, 런치가
+    #   주행 시작보다 한참 먼저 뜨므로 잃는 것이 없다. 반대로 fps 가 틀리면 영상이
+    #   빠르거나 느리게 재생되어 '몇 초에 무슨 일이 있었나' 를 못 따진다.
+    tl_video = Node(
+        package='nxde',
+        executable='video',
+        name='tl_video_node',
+        output='screen',
+        additional_env=node_env,
+        parameters=[{
+            'image_topic': LaunchConfiguration('tl_video_topic'),
+            'output_dir':  LaunchConfiguration('tl_video_dir'),
+            'scale':       LaunchConfiguration('tl_video_scale'),
+            'fps':         0.0,          # 0 = 실측(권장)
+            'prefix':      'tl',         # → tl-<날짜>_<시각>.mp4
+        }],
+        condition=IfCondition(AndSubstitution(use_camera, rec_video)),
+    )
+
+    return [usb_cam, usb_cam_ctrl, traffic_light, tl_video]
 
 
 def banner(ports, log=print):

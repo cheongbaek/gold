@@ -2,17 +2,17 @@
 # -*- coding: utf-8 -*-
 """paths.py — ★저장 위치의 단일 소유자★
 
-경로(맵) CSV·주행 기록 CSV·음성 안내 음원이 어디에 있는지를 여기 한 곳에서 정한다.
-mapping·driving·prompt·record 가 같은 폴더를 봐야 하는데, 각자 자기 상수를
-들고 있으면 반드시 어긋난다(구 white 에서 prompt.py 주석이 "mapping.py 가
-저장하는 폴더와 동일해야 한다"고 경고하고 있던 바로 그 문제다).
+경로(맵) CSV·주행 기록 CSV·디버그 녹화 영상·음성 안내 음원이 어디에 있는지를
+여기 한 곳에서 정한다. mapping·driving·prompt·record 가 같은 폴더를 봐야 하는데,
+각자 자기 상수를 들고 있으면 반드시 어긋난다(구 white 에서 prompt.py 주석이
+"mapping.py 가 저장하는 폴더와 동일해야 한다"고 경고하고 있던 바로 그 문제다).
 
-우선순위 (세 함수 공통):
+우선순위 (네 함수 공통):
   1) 노드 파라미터로 준 명시 경로
-  2) 환경변수 (WHITE1_DATA_DIR / WHITE1_RECORD_DIR / WHITE1_SOUND_DIR)
-  3) ★소스 트리★ <...>/src/white1/{gps_data,ros2bag,sound}
+  2) 환경변수 (WHITE1_DATA_DIR / WHITE1_RECORD_DIR / WHITE1_VIDEO_DIR / WHITE1_SOUND_DIR)
+  3) ★소스 트리★ <...>/src/white1/{gps_data,ros2bag,video,sound}
   4) ★sound 만★ 설치본 share/white1/sound (소스트리가 아예 없는 배포본용)
-  5) 못 찾으면 ~/white1/{gps_data,ros2bag,sound}
+  5) 못 찾으면 ~/white1/{gps_data,ros2bag,video,sound}
      install/ 안에는 절대 쌓지 않는다 — 재빌드하면 날아간다.
      (4 는 예외다 — 음원은 ★읽기 전용★ 이라 재빌드로 날아가도 잃을 것이 없다.)
 
@@ -134,6 +134,25 @@ def data_dir(explicit: str = "") -> str:
 def record_dir(explicit: str = "") -> str:
     """주행 기록 CSV 폴더 — record 가 쓴다."""
     return _resolve(explicit, 'WHITE1_RECORD_DIR', 'ros2bag')
+
+
+def video_dir(explicit: str = "") -> str:
+    """디버그 녹화 영상(mp4) 폴더 — nxde 의 video 노드가 쓴다.
+
+    ★[2026-09-10] 신설★ 신호등 인지의 디버그 화면(/tl/debug_image)을 주행 내내
+    적는다(camera_launch.py 의 tl_record_video). 저장 위치를 여기서 정하는 이유는
+    ★nxde/video.py 의 자체 폴백이 이 워크스페이스에서는 못 쓰는 값이기 때문★ 이다:
+    그 노드는 <nxde 패키지 루트>/video 를 쓰되 '설치본이면 ~/nxde_video 로 폴백'
+    하는데, 이 워크스페이스는 ★--symlink-install 금지★ (CLAUDE.md 0.4절) 라
+    ★언제나★ 폴백 쪽으로 떨어진다 — 즉 영상이 소스트리에서 멀리 떨어진 홈에 쌓인다.
+    그래서 런치가 이 함수 값을 output_dir 로 ★명시해서★ 넘긴다.
+
+    gps_data·ros2bag 과 나란히 두는 것이라 우선순위 규칙도 그 둘과 같다.
+    ⚠️ 이 폴더는 커진다 — 1080p 는 분당 20~60MB 이고, 여기 적히는 디버그 캔버스
+    (1248x610)도 분당 15~25MB 다. .gitignore 가 *.mp4 · *.avi 를 막고 있으므로
+    이력에는 안 들어가지만, ★작업트리에는 그대로 쌓이므로 가끔 비워야 한다.★
+    """
+    return _resolve(explicit, 'WHITE1_VIDEO_DIR', 'video')
 
 
 def sound_dir(explicit: str = "") -> str:

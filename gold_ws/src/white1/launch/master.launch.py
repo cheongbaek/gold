@@ -18,6 +18,10 @@ master.launch.py ― white1 ★수동 계측★ 런치 (마우스 레버 창 + �
     white1/record         전 토픽 → CSV (force_record — 뜨는 즉시 manual-<시각>.csv)
     usb_cam               카메라 → /image_raw                        (use_camera)
     white1/traffic_light  신호등 인지 — 빨간불이면 리니어 2단          (use_camera)
+    nxde/video            ★인지 디버그 화면 mp4 녹화★             (tl_record_video)
+                          /tl/debug_image → <src>/white1/video/tl-<날짜>_<시각>.mp4.
+                          ★인지 결과 창은 기본으로 안 뜬다★ (tl_show_window 기본 false)
+                          — 눈으로 맞출 때만 tl_show_window:=true 로 켠다.
 
 ★신호등 인지는 master 창 최하단 체크박스로 켠다★ 체크가 켜져 있는 동안만 개입한다
   (/tl_enable). 빨간불이 사라지거나 초록불이 보이면 리니어를 풀고, 그 순간
