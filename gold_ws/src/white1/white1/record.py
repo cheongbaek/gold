@@ -314,6 +314,20 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #       tl_state=RED     + tl_near_metric 60  → 가까워서 섰다(정상)
     #       tl_state=RED     + tl_near_metric 26  → ★임계(25px)를 겨우 넘어 멀리서 섰다★
     #       tl_state=RED_FAR + tl_red_far=True    → 빨갛지만 멀다고 보고 안 섰다
+    #   ★[2026-09-10] 허락 두 열 — terrain 'T' 구간이 실제로 들었는지를 남긴다★
+    #   이 둘이 없어서 '신호등이 왜 개입 안 했나' 를 로그로 가릴 수 없었다.
+    #   tl_permit 은 driving 이 내는 허락(TRAFFIC_LIGHT_ENABLE + DRIVE_RUN + ★T 구간★)
+    #   이고, tl_req 는 신호등이 그 허락 아래 요구한 단계다. 함께 읽으면 갈린다:
+    #       tl_permit=False              → T 구간 밖이다. 신호등은 손을 안 댄다(정상)
+    #       tl_permit=True, tl_req=0     → T 구간인데 빨간불이 아니다(통과)
+    #       tl_permit=True, tl_req=2     → 빨간불 확정 — brake_level 도 2 여야 한다
+    #       tl_req=2 인데 brake_level<2  → ★max() 합성이 안 됐다★ (있을 수 없다)
+    TopicSpec('/tl_permit', Bool, ('tl_permit',), _scalar,
+              note="driving → traffic_light 개입 허락. ★신선도가 곧 허락★ 이고, "
+                   "[2026-09-10] 부터 terrain 열 'T' 구간에서만 True 다"),
+    TopicSpec('/tl_brake_req', Int32, ('tl_req',), _scalar,
+              note='신호등이 요구한 브레이크 단계. driving 이 자기 요청과 max() 로 '
+                   '합쳐 /brake_level 을 낸다 — 두 발행자가 다투지 않게'),
     TopicSpec('/tl/state', String, ('tl_state',), _scalar,
               note='RED / RED_FAR / GREEN / UNKNOWN — 프레임 판정'),
     TopicSpec('/tl/near_metric', Float32, ('tl_near_metric',), _scalar,

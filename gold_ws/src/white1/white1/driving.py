@@ -1121,6 +1121,37 @@ LSTATUS_STOP  = 'S'             # 일시정지 처리 중
 #  2단 정지거리는 4펄스 2.84 m / 6펄스 6.39 m (a=2.2 하한) 이고 판정·행정 지연이
 #  더해진다. 정지선처럼 쓰려면 ★사람이 S 를 그만큼 앞당겨 적는다★.
 STOP_ZONE_CHARS = ('S', 's')
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-10] terrain 'T' — 신호등 인지 구간 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★요구★ 신호등 인지 노드는 상시 돌되(카메라도 계속 켜져 있다), 실제 개입은
+#  ★사람이 CSV 에 적은 T 구간에서만★ 유효하다. 그 구간에서 빨간불이면 리니어 2단,
+#  그 밖(초록·미검출·불확실)이면 ★일시정지 없이 통과★ 한다.
+#
+#  ★L 처럼 여러 행에 연속으로 적는다★ (S 는 한 행) — 교차로 접근 구간 전체가
+#  '신호등을 봐도 되는 곳' 이기 때문이다.
+#
+#  ★구현이 거의 필요 없었던 이유 — /tl_permit 이 이미 그 계약이다★
+#  종전 `/tl_permit` 은 `TRAFFIC_LIGHT_ENABLE and state == DRIVE_RUN` 이었다.
+#  즉 '개입해도 되는가' 를 20Hz 로 계속 내보내고, traffic_light 는 그것이
+#  ★신선할 때만★ 허락으로 읽는다(그쪽 TL_ENABLE_STALE_S 2.0s — 이 노드가 죽으면
+#  스스로 손을 뗀다). 여기에 `and in_tl_zone()` 한 항을 더하는 것이 전부다.
+#  ★traffic_light.py 는 한 줄도 고치지 않는다★ — 인지·정지선·RED 판정은 그대로다.
+#
+#  ★[사용자 결정] 구간을 벗어나면 즉시 해제한다★
+#  '물고 있는 동안은 유지' 를 택하지 않았다. 그래서 아래가 ★사람이 지켜야 할 규약★
+#  이 된다 — T 는 정지선 뒤로도 ★정지거리만큼 더★ 이어져 있어야 한다. 그러지 않으면
+#  빨간불에 물린 채 관성으로 구간을 빠져나가는 순간 브레이크가 풀려 교차로 안으로
+#  굴러간다. 그래서 select_route 가 T 구간 길이를 재서 정지거리와 비교해 경고한다.
+#  (차가 완전히 서면 wp_idx 가 안 움직이므로 구간 안에 그대로 머문다 — 위험한 것은
+#   '구르는 채로 구간 끝을 넘는' 경우 하나뿐이다.)
+#
+#  ⚠️ ★T 가 하나도 없으면 신호등은 전 구간에서 개입하지 않는다★ 종전 경로 CSV 는
+#  전부 여기에 해당한다. 조용히 달라지지 않도록 select_route 가 그 사실을 말한다.
+#  (master 의 체크박스 `/tl_enable` 은 종전대로 OR 라 그쪽으로는 여전히 열린다 —
+#   벤치 시험용 수동 우회이고, 자율주행 판단 경로가 아니다.)
+TL_ZONE_CHARS = ('T', 't')
 STOP_HOLD_AFTER_ZERO_S = 3.5   # [s] 양 펄스 0 확인 뒤 이만큼 기다렸다 리니어를 푼다
 #  ★'양 펄스가 모두 0' 은 /encoder 로 정확히 판정된다★ 그 토픽은 좌+우 ★합★ 이고
 #  둘 다 음수가 아니므로 합 0 ⇔ 양쪽 0 이다. 다만 self.enc_pulse 는 중앙값 3점 뒤
@@ -1789,6 +1820,15 @@ class DrivingNode(Node):
     def in_lidar_zone(self, idx=None):
         return self.zone_at(self.wp_idx if idx is None else idx) in LIDAR_ZONE_CHARS
 
+    def in_tl_zone(self, idx=None):
+        """지금 ★신호등 인지 구간★ 안인가 (terrain 'T').  [2026-09-10]
+
+        ★in_lidar_zone 과 같은 O(1) 판정이다★ 사전계산 표가 필요 없다 —
+        구간의 '시작까지 남은 거리' 를 재야 하는 L(인계 서행)과 달리, T 는
+        '지금 안에 있는가' 만 물으면 되기 때문이다.
+        """
+        return self.zone_at(self.wp_idx if idx is None else idx) in TL_ZONE_CHARS
+
     # ══════════════════════════════════════════════════════════════════════════
     #  /lstatus — ★이 토픽이 조종권이다★ [2026-09-07]
     # ══════════════════════════════════════════════════════════════════════════
@@ -2197,6 +2237,7 @@ class DrivingNode(Node):
         n_lidar = sum(1 for z in zone if z in LIDAR_ZONE_CHARS)
         self.event(f"📁 경로 선택: {name} (WP {len(wps)}개) — 스위치를 자율로 올리면 출발")
         self._warn_stop_zones(zone)
+        self._warn_tl_zones(zone)
         if n_lidar:
             # ★몇 개인지가 아니라 몇 토막인지를 말한다★ 사람이 손으로 적은 열이라
             #   오타 하나가 구간을 둘로 쪼개는데, 개수만 보면 그것이 안 드러난다.
@@ -2238,6 +2279,92 @@ class DrivingNode(Node):
                        f"{', '.join(str(i) for i in inside)}. "
                        f"그 구간은 mppi 가 몰기 때문에 ★일시정지가 발동하지 않는다★. "
                        f"L 구간 밖으로 옮길 것")
+
+    def _warn_tl_zones(self, zone):
+        """terrain 'T'(신호등 인지 구간)를 세고 ★사람이 적은 열의 실수★ 를 말한다.
+        [2026-09-10 신설]
+
+        ★T 는 '개입 허락' 이지 '정지 지점' 이 아니다★ 그래서 검사하는 것도 다르다 —
+        S 는 '한 행인가' 를 보지만, T 는 ★구간이 정지거리를 담을 만큼 긴가★ 를 본다.
+        사용자 결정에 따라 ★구간을 벗어나는 순간 제동이 풀리므로★, 구간이 짧으면
+        빨간불에 물린 채 관성으로 빠져나가며 브레이크가 풀린다.
+        """
+        segs = self._zone_segments(zone, TL_ZONE_CHARS)
+        if not segs:
+            #  ★조용히 달라지지 않게 말한다★ 종전 CSV 는 전부 여기에 해당하고,
+            #  그 경로에서는 신호등이 아무 개입도 하지 않는다.
+            self.event(f"🚦 신호등 구간 없음 ({LIDAR_ZONE_COLUMN} 열에 'T' 가 없다) — "
+                       f"★이 경로에서는 신호등 개입이 전혀 없다★")
+            return
+        n_tl = sum(1 for z in zone if z in TL_ZONE_CHARS)
+        self.event(f"🚦 신호등 구간 {len(segs)}곳 / WP {n_tl}개 "
+                   f"({', '.join(f'{i0}~{i1}' for i0, i1 in segs)}) — "
+                   f"{LIDAR_ZONE_COLUMN} 열의 'T'. 이 구간에서만 빨간불 2단이 유효하다")
+
+        #  ① ★구간이 정지거리를 담는가★ — 이 결정(구간 밖 즉시 해제)의 유일한 위험이다.
+        #     ★WP 간격을 가정하지 않고 실제 경로에서 잰다★ 지금 매핑은 0.25m 고정이지만
+        #     구 CSV 는 0.23~0.43m 로 제각각이라, 0.25 를 곱하면 길이를 과소평가해
+        #     ★경고가 안 떠야 할 곳에서 뜨거나 떠야 할 곳에서 안 뜬다.★
+        #     (wp_s 는 아직 없다 — 여기는 경로 '선택' 시점이라 좌표 변환 전이다.)
+        v = self.drive_pulse * MS_PER_PULSE
+        need = self.stop_dist(v, GOAL_BRAKE2_MS2, GOAL_BRAKE2_LAG_S)
+        for i0, i1 in segs:
+            span_m = self._span_m(i0, i1)
+            if not math.isfinite(span_m) or span_m >= need:
+                continue
+            self.event(
+                f"⚠️ 신호등 구간 WP {i0}~{i1} 이 {span_m:.1f}m 뿐이다 — "
+                f"{self.drive_pulse}펄스({v * 3.6:.1f}km/h) 2단 정지거리 "
+                f"{need:.1f}m 보다 짧다. ★구간을 벗어나면 제동이 즉시 풀리므로★ "
+                f"빨간불에 물린 채 교차로로 굴러갈 수 있다 — "
+                f"T 를 정지선 뒤로 {need - span_m:.1f}m 더 이어서 적을 것")
+
+        #  ② ★T 구간이 L·S 에 쪼개졌는가★
+        #     ★terrain 은 열이 하나다★ — 한 행이 T 이면서 동시에 L 일 수는 없다.
+        #     그래서 '겹친다' 는 애초에 성립하지 않고, 실제로 일어나는 실수는
+        #     ★T 를 길게 적어 놓고 그 가운데 몇 행을 L 이나 S 로 덮어써서 구간이
+        #     두 토막이 나는 것★ 이다. 사람 눈에는 한 구간인데 코드에는 둘이고,
+        #     ★그 사이 구멍에서는 /tl_permit 이 False★ 라 빨간불을 봐도 안 선다.
+        #     (덮어쓴 것이 L 이면 그 구멍은 mppi 가 모는 구간이기도 하다.)
+        for (a0, a1), (b0, b1) in zip(segs, segs[1:]):
+            gap = zone[a1 + 1:b0]
+            if not gap:
+                continue
+            hole = set(gap)
+            if hole <= set(LIDAR_ZONE_CHARS) | set(STOP_ZONE_CHARS):
+                what = 'L' if hole & set(LIDAR_ZONE_CHARS) else 'S'
+                self.event(
+                    f"❌ 신호등 구간이 WP {a1 + 1}~{b0 - 1} 의 '{what}' 로 "
+                    f"★두 토막이 났다★ (WP {a0}~{a1} / {b0}~{b1}). terrain 은 열이 "
+                    f"하나라 T 를 덮어쓴 것이다 — 그 구멍에서는 신호등이 개입하지 "
+                    f"않는다. T 와 {what} 를 겹치지 않게 다시 적을 것")
+
+        #  ③ S 가 T 바로 옆에 있으면 알린다 — 금지는 아니다(교차로 앞 정지선과
+        #     신호등은 실제로 같이 있을 수 있다). 다만 ★S 행에서는 T 가 아니므로
+        #     그 순간 신호등 허락이 없다★ — 3.5초만 서고 신호와 무관하게 떠난다.
+        #     '빨간불이면 계속 기다린다' 를 기대하고 적으면 어긋난다.
+        s_near = [i for i, z in enumerate(zone)
+                  if z in STOP_ZONE_CHARS
+                  and any(a - 1 <= i <= b + 1 for a, b in segs)]
+        if s_near:
+            self.event(f"ℹ️ 신호등 구간에 붙어 S 가 있다 — WP "
+                       f"{', '.join(str(i) for i in s_near)}. ★S 행에서는 신호등 "
+                       f"허락이 없다★ — 3.5초만 서고 신호와 무관하게 출발한다. "
+                       f"빨간불에 계속 기다리게 하려면 S 를 빼고 T 만 적을 것")
+
+    def _span_m(self, i0, i1):
+        """raw_wps 의 i0~i1 구간 호길이 [m]. 좌표 변환 전에도 쓸 수 있다."""
+        wps = getattr(self, 'raw_wps', None)
+        if not wps or i1 >= len(wps) or i0 >= i1:
+            return float('nan')
+        lat0 = math.radians(wps[i0][0])
+        k = math.cos(lat0)
+        d = 0.0
+        for i in range(i0, i1):
+            dla = math.radians(wps[i + 1][0] - wps[i][0]) * EARTH_R
+            dlo = math.radians(wps[i + 1][1] - wps[i][1]) * EARTH_R * k
+            d += math.hypot(dla, dlo)
+        return d
 
     @staticmethod
     def _zone_segments(zone, chars=LIDAR_ZONE_CHARS):
@@ -4103,13 +4230,35 @@ class DrivingNode(Node):
                 best_signed = math.copysign(d, vx * ey - vy * ex)
         return best_signed
 
+    def tl_permit_now(self):
+        """지금 신호등이 이 차에 손을 대도 되는가.  [2026-09-10]
+
+        세 항의 AND 다:
+          ① TRAFFIC_LIGHT_ENABLE — 코드 내부 상수 (기능 자체의 on/off)
+          ② state == DRIVE_RUN   — 자율주행으로 실제 굴러가는 중일 때만
+          ③ in_tl_zone()         — ★사람이 terrain 열에 'T' 를 적은 구간★
+
+        ★S(일시정지)·L(라이다) 과 달리 여기서 아무것도 '하지' 않는다★ 이 함수는
+        허락만 낸다. 빨간불 판정도, 정지선도, 리니어 체결도 전부 traffic_light 가
+        하고, 그 결과는 /tl_brake_req 로 돌아와 _publish_brake 가 max() 로 합친다.
+        """
+        return bool(TRAFFIC_LIGHT_ENABLE
+                    and self.state == S_DRIVE_RUN
+                    and self.in_tl_zone())
+
     def publish_state_topics(self):
         self.pub_dstate.publish(String(data=self.state))
         # ★신호등 개입 허락 [2026-08-14]★ DRIVE_RUN 에서만, 그리고 상수가 True 일 때만.
         #   ★신선도가 곧 허락이다★ 이 노드가 죽으면 값이 끊겨 traffic_light 가 스스로
         #   손을 뗀다(그쪽 TL_ENABLE_STALE_S). 그래서 False 도 계속 내보낸다.
-        self.pub_tl_permit.publish(Bool(
-            data=bool(TRAFFIC_LIGHT_ENABLE and self.state == S_DRIVE_RUN)))
+        #
+        #   ★[2026-09-10] 여기에 'T 구간 안인가' 한 항이 더해졌다 (사용자 지시)★
+        #   신호등 노드는 상시 돌지만 ★개입은 사람이 CSV 에 적은 T 구간에서만★ 유효하다.
+        #   traffic_light.py 는 한 줄도 고치지 않았다 — 이 토픽이 이미 '허락' 계약이라
+        #   허락의 범위만 좁히면 그쪽 거동이 통째로 따라온다(상수절 'terrain T' 참고).
+        #   ⚠️ ★구간을 벗어나면 즉시 False 다 (사용자 결정)★ 그래서 T 는 정지선 뒤로
+        #   정지거리만큼 더 이어져 있어야 하고, select_route 가 그것을 재서 경고한다.
+        self.pub_tl_permit.publish(Bool(data=self.tl_permit_now()))
         # ★라이다 허락 [2026-09-01]★ /tl_permit 과 같은 규약이다 — True/False 를 매 틱
         #   계속 내므로 ★신선도가 곧 허락★ 이고, 이 노드가 죽으면 값이 끊겨 mppi 가
         #   스스로 손을 뗀다(그쪽 permit_stale_s). 그래서 False 도 계속 내보낸다.
