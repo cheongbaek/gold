@@ -286,14 +286,14 @@ private:
     //  ★8 m 인 이유★ 콘 간격이 5~8 m 라(사용자), 5 m 면 #1 을 지난 뒤 #2 가
     //  사거리 밖이라 목표가 잠깐 0 으로 돌아갔다 다시 튄다.
     declare_parameter<double>("avoid.cone_half_m", 0.20); // 라바콘 반폭
-    declare_parameter<double>("avoid.margin_m", 0.25);    // 그 위 안전여유
-    declare_parameter<double>("avoid.max_offset_m", 1.25); // ★회피 목표 상한★
+    declare_parameter<double>("avoid.margin_m", 0.30);    // 그 위 안전여유
+    declare_parameter<double>("avoid.max_offset_m", 1.35); // ★회피 목표 상한★
     //  ★이보다 가까운 콘은 "지나쳤다" 로 본다 [2026-09-11]★ 앞차축 1.25 m.
     declare_parameter<double>("avoid.pass_x_m", 0.90);
     //  ★기하 조향 [2026-09-11]★ false 면 종전 MPPI 조향으로 되돌아간다.
     declare_parameter<bool>("avoid.geometric_steer", true);
-    declare_parameter<double>("avoid.k_psi", 1.0);    // 방향항 (감쇠)
-    declare_parameter<double>("avoid.k_cte", 0.6);    // 위치항 (수렴)
+    declare_parameter<double>("avoid.k_psi", 1.5);    // 방향항 (감쇠)
+    declare_parameter<double>("avoid.k_cte", 1.2);    // 위치항 (수렴)
     declare_parameter<double>("avoid.v_min", 1.0);    // atan 분모 하한 [m/s]
     //  ★붙들고 있던 콘보다 이만큼 멀어지면 "다음 콘" 으로 본다★
     declare_parameter<double>("avoid.new_cone_dx_m", 1.5);
@@ -301,6 +301,8 @@ private:
     //  콘 하나의 치사 원반(반경 0.63 m)은 0.1 m 격자에서 ≈124 셀이다.
     declare_parameter<int>("avoid.cone_min_cells", 20);
     declare_parameter<double>("avoid.cone_y_max_m", 3.0);  // 이보다 옆은 무시
+    //  ★검출 깜빡임과 실제 통과를 가른다★ 20Hz 이므로 6틱 = 0.3 s.
+    declare_parameter<int>("avoid.cone_lost_ticks", 6);
     //  ★코스트맵 팽창반경을 여기서도 안다★ 회피 목표가 팽창 경계 안에 앉으면
     //  플래너가 목표에서도 비용을 보고 밖으로 달아난다(updateLateralTarget).
     declare_parameter<double>("avoid.inflation_m", 0.40);
@@ -519,6 +521,7 @@ private:
     lat_new_cone_dx_  = get_parameter("avoid.new_cone_dx_m").as_double();
     cone_min_cells_   = static_cast<int>(get_parameter("avoid.cone_min_cells").as_int());
     cone_y_max_       = get_parameter("avoid.cone_y_max_m").as_double();
+    lat_lost_max_     = static_cast<int>(get_parameter("avoid.cone_lost_ticks").as_int());
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
@@ -776,6 +779,7 @@ private:
     lat_latched_ = false;              // 회피 방향 래치도 푼다 [2026-09-11]
     lat_last_side_ = 0;                // 교대 기억도 지운다
     lat_locked_ox_ = 0.0;
+    lat_lost_n_ = 0;
     mppi_params_.lateral_target = 0.0;
     corridor_cost_ema_ = 0.0;
     corridor_cost_ema_init_ = false;
@@ -1449,18 +1453,32 @@ private:
     const bool seen = std::isfinite(ox) && ox <= lat_target_range_;
 
     if (!seen) {
-      //  ★지나갔다 — 즉시 반대쪽(복귀)으로★ 다음 콘이 아직 안 보이면 중심선이다.
-      //  다음 콘이 보이면 아래에서 그 콘 기준으로 새 목표가 잡힌다.
+      //  ══════════════════════════════════════════════════════════════════
+      //  ★한두 틱 끊긴 것과 정말 지나간 것을 구별한다 [2026-09-11]★
+      //  ══════════════════════════════════════════════════════════════════
+      //  ★실측 20260911_003740★ n_cones 가 1 → ★0 → 0★ → 1 로 두 틱 끊겼고,
+      //  그 사이 목표가 −0.50 → ★+0.00★ → −0.93 으로 튀었다. 조향이 따라
+      //  +14 → +21 → +17 → +12 → +8 → +4 → −4 로 되돌아 ★콘을 친 뒤에 피하는★
+      //  모습이 됐다(사용자 관찰과 일치).
+      //  끊기는 이유는 콘이 가까워지며 치사 원반이 ego 클리어 박스에 잘려
+      //  군집이 cone_min_cells 밑으로 내려가기 때문이다 — 콘이 사라진 것이 아니다.
+      //  → ★연속 lost_max 틱★ 동안 안 보여야 '지나갔다' 로 인정한다.
+      //    그전에는 직전 목표를 그대로 유지한다(버리지 않는다).
+      if (lat_latched_ && ++lat_lost_n_ < lat_lost_max_) {
+        return;                       // 잠깐 놓쳤다 — 목표를 지킨다
+      }
       if (lat_latched_) {
         RCLCPP_INFO(
           get_logger(),
-          "🛞 콘 통과 — 래치 해제, 목표를 %+.2f → 0.00 m 로 (즉시 복귀)",
-          mppi_params_.lateral_target);
+          "🛞 콘 통과 — 래치 해제(%d틱 연속 미검출), 목표 %+.2f → 0.00 m (즉시 복귀)",
+          lat_lost_n_, mppi_params_.lateral_target);
       }
       lat_latched_ = false;
+      lat_lost_n_ = 0;
       mppi_params_.lateral_target = 0.0;
       return;
     }
+    lat_lost_n_ = 0;                  // 보인다 — 미검출 카운터를 지운다
     //  ══════════════════════════════════════════════════════════════════
     //  ★래치는 '이 콘' 에 대한 것이다 — 콘이 바뀌면 다시 정한다 [2026-09-11]★
     //  ══════════════════════════════════════════════════════════════════
@@ -1698,10 +1716,14 @@ private:
     double ox = std::numeric_limits<double>::quiet_NaN();
     double oy = std::numeric_limits<double>::quiet_NaN();
     {
+      //  ★'앞쪽' 만 본다 [2026-09-11]★ detectCones 는 x 오름차순이라 걸러내지
+      //  않으면 ★뒤쪽 물체가 제일 먼저 나온다★ — 실측에서 210틱 중 163틱이
+      //  음수 x(최소 −8.70 m)였다. 기록이 통째로 못 쓰게 된다.
+      //  updateLateralTarget 은 이미 같은 필터를 쓰고 있었다 — 진단만 빠져 있었다.
       const std::vector<ConeObs> cs = detectCones(snap);
       for (const auto & c : cs) {
-        if (std::abs(c.y) > cone_y_max_) continue;
-        ox = c.x; oy = c.y; break;              // x 오름차순 — 가장 가까운 콘
+        if (c.x < lat_pass_x_ || std::abs(c.y) > cone_y_max_) continue;
+        ox = c.x; oy = c.y; break;              // x 오름차순 — 가장 가까운 앞쪽 콘
       }
     }
     std_msgs::msg::Float64MultiArray m;
@@ -1788,15 +1810,17 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr ref_sub_;
   std::string diag_topic_ = "/lidar_diag";
   //  ★회피 방향 결정 [2026-09-11]★
-  double lat_target_range_ = 8.0, lat_cone_half_ = 0.20, lat_margin_ = 0.25;
-  double lat_max_offset_ = 1.25;  // 회피 목표 상한 (횡벽과 ★다른 값★)
+  double lat_target_range_ = 8.0, lat_cone_half_ = 0.20, lat_margin_ = 0.30;
+  double lat_max_offset_ = 1.35;  // 회피 목표 상한 (횡벽과 ★다른 값★)
   double lat_inflation_ = 0.40;   // 코스트맵 팽창반경 (같은 값을 두 곳에 둔다)
   double lat_pass_x_ = 0.90;      // 이보다 가까우면 "지나쳤다"
   bool   geometric_steer_ = true; // ★조향을 기하로 만든다 [2026-09-11]★
-  double geo_k_psi_ = 1.0, geo_k_cte_ = 0.6, geo_v_min_ = 1.0;
+  double geo_k_psi_ = 1.5, geo_k_cte_ = 1.2, geo_v_min_ = 1.0;
   int    lat_last_side_ = 0;      // 직전 콘을 어느 쪽으로 지났나 (−1 우 / +1 좌)
   bool   lat_latched_ = false;   // 이 장애물에 대해 쪽을 정했나
   double lat_locked_ox_ = 0.0;   // 붙들고 있는 콘까지의 거리 (늘면 새 콘)
+  int    lat_lost_n_ = 0;        // 연속 미검출 틱 (깜빡임과 통과를 가른다)
+  int    lat_lost_max_ = 6;      // 이만큼 연속이어야 "지나갔다"
   double lat_new_cone_dx_ = 1.5; // 이만큼 멀어지면 다른 콘으로 본다
   int    cone_min_cells_ = 20;   // 군집 최소 셀 수 (잡음 제거)
   double cone_y_max_ = 3.0;      // 이보다 옆의 콘은 무시
