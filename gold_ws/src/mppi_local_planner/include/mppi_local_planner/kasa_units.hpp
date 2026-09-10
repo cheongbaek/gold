@@ -298,13 +298,21 @@ public:
   ///   · msToPulse 는 max_pulse_(=cruise_pulse, 보통 2)로 자른다 → 킥이 2 로 잘린다
   ///   · 킥은 '기준속도의 천장' 이 아니라 ★기동을 위한 일시적 가산★ 이라 성격이 다르다
   /// white1 이 같은 이유로 REF_TRIM_OUT_MAX(15) 를 MAX_PULSE_LIMIT(4) 와 따로 둔다.
-  /// ★pot 환산에 쓰는 속도는 '지금 내는 펄스' 다★ 언더스티어 항이 v² 로 들어가므로
-  /// 킥으로 올린 펄스를 그대로 넣어야 조향이 실제 속도와 맞는다.
-  void driveRaw(int pulse, double road_deg, bool control_enable) {
+  /// ★pot 환산 속도는 ★실측★ 이다 — 지령이 아니다 [2026-09-11 수정]★
+  /// 처음에는 '지금 내는 펄스' 를 넣었는데 ★그것이 조향을 포화시켰다.★
+  /// 언더스티어 항이 v² 라, 킥이 4펄스(3.54 m/s)를 만들면
+  ///     도로휠 22.9° → pot 50.7° → ★±40 클램프★
+  /// 가 되어 25% 과조향에 분해능까지 잃는다(실측 속도 1.3 m/s 기준 옳은 값은 31.8°).
+  /// 이 항은 ★타이어가 실제로 미끄러지는 만큼★ 을 보상하는 것이므로 기준은
+  /// 실제 속도여야 한다. v_ms 를 못 받으면(음수) 펄스로 떨어진다.
+  void driveRaw(int pulse, double road_deg, bool control_enable,
+                double v_meas_ms = -1.0) {
     const int p = std::clamp(pulse, 0, PULSE_PROTOCOL_MAX);
     const double clamped_road =
         std::clamp(road_deg, -steer_road_max_deg_, steer_road_max_deg_);
-    const double pot_left_positive = roadWheelToPotDeg(clamped_road, pulseToMs(p));
+    const double v_for_pot =
+        (std::isfinite(v_meas_ms) && v_meas_ms >= 0.0) ? v_meas_ms : pulseToMs(p);
+    const double pot_left_positive = roadWheelToPotDeg(clamped_road, v_for_pot);
 
     geometry_msgs::msg::Twist msg;
     msg.linear.x  = static_cast<double>(p);

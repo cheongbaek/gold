@@ -189,6 +189,16 @@ public:
     costmap_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(costmap_topic_, 1);
     path_pub_ = create_publisher<nav_msgs::msg::Path>(path_topic_, 1);
     reference_path_pub_ = create_publisher<nav_msgs::msg::Path>(reference_path_topic_, 1);
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★[2026-09-11] /lidar_diag — 회피를 사후에 볼 수 있게 (사용자 지시)★
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★L 구간에서만 나간다★ 이 노드가 실제로 몰고 있을 때만 발행하므로,
+    //  record.py 의 열은 자연히 L 구간에서만 채워지고 그 밖에서는 빈칸이다 —
+    //  '어디서부터 라이다가 몰았나' 가 열 모양으로 바로 드러난다.
+    //  ★진단 목적은 하나다 — 라바콘 사이를 잘 지났는가.★ 그래서 '기준선 대비
+    //  어디에 있었나(y·yaw)' 와 '무엇을 보고 얼마나 꺾었나(장애물·조향)' 를
+    //  한 배열에 담는다. 코스트맵·롤아웃은 CSV 에 담기엔 너무 크다.
+    diag_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(diag_topic_, 10);
 
     // Use nanosecond period to avoid millisecond truncation.
     const auto period = std::chrono::duration<double>(1.0 / control_frequency_);
@@ -270,6 +280,7 @@ private:
     declare_parameter<std::string>("handover.active_topic", "/lidar_active");
     //  ★GPS 기준선 [2026-09-11]★ 배열 규약의 소유자는 white1/driving.py 다.
     declare_parameter<std::string>("handover.ref_topic", "/lidar_ref");
+    declare_parameter<std::string>("diag_topic", "/lidar_diag");
     declare_parameter<double>("handover.ref_stale_s", 0.5);
     declare_parameter<bool>("handover.use_gps_ref", true);
     //  ★false 로 두면 종전처럼 '런치 = 출발' 이다★ 라이다 단독 시험용. 실차에서
@@ -462,6 +473,7 @@ private:
     path_topic_ = get_parameter("path_topic").as_string();
     reference_path_topic_ = get_parameter("reference_path_topic").as_string();
     ref_topic_    = get_parameter("handover.ref_topic").as_string();
+    diag_topic_   = get_parameter("diag_topic").as_string();
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
@@ -767,7 +779,14 @@ private:
     // 서로 미는 상태가 된다(drive_lidar_node 와 같은 이유).
     const bool braking = actuator_->brakeStage() > lidar::kasa::BRAKE_OFF;
     const int p_out = braking ? 0 : pulse;
-    actuator_->driveRaw(p_out, braking ? 0.0 : road_deg, /*control_enable=*/true);
+    //  ★pot 환산은 실측 속도로★ 지령(특히 킥으로 올린 값)을 넣으면 언더스티어
+    //  항이 v² 로 부풀어 조향이 ±40 에 포화한다(driveRaw 주석의 실측).
+    const double enc_age2 = nowSeconds() - enc_t_.load(std::memory_order_relaxed);
+    const double v_meas = (enc_t_.load(std::memory_order_relaxed) > 0.0 && enc_age2 <= 1.0)
+        ? enc_pulse_.load(std::memory_order_relaxed) * lidar::kasa::MS_PER_PULSE
+        : -1.0;
+    actuator_->driveRaw(p_out, braking ? 0.0 : road_deg, /*control_enable=*/true,
+                        v_meas);
     last_commanded_v_.store(
       lidar::kasa::pulseToMs(actuator_->lastPulse()), std::memory_order_relaxed);
   }
@@ -1230,6 +1249,7 @@ private:
       gps_ref_live_ ? "★GPS★" : "추측항법",
       current_pose.y, current_pose.yaw * 180.0 / M_PI);
 
+    publishDiag(current_pose, steer_deg, avg_cost, snap);
     publishRolloutPath();
     publishReferencePath(current_pose);
   }
@@ -1286,6 +1306,46 @@ private:
       path.poses.push_back(ps);
     }
     path_pub_->publish(path);
+  }
+
+  /// 전방 코리도 안에서 ★가장 가까운 장애물★ 을 찾는다 → (x, y). 없으면 NaN.
+  /// 회피가 잘 됐는지는 결국 '무엇을 얼마나 비켜 갔나' 이므로 이 둘이 핵심이다.
+  void nearestObstacle(const CostmapSnapshot & snap, double & ox, double & oy) const
+  {
+    ox = oy = std::numeric_limits<double>::quiet_NaN();
+    if (!snap.valid) return;
+    double best = std::numeric_limits<double>::infinity();
+    for (double x = 0.3; x <= 8.0; x += snap.resolution) {
+      for (double y = -3.0; y <= 3.0; y += snap.resolution) {
+        if (snap.getCost(x, y) < 50.0) continue;      // 빈 칸은 건너뛴다
+        const double d = std::hypot(x, y);
+        if (d < best) { best = d; ox = x; oy = y; }
+      }
+    }
+  }
+
+  /// ★L 구간 전용 진단★ — 이 함수는 실제로 몰고 있을 때만 불린다.
+  /// 배열 규약(record.py 가 같은 순서로 읽는다):
+  ///   [0] y_m      기준선 대비 횡오차 [m]  + 왼쪽
+  ///   [1] yaw_deg  기준선 대비 방위오차 [deg] + 왼쪽
+  ///   [2] road_deg 플래너가 낸 도로휠각 [deg] + 왼쪽
+  ///   [3] pot_deg  실제 발행 pot [deg] ★− 좌 / + 우 (보드 규약)★
+  ///   [4] pulse    실제 발행 펄스
+  ///   [5] avg_cost MPPI 평균 비용 (정지 게이트 임계와 비교해서 읽는다)
+  ///   [6] gps_ref  1 = 기준선이 GPS, 0 = 추측항법
+  ///   [7] obs_x    최근접 장애물 전방거리 [m] (라이다 원점 기준). 없으면 NaN
+  ///   [8] obs_y    그 장애물의 횡위치 [m] + 왼쪽. ★부호가 곧 '어느 쪽 라바콘인가'★
+  void publishDiag(const OdomPose & pose, double road_deg, double avg_cost,
+                   const CostmapSnapshot & snap)
+  {
+    double ox, oy;
+    nearestObstacle(snap, ox, oy);
+    std_msgs::msg::Float64MultiArray m;
+    m.data = {
+      pose.y, pose.yaw * 180.0 / M_PI, road_deg,
+      actuator_->lastPotDeg(), static_cast<double>(actuator_->lastPulse()),
+      avg_cost, gps_ref_live_ ? 1.0 : 0.0, ox, oy};
+    diag_pub_->publish(m);
   }
 
   void publishReferencePath(const OdomPose & odom_pose)
@@ -1361,6 +1421,8 @@ private:
   double ref_t_ = 0.0, ref_cte_ = 0.0, ref_herr_ = 0.0;
   double ref_zone_left_ = std::numeric_limits<double>::quiet_NaN();
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr ref_sub_;
+  std::string diag_topic_ = "/lidar_diag";
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr diag_pub_;
   double steer_filt_deg_ = 0.0;
   double last_pub_steer_deg_ = 0.0;
   std::mutex odom_mutex_;

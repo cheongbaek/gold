@@ -93,11 +93,22 @@ mppi_local_planner_node:
     costmap_topic: "/mppi_local_planner/costmap"
     path_topic: "/mppi_local_planner/local_path"
     reference_path_topic: "/mppi_local_planner/reference_path"
+    #  ★[2026-09-11] 회피 진단 — ★모는 동안에만★ 낸다 = L 구간 전용★
+    #  record.py 가 아홉 열(ld_*)로 받는다. 배열 규약은 publishDiag 주석이 소유자.
+    #  ★읽는 법★ ld_obs_y 의 부호(라바콘이 중심선 어느 쪽인가)와 ld_y 의 부호
+    #  (그때 차가 어느 쪽인가)가 ★반대★ 여야 비켜 간 것이다.
+    diag_topic: "/lidar_diag"
     base_frame_id: "os_sensor"
 
     # ── 제원 (실측) ──────────────────────────────────────────────────────
     wheelbase: 1.25              # [m] 축거 1250mm
-    track_width: 1.10            # [m] 윤거 1100mm (white/kasa_units.py). lidar yaml 0.65 는 1/5 잔재
+    #  ★[2026-09-11] 1.10 → 1.08 (정본에 맞춤 — 사용자 지시 '차량 크기에 맞게')★
+    #  정본은 ../mad-code/CLAUDE.md 1절의 실측 ★1080 mm★ 다. 1.10 은 구
+    #  white/kasa_units.py 값이고 CLAUDE.md 가 오래전부터 '맞춰 두는 편이 좋다' 로
+    #  적어 둔 항목이다. 반폭으로 10mm 차이라 충돌 판정에는 거의 영향이 없지만,
+    #  라바콘 사이 통과 여유를 계산하는 지금은 실제 값으로 두는 편이 맞다.
+    #  ★차 반폭 0.540 m★ — 아래 max_lateral_offset 이 이 값에서 유도된다.
+    track_width: 1.08            # [m] 윤거 1080mm (mad-code/CLAUDE.md 1절 실측)
     #  ⚠️ 아래 셋은 ★cruise_pulse > 0 이면 노드가 덮어쓴다★ (0 으로 둘 때만 유효)
     max_speed: 2.05              # [m/s] 플래너 하드캡. 2펄스(1.768) 위 여유
     min_speed: 0.80              # 회피 중 1펄스(~3 km/h, 원본 3params 와 같음)를 허용
@@ -192,7 +203,20 @@ mppi_local_planner_node:
       return_clear_cost: 40.0
       weight_path_terminal: 22.0
       weight_heading_terminal: 12.0
-      max_lateral_offset: 1.20
+      # ══════════════════════════════════════════════════════════════════
+      #  ★[2026-09-11] 1.20 → 1.00 — 차 크기와 ★물리적 실행 가능성★ 에서 유도★
+      # ══════════════════════════════════════════════════════════════════
+      #  ① 필요한 만큼 : 중심선 위의 라바콘을 비켜 가려면
+      #       차 반폭 0.540 + 콘 반폭 0.20 + 여유 0.26 = ★0.99 m★
+      #     (라바콘이 중심선에서 좌우로 놓이면 필요량은 그보다 작아진다)
+      #  ② 낼 수 있는 만큼 : S자 곡률 κ ≈ 2A(π/Λ)². max_steering 0.40 rad 은
+      #     R 2.96 m 가 한계라, 진폭 1.0 m 는 반파장 ★6 m 이상★ 이어야 성립한다.
+      #     1.2 m 를 목표로 두면 차가 물리적으로 따라갈 수 없는 궤적을 겨눈다 —
+      #     그러면 늘 뒤처진 채 풀락으로 쫓아가고, 그것이 관측된 모습이다.
+      #  ★실측(route_20260910_102050-20260910_225834)★ CTE 가 −2.19 → +2.05 로
+      #  진폭 2.1 m 였다. 설계값 1.20 의 1.8배 — ★벽이 서 있지 않았다★는 뜻이고,
+      #  원인은 odom.y 가 추측항법이었던 것이다(/lidar_ref 로 고쳤다).
+      max_lateral_offset: 1.00
       weight_lateral_wall: 12.0
       lookahead_distance: 7.0
       lookahead_step: 0.40
