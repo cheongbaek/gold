@@ -282,10 +282,15 @@ private:
     declare_parameter<std::string>("handover.ref_topic", "/lidar_ref");
     declare_parameter<std::string>("diag_topic", "/lidar_diag");
     //  ★회피 방향 결정 [2026-09-11]★ (updateLateralTarget)
-    declare_parameter<double>("avoid.range_m", 5.0);      // 이 안의 장애물만 본다
+    declare_parameter<double>("avoid.range_m", 8.0);      // 이 안의 장애물만 본다
+    //  ★8 m 인 이유★ 콘 간격이 5~8 m 라(사용자), 5 m 면 #1 을 지난 뒤 #2 가
+    //  사거리 밖이라 목표가 잠깐 0 으로 돌아갔다 다시 튄다.
     declare_parameter<double>("avoid.cone_half_m", 0.20); // 라바콘 반폭
     declare_parameter<double>("avoid.margin_m", 0.25);    // 그 위 안전여유
-    declare_parameter<double>("avoid.max_offset_m", 1.0); // ★회피 목표 상한★
+    declare_parameter<double>("avoid.max_offset_m", 1.25); // ★회피 목표 상한★
+    //  ★코스트맵 팽창반경을 여기서도 안다★ 회피 목표가 팽창 경계 안에 앉으면
+    //  플래너가 목표에서도 비용을 보고 밖으로 달아난다(updateLateralTarget).
+    declare_parameter<double>("avoid.inflation_m", 0.40);
     declare_parameter<double>("handover.ref_stale_s", 0.5);
     declare_parameter<bool>("handover.use_gps_ref", true);
     //  ★false 로 두면 종전처럼 '런치 = 출발' 이다★ 라이다 단독 시험용. 실차에서
@@ -488,6 +493,7 @@ private:
     lat_cone_half_    = get_parameter("avoid.cone_half_m").as_double();
     lat_margin_       = get_parameter("avoid.margin_m").as_double();
     lat_max_offset_   = get_parameter("avoid.max_offset_m").as_double();
+    lat_inflation_    = get_parameter("avoid.inflation_m").as_double();
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
@@ -739,6 +745,7 @@ private:
     }
     corridor_clear_latched_ = false;
     lat_latched_ = false;              // 회피 방향 래치도 푼다 [2026-09-11]
+    lat_last_side_ = 0;                // 교대 기억도 지운다
     mppi_params_.lateral_target = 0.0;
     corridor_cost_ema_ = 0.0;
     corridor_cost_ema_init_ = false;
@@ -1370,14 +1377,36 @@ private:
       //  같은 장애물을 계속 보고 있다 — 정한 쪽을 지킨다.
       return;
     }
+    //  ══════════════════════════════════════════════════════════════════
+    //  ★여유는 ★비용함수가 요구하는 값★ 에서 유도한다 [2026-09-11 수정]★
+    //  ══════════════════════════════════════════════════════════════════
+    //  종전에는 반폭 + 콘반폭 + 여유 = 0.99 m 였는데, ★그것이 폭주의 원인이었다.★
+    //  비용함수가 실제로 요구하는 것은 다르다:
+    //    · 풋프린트 앞 모서리가 ±half_w(0.54) 에 있고 (vehicle_model.hpp)
+    //    · 코스트맵이 장애물을 inflation_radius(0.40) 만큼 부풀린다
+    //    → 차 중심이 콘에서 ★0.94 m★ 안이면 비용이 붙는다
+    //  0.99 는 그 경계에서 ★5 cm★ 떨어져 있을 뿐이라, 플래너가 목표 지점에서도
+    //  잔여 비용을 보고 계속 밖으로 나간다. 실측(20260910_234828): 목표 −0.49
+    //  인데 ★−2.04★ 까지 갔고 그 지점 avg_cost 가 3084 였다.
+    //  ★그래서 팽창반경을 그대로 넣는다★ — 콘 반폭은 이미 팽창에 포함돼 있으므로
+    //  둘 중 큰 쪽만 센다(이중계산 방지).
     const double clear = 0.5 * vehicle_params_.track_width
-                         + lat_cone_half_ + lat_margin_;
+                         + std::max(lat_cone_half_, lat_inflation_) + lat_margin_;
     const double cand_r = oy - clear;      // 오른쪽으로 비킨다
     const double cand_l = oy + clear;      // 왼쪽으로 비킨다
     double target;
     if (std::abs(std::abs(cand_r) - std::abs(cand_l)) < 1e-3) {
-      //  좌우 대칭(장애물이 정면) — ★차가 이미 있는 쪽★ 으로. 앞을 가로지르지 않는다.
-      target = (odom_pose_.y >= 0.0) ? cand_l : cand_r;
+      //  ★좌우가 같다(콘이 정면) — 이때만 다른 근거가 필요하다★
+      //  ① 직전 콘을 지난 반대쪽 : 사용자가 말한 배치 그대로다 —
+      //     "첫 콘 왼쪽이면 그 오른쪽 통과, 다음 콘은 왼쪽 통과" = ★교대★.
+      //     콘이 좌우로 번갈아 서 있으면 |target| 비교만으로도 교대가 나오지만,
+      //     정면이라 좌우가 같을 때는 그 비교가 답을 못 준다. 그때 이것이 정한다.
+      //  ② 직전 정보가 없으면 차가 이미 있는 쪽 — 앞을 가로지르지 않는다.
+      if (lat_last_side_ != 0) {
+        target = (lat_last_side_ > 0) ? cand_r : cand_l;   // 지난번 반대쪽
+      } else {
+        target = (odom_pose_.y >= 0.0) ? cand_l : cand_r;
+      }
     } else {
       target = (std::abs(cand_r) <= std::abs(cand_l)) ? cand_r : cand_l;
     }
@@ -1388,6 +1417,7 @@ private:
     target = std::clamp(target, -lat_max_offset_, lat_max_offset_);
     mppi_params_.lateral_target = target;
     lat_latched_ = true;
+    lat_last_side_ = (target < oy) ? -1 : +1;   // 콘 대비 어느 쪽으로 지나는가
     RCLCPP_INFO(
       get_logger(),
       "🛞 회피 방향 결정 — 장애물 x=%.2f y=%+.2f m (중심선 %s) → "
@@ -1513,8 +1543,10 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr ref_sub_;
   std::string diag_topic_ = "/lidar_diag";
   //  ★회피 방향 결정 [2026-09-11]★
-  double lat_target_range_ = 5.0, lat_cone_half_ = 0.20, lat_margin_ = 0.25;
-  double lat_max_offset_ = 1.0;   // 회피 목표 상한 (횡벽과 ★다른 값★)
+  double lat_target_range_ = 8.0, lat_cone_half_ = 0.20, lat_margin_ = 0.25;
+  double lat_max_offset_ = 1.25;  // 회피 목표 상한 (횡벽과 ★다른 값★)
+  double lat_inflation_ = 0.40;   // 코스트맵 팽창반경 (같은 값을 두 곳에 둔다)
+  int    lat_last_side_ = 0;      // 직전 콘을 어느 쪽으로 지났나 (−1 우 / +1 좌)
   bool   lat_latched_ = false;   // 이 장애물에 대해 쪽을 정했나
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr diag_pub_;
   double steer_filt_deg_ = 0.0;
