@@ -164,6 +164,23 @@ double MPPIController::rolloutCost(
       const double over = y_abs - params_.max_lateral_offset;
       cost += params_.weight_lateral_wall * over * over;
     }
+    //  ★하드 벽 [2026-09-11]★ 사용자가 정한 '넘을 필요 없는' 선(2.5m). 넘으면
+    //  길을 벗어날 위험이 있으므로 장애물 비용(수백)을 압도해야 한다.
+    if (y_abs > params_.lateral_hard) {
+      const double over = y_abs - params_.lateral_hard;
+      cost += params_.weight_lateral_hard * over * over;
+    }
+    //  ★헤딩 벽 [2026-09-11]★ ★S 를 완만하게 만드는 직접적인 수단이다.★
+    //  횡위치는 헤딩의 적분이라, 헤딩을 묶으면 횡위치가 달아나는 ★속도★ 가
+    //  묶인다. 위 두 벽은 이미 벗어난 뒤에 되돌리는 힘이지만 이것은 애초에
+    //  크게 벗어나지 못하게 한다(실측에서 헤딩이 ±73° 까지 갔다).
+    {
+      const double h_abs = std::abs(yaw_odom);
+      if (h_abs > params_.max_heading_dev) {
+        const double over = h_abs - params_.max_heading_dev;
+        cost += params_.weight_heading_wall * over * over;
+      }
+    }
 
     const double dv = params_.desired_speed - u.v;
     cost += params_.weight_speed * dv * dv;

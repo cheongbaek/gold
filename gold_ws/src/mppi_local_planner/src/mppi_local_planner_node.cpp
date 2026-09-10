@@ -285,6 +285,7 @@ private:
     declare_parameter<double>("avoid.range_m", 5.0);      // 이 안의 장애물만 본다
     declare_parameter<double>("avoid.cone_half_m", 0.20); // 라바콘 반폭
     declare_parameter<double>("avoid.margin_m", 0.25);    // 그 위 안전여유
+    declare_parameter<double>("avoid.max_offset_m", 1.0); // ★회피 목표 상한★
     declare_parameter<double>("handover.ref_stale_s", 0.5);
     declare_parameter<bool>("handover.use_gps_ref", true);
     //  ★false 로 두면 종전처럼 '런치 = 출발' 이다★ 라이다 단독 시험용. 실차에서
@@ -422,6 +423,11 @@ private:
     declare_parameter<double>("mppi.weight_heading_terminal", 12.0);
     declare_parameter<double>("mppi.max_lateral_offset", 1.20);
     declare_parameter<double>("mppi.weight_lateral_wall", 12.0);
+    //  ★완만한 S — 하드 벽 + 헤딩 벽 [2026-09-11]★ (근거는 MPPIParams 주석)
+    declare_parameter<double>("mppi.lateral_hard", 2.5);
+    declare_parameter<double>("mppi.weight_lateral_hard", 4000.0);
+    declare_parameter<double>("mppi.max_heading_dev", 0.52);
+    declare_parameter<double>("mppi.weight_heading_wall", 4000.0);
     declare_parameter<double>("mppi.lookahead_distance", 7.0);
     declare_parameter<double>("mppi.lookahead_step", 0.40);
     declare_parameter<double>("mppi.weight_lookahead", 0.55);
@@ -481,6 +487,7 @@ private:
     lat_target_range_ = get_parameter("avoid.range_m").as_double();
     lat_cone_half_    = get_parameter("avoid.cone_half_m").as_double();
     lat_margin_       = get_parameter("avoid.margin_m").as_double();
+    lat_max_offset_   = get_parameter("avoid.max_offset_m").as_double();
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
@@ -616,6 +623,12 @@ private:
     mppi_params_.weight_heading_terminal = get_parameter("mppi.weight_heading_terminal").as_double();
     mppi_params_.max_lateral_offset = get_parameter("mppi.max_lateral_offset").as_double();
     mppi_params_.weight_lateral_wall = get_parameter("mppi.weight_lateral_wall").as_double();
+    mppi_params_.lateral_hard = get_parameter("mppi.lateral_hard").as_double();
+    mppi_params_.weight_lateral_hard =
+      get_parameter("mppi.weight_lateral_hard").as_double();
+    mppi_params_.max_heading_dev = get_parameter("mppi.max_heading_dev").as_double();
+    mppi_params_.weight_heading_wall =
+      get_parameter("mppi.weight_heading_wall").as_double();
     mppi_params_.lookahead_distance = get_parameter("mppi.lookahead_distance").as_double();
     mppi_params_.lookahead_step = get_parameter("mppi.lookahead_step").as_double();
     mppi_params_.weight_lookahead = get_parameter("mppi.weight_lookahead").as_double();
@@ -1368,8 +1381,11 @@ private:
     } else {
       target = (std::abs(cand_r) <= std::abs(cand_l)) ? cand_r : cand_l;
     }
-    target = std::clamp(target, -mppi_params_.max_lateral_offset,
-                        mppi_params_.max_lateral_offset);
+    //  ★횡벽(max_lateral_offset)이 아니라 전용 상한으로 자른다 [2026-09-11]★
+    //  같은 값을 쓰면 회피 목표가 정확히 벽 위에 앉아 ★서로 밀어낸다★ —
+    //  목표로 가려는 힘과 벽이 되미는 힘이 같은 자리에서 싸운다.
+    //  벽은 목표보다 바깥에 있어야 한다(params.yaml 의 두 값을 함께 볼 것).
+    target = std::clamp(target, -lat_max_offset_, lat_max_offset_);
     mppi_params_.lateral_target = target;
     lat_latched_ = true;
     RCLCPP_INFO(
@@ -1498,6 +1514,7 @@ private:
   std::string diag_topic_ = "/lidar_diag";
   //  ★회피 방향 결정 [2026-09-11]★
   double lat_target_range_ = 5.0, lat_cone_half_ = 0.20, lat_margin_ = 0.25;
+  double lat_max_offset_ = 1.0;   // 회피 목표 상한 (횡벽과 ★다른 값★)
   bool   lat_latched_ = false;   // 이 장애물에 대해 쪽을 정했나
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr diag_pub_;
   double steer_filt_deg_ = 0.0;
