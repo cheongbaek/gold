@@ -70,10 +70,15 @@ import time
 import rclpy
 import rclpy.executors
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import Imu
 
 from std_msgs.msg import Bool, String
 
 from white1 import paths
+#  ★라이다 준비 판정의 상수·토픽은 driving.py 가 소유자다★ 여기서 다시 적으면
+#  두 곳이 어긋나 '화면은 출발, driving 은 거절' 이 된다(gate_for 의 lidar_ready).
+from white1 import driving as dv
 
 # ★음성 안내 [2026-08-12 → 2026-08-21]★ 이 화면이 직접 내는 것은 ★네 개★ 다 —
 #   시작 인사와 대기 안내 셋(스위치 둘 + E-STOP 하나). 전부 토픽에 나타나지 않는
@@ -104,6 +109,15 @@ UI_WAIT        = 'WAIT'
 # 시작 게이트 — ★이 순서로★ 확인한다(파일 헤더 참고).
 GATE_SWITCH = 'SWITCH'    # 스위치가 목표 위치가 아니다
 GATE_ESTOP  = 'ESTOP'     # E-STOP 이 물려 있다
+#  ★[2026-09-10] 3단 게이트가 되었다 — ★주행에만★ (사용자 지시)★
+#  라이다 노드는 상시 돌아야 하는데 OS1-32 는 첫 패킷까지 수십 초가 걸린다.
+#  2026-09-10 주행에서 조종권은 정상으로 넘어갔는데 mppi 가 점군을 못 받아
+#  ★차가 L 구간에서 30초를 서 있었다★ (driving.py 상단 '주행은 라이다가 켜진
+#  뒤에' 절의 로그). 그래서 주행은 라이다가 흐르기 시작한 뒤에 출발시킨다.
+#  ★매핑은 이 게이트를 받지 않는다★ — GPS·IMU 만 있으면 된다.
+#  ★진짜 게이트는 driving.cb_drive_cmd 다★ 이 화면은 그보다 먼저 기다려 줄 뿐이고,
+#  화면을 안 띄우고 DRIVE_START 를 직접 쏴도 그쪽에서 막힌다.
+GATE_LIDAR  = 'LIDAR'     # 라이다가 아직 안 켜졌다 (주행만)
 
 
 class PromptNode(Node):
@@ -134,6 +148,9 @@ class PromptNode(Node):
         self.state = 'IDLE'
         self.auto_mode = None
         self.estop = False
+        self._ouster_n = 0            # 라이다 센서 스트리밍 (상단 GATE_LIDAR)
+        self._ouster_t = 0.0
+        self._lidar_active_t = 0.0    # mppi 하트비트
         self.selected = ''
         self.events = []          # 최근 이벤트 몇 줄
         self.last_point = None    # 매핑 중 마지막으로 기록된 좌표 한 줄
@@ -142,6 +159,14 @@ class PromptNode(Node):
         self.create_subscription(String, '/drive_event', self.cb_event, 10)
         self.create_subscription(Bool, '/vehicle_mode', self.cb_mode, 10)
         self.create_subscription(Bool, '/estop', self.cb_estop, 10)
+        #  ★라이다 준비 [2026-09-10]★ 두 토픽의 뜻이 다르다 —
+        #    /ouster/imu    : 센서가 실제로 흘리고 있다 (드라이버가 UDP 를 받는 중)
+        #    /lidar_active  : mppi 가 살아 있다 (★순수 하트비트 — 점군과 무관★)
+        #  둘 다 있어야 L 구간을 몰 수 있다. best_effort 로 받아야 붙는다.
+        self.create_subscription(
+            Imu, dv.OUSTER_IMU_TOPIC, self.cb_ouster,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+        self.create_subscription(Bool, dv.LIDAR_ACTIVE_TOPIC, self.cb_lidar_active, 10)
         # ★mapping.py 가 CSV 에 실제로 쓴 행만 여기로 나온다★ 매핑 진행을
         #   눈으로 확인하기 위한 용도일 뿐, 이 화면은 이 값을 판단에 쓰지 않는다.
         self.create_subscription(String, '/mapping_point', self.cb_point, 10)
@@ -163,6 +188,13 @@ class PromptNode(Node):
 
     def cb_estop(self, m):
         self.estop = bool(m.data)
+
+    def cb_ouster(self, _m):
+        self._ouster_n += 1
+        self._ouster_t = time.time()
+
+    def cb_lidar_active(self, _m):
+        self._lidar_active_t = time.time()
 
     def cb_point(self, m):
         self.last_point = str(m.data)
@@ -187,7 +219,26 @@ class PromptNode(Node):
             return GATE_SWITCH
         if self.estop:
             return GATE_ESTOP
+        #  ★라이다는 맨 마지막 [2026-09-10]★ 위 둘은 사람이 손을 써야 풀리고
+        #  이것은 기다리면 풀린다 — 사람이 할 일을 먼저 알려 주는 순서다.
+        #  ★주행에만 건다★ (want_auto). 매핑은 GPS·IMU 만 있으면 된다.
+        if want_auto and not self.lidar_ready():
+            return GATE_LIDAR
         return None
+
+    def lidar_ready(self):
+        """라이다 사슬이 실제로 돌고 있는가.  [2026-09-10]
+
+        ★driving.py 와 같은 판정을 같은 상수로 한다★ 두 곳이 다르게 판단하면
+        '화면은 출발했다는데 driving 이 거절' 하는 상태가 된다. 그래서 상수도
+        토픽 이름도 driving.py 에서 가져온다 — ★그쪽이 소유자다.★
+        """
+        now = time.time()
+        sensor = (self._ouster_n >= dv.LIDAR_SENSOR_MIN_N
+                  and (now - self._ouster_t) <= dv.LIDAR_SENSOR_STALE_S)
+        planner = (self._lidar_active_t > 0.0
+                   and (now - self._lidar_active_t) <= dv.LIDAR_ACTIVE_STALE_S)
+        return sensor and planner
 
     def announce_gate(self, pending, gate):
         """게이트가 ★바뀔 때만★ 한 번 안내한다.
@@ -244,7 +295,7 @@ class PromptNode(Node):
         lines += [
             " 1) 매핑 시작   2) 주행 시작   |  r = 새로고침  |  s = 정지(리니어 2단)  |  q = 종료",
             " ▶ 매핑: ①스위치 수동조종 → ②E-STOP 해제  (둘 다 되면 즉시 시작)",
-            " ▶ 주행: 경로 선택 후 ①스위치 자율주행 → ②E-STOP 해제",
+            " ▶ 주행: 경로 선택 후 ①스위치 자율주행 → ②E-STOP 해제 → ③라이다 준비",
             ""]
         return "\n".join(lines)
 
@@ -259,7 +310,8 @@ class PromptNode(Node):
         return "\n".join(lines)
 
     def wait_screen(self, pending, gate):
-        """2단 게이트 대기 화면. ★지금 걸린 한 가지만 크게 말한다★
+        """게이트 대기 화면. ★지금 걸린 한 가지만 크게 말한다★
+        (매핑 2단 / 주행 3단 — [2026-09-10] 주행에 ③라이다가 붙었다)
 
         둘 다 어긋나 있어도 ①만 띄우고, 그것이 해결되면 화면이 ②로 바뀐다 —
         음성 우선순위와 화면이 같은 것을 말해야 사람이 헷갈리지 않는다.
@@ -272,15 +324,31 @@ class PromptNode(Node):
         else:
             cur = "자율주행" if self.auto_mode else "수동조종"
 
+        nstep = 3 if pending == 'DRIVE' else 2      # 주행만 ③라이다가 있다
         if gate == GATE_SWITCH:
-            head = f" ⏳ {label} 대기 ①/② — 스위치를 ★{need}★ 로 전환하세요 (현재: {cur})"
+            head = (f" ⏳ {label} 대기 ①/{nstep} — 스위치를 ★{need}★ 로 전환하세요 "
+                    f"(현재: {cur})")
             rest = ("   다음 단계: ②E-STOP 해제 (지금 체결 중)" if self.estop
                     else "   다음 단계: ②E-STOP 확인 — 지금은 해제 상태다")
+        elif gate == GATE_LIDAR:
+            #  ★기다리면 풀린다 — 사람이 할 일이 없다★ 그래서 무엇을 기다리는지와
+            #  진행(프레임 수)을 보여 준다. 안 뜨면 유선 LAN 문제다.
+            head = f" ⏳ {label} 대기 ③/3 — ★라이다가 켜지는 중★ (스위치·E-STOP ✔)"
+            if self._ouster_n == 0:
+                rest = ("   /ouster/imu 가 아직 없다 — OS1-32 는 첫 패킷까지 수십 초. "
+                        "안 뜨면 유선 LAN : ip -br addr show eno1 / ping -c2 192.168.6.11")
+            elif self._ouster_n < dv.LIDAR_SENSOR_MIN_N:
+                rest = (f"   센서 스트리밍 시작됨 — 안정화 확인 중 "
+                        f"{self._ouster_n}/{dv.LIDAR_SENSOR_MIN_N}")
+            else:
+                rest = ("   센서는 흐르는데 mppi 의 /lidar_active 가 없다 — "
+                        "mppi_local_planner 가 떠 있는지 확인 (use_lidar:=true 인가)")
         else:
-            head = f" 🚨 {label} 대기 ②/② — ★E-STOP 을 해제하세요★ (스위치: {cur} ✔)"
+            head = (f" 🚨 {label} 대기 ②/{nstep} — ★E-STOP 을 해제하세요★ "
+                    f"(스위치: {cur} ✔)")
             rest = ("   해제하는 즉시 매핑이 시작됩니다 — 페달로 몰 준비를 하고 해제할 것"
                     if pending == 'MAP' else
-                    "   해제하는 즉시 ★차가 출발합니다★ — 차 주변을 먼저 확인할 것")
+                    "   다음 단계: ③라이다 준비 — 그것까지 되면 ★차가 출발합니다★")
         lines = [self.header(), head, rest,
                  " 아무 키나 누르면 취소하고 메뉴로 돌아갑니다.",
                  ""]

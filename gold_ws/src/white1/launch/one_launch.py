@@ -554,6 +554,10 @@ def generate_launch_description():
             'steer_plant_gain': LaunchConfiguration('steer_plant_gain'),
             'steer_understeer': LaunchConfiguration('steer_understeer'),
             'cte_ki':        LaunchConfiguration('cte_ki'),
+            #  ★주행은 라이다가 켜진 뒤에 시작한다 [2026-09-10]★ use_lidar 를
+            #  그대로 물려준다 — 라이다를 안 띄우는 구성에서 영영 대기하지
+            #  않게 하는 스위치다. ★매핑은 이 게이트를 받지 않는다.★
+            'require_lidar': LaunchConfiguration('use_lidar'),
             'goal_brake_m':   LaunchConfiguration('goal_brake_m'),
             'goal_creep_kmh': LaunchConfiguration('goal_creep_kmh'),
             'goal_brake1_ms2': LaunchConfiguration('goal_brake1_ms2'),

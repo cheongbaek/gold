@@ -262,6 +262,7 @@ import time
 import rclpy
 import rclpy.executors
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu
@@ -1279,6 +1280,38 @@ LIDAR_HOLD_PULSE = GOAL_HOLD_PULSE  # 인계 속도 = 종점 유지속도 = 2펄
 #  mppi 는 20Hz 로 내므로 1.0s 는 20틱 여유다.
 LIDAR_ACTIVE_STALE_S = 1.0
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-10] 주행은 ★라이다가 켜진 뒤에★ 시작한다 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★실측 — 조종권은 넘어갔는데 mppi 가 아무것도 못 냈다★
+#  ros2bag route_20260910_212627-20260910_213159 :
+#      t=14.82  🛞 라이다 구간 진입 — WP 49/107 에서 조종권 이양
+#      t=15~19  lstatus='L', cmd_pulse 0.0, brake 0  →  차가 코스트로 멈춤
+#      t=19~49  ★30초간 그대로★ (사람이 STOP 을 누를 때까지)
+#  이양 자체는 정상이었다. hold_for_lidar 도 안 걸렸다 — 즉 ★mppi 는 살아 있었다.★
+#  살아 있는데 몰지 않은 이유는 하나뿐이다: ★점군이 아직 안 오고 있었다.★
+#
+#  ★/lidar_active 로는 이것을 못 잡는다★ mppi 의 publishActive() 는 ★순수
+#  하트비트★ 다(그 파일 566행: "매 틱 낸다 — driving 은 값이 아니라 신선도를 본다").
+#  점군을 한 프레임도 못 받아도 꼬박꼬박 나간다. 즉 그 토픽이 증명하는 것은
+#  '플래너가 살아 있다' 이지 '라이다가 보고 있다' 가 아니다.
+#  (braketest 에서 /aeb_stop 이 pedal_drive_node 의 타이머라 라이다 생존을 증명하지
+#   못했던 것과 ★정확히 같은 함정★ 이다 — 그때는 cone_lidar 의 프레임별 신호를 봤다.)
+#
+#  ★그래서 센서 쪽을 직접 본다 — /ouster/imu★
+#  ouster 드라이버는 proc_mask 가 IMU|PCL 이라 ★센서에서 UDP 를 실제로 받는 동안만★
+#  이것을 ~100Hz 로 낸다(ouster_driver.yaml 49행). 점군과 같은 스트림에서 나오므로
+#  '센서가 살아서 흘리고 있다' 를 증명하고, 메시지가 작아서 20Hz 제어 노드가
+#  구독해도 부담이 없다(/ouster/points 는 프레임당 0.5~1.5MB 라 세는 것만으로도
+#  비싸다 — 그래서 점군을 직접 구독하지 않는다).
+#
+#  ★매핑은 이 게이트를 받지 않는다 (사용자 지시)★ 매핑은 GPS·IMU 만 있으면 된다.
+#  ★use_lidar:=false 면 통째로 꺼진다★ (require_lidar 파라미터). 안 그러면 라이다
+#  없이 돌리는 구성에서 영영 출발하지 못한다.
+OUSTER_IMU_TOPIC     = '/ouster/imu'
+LIDAR_SENSOR_STALE_S = 1.0    # 마지막 수신이 이보다 낡으면 센서가 끊긴 것
+LIDAR_SENSOR_MIN_N   = 10     # 이만큼 받아야 '스트리밍 중'. 한두 개는 우연일 수 있다
+
 # ── 복귀 버퍼 (L → G) ──
 #  ★왜 필요한가★ mppi 는 회피 뒤 ★자기 기준선★ 으로 복귀한다 — L 구간 진입 시점의
 #  IMU 헤딩으로 그은 직선이지, 이 노드의 GPS 경로가 아니다. 그래서 복귀 순간의 CTE 가
@@ -1451,6 +1484,10 @@ class DrivingNode(Node):
         self.declare_parameter('steer_plant_gain', STEER_PLANT_GAIN)
         self.declare_parameter('steer_understeer', STEER_UNDERSTEER)
         self.declare_parameter('cte_ki', CTE_KI)
+        #  ★주행 시작 전 라이다를 기다릴지 [2026-09-10]★ 런치가 use_lidar 를
+        #  그대로 물려준다. 라이다 없이 돌리는 구성에서 영영 대기하지 않게 하는
+        #  스위치일 뿐이고 ★기본은 반드시 기다린다★ 이다. 매핑은 영향 없다.
+        self.declare_parameter('require_lidar', True)
         # ── 종점 접근 [2026-08-12 도입 → 2026-08-19 개편] ── 상단 '종점 접근' 절 참고
         self.declare_parameter('goal_brake_m', GOAL_WATCH_M)
         self.declare_parameter('goal_creep_kmh', GOAL_CREEP_KMH)
@@ -1481,6 +1518,7 @@ class DrivingNode(Node):
         self.plant_gain = max(0.1, float(self.get_parameter('steer_plant_gain').value))
         self.understeer = float(self.get_parameter('steer_understeer').value)
         self.cte_ki = max(0.0, float(self.get_parameter('cte_ki').value))
+        self.require_lidar = bool(self.get_parameter('require_lidar').value)
         # 0 이하로 주면 그 단계를 끄는 뜻이 된다 — 제동 없이 예전 거동으로 돌아간다.
         self.goal_brake_m = max(0.0, float(self.get_parameter('goal_brake_m').value))
         self.goal_creep_kmh = max(0.0,
@@ -1620,6 +1658,10 @@ class DrivingNode(Node):
         self._lidar_zone_t0 = 0.0     # 이양 시각 (로그·진단)
         self._lidar_active = False    # mppi 가 마지막으로 보고한 값
         self._lidar_active_t = 0.0    # 그 보고를 받은 시각 — ★신선도가 곧 생존이다★
+        #  ★센서가 실제로 흘리고 있는가 [2026-09-10]★ (상단 '주행은 라이다가
+        #  켜진 뒤에' 절) — /lidar_active 는 플래너 생존일 뿐이라 이것과 다르다.
+        self._ouster_n = 0
+        self._ouster_t = 0.0
         self._rejoin = False          # L → G 복귀 재수렴 중인가
         self._rejoin_t0 = 0.0         # 재수렴 시작 시각 (REJOIN_TIMEOUT_S 판정)
         self._rejoin_cte0 = 0.0       # 복귀 순간의 CTE (로그 — 얼마나 벗어나 돌아왔나)
@@ -1702,6 +1744,12 @@ class DrivingNode(Node):
         #  라이다가 없는 것이고, 그러면 L 구간에 조종권을 넘기지 않는다.
         self.create_subscription(Bool, LIDAR_ACTIVE_TOPIC,
                                  self.cb_lidar_active, 10)
+        #  ★센서 스트리밍 확인 [2026-09-10]★ ~100Hz 라 best_effort·depth 1 로 받는다.
+        #  ouster 드라이버는 SensorDataQoS(best_effort)로 내므로 이쪽도 맞춰야 붙는다
+        #  (reliable 구독자는 best_effort 발행자와 ★호환되지 않아 조용히 안 온다★).
+        self.create_subscription(
+            Imu, OUSTER_IMU_TOPIC, self.cb_ouster_imu,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
 
         self.create_timer(1.0 / CONTROL_HZ, self.loop)
 
@@ -1914,6 +1962,51 @@ class DrivingNode(Node):
         그 상황을 알 방법이 없다."""
         self._lidar_active = bool(msg.data)
         self._lidar_active_t = time.time()
+
+    def cb_ouster_imu(self, _msg):
+        """★값은 보지 않는다 — 온다는 사실만 본다★  [2026-09-10]
+
+        ouster 드라이버는 센서에서 UDP 를 실제로 받는 동안만 이것을 낸다. 즉 이게
+        들어온다 = 점군도 흐르고 있다(같은 스트림·같은 proc_mask). 점군을 직접
+        구독하지 않는 이유는 상단 절에 있다(프레임당 0.5~1.5MB).
+        """
+        self._ouster_n += 1
+        self._ouster_t = time.time()
+
+    def lidar_ready(self):
+        """라이다 사슬이 ★실제로 돌고 있는가★ → (센서, 플래너).  [2026-09-10]
+
+        ★둘의 뜻이 다르므로 따로 본다★
+          · 센서   : /ouster/imu 가 충분히 왔고 신선한가 → ouster 가 흘리고 있다
+          · 플래너 : /lidar_active 가 신선한가            → mppi 가 살아 있다
+        센서만 있으면 L 구간을 몰 사람이 없고, 플래너만 있으면 눈이 없다 —
+        2026-09-10 주행이 바로 그 '플래너만 있는' 상태였다(상단 절).
+        """
+        now = time.time()
+        sensor = (self._ouster_n >= LIDAR_SENSOR_MIN_N
+                  and (now - self._ouster_t) <= LIDAR_SENSOR_STALE_S)
+        return sensor, self.lidar_alive()
+
+    def lidar_wait_reason(self):
+        """주행을 아직 시작하면 안 되는 이유 한 줄. 없으면 '' (= 출발해도 된다)."""
+        if not self.require_lidar:
+            return ''
+        sensor, planner = self.lidar_ready()
+        if not sensor and self._ouster_n == 0:
+            return ("⏳ ★라이다 대기★ — /ouster/imu 가 아직 한 번도 오지 않았다. "
+                    "OS1-32 는 첫 패킷까지 수십 초가 걸린다. 안 뜨면 유선 LAN 을 볼 것 : "
+                    "ip -br addr show eno1 (192.168.6.100/24) / ping -c2 192.168.6.11")
+        if not sensor and (time.time() - self._ouster_t) > LIDAR_SENSOR_STALE_S:
+            return (f"⏳ ★라이다 대기★ — /ouster/imu 가 "
+                    f"{time.time() - self._ouster_t:.1f}s 째 끊겼다 "
+                    f"(누적 {self._ouster_n}). 센서 스트림이 끊긴다")
+        if not sensor:
+            return (f"⏳ ★라이다 대기★ — 센서 스트리밍 시작됨, 안정화 확인 중 "
+                    f"{self._ouster_n}/{LIDAR_SENSOR_MIN_N}")
+        if not planner:
+            return ("⏳ ★라이다 대기★ — 센서는 흐르는데 mppi 의 /lidar_active 가 "
+                    "안 온다. mppi_local_planner 가 떠 있는지 확인 (use_lidar:=true 인가)")
+        return ''
 
     def lidar_alive(self):
         """mppi 가 살아 있나(= /lidar_active 가 신선한가). 한 번도 못 받으면 False."""
@@ -2310,6 +2403,14 @@ class DrivingNode(Node):
                 self.event("⚠️ 주행 시작 실패 — 스위치가 자율주행이어야 한다")
             elif not getattr(self, 'raw_wps', None):
                 self.event("⚠️ 주행 시작 실패 — 경로가 선택되지 않았다")
+            elif self.lidar_wait_reason():
+                #  ★라이다가 켜진 뒤에 출발한다 [2026-09-10 — 사용자 지시]★
+                #  ★게이트 중 맨 마지막에 둔다★ 위의 것들(E-STOP·스위치·경로)은
+                #  사람이 손을 써야 풀리므로 먼저 알려야 하고, 라이다는 기다리면
+                #  알아서 풀린다. prompt 의 ①스위치 → ②E-STOP 순서와 같은 규칙이다.
+                #  ★매핑에는 이 게이트가 없다★ (위 MAP_START 분기) — 사용자 지시대로
+                #  매핑은 GPS·IMU 만 있으면 된다.
+                self.event(self.lidar_wait_reason())
             else:
                 self.enter(S_DRIVE_HEADING, f"▶ 주행 시작(prompt) [{self.route_name}]")
                 self._announce_gps_quality()
