@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [white1 / 2026-09-09]
+braketest.launch.py ― ★제동검차 전용 런치★ [white1 / 2026-09-12 개편]
 ════════════════════════════════════════════════════════════════════════════════
     ros2 launch white1 braketest.launch.py
-    ros2 launch white1 braketest.launch.py route:=route_20260908_203042.csv
+    ros2 launch white1 braketest.launch.py goal_lat:=37.1234567 goal_lon:=127.1234567
     ros2 launch white1 braketest.launch.py drive_pulse:=8
-    ros2 launch white1 braketest.launch.py drive_pwm:=140      # ★직접 PWM★
+    ros2 launch white1 braketest.launch.py t_preview:=1.2       # ★좁은 차로★
+    ros2 launch white1 braketest.launch.py drive_pwm:=140       # ★직접 PWM★
+
+  ★[2026-09-12] 경로 CSV 추종을 버렸다★ 기준은 ★목표 좌표 한 점★ 이고, 주행은
+  '출발 위치 → 그 점' 을 잇는 ★직선 한 줄★ 을 프리뷰로 추종한다. 목표 좌표의
+  단일 소유자는 ★braketest.py 상단의 GOAL_LAT / GOAL_LON★ 이다(런치 인자는 그것을
+  덮는 임시 수단). 근거 전문은 braketest.py 헤더.
 
   띄우는 것 (one_launch.py 에서 ★측정에 필요한 것만★ 남겼다):
       lidar/aeb.launch.py   ★라이다 정지 시스템 그대로★ (통째로 include)
@@ -45,23 +51,27 @@ braketest.launch.py ― ★브레이크 제동거리 측정 전용 런치★ [wh
      인지만 따로 확인하려면 : ros2 launch lidar aeb.launch.py use_rviz:=true
         차 앞 3 m 에 사람 → /cone_lidar_node/obstacle_distance 가 3.0 이면 맞다
   1. `ros2 run nxde check` 로 A/B보드·GPS·IMU 연결을 먼저 확인한다.
-  2. ★차 앞을 비운다.★ 기본 10펄스(31.8 km/h)에서 S 지점 뒤로 13~20 m 를 더 간다
-     (braketest.py 헤더의 안전절 계산). ★S 뒤 최소 30 m 가 필요하다.★
+  2. ★차 앞을 비운다.★ 기본 10펄스(31.8 km/h)에서 트리거 지점 뒤로 13~20 m 를
+     더 간다(braketest.py 헤더의 안전절 계산).
+     ★목표 좌표(또는 장애물) 뒤로 최소 30 m 가 필요하다.★
   3. D5 스위치를 ★자율주행★ 으로, E-STOP 을 해제한다.
-  4. 런치를 띄운다. GPS 품질이 서면 ★그 자리에서 지정속도로 출발한다★
-     (헤딩 초기화 구간이 없다 — 출발 방위를 경로에서 빌린다).
-     ⚠️ 차를 ★경로 위에, 경로 방향으로★ 세워 둘 것. 경로에서 2 m 이상 떨어져
-        있으면 출발하지 않는다.
+  4. ★차를 목표 좌표를 일직선으로 바라보는 자리에 세운다.★ 이것이 이 시험의
+     유일한 전제다 — 출발 방위를 그 선에서 빌리기 때문이다. 전제가 틀리면
+     ★출발 1초 뒤 GPS 코스가 알려 주고 차가 스스로 선다★(조준 오차 8° 한계).
+  5. 런치를 띄운다. GPS 품질이 서고 라이다가 살아나면 ★그 자리에서 출발한다★
+     (헤딩 초기화 구간이 없다).
      → 확인하고 출발시키고 싶으면 `auto_start:=false` 로 띄우고,
        `ros2 topic pub -1 /braketest_go std_msgs/msg/Bool '{data: true}'`
-  5. 달리는 동안 ★둘 중 먼저 오는 것★ 에서 선다 —
+  6. 달리는 동안 ★둘 중 먼저 오는 것★ 에서 선다 —
      ① 라이다 장애물 → ★arduino AEB 가 문다★ (braketest 는 관찰만)
-     ② 종점 도달     → braketest 가 /brake_level 2단
+     ② ★목표 좌표 도달★ → braketest 가 /brake_level 2단 (FAIL-SAFE)
      완전정지하면 결과를 찍고 ★리니어를 풀고★ 런치가 스스로 내려간다.
      ⚠️ ①로 섰을 때는 ★장애물을 치워야★ arduino 가 리니어를 푼다(설계상 그렇다).
         치우지 않으면 20초 뒤 물린 채로 런치가 내려간다 — 그때는 D5 를 수동조종으로
         내렸다 올리면 풀린다(모드 전환은 반드시 리니어를 푼다).
 
+  ⚠️ ★목표 좌표 뒤로 최소 30 m 가 비어 있어야 한다★ — 목표 좌표는 "여기서 서라"
+     가 아니라 ★"여기서 밟기 시작하라"★ 다. 31.8 km/h 에서 그 뒤로 13~20 m 를 더 간다.
   ⚠️ 라이다 ROI 는 전방 2.0~6.0 m 인데 10펄스 2단 정지거리가 12.9~20.4 m 다 —
      ★보고 나서 서기에는 원리적으로 부족하다.★ 이 시험은 '얼마나 못 서는가' 를
      재는 것이다. 사람·부술 수 있는 물건을 장애물로 쓰지 말 것.
@@ -103,6 +113,21 @@ def _setup(context, *args, **kwargs):
 
     def cfg(name):
         return LaunchConfiguration(name)
+
+    def num(name, default=0.0):
+        """★좌표는 여기서 실수로 풀어서 넘긴다★
+
+        LaunchConfiguration 을 그대로 파라미터에 실으면 launch_ros 가 문자열을
+        보고 형을 짐작한다 — 사용자가 `goal_lat:=37` 처럼 소수점 없이 적으면 int
+        로 짐작해 ★형 불일치로 노드가 뜨지 않는다.★ 좌표는 손으로 적는 값이라
+        그 사고가 가장 나기 쉬운 자리다. OpaqueFunction 안이라 context 가 있으므로
+        여기서 float 로 풀어 ★파이썬 실수★ 로 넘긴다.
+        """
+        try:
+            return float(str(cfg(name).perform(context)).strip() or default)
+        except (ValueError, TypeError):
+            print(f"    [braketest] ⚠️ {name} 값을 실수로 읽지 못했다 — {default} 로 둔다")
+            return float(default)
 
     # ═══════════════════════════════════════════════════════════════════
     #  [하드웨어] 아두이노 A/B
@@ -167,10 +192,16 @@ def _setup(context, *args, **kwargs):
         parameters=[{
             'data_dir':      cfg('data_dir'),
             'route':         cfg('route'),
+            #  ★목표 좌표★ 비우면(0) braketest.py 상단 GOAL_LAT/GOAL_LON 을 쓴다
+            'goal_lat':      num('goal_lat'),
+            'goal_lon':      num('goal_lon'),
             'drive_pulse':   cfg('drive_pulse'),
             'drive_pwm':     cfg('drive_pwm'),
             'cte_abort_m':   cfg('cte_abort_m'),
             'steer_limit_deg': cfg('steer_limit_deg'),
+            't_preview':     cfg('t_preview'),
+            'ay_max':        cfg('ay_max'),
+            'steer_trim_deg': cfg('steer_trim_deg'),
             #  ★라이다가 살아난 뒤에 출발한다★ [2026-09-10]
             #  use_lidar 를 그대로 물려준다 — 라이다를 안 띄우는 구성에서
             #  영영 기다리는 일이 없게 한다.
@@ -252,13 +283,22 @@ def _setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
+        # ══════════════════════════════════════════════════════════════════
+        #  ★★ 목표 좌표 — 이 시험의 기준선은 '출발 위치 → 이 점' 이다 ★★
+        # ══════════════════════════════════════════════════════════════════
+        #  ★기본은 braketest.py 상단 상수다★ 여기 인자는 그것을 덮는 임시 수단이고,
+        #  값의 단일 소유자는 파일 상단 GOAL_LAT / GOAL_LON 이다(사용자 지시).
+        DeclareLaunchArgument(
+            'goal_lat', default_value='0.0',
+            description='★목표 위도★ 0 이면 braketest.py 상단 GOAL_LAT 를 쓴다'),
+        DeclareLaunchArgument(
+            'goal_lon', default_value='0.0',
+            description='★목표 경도★ 0 이면 braketest.py 상단 GOAL_LON 을 쓴다'),
         DeclareLaunchArgument(
             'route', default_value='',
-            description='주행할 매핑 CSV 파일명. ★비우면 braketest.py 상단의 ROUTE★ '
-                        '(그것도 비면 gps_data 의 최신 route_*.csv). '
-                        '★직선 또는 직선에 가까운 경로여야 한다★ — 이 노드는 코너 '
-                        '감속을 하지 않고 고정 속도로 달린다. '
-                        'terrain 열에 ★S★ 가 있어야 하고, 없으면 시작하지 않는다'),
+            description='★폴백 전용★ 목표 좌표가 비어 있을 때 이 CSV 의 '
+                        '★마지막 점★ 을 목표로 쓴다(기록 파일명도 이 이름이 된다). '
+                        '경로를 추종하지는 않는다 — 이 노드는 ★직선 한 줄★ 만 본다'),
         DeclareLaunchArgument(
             'drive_pulse', default_value='10',
             description='★주행 목표펄스 0~15★ 기본 10 = 31.8 km/h. '
@@ -269,15 +309,35 @@ def generate_launch_description():
                         'PID·슬루·폭주감지·기동블랭킹이 전부 빠지는 무보호 경로다. '
                         '구동계 개입 없는 순수 관성 상태로 제동에 들어가고 싶을 때만'),
 
+        # ══════════════════════════════════════════════════════════════════
+        #  ★★ 조향 — 튜닝 손잡이는 t_preview 와 ay_max 둘뿐이다 ★★
+        # ══════════════════════════════════════════════════════════════════
         DeclareLaunchArgument(
-            'steer_limit_deg', default_value='5.0',
-            description='★조향 pot 지령 절대 상한 [deg]★ 직선 전용 안정화. '
-                        'B보드 상한 40° 보다 훨씬 낮게 잘라 급선회를 원천 차단한다. '
-                        '[2026-09-10] 3.0 → 5.0 으로 되돌렸다 : 실차 로그에서 −3.0° '
-                        '가 전 구간 포화인데도 CTE 가 커졌다(braketest.py 상단 절)'),
+            't_preview', default_value='1.5',
+            description='★프리뷰 시간 [s]★ = 이득을 정하는 유일한 값. '
+                        'L_p = t_preview × v (8.84 m/s 에서 13.3 m, ω_n 0.94 rad/s). '
+                        '★줄이면 정밀하지만 위상여유를 먹고, 키우면 매끄럽지만 '
+                        '벌어진 채로 간다★ — 차로가 좁으면 1.2 가 첫 손잡이다'),
+        DeclareLaunchArgument(
+            'ay_max', default_value='2.0',
+            description='★횡가속도 상한 [m/s²]★ pot 상한이 여기서 유도된다 '
+                        '(8.84 m/s 에서 pot ≈12.6°). 속도가 달라져도 뜻이 변하지 '
+                        '않는다. 필터된 실측 횡가속이 이 값의 1.5배를 넘으면 중단'),
+        DeclareLaunchArgument(
+            'steer_limit_deg', default_value='12.0',
+            description='★pot 지령의 절대 뚜껑 [deg]★ ay_max 유도값이 저속에서 '
+                        '커지는 것을 자른다. [2026-09-12] 5.0 → 12.0 : 5° 는 실측 '
+                        '전달비로 환산하면 도로휠 0.72°(횡가속 0.79) 뿐이라 ★항상 '
+                        '포화★ 했고, 포화가 곧 계전기 진동이었다. 대신 전달비를 '
+                        '주행 중에 재서 ★조이는 쪽으로만★ 자동 보정한다'),
+        DeclareLaunchArgument(
+            'steer_trim_deg', default_value='0.0',
+            description='★조향 영점 트림 [pot deg]★ + 면 우. 직진인데 한쪽으로 '
+                        '계속 밀리면 지난 로그 steer_measured_deg 의 평균을 부호 '
+                        '반대로 적는다. B보드 시리얼 `a` 로 영점을 다시 잡는 것이 정공법'),
         DeclareLaunchArgument(
             'cte_abort_m', default_value='3.0',
-            description='경로에서 이만큼 벗어나면 스스로 2단을 물고 시험을 접는다'),
+            description='기준선에서 이만큼 벗어나면 스스로 2단을 물고 시험을 접는다'),
         DeclareLaunchArgument(
             'auto_start', default_value='true',
             description='true = ★런치 = 출발★ 준비되는 대로 스스로 굴러간다. '
@@ -286,7 +346,7 @@ def generate_launch_description():
             'use_lidar', default_value='true',
             description='★라이다 정지 시스템(lidar/aeb.launch.py)을 함께 띄운다★ '
                         '= ouster 드라이버 + cone_lidar_node. false 로 두면 '
-                        '★종점 도달로만 정지한다★ (장애물 보호 없음)'),
+                        '★목표 좌표 도달로만 정지한다★ (장애물 보호 없음)'),
         DeclareLaunchArgument(
             'use_lidar_rviz', default_value='false',
             description='RViz 로 라이다 ROI 를 보면서 돌린다'),
