@@ -2128,6 +2128,7 @@ ping -c2 192.168.6.11
 | 인지 디버그 녹화 | **`tl_record_video` 하나가 `traffic_light` 의 `tl_publish_debug`(발행) 와 `nxde/video` 노드(수신) 를 함께 켠다** — 따로 열면 0바이트 파일이 나온다(5.2절) |
 | `terrain` 규약 | `driving.py:963` **+** `one_launch.py` 헤더 **+** `lidar/README.md` **+** 이 문서 |
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |
+| **헤딩 출처** | **mppi = OS1 자체 IMU(`params.yaml` 의 `imu_topic`·`use_os1_imu`·`imu_yaw_sign`) / driving = 외장 iAHRS(`/imu`)** — ★섞지 않는다★. `one_launch.py` 는 mppi 에 IMU 를 **넘기지 않는다**(넘기면 `use_os1_imu` 가 무시하고 경고만 남는다). mppi 의 IMU 설정 단일 소유자는 `params.yaml` [2026-09-12] |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
 

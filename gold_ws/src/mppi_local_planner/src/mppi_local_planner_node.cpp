@@ -2,9 +2,11 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -154,14 +156,9 @@ public:
     //  ★그 y 가 틀리면 벽이 서 있지 않은 것과 같다★ — 실제로 CTE 가 −0.23 →
     //  −4.54m 로 벌어졌다(ros2bag route_20260910_212627-20260910_220129).
     //
-    //  white1/driving 은 매핑 경로를 들고 있으므로 그 두 값을 정확히 안다.
-    //  받아서 odom.y / odom.yaw 를 ★덮어쓴다★ — 그러면 이 노드의 기준선이
-    //  '인계 시점 헤딩으로 그은 가상의 직선' 에서 ★실제 매핑 중심선★ 이 된다.
-    //  라바콘이 그 중심선 좌우로 번갈아 놓이므로 중심선이 정확해야 S자가 된다.
-    //
-    //  ★부호가 그대로 맞는다★ driving 의 CTE 는 '+ = 차가 경로 왼쪽', 이 노드의
-    //  odom.y 도 '+ = 기준선 왼쪽'(y += v·sin(yaw)) 이다. yaw 도 '기준방위 대비
-    //  + = 왼쪽' 이라 heading_err 과 같다. 뒤집지 않는다.
+    //  white1/driving 은 매핑 경로를 들고 있으므로 CTE 를 정확히 안다.
+    //  odom.y 만 그것으로 덮는다. yaw 는 OS1 자이로 적분 (use_gps_yaw 가
+    //  true 일 때만 heading_err 로 덮는다 — 그건 외장 iAHRS 값이다).
     ref_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
       ref_topic_, rclcpp::QoS(10),
       [this](const std_msgs::msg::Float64MultiArray::ConstSharedPtr & m) {
@@ -228,9 +225,9 @@ public:
       flip_lidar_xy_ ? "true" : "false");
     RCLCPP_INFO(
       get_logger(),
-      "헤딩 IMU = '%s'  use_orientation=%s  "
-      "(기본 /imu = 외장 iAHRS AHRS 쿼터니언. /ouster/imu 는 자이로만이라 드리프트가 크다)",
-      imu_topic_.c_str(), imu_use_orientation_ ? "true" : "false");
+      "헤딩 IMU = '%s'  use_orientation=%s  yaw_sign=%.0f  "
+      "(OS1 내장 자이로 적분. 쿼터니언 없음 → 바이어스 보정 후 wz 적분)",
+      imu_topic_.c_str(), imu_use_orientation_ ? "true" : "false", imu_yaw_sign_);
     RCLCPP_INFO(
       get_logger(),
       "Ego clear (tight): occ circle r=%.2f m, rect x=[%.2f, %.2f] y_half=%.2f | "
@@ -267,8 +264,11 @@ private:
   void declareParameters()
   {
     declare_parameter<std::string>("lidar_topic", "/ouster/points");
-    declare_parameter<std::string>("imu_topic", "/imu");
-    declare_parameter<bool>("imu_use_orientation", true);
+    declare_parameter<std::string>("imu_topic", "/ouster/imu");
+    declare_parameter<bool>("imu_use_orientation", false);
+    //  ★true 면 white1 런치가 /imu 를 넣어도 OS1 내장 자이로를 쓴다★
+    declare_parameter<bool>("use_os1_imu", true);
+    declare_parameter<double>("imu_yaw_sign", 1.0);
     declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_raw");
     declare_parameter<double>("control_frequency", 20.0);
 
@@ -292,9 +292,10 @@ private:
     declare_parameter<double>("avoid.pass_x_m", 0.90);
     //  ★기하 조향 [2026-09-11]★ false 면 종전 MPPI 조향으로 되돌아간다.
     declare_parameter<bool>("avoid.geometric_steer", true);
-    declare_parameter<double>("avoid.k_psi", 1.5);    // 방향항 (감쇠)
-    declare_parameter<double>("avoid.k_cte", 1.2);    // 위치항 (수렴)
-    declare_parameter<double>("avoid.v_min", 1.0);    // atan 분모 하한 [m/s]
+    declare_parameter<double>("avoid.k_psi", 1.0);    // 방향항 (감쇠) — 도에 곱함
+    declare_parameter<double>("avoid.k_cte", 1.0);    // 위치항 스케일 (atan(k·e/L))
+    declare_parameter<double>("avoid.v_min", 1.0);    // 구식 분모. 지금은 L 을 쓴다
+    declare_parameter<double>("avoid.target_slew_mps", 1.5);  // 횡목표 변화 상한
     //  ★붙들고 있던 콘보다 이만큼 멀어지면 "다음 콘" 으로 본다★
     declare_parameter<double>("avoid.new_cone_dx_m", 1.5);
     //  ★콘 군집 판정★ 치사 셀이 이만큼 안 모이면 잡음으로 본다.
@@ -308,6 +309,8 @@ private:
     declare_parameter<double>("avoid.inflation_m", 0.40);
     declare_parameter<double>("handover.ref_stale_s", 0.5);
     declare_parameter<bool>("handover.use_gps_ref", true);
+    //  y(CTE) 만 GPS 로 덮는다. yaw 를 덮으면 외장 iAHRS 헤딩이 다시 들어온다.
+    declare_parameter<bool>("handover.use_gps_yaw", false);
     //  ★false 로 두면 종전처럼 '런치 = 출발' 이다★ 라이다 단독 시험용. 실차에서
     //  white1 one_launch 로 띄울 때는 반드시 true 여야 한다 — 아니면 이 노드가
     //  GPS 추종 구간에서도 /cmd_vel_raw 를 내며 driving.py 와 다툰다.
@@ -457,7 +460,27 @@ private:
     declare_parameter<double>("mppi.weight_lookahead", 0.55);
     declare_parameter<double>("mppi.stop_cost_threshold", 750.0);
 
-    declare_parameter<int>("imu_bias_calibration_samples", 30);
+    declare_parameter<int>("imu_bias_calibration_samples", 100);  // OS1 ~100Hz → 1s
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★[2026-09-12] 자이로 바이어스 자체 복구 (사용자 지시)★
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★왜 필요한가★ 2026-09-12 두 주행(145723 · 150357)에서 이 노드가 믿은
+    //  요레이트가 실제보다 ★-30°/s★ 어긋나 있었다. driving 의 실측 요레이트와
+    //  회귀하면 기울기는 +0.98(축·부호 정상)인데 상수항만 -30.07 / -30.24 °/s 다.
+    //  9/10 로그 11건은 -2.6 ~ +2.7 °/s 라 ★구조 결함이 아니라 그날의 캘리브
+    //  실패★ 였다 — 두 주행의 값이 거의 같은 것은 같은 노드 세션의 바이어스를
+    //  계속 쓴 탓이다(gyro_bias_calibrated_ 는 한 번 true 면 다시 재지 않았다).
+    //  그 결과 인계 4.15초 만에 헤딩이 125° 어긋나 조향이 좌로 포화(-37°)했고
+    //  CTE 가 +0.02 → +6.23 m 로 벌어졌다.
+    //
+    //  고치는 방법은 둘이다 —
+    //    ① 잘못 잡은 것을 ★받아들이지 않는다★ (아래 max_abs · max_std)
+    //    ② 잘못 잡혔어도 ★서 있을 때마다 다시 잡는다★ (recal_still_s)
+    //  둘 다 OS1 자이로만으로 끝나므로 외장 iAHRS 와 섞이지 않는다.
+    //  ★신호등·S 지점에서 자주 서므로 ②의 기회는 충분하다★
+    declare_parameter<double>("imu_bias_max_abs", 0.10);     // rad/s = 5.7°/s
+    declare_parameter<double>("imu_bias_max_std", 0.05);     // rad/s = 2.9°/s
+    declare_parameter<double>("imu_bias_recal_still_s", 1.0);
 
     declare_parameter<bool>("reference_reset.enable", true);
     declare_parameter<double>("reference_reset.clear_seconds", 1.5);
@@ -500,6 +523,26 @@ private:
     lidar_topic_ = get_parameter("lidar_topic").as_string();
     imu_topic_ = get_parameter("imu_topic").as_string();
     imu_use_orientation_ = get_parameter("imu_use_orientation").as_bool();
+    use_os1_imu_ = get_parameter("use_os1_imu").as_bool();
+    imu_yaw_sign_ = get_parameter("imu_yaw_sign").as_double();
+    if (imu_yaw_sign_ >= 0.0) {
+      imu_yaw_sign_ = 1.0;
+    } else {
+      imu_yaw_sign_ = -1.0;
+    }
+    if (use_os1_imu_) {
+      // white1 one_launch 가 imu_topic:=/imu · imu_use_orientation:=true 를
+      // 넣어도, 구독은 이 멤버로 만든다 → OS1 내장 자이로가 이긴다.
+      if (imu_topic_ != "/ouster/imu" || imu_use_orientation_) {
+        RCLCPP_WARN(
+          get_logger(),
+          "use_os1_imu=true — 런치 IMU '%s' orientation=%s 를 무시하고 "
+          "/ouster/imu 자이로 적분을 쓴다",
+          imu_topic_.c_str(), imu_use_orientation_ ? "true" : "false");
+      }
+      imu_topic_ = "/ouster/imu";
+      imu_use_orientation_ = false;
+    }
     cmd_vel_topic_ = get_parameter("cmd_vel_topic").as_string();
     control_frequency_ = get_parameter("control_frequency").as_double();
 
@@ -518,12 +561,17 @@ private:
     geo_k_psi_        = get_parameter("avoid.k_psi").as_double();
     geo_k_cte_        = get_parameter("avoid.k_cte").as_double();
     geo_v_min_        = get_parameter("avoid.v_min").as_double();
+    lat_target_slew_mps_ = std::max(0.0, get_parameter("avoid.target_slew_mps").as_double());
     lat_new_cone_dx_  = get_parameter("avoid.new_cone_dx_m").as_double();
     cone_min_cells_   = static_cast<int>(get_parameter("avoid.cone_min_cells").as_int());
     cone_y_max_       = get_parameter("avoid.cone_y_max_m").as_double();
     lat_lost_max_     = static_cast<int>(get_parameter("avoid.cone_lost_ticks").as_int());
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
+    use_gps_yaw_  = get_parameter("handover.use_gps_yaw").as_bool();
+    if (use_os1_imu_) {
+      use_gps_yaw_ = false;   // 헤딩은 OS1 자이로. 외장 iAHRS heading_err 를 안 덮는다
+    }
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
     active_topic_ = get_parameter("handover.active_topic").as_string();
     require_lstatus_ = get_parameter("handover.require_lstatus").as_bool();
@@ -673,6 +721,9 @@ private:
     mppi_params_.stop_cost_threshold = get_parameter("mppi.stop_cost_threshold").as_double();
 
     imu_bias_calibration_samples_ = get_parameter("imu_bias_calibration_samples").as_int();
+    imu_bias_max_abs_ = get_parameter("imu_bias_max_abs").as_double();
+    imu_bias_max_std_ = get_parameter("imu_bias_max_std").as_double();
+    imu_bias_recal_still_s_ = get_parameter("imu_bias_recal_still_s").as_double();
 
     reference_reset_enable_ = get_parameter("reference_reset.enable").as_bool();
     reference_reset_clear_seconds_ = get_parameter("reference_reset.clear_seconds").as_double();
@@ -781,6 +832,7 @@ private:
     lat_locked_ox_ = 0.0;
     lat_lost_n_ = 0;
     mppi_params_.lateral_target = 0.0;
+    lat_target_filt_ = 0.0;
     corridor_cost_ema_ = 0.0;
     corridor_cost_ema_init_ = false;
     clear_ahead_seconds_ = 0.0;
@@ -942,8 +994,32 @@ private:
         has_abs_yaw_ = true;
       } else {
         gyro_bias_sum_ += msg->angular_velocity.z;
+        gyro_bias_sumsq_ += msg->angular_velocity.z * msg->angular_velocity.z;
       }
       if (n >= imu_bias_calibration_samples_) {
+        //  ★[2026-09-12] 받아들이기 전에 검사한다★ 캘리브 표본에 실제 회전이
+        //  섞이면(런치 순간 차가 움직이고 있었다면) 그것이 그대로 바이어스가 되어
+        //  주행 내내 헤딩을 갉아먹는다 — 2026-09-12 의 -30°/s 가 그것이다.
+        //  정지 중이라면 |평균| 도 표준편차도 작아야 한다. 둘 중 하나라도 크면
+        //  ★버리고 처음부터 다시 모은다★ (잠글 때까지 차를 세워 두면 곧 통과한다).
+        if (!use_ori) {
+          const double mean = gyro_bias_sum_ / static_cast<double>(n);
+          const double var = std::max(0.0, gyro_bias_sumsq_ / static_cast<double>(n) - mean * mean);
+          const double sd = std::sqrt(var);
+          if (std::abs(mean) > imu_bias_max_abs_ || sd > imu_bias_max_std_) {
+            ++gyro_bias_reject_n_;
+            RCLCPP_WARN(
+              get_logger(),
+              "자이로 바이어스 캘리브 거부 #%d — 평균 %.4f rad/s (%.1f°/s, 상한 %.1f) "
+              "표준편차 %.4f (상한 %.4f). ★차가 움직이는 중이다★ — 세우면 다시 잡는다.",
+              gyro_bias_reject_n_, mean, mean * 180.0 / M_PI,
+              imu_bias_max_abs_ * 180.0 / M_PI, sd, imu_bias_max_std_);
+            gyro_bias_sum_ = 0.0;
+            gyro_bias_sumsq_ = 0.0;
+            gyro_bias_sample_count_.store(0, std::memory_order_relaxed);
+            return;
+          }
+        }
         if (use_ori) {
           imu_heading_from_quat_ = true;
         } else {
@@ -980,6 +1056,63 @@ private:
       return;
     }
 
+    //  ══════════════════════════════════════════════════════════════════
+    //  ★[2026-09-12] 서 있는 동안 바이어스를 다시 잡는다★
+    //  ══════════════════════════════════════════════════════════════════
+    //  초기 캘리브가 통과했어도 온도·시간에 따라 흐르고, 무엇보다 ★한 번
+    //  잘못 잡히면 노드를 내릴 때까지 그대로였다★. 차가 확실히 서 있는 동안
+    //  (엔코더 실측 0 + 지령 0 이 imu_bias_recal_still_s 이상 이어질 때)
+    //  표본을 모아 같은 품질검사를 통과하면 갱신한다.
+    //  ★정지 중에는 자이로가 곧 바이어스다★ — 별도 기준(GPS·iAHRS)이 필요 없어
+    //  '라이다는 자체 IMU' 원칙을 깨지 않는다.
+    if (!use_ori) {
+      const double enc_age_b = nowSeconds() - enc_t_.load(std::memory_order_relaxed);
+      const double v_cmd_b = last_commanded_v_.load(std::memory_order_relaxed);
+      const bool still = (enc_age_b < 1.0) &&
+                         (enc_pulse_.load(std::memory_order_relaxed) < 0.25) &&
+                         (std::abs(v_cmd_b) < 0.05);
+      const double tnow = nowSeconds();
+      if (!still) {
+        recal_still_since_ = -1.0;
+        recal_sum_ = recal_sumsq_ = 0.0;
+        recal_n_ = 0;
+      } else {
+        if (recal_still_since_ < 0.0) {
+          recal_still_since_ = tnow;
+          recal_sum_ = recal_sumsq_ = 0.0;
+          recal_n_ = 0;
+        }
+        //  정지가 충분히 이어진 뒤부터 모은다(멈추는 순간의 잔여 요레이트 배제)
+        if (tnow - recal_still_since_ >= imu_bias_recal_still_s_) {
+          const double wz_raw = msg->angular_velocity.z;
+          recal_sum_ += wz_raw;
+          recal_sumsq_ += wz_raw * wz_raw;
+          ++recal_n_;
+          if (recal_n_ >= imu_bias_calibration_samples_) {
+            const double mean = recal_sum_ / static_cast<double>(recal_n_);
+            const double var = std::max(
+              0.0, recal_sumsq_ / static_cast<double>(recal_n_) - mean * mean);
+            const double sd = std::sqrt(var);
+            if (std::abs(mean) <= imu_bias_max_abs_ && sd <= imu_bias_max_std_) {
+              const double old_bias = gyro_bias_wz_;
+              gyro_bias_wz_ = mean;
+              if (std::abs(mean - old_bias) > 0.01) {   // 0.57°/s 넘게 바뀌면 알린다
+                RCLCPP_INFO(
+                  get_logger(),
+                  "자이로 바이어스 재캘리브 — %.4f → %.4f rad/s "
+                  "(%.2f → %.2f °/s, %d 표본, 정지 %.1fs)",
+                  old_bias, mean, old_bias * 180.0 / M_PI, mean * 180.0 / M_PI,
+                  recal_n_, tnow - recal_still_since_);
+              }
+            }
+            recal_sum_ = recal_sumsq_ = 0.0;
+            recal_n_ = 0;
+            recal_still_since_ = tnow;   // 다음 창을 새로 연다
+          }
+        }
+      }
+    }
+
     if (use_ori) {
       const double yaw_abs = yawFromQuaternion(msg->orientation);
       last_abs_yaw_ = yaw_abs;              // 재무장이 꺼내 쓴다 (rearmReference)
@@ -987,7 +1120,7 @@ private:
       odom_pose_.yaw = wrapAngle(yaw_abs - heading_ref_yaw_);
       imu_heading_from_quat_ = true;
     } else {
-      double wz = msg->angular_velocity.z - gyro_bias_wz_;
+      double wz = imu_yaw_sign_ * (msg->angular_velocity.z - gyro_bias_wz_);
       const double v_now = last_commanded_v_.load(std::memory_order_relaxed);
       if (v_now < 0.25 && std::abs(wz) < 0.08) {
         wz = 0.0;
@@ -1006,17 +1139,18 @@ private:
     odom_pose_.x += v * std::cos(odom_pose_.yaw) * dt;
 
     // ══════════════════════════════════════════════════════════════════════
-    //  ★y·yaw 는 GPS 기준선이 있으면 그것으로 덮는다 [2026-09-11]★
+    //  ★y 는 GPS CTE, yaw 는 OS1 자이로 [2026-09-12]★
     // ══════════════════════════════════════════════════════════════════════
-    //  추측항법의 y 는 누적오차를 바로잡을 방법이 없다(위 ref_sub_ 주석의 실측).
-    //  driving 이 매핑 중심선 기준의 CTE·방위오차를 20Hz 로 주므로 그대로 쓴다.
-    //  ★신선하지 않으면 종전 거동으로 떨어진다★ — driving 이 죽었거나 GPS 품질이
-    //  나쁘면 valid=0 이 오고, 그때는 추측항법이 그래도 없는 것보다 낫다.
+    //  횡위치는 추측항법이면 지령/실측 속도 오차가 쌓인다(실측 1.65배).
+    //  driving 의 CTE 로 y 만 덮는다. yaw 를 heading_err 로 덮으면 헤딩이
+    //  다시 외장 iAHRS 가 된다 — use_gps_yaw 가 켜진 때만 그렇게 한다.
     if (use_gps_ref_ && ref_valid_ &&
         (nowSeconds() - ref_t_) <= ref_stale_s_)
     {
-      odom_pose_.y   = ref_cte_;    // + = 중심선 왼쪽 (driving 과 같은 부호)
-      odom_pose_.yaw = ref_herr_;   // + = 중심선보다 왼쪽을 향함
+      odom_pose_.y = ref_cte_;      // + = 중심선 왼쪽
+      if (use_gps_yaw_) {
+        odom_pose_.yaw = ref_herr_;
+      }
       gps_ref_live_ = true;
     } else {
       gps_ref_live_ = false;
@@ -1254,6 +1388,8 @@ private:
     const CostmapSnapshot snap = costmap_->snapshot();
     //  ★비켜 갈 쪽을 먼저 정한다★ (updateLateralTarget 주석의 실측 근거)
     updateLateralTarget(snap);
+    slewLateralTarget();
+    controller_->setLateralTarget(mppi_params_.lateral_target);
     if (!snap.valid) {
       publishStop(/*apply_brake=*/false);
       return;
@@ -1338,7 +1474,7 @@ private:
       ref, actuator_->lastPulse(), lidar::kasa::pulseToMs(actuator_->lastPulse()),
       enc_pulse_.load(std::memory_order_relaxed),
       result.control.delta * 180.0 / M_PI, steer_deg, avg_cost,
-      gps_ref_live_ ? "★GPS★" : "추측항법",
+      gps_ref_live_ ? "GPS-y/OS1-yaw" : "추측항법",
       current_pose.y, current_pose.yaw * 180.0 / M_PI);
 
     publishDiag(current_pose, steer_deg, avg_cost, snap);
@@ -1424,6 +1560,11 @@ private:
   /// 좌우 경계에 있을 때 목표가 왕복해 조향이 떨린다(래치).
   void updateLateralTarget(const CostmapSnapshot & snap)
   {
+    OdomPose odom;
+    {
+      std::lock_guard<std::mutex> lock(odom_mutex_);
+      odom = odom_pose_;
+    }
     //  ★콘을 하나씩 분리해 ★거리 순★ 으로 본다★ (detectCones 주석의 근거)
     //  앞쪽(pass_x 이상)에 있는 것 중 ★가장 가까운 콘★ 이 지금 상대다.
     //  #1 을 지나면 목록에서 빠지고 #2 가 자동으로 첫 번째가 된다.
@@ -1506,8 +1647,8 @@ private:
         //    위치는 콘이 가까워질수록 ★계속 정확해지게★ 다시 계산한다.
         const double clear2 = 0.5 * vehicle_params_.track_width
                               + std::max(lat_cone_half_, lat_inflation_) + lat_margin_;
-        const double so2 = std::sin(odom_pose_.yaw), co2 = std::cos(odom_pose_.yaw);
-        const double cone_y2 = odom_pose_.y + ox * so2 + oy * co2;
+        const double so2 = std::sin(odom.yaw), co2 = std::cos(odom.yaw);
+        const double cone_y2 = odom.y + ox * so2 + oy * co2;
         mppi_params_.lateral_target = std::clamp(
           cone_y2 + lat_last_side_ * clear2, -lat_max_offset_, lat_max_offset_);
         return;                       // 같은 콘 — 정한 쪽을 지킨다
@@ -1548,8 +1689,8 @@ private:
     //
     //  ★변환★ 차체 (ox, oy) → 기준선 횡좌표. 컨트롤러가 롤아웃을 옮길 때
     //  쓰는 식과 ★같은 식★ 이다 (y_odom = odom.y + s.x·sin + s.y·cos).
-    const double so = std::sin(odom_pose_.yaw), co = std::cos(odom_pose_.yaw);
-    const double cone_y = odom_pose_.y + ox * so + oy * co;   // ★기준선 기준★
+    const double so = std::sin(odom.yaw), co = std::cos(odom.yaw);
+    const double cone_y = odom.y + ox * so + oy * co;   // ★기준선 기준★
     const double cand_r = cone_y - clear;      // 콘의 오른쪽으로 비킨다
     const double cand_l = cone_y + clear;      // 콘의 왼쪽으로 비킨다
     double target;
@@ -1564,7 +1705,7 @@ private:
       if (lat_last_side_ != 0) {
         target = (lat_last_side_ > 0) ? cand_r : cand_l;   // 지난번 반대쪽
       } else {
-        target = (odom_pose_.y >= 0.0) ? cand_l : cand_r;
+        target = (odom.y >= 0.0) ? cand_l : cand_r;
       }
     } else {
       target = (std::abs(cand_r) <= std::abs(cand_l)) ? cand_r : cand_l;
@@ -1589,30 +1730,38 @@ private:
   }
 
   /// ★목표 횡위치로 붙이는 기하 조향★ → 도로휠각 [deg, + = 좌]
-  /// [2026-09-11 신설 — 사용자 지시. 근거는 controlLoop 의 호출부 주석]
   ///
   ///     e       = y − y_target        (+ = 목표보다 왼쪽)
   ///     ψ_err   = yaw                 (+ = 기준선보다 왼쪽을 향함)
-  ///     δ(+우)  = K_psi·ψ_err + atan(K_cte·e / max(v, v_min))
+  ///     δ(+우)  = K_psi·ψ_err + atan(K_cte·e / L)
   ///     δ(+좌)  = −δ(+우)
   ///
-  /// ★braketest.py 와 같은 식이다★ 그쪽은 실차에서 검증됐다(직선 ±0.4 m).
-  /// 방향항(ψ)이 감쇠를, 위치항(e)이 수렴을 맡는다 — 위치항만 두면 조향→헤딩→
-  /// 횡위치가 2중적분이라 감쇠가 없어 발산한다(braketest 에서 실측으로 확인).
-  ///
-  /// ★저속이라 스탠리 항이 세게 먹는다 — 그것이 여기서는 맞다★
-  /// v ≈ 1.77 m/s 에서 e = 1.0 m 면 atan(0.6·1.0/1.77) = 18.7°.
-  /// "지나치는 즉시 반대쪽으로 획 꺾는다"(사용자)가 이 항 하나에서 나온다.
+  /// L = stanley_lookahead (기본 4.0 m). 종전 atan(k_cte·e / v) 는 v=1.77,
+  /// k_cte=1.2 에서 L_eq=1.47 m 이라 e=1.24 m → 40° → 22.9° 포화였다.
+  /// L=4 m 이면 같은 오차에 17° — 완만한 S (params.yaml stanley_lookahead 주석).
   double geometricSteerDeg(const OdomPose & pose) const
   {
-    const double v = std::max(geo_v_min_,
-                              lidar::kasa::pulseToMs(std::max(1, actuator_->maxPulse())));
+    const double L = std::max(2.5, mppi_params_.stanley_lookahead);
     const double e = pose.y - mppi_params_.lateral_target;   // + = 목표보다 왼쪽
     const double psi_deg = pose.yaw * 180.0 / M_PI;          // + = 기준선보다 왼쪽
     const double right_deg = geo_k_psi_ * psi_deg
-                             + std::atan(geo_k_cte_ * e / v) * 180.0 / M_PI;
+                             + std::atan(geo_k_cte_ * e / L) * 180.0 / M_PI;
     const double max_deg = vehicle_params_.max_steering_angle * 180.0 / M_PI;
     return std::clamp(-right_deg, -max_deg, max_deg);        // + = 좌
+  }
+
+  /// 횡목표가 한 틱에 점프하지 않게 속도 제한. 콘 통과 때 y_t 가 0 또는
+  /// 반대 부호로 스냅되면 기하 조향이 반대 풀락을 낸다.
+  void slewLateralTarget()
+  {
+    const double raw = mppi_params_.lateral_target;
+    if (lat_target_slew_mps_ <= 1e-6) {
+      lat_target_filt_ = raw;
+      return;
+    }
+    const double max_dy = lat_target_slew_mps_ / std::max(1.0, control_frequency_);
+    lat_target_filt_ += std::clamp(raw - lat_target_filt_, -max_dy, max_dy);
+    mppi_params_.lateral_target = lat_target_filt_;
   }
 
   struct ConeObs { double x, y; int cells; };
@@ -1803,6 +1952,9 @@ private:
   std::string ref_topic_ = "/lidar_ref";
   double ref_stale_s_ = 0.5;
   bool   use_gps_ref_ = true;
+  bool   use_gps_yaw_ = false;  // true 면 heading_err 로 yaw 를 덮음 (외장 IMU)
+  bool   use_os1_imu_ = true;
+  double imu_yaw_sign_ = 1.0;
   bool   ref_valid_ = false;
   bool   gps_ref_live_ = false;
   double ref_t_ = 0.0, ref_cte_ = 0.0, ref_herr_ = 0.0;
@@ -1815,7 +1967,9 @@ private:
   double lat_inflation_ = 0.40;   // 코스트맵 팽창반경 (같은 값을 두 곳에 둔다)
   double lat_pass_x_ = 0.90;      // 이보다 가까우면 "지나쳤다"
   bool   geometric_steer_ = true; // ★조향을 기하로 만든다 [2026-09-11]★
-  double geo_k_psi_ = 1.5, geo_k_cte_ = 1.2, geo_v_min_ = 1.0;
+  double geo_k_psi_ = 1.0, geo_k_cte_ = 1.0, geo_v_min_ = 1.0;
+  double lat_target_slew_mps_ = 1.5;
+  double lat_target_filt_ = 0.0;
   int    lat_last_side_ = 0;      // 직전 콘을 어느 쪽으로 지났나 (−1 우 / +1 좌)
   bool   lat_latched_ = false;   // 이 장애물에 대해 쪽을 정했나
   double lat_locked_ox_ = 0.0;   // 붙들고 있는 콘까지의 거리 (늘면 새 콘)
@@ -1830,7 +1984,7 @@ private:
   double last_pub_steer_deg_ = 0.0;
   std::mutex odom_mutex_;
   OdomPose odom_pose_;
-  bool imu_use_orientation_ = true;
+  bool imu_use_orientation_ = false;
   bool imu_heading_from_quat_ = false;
   double heading_ref_yaw_ = 0.0;
   bool imu_initialized_ = false;
@@ -1841,9 +1995,18 @@ private:
   bool static_tf_published_ = false;
   int imu_bias_calibration_samples_ = 100;
   double gyro_bias_sum_ = 0.0;
+  double gyro_bias_sumsq_ = 0.0;            // ★품질 검증용 (분산)
   std::atomic<int> gyro_bias_sample_count_{0};
   double gyro_bias_wz_ = 0.0;
   std::atomic<bool> gyro_bias_calibrated_{false};
+  //  ★[2026-09-12] 바이어스 자체 복구★ — 아래 6개. imuCallback 에서만 만진다.
+  double imu_bias_max_abs_ = 0.10;          // [rad/s] 정지 중 |평균| 이 넘으면 캘리브 거부
+  double imu_bias_max_std_ = 0.05;          // [rad/s] 표본 표준편차가 넘으면 거부
+  double imu_bias_recal_still_s_ = 1.0;     // 이만큼 서 있으면 재캘리브 표본을 쓴다
+  int    gyro_bias_reject_n_ = 0;           // 거부 횟수 (로그용)
+  double recal_sum_ = 0.0, recal_sumsq_ = 0.0;
+  int    recal_n_ = 0;
+  double recal_still_since_ = -1.0;         // 정지가 이어지기 시작한 시각 (<0 = 움직이는 중)
   bool reference_reset_enable_ = true;
   double reference_reset_clear_seconds_ = 1.5;
   double reference_reset_blocked_seconds_ = 0.5;

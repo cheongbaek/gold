@@ -169,9 +169,17 @@ def _lidar_actions(context, *_a, **_kw):
                 #   내며 driving.py 와 20Hz 로 서로를 덮는다. 런치 인자로도 열지 않는다.
                 #   ★[2026-09-07] require_permit → require_lstatus (이름만 바뀌었다)★
                 'handover.require_lstatus': True,
-                # 외장 iAHRS. /ouster/imu 는 자이로만이라 드리프트가 크다.
-                'imu_topic': '/imu',
-                'imu_use_orientation': True,
+                #  ★[2026-09-12] 여기서 IMU 를 넘기지 않는다 (사용자 지시)★
+                #  ★mppi = OS1 자체 IMU / driving = 외장 iAHRS — 섞지 않는다★
+                #  종전에는 이 자리에서 imu_topic:=/imu · imu_use_orientation:=True
+                #  (외장 iAHRS)를 넘겼는데, params.yaml 은 use_os1_imu:true 로
+                #  /ouster/imu 를 쓰라고 적혀 있었다. 노드가 use_os1_imu 를 우선해
+                #  런치 값을 ★무시하고 경고를 띄우는★ 상태였다 — 거동은 OS1 이
+                #  맞았지만 런치와 설정이 정반대를 지시하는 채로 남아 있었다.
+                #  ⚠️ 되살리지 말 것. 두 IMU 를 한 노드가 오가면 인계 순간 어느
+                #     헤딩이 기준인지 흐려진다. mppi 의 IMU 설정은 params.yaml
+                #     (mppi_local_planner/config/params.yaml 의 imu_topic ·
+                #     use_os1_imu · imu_yaw_sign)이 ★단일 소유자★ 다.
                 'flip_lidar_xy': LaunchConfiguration('flip_lidar_xy'),
                 #  ★[2026-09-07] 순항속도 인자를 하나로 줄였다★ 종전에는
                 #  lidar_speed(m/s) 와 lidar_pulse(상한) 둘을 열어 두고 "짝을 맞춰
