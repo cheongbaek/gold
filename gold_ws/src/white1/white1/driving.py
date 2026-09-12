@@ -891,6 +891,11 @@ GOAL_KICK_MAX_N  = 3      # 이만큼 시도해도 못 움직이면 구동을 �
 #     CTE ≤ 약 K/8 = 0.19m 를 보장한다. ★코너에서 조향 권한을 되찾는 장치이기도 하다★
 #     (LFD 가 짧아지면 순수추종이 낼 수 있는 최대 도로휠각 atan(2L/LFD) 가 커진다)
 LFD_CURVE_CAP_K = 1.5
+#  ★[2026-09-12] curve_cap 의 수치 가드각★ 이 아래에서는 tan 이 0 에 수렴해
+#  나눗셈이 폭발한다. 이 각의 cap 은 √(1.5×1.25/tan0.05°) ≈ 46 m 로 LFD_MAX_M 보다
+#  한참 크므로 min() 에 잘린다 — ★거동에는 영향이 없는 순수 수치 가드다★.
+#  (종전의 2.5° 분기와 달리 '여기서부터 상한' 이라는 뜻이 아니다. lookahead_m 참고)
+CURVE_CAP_EPS_DEG = 0.05
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-10] 고속 안전 감속 두 가지 — 구 white/driving.py 에서 복구 ★★
@@ -4268,10 +4273,28 @@ class DrivingNode(Node):
         lfd_speed = v * math.sqrt(2.0) / self.lfd_omega_n
 
         def curve_cap(demand_deg):
-            if demand_deg <= 2.5:
+            #  ★[2026-09-12] 임계각 분기를 걷어내고 min() 으로 잇는다★
+            #  종전 : `if demand_deg <= 2.5: return LFD_MAX_M` — 이 2.5° 는
+            #  ★LFD_MAX_M 이 6.4 m 이던 시절★ 의 값이다. √(K·L/tan θ) 가 LFD_MAX_M
+            #  과 같아지는 각이라야 경계가 연속인데, 그 각은 LFD_MAX_M 에 딸려 움직인다:
+            #        LFD_MAX 6.55 m → 2.50°   7.8 m → 1.77°   ★9.1 m → 1.30°★
+            #  6.4 → 7.8 → 9.1 로 상한만 올리는 동안 이 2.5° 를 아무도 맞추지 않아
+            #  경계에 ★계단★ 이 생겼다. 2026-09-12 로그(7펄스)에서 그 크기가 2.55 m 다:
+            #        demand 2.49° → 6.57 m  /  2.50° → ★9.1 m★  (점프 2.55 m)
+            #  요구 곡률이 그 경계에서 미세하게 떨면 LFD 가 6.55 ↔ 9.1 로 튀고,
+            #  실효 ω_n(= v√2/LFD) 이 배로 오가며 ★조향이 떤다★.
+            #  ⚠️ 4펄스에서는 이 계단이 ★보이지 않았다★ — lfd_speed(5.16 m)가 천장이라
+            #     min() 이 늘 그쪽을 골랐다(142144 로그: 실측 LFD 가 5.8 m 를 한 번도
+            #     넘지 않는다). 7펄스로 천장이 9.02 m 가 되면서 드러난 것이다.
+            #  ★min() 으로 잇는 이유★ demand → 0 이면 r → ∞ 라 √(K·r) 이 LFD_MAX_M
+            #  위로 자라므로, min() 이 ★경계에서 저절로★ LFD_MAX_M 을 준다. 임계값을
+            #  손으로 적을 필요가 없어지고 ★LFD_MAX_M 을 어떻게 바꿔도 연속이다★.
+            #  남은 분기는 tan(0) 나눗셈을 막는 수치 가드다(그 각의 cap 은 46 m 라
+            #  어차피 min() 에 잘린다 — 거동이 바뀌지 않는다).
+            if demand_deg <= CURVE_CAP_EPS_DEG:
                 return LFD_MAX_M
             r = self.wheelbase / math.tan(math.radians(min(demand_deg, self.road_max)))
-            return math.sqrt(LFD_CURVE_CAP_K * r)
+            return min(LFD_MAX_M, math.sqrt(LFD_CURVE_CAP_K * r))
 
         lfd_win_only = min(LFD_MAX_M, max(self.lfd_min,
                                           min(lfd_speed, curve_cap(near_win))))
