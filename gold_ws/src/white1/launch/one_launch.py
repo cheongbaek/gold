@@ -326,10 +326,14 @@ def generate_launch_description():
 
         # ── 주행 튜닝 (driving.py 상단 상수의 런치 override) ──
         DeclareLaunchArgument(
-            'drive_pulse', default_value='4',
-            description='★주행 고정 속도[펄스]★ 4 ≈ 12.7 km/h (1펄스 ≈ 3.18 km/h). '
-                        '[2026-08-11] driving.py 의 MAX_PULSE_LIMIT(4)로 잘린다 — '
-                        '이보다 크게 넣어도 4 로 내려간다'),
+            'drive_pulse', default_value='7',
+            description='★주행 고정 속도[펄스]★ 7 ≈ 22.3 km/h (1펄스 ≈ 3.18 km/h). '
+                        '[2026-09-12] 기본 4 → 7. 4 는 A보드 적분 동결 함정값이라 '
+                        '(err 가 정확히 4 여서 적분이 안 자란다) 지령 4펄스에 실측이 '
+                        '2.5~2.7펄스밖에 안 나왔다. driving.py 의 '
+                        'MAX_PULSE_LIMIT(10)으로 잘린다 — 다만 파생 상수'
+                        '(LFD_MAX_M·CURVE_PREVIEW_FAR_MAX)는 ★7펄스 기준★ 이라 '
+                        '8 이상을 쓰려면 그 둘을 다시 계산할 것'),
         DeclareLaunchArgument(
             'heading_pulse', default_value='3',
             description='헤딩 초기화 중 속도[펄스] 3 ≈ 9.5 km/h'),

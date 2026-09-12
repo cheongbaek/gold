@@ -757,7 +757,7 @@ use_arduino:=true  use_record:=true  use_mapping:=true  use_sound:=true  use_hud
 use_camera:=?      use_lidar:=true   use_lidar_rviz:=false  flip_lidar_xy:=true
 tl_record_video:=true  ← ★인지 디버그 화면을 주행 내내 mp4 로 (5.2절)★
 tl_show_window:=true   ← 화면 없는 SSH 면 false (5.2절)
-drive_pulse:=4     heading_pulse:=3  wheelbase_m:=1.25
+drive_pulse:=7     heading_pulse:=3  wheelbase_m:=1.25
 lidar_pulse:=2     ← ★L 구간 순항 [펄스]. 이것 하나만 고치면 된다 (6.4②)★
 lfd_omega_n:=0.97  lfd_min_m:=2.3
 steer_plant_gain:=1.26  steer_understeer:=5.17  cte_ki:=0.30
@@ -767,10 +767,29 @@ manual_use_pwm:=true  manual_pwm_min:=16  manual_pwm_max:=255
 throttle_raw_min:=220  throttle_raw_max:=950  throttle_gamma:=1.4
 ```
 
-**속도를 올려 볼 때** (6.2 — 상한은 6, 기본은 4로 두었다):
+**속도** — ★[2026-09-12] 기본 4 → **7펄스(22.3 km/h)**, 상한 6 → **10**★
+
+**4 를 떠난 이유는 A보드 적분 동결 함정이다**(1.5절). 적분 누적 조건이
+`abs(err) < 4` 라 선 차에 목표 4를 주면 err 가 **정확히 4** 여서 적분이 영영 안 자라고
+PWM 이 91.6 에 묶인다. 2026-09-12 로그 실측 :
+
+| 지령 | 실측 | 그 구간 GPS 속도 | 이론값 |
+|---|---|---|---|
+| cmd = 4 (제동 없음, 122~192초) | **2.50 ~ 2.72펄스** | 8.79 ~ 9.59 km/h | 12.73 km/h |
+
+**올리는 쪽이 오히려 함정에서 벗어나는 방향이다** — FF(7)≈113 으로 세게 밀고,
+실측이 3펄스를 넘는 순간 `err < 4` 가 되어 적분이 정상으로 붙는다.
+
+> ⚠️ **상한 10 은 '여유'지 '목표'가 아니다.** 파생 상수(`LFD_MAX_M 9.1` ·
+> `CURVE_PREVIEW_FAR_MAX 24.0`)는 **7펄스 기준**으로 맞췄다 — 8 이상을 상시로 쓰려면
+> 그 둘을 다시 계산할 것.
+>
+> ⚠️ **7펄스의 2단 정지거리는 `8.70 m` (+지연 1.86 = `10.56 m`)** 로 4펄스(3.90 m)의
+> 2.7배다. 경로이탈 감지·신호등 정지선·종점이 전부 그만큼 늦게 선다. 특히 종점은
+> `GOAL_DECEL_M(5.0m)` 고정 체결이라 2펄스까지 못 내려와 **2단 백스톱이 받는다**.
 
 ```bash
-ros2 launch white1 one_launch.py drive_pulse:=5      # 그다음 6
+ros2 launch white1 one_launch.py drive_pulse:=4      # 되돌릴 때
 ```
 
 **계약 확인** (`/lstatus` 교체 뒤 반드시):
@@ -1005,9 +1024,9 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 
 | 무엇 | 어디 |
 |---|---|
-| `MAX_PULSE_LIMIT = 6` (기본 `DRIVE_PULSE`·런치는 4) | `driving.py` 상수절 |
-| `corner_min_pulse = min(dp, max(2, round(dp/2)))` | `driving.py __init__` |
-| `MIN_SPEED_RATIO = 1/2` · `CURVE_PREVIEW_FAR_MAX = 20` · `LFD_MAX_M = 7.8` | `driving.py` 상수절 |
+| ~~`MAX_PULSE_LIMIT = 6` (기본 4)~~ → **`MAX_PULSE_LIMIT = 10` (기본·런치 7)** [2026-09-12] | `driving.py` 상수절 |
+| ~~`corner_min_pulse = min(dp, max(2, round(dp/2)))`~~ → **`int(dp × MIN_SPEED_RATIO)` (내림)** 이고 **`min_speed_ms` 를 그 정수에서 유도**한다 [2026-09-12] — 반올림이면 7펄스에서 코너 하한이 4(12.7 km/h)가 되고, 연속값 3.5펄스와 어긋난다 | `driving.py __init__` |
+| `MIN_SPEED_RATIO = 1/2` · ~~`CURVE_PREVIEW_FAR_MAX = 20`~~ → **24.0** · ~~`LFD_MAX_M = 7.8`~~ → **9.1** [2026-09-12] | `driving.py` 상수절 |
 | `decel_dist(v0,v1,a,lag)` — `stop_dist` 의 일반화 | `driving.py` |
 | 종점 : `GOAL_DECEL_M=5.0` · `GOAL_HOLD_PULSE=2` · `GOAL_HOLD_ENC_PULSE=2` · `GOAL_KICK_PULSE=3` | `driving.py` |
 | `goal_approach` 체결=고정 5 m, `need1/need2` 를 유지펄스 기준으로 재기준화 | `driving.py goal_approach` |
@@ -1021,7 +1040,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | 소유권 순서 : 종점 > S > L인계 > 코너 | `run_follow` + `corner_brake` 의 `ok` |
 | `/lstatus` 구독 · `cruise_pulse` 단일화 | `mppi_local_planner_node.cpp` |
 | `cruise_pulse: 2` 최상단 · `handover.require_lstatus` | `mppi .../params.yaml` |
-| `PULSE_OPERATING_MAX 4 → 6` (두 패키지) | `*/kasa_units.hpp` |
+| `PULSE_OPERATING_MAX` 4 → 6 → **10** (두 패키지) [2026-09-12] | `*/kasa_units.hpp` |
 | `lidar_speed` 인자 삭제, `lidar_pulse` 하나로 | `one_launch.py` |
 | `/lstatus` 기록 열 · HUD 표시 | `record.py` · `hud.py` |
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
