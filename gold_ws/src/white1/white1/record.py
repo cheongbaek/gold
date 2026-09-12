@@ -98,6 +98,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu, NavSatFix
 from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
+from nav_msgs.msg import Path as NavPath
 
 from white1 import paths
 
@@ -315,11 +316,20 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #    ld_obs_x 가 줄다가 사라지면 그 라바콘을 지나친 것이고, 그 직전의
     #    |ld_y − ld_obs_y| 가 ★실제 통과 여유★ 다(차 반폭 0.55m 와 비교).
     #    ld_gps_ref=0 인 구간은 기준선이 추측항법이라 ld_y 를 믿을 수 없다.
+    #  ★[2026-09-12] 11 → 14★ 뒤 3개는 ★검출 진단★ 이다 — '콘이 없었다' 와
+    #  '있는데 못 잡았다' 를 가른다(2026-09-12 인계 분석에서 갈리지 않던 지점).
+    #    ld_lethal_cells   치사 셀 총수 — 0 이면 ★점군 자체가 없다★
+    #    ld_clusters_all   찾은 군집 수 (cone_min_cells 적용 ★전★)
+    #    ld_clusters_rej   문턱 미달로 버린 군집 수
+    #  → all>0 인데 n_cones=0 이고 rej>0 이면 ★문턱에서 떨어진 것★ 이고,
+    #    lethal=0 이면 애초에 아무것도 안 보인 것이다.
+    #  ⚠️ mppi_local_planner_node.cpp 의 diag m.data(14개)와 ★짝★ 이다.
     TopicSpec('/lidar_diag', Float64MultiArray,
               ('ld_y', 'ld_yaw_deg', 'ld_road_deg', 'ld_pot_deg', 'ld_pulse',
                'ld_avg_cost', 'ld_gps_ref', 'ld_obs_x', 'ld_obs_y',
-               'ld_target_y', 'ld_n_cones'),
-              _array(11), hold=False,
+               'ld_target_y', 'ld_n_cones',
+               'ld_lethal_cells', 'ld_clusters_all', 'ld_clusters_rej'),
+              _array(14), hold=False,
               note='mppi 가 ★모는 동안에만★ 낸다 = L 구간 전용. y·yaw 는 '
                    '★기준선(매핑 중심선) 대비★ 이고 + 가 왼쪽. pot 만 보드 규약'
                    '(− 좌 / + 우)이다. obs_x/y 는 ★군집으로 분리한 콘의 중심★ '
@@ -472,8 +482,8 @@ class RecordNode(Node):
     STATUS_PERIOD_S = 10.0
     FLUSH_EVERY_ROWS = 20
 
-    def __init__(self):
-        super().__init__('record_node')
+    def __init__(self, **kwargs):
+        super().__init__('record_node', **kwargs)
 
         self.declare_parameter('output_dir', '')
         self.declare_parameter('sample_hz', 20.0)
@@ -486,11 +496,54 @@ class RecordNode(Node):
         #   이름을 들은 적이 없으므로 파일명 앞부분은 manual 이 된다.
         #   ★런치(one_launch.py)는 이 값을 주지 않는다★ = 자율주행 기록 규칙은 그대로다.
         self.declare_parameter('force_record', False)
+        # ── ★[2026-09-12] 라이다 궤적 기록 (.cones.csv)★ ──────────────────────────
+        #  ★무엇을 적나★ 메인 CSV 는 '한 행 = 한 시점' 의 고정 열이라 ★개수가
+        #  변하는 콘 목록★ 을 담을 수 없다. 그래서 같은 이름에 확장자만 다른
+        #  짝 파일을 연다 :
+        #      ros2bag/<경로이름>-<시각>.csv          메인 (87열, 한 행 = 한 시점)
+        #      ros2bag/<경로이름>-<시각>.cones.csv    라이다 (한 행 = 한 콘/한 점)
+        #  t_rel·t_wall 이 양쪽에 있어 그 열로 조인한다.
+        #
+        #  ★언제 적나 — 두 모드★
+        #    (a) one_launch 와 함께 (기본) : ★lstatus 가 'L' 인 동안만★.
+        #        라이다가 실제로 모는 구간만 남으므로 파일이 작고, 메인 CSV 의
+        #        lstatus 열과 시각이 그대로 맞는다.
+        #    (b) 단독 실행 `ros2 run white1 record --lidar` : ★상시★.
+        #        이상적인 회피를 골라 담으려면 구간 판정을 기다릴 수 없다.
+        #
+        #  ★중복 방지★ (b)가 뜨면 /record_lidar_owner 를 20Hz 로 낸다. (a)는 그것이
+        #  신선한 동안 ★자기 .cones.csv 를 닫고 손을 뗀다★ — 메인 CSV 는 그대로
+        #  적는다(그쪽은 (b)가 건드리지 않는다). 신선도가 곧 소유권이라,
+        #  (b)를 Ctrl-C 로 내리면 (a)가 1초 뒤 자동으로 되받는다.
+        self.declare_parameter('lidar_record', False)   # --lidar 가 True 로 바꾼다
+        self.declare_parameter('lidar_owner_topic', '/record_lidar_owner')
+        self.declare_parameter('lidar_owner_stale_s', 1.0)
+        #  계획 경로는 매 틱 수십 점이라 그대로 적으면 메인보다 커진다. 솎아낸다.
+        self.declare_parameter('lidar_path_every_n', 20)   # 20틱(1초)마다 한 번만
+        self.declare_parameter('lidar_path_stride', 3)     # 그 경로의 매 3번째 점만
 
         self.out_root = paths.record_dir(self.get_parameter('output_dir').value or '')
         # 20Hz = driving 제어주기. 더 빠른 토픽(imu)은 주기 안에서 마지막 값만 남는다.
         self.sample_hz = max(1.0, float(self.get_parameter('sample_hz').value))
         self.force_record = bool(self.get_parameter('force_record').value)
+        self.lidar_record = bool(self.get_parameter('lidar_record').value)
+        self.lidar_owner_stale = float(self.get_parameter('lidar_owner_stale_s').value)
+        self.lidar_path_every_n = max(1, int(self.get_parameter('lidar_path_every_n').value))
+        self.lidar_path_stride = max(1, int(self.get_parameter('lidar_path_stride').value))
+        # 라이다 기록 상태
+        self._cones_fp = None
+        self._cones_writer = None
+        self._cones_path = ''
+        self._cones_rows = 0
+        self._cones_t0 = 0.0
+        self._ld_last: Dict[str, Any] = {}   # /lidar_diag 최신값 (cones.csv 전용 사본)
+        self._ld_last_t = 0.0
+        self._cones: List[float] = []        # 마지막 /lidar_cones (3개씩)
+        self._cones_t = 0.0
+        self._lpath: List[tuple] = []        # 마지막 계획 경로 [(x,y), ...]
+        self._lpath_t = 0.0
+        self._lpath_tick = 0
+        self._owner_t = 0.0                  # 남이 소유권을 주장한 마지막 시각
 
         self.drive_state = 'IDLE'
         self.route_name = ''       # 주행 중인 경로 CSV 이름 — 기록 파일명 앞부분
@@ -513,6 +566,24 @@ class RecordNode(Node):
                 spec.msg_type, spec.topic,
                 (lambda msg, s=spec: self._on_msg(s, msg)), 10)
 
+        # ── ★라이다 궤적 (.cones.csv)★ — 고정 열 구조와 별개로 직접 구독한다
+        self.create_subscription(
+            Float64MultiArray, '/lidar_cones',
+            lambda m: self._on_cones(m), 10)
+        self.create_subscription(
+            NavPath, '/mppi_local_planner/local_path',
+            lambda m: self._on_lpath(m), 1)
+        owner_topic = self.get_parameter('lidar_owner_topic').value
+        if self.lidar_record:
+            #  ★내가 맡는다★ — 런치 쪽 record 가 이걸 보고 손을 뗀다
+            self._owner_pub = self.create_publisher(Bool, owner_topic, 10)
+            self.create_timer(0.05, self._owner_tick)     # 20Hz
+        else:
+            self._owner_pub = None
+            self.create_subscription(
+                Bool, owner_topic,
+                lambda m: setattr(self, '_owner_t', time.time()), 10)
+
         self.create_timer(1.0 / self.sample_hz, self._tick)
         self.create_timer(1.0, self._status_tick)
 
@@ -533,6 +604,13 @@ class RecordNode(Node):
     def _on_msg(self, spec: TopicSpec, msg):
         was = self.recording
 
+        if spec.topic == '/lidar_diag':
+            #  ★.cones.csv 는 이 값을 매 행에 적는다★ hold=False 라 _pending 에
+            #  들어갔다가 메인 행이 pop 해 가므로, 여기서 따로 붙들어 둔다.
+            #  (메인 CSV 의 'L 구간에만 값이 있다' 규칙은 그대로다 — 이건 별도 사본)
+            self._ld_last = {
+                k: v for k, v in zip(spec.columns, list(msg.data) + [None] * 16)}
+            self._ld_last_t = time.time()
         if spec.topic == '/drive_state':
             self.drive_state = str(msg.data)
         elif spec.topic == '/drive_cmd':
@@ -616,6 +694,23 @@ class RecordNode(Node):
     def _tick(self):
         if self.recording:
             self._write_row()
+        #  ★라이다 궤적은 메인 세션과 ★독립★ 으로 열고 닫는다★
+        #  런치 모드에서는 L 구간에만, --lidar 단독 모드에서는 상시.
+        want = self._lidar_wanted()
+        if want and self._cones_writer is None:
+            self._cones_open()
+        elif not want and self._cones_writer is not None:
+            self._cones_close()
+        if self._cones_writer is not None:
+            now = time.time()
+            #  ★t_rel 기준을 메인 CSV 와 맞춘다★ — 그래야 두 파일이 그 열로 조인된다
+            t0 = self.session_t0 if self.recording else self._cones_t0
+            self._cones_write(now - t0, now)
+            if self._cones_rows % self.FLUSH_EVERY_ROWS == 0:
+                try:
+                    self._cones_fp.flush()
+                except Exception:
+                    pass
 
     def _write_row(self):
         if self._writer is None:
@@ -635,6 +730,108 @@ class RecordNode(Node):
             except Exception:
                 pass
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  라이다 궤적 (.cones.csv)
+    # ══════════════════════════════════════════════════════════════════════════
+    CONES_COLUMNS = (
+        't_rel', 't_wall', 'kind', 'i', 'x_m', 'y_m', 'cells',
+        'ego_y', 'ego_yaw_deg', 'target_y', 'n_ahead',
+        'lethal_cells', 'clusters_all', 'clusters_rej', 'lstatus')
+
+    def _owner_tick(self):
+        """--lidar 모드가 20Hz 로 소유권을 주장한다 (값보다 ★신선도★)."""
+        if self._owner_pub is not None:
+            self._owner_pub.publish(Bool(data=True))
+
+    def _on_cones(self, msg):
+        self._cones = list(msg.data)
+        self._cones_t = time.time()
+
+    def _on_lpath(self, msg):
+        #  계획 경로는 매 틱 수십 점이다 — every_n 틱에 한 번, stride 점만 남긴다
+        self._lpath_tick += 1
+        if self._lpath_tick % self.lidar_path_every_n:
+            return
+        self._lpath = [(p.pose.position.x, p.pose.position.y)
+                       for p in msg.poses[::self.lidar_path_stride]]
+        self._lpath_t = time.time()
+
+    def _lidar_wanted(self) -> bool:
+        """지금 라이다 궤적을 적어야 하는가."""
+        if self.lidar_record:
+            return True                      # 단독 모드 = 상시
+        #  남이 맡고 있으면 손을 뗀다 (신선도가 곧 소유권)
+        if time.time() - self._owner_t < self.lidar_owner_stale:
+            return False
+        #  런치 모드 = lstatus 가 'L' 인 동안만
+        return str(self._hold.get('lstatus', '')).strip().upper() == 'L'
+
+    def _cones_open(self):
+        if self._cones_writer is not None:
+            return
+        #  ★메인 CSV 와 ★파일명이 같고 확장자만 다르다★
+        if self.csv_path:
+            base = self.csv_path[:-4] if self.csv_path.endswith('.csv') else self.csv_path
+        else:
+            base = os.path.join(
+                self.out_root,
+                f"{MANUAL_ROUTE}-{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        self._cones_path = base + '.cones.csv'
+        os.makedirs(self.out_root, exist_ok=True)
+        self._cones_fp = open(self._cones_path, 'w', newline='', encoding='utf-8-sig')
+        self._cones_writer = csv.writer(self._cones_fp)
+        self._cones_writer.writerow(self.CONES_COLUMNS)
+        self._cones_rows = 0
+        self._cones_t0 = self.session_t0 if self.recording else time.time()
+        self.get_logger().info(
+            f"🛞 라이다 궤적 기록 시작 ({'상시(--lidar)' if self.lidar_record else 'L 구간'})"
+            f" → {self._cones_path}")
+
+    def _cones_close(self):
+        if self._cones_writer is None:
+            return
+        try:
+            self._cones_fp.close()
+        except Exception:
+            pass
+        self.get_logger().info(
+            f"🛞 라이다 궤적 기록 종료 — {self._cones_rows}행 → {self._cones_path}")
+        self._cones_fp = self._cones_writer = None
+        self._cones_rows = 0
+
+    def _cones_write(self, t_rel: float, t_wall: float):
+        """한 스냅샷을 적는다. 콘이 없어도 한 행(kind=none)은 남긴다."""
+        if self._cones_writer is None:
+            return
+        h = self._hold
+        ld = self._ld_last if (time.time() - self._ld_last_t) < 1.0 else {}
+        def g(k):
+            v = ld.get(k, None)
+            if v is None:
+                v = h.get(k, '')
+            return '' if v is None else v
+        meta = [g('ld_y'), g('ld_yaw_deg'), g('ld_target_y'), g('ld_n_cones'),
+                g('ld_lethal_cells'), g('ld_clusters_all'), g('ld_clusters_rej'),
+                str(h.get('lstatus', '')).strip()]
+        rows = []
+        c = self._cones
+        for i in range(0, len(c) - 2, 3):
+            rows.append([f"{t_rel:.2f}", f"{t_wall:.3f}", 'cone', i // 3,
+                         f"{c[i]:.3f}", f"{c[i+1]:.3f}", int(c[i+2])] + meta)
+        if not rows:
+            #  ★콘 0개도 한 행 남긴다★ — '안 보였다' 가 기록에 있어야
+            #  lethal_cells·clusters_rej 와 함께 원인이 갈린다
+            rows.append([f"{t_rel:.2f}", f"{t_wall:.3f}", 'none', -1, '', '', ''] + meta)
+        #  계획 경로 — 갱신된 것이 있을 때만 (every_n 틱에 한 번)
+        if self._lpath:
+            for j, (px, py) in enumerate(self._lpath):
+                rows.append([f"{t_rel:.2f}", f"{t_wall:.3f}", 'path', j,
+                             f"{px:.3f}", f"{py:.3f}", ''] + meta)
+            self._lpath = []          # 한 번만 적는다
+        for r in rows:
+            self._cones_writer.writerow(r)
+        self._cones_rows += len(rows)
+
     def _stop_session(self):
         if not self.recording:
             return
@@ -648,6 +845,10 @@ class RecordNode(Node):
         self.get_logger().info(
             f"⏹️ 기록 종료 ({self.drive_state}) — {dur:.1f}초, {self._rows}행 "
             f"→ {self.csv_path}")
+        #  ★런치 모드에서는 메인이 닫히면 라이다도 닫는다★ 다음 주행은 새 파일이다.
+        #  --lidar 단독 모드는 노드 수명이 기록 구간이므로 여기서 닫지 않는다.
+        if not self.lidar_record:
+            self._cones_close()
 
     def _status_tick(self):
         now = time.time()
@@ -659,17 +860,45 @@ class RecordNode(Node):
             self.get_logger().info(
                 f"📼 기록 중 {now - self.session_t0:.0f}초 | {self._rows}행 | "
                 f"수신 토픽 {live}/{len(RECORD_TOPICS)}")
+        if self._cones_writer is not None:
+            self.get_logger().info(f"🛞 라이다 궤적 {self._cones_rows}행")
+        elif not self.lidar_record and time.time() - self._owner_t < self.lidar_owner_stale:
+            self.get_logger().info(
+                "🛞 라이다 궤적은 --lidar 단독 노드가 맡고 있다 — 손을 뗀 상태")
 
     def destroy_node(self):
         if self.recording:
             self._write_row()
             self._stop_session()
+        self._cones_close()
         super().destroy_node()
 
 
 def main(args=None):
+    # ── ★[2026-09-12] 짧은 플래그를 ROS 파라미터로 옮긴다★ ────────────────────────
+    #  `ros2 run white1 record --lidar` 처럼 쓰기 위해서다. rclpy.init 은 모르는
+    #  인자를 만나면 실패하므로 ★먼저 꺼내고 argv 에서 지운다★.
+    #      --lidar   라이다 궤적을 ★상시★ 기록 (.cones.csv). 런치 쪽 record 는
+    #                /record_lidar_owner 를 보고 자기 라이다 기록을 접는다.
+    #      --force   메인 CSV 도 상시 기록 (= -p force_record:=true)
+    #  ※ --ros-args -p lidar_record:=true 로 줘도 같다. 이건 손맛용 별칭이다.
+    import sys
+    argv = sys.argv[1:] if args is None else list(args)
+    flag_lidar = '--lidar' in argv
+    flag_force = '--force' in argv
+    argv = [a for a in argv if a not in ('--lidar', '--force')]
+    if args is None:
+        sys.argv = [sys.argv[0]] + argv
     rclpy.init(args=args)
-    node = RecordNode()
+    #  ★생성자 ★전에★ 정해야 한다★ — __init__ 이 이 값을 보고 구독·발행을
+    #  구성하기 때문이다(소유권 발행 타이머는 lidar_record 일 때만 만든다).
+    from rclpy.parameter import Parameter
+    overrides = []
+    if flag_lidar:
+        overrides.append(Parameter('lidar_record', Parameter.Type.BOOL, True))
+    if flag_force:
+        overrides.append(Parameter('force_record', Parameter.Type.BOOL, True))
+    node = RecordNode(parameter_overrides=overrides)
     try:
         rclpy.spin(node)
     # ★[2026-09-04] ExternalShutdownException 도 받는다★ launch 가 내려갈 때

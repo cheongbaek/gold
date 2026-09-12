@@ -196,6 +196,11 @@ public:
     //  어디에 있었나(y·yaw)' 와 '무엇을 보고 얼마나 꺾었나(장애물·조향)' 를
     //  한 배열에 담는다. 코스트맵·롤아웃은 CSV 에 담기엔 너무 크다.
     diag_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(diag_topic_, 10);
+    //  ★[2026-09-12] 콘 ★목록★ — diag 는 고정 길이라 가변 개수를 못 담는다★
+    //  [x1,y1,cells1, x2,y2,cells2, ...] 3개씩 끊어 읽는다. 앞쪽(pass_x 이상) ·
+    //  |y| ≤ cone_y_max 로 거른 ★회피 대상★ 만 담는다 — 진단 ox/oy 와 같은 기준.
+    //  white1/record 가 이것을 받아 <주행CSV이름>.cones.csv 로 적는다.
+    cones_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(cones_topic_, 10);
 
     // Use nanosecond period to avoid millisecond truncation.
     const auto period = std::chrono::duration<double>(1.0 / control_frequency_);
@@ -281,6 +286,7 @@ private:
     //  ★GPS 기준선 [2026-09-11]★ 배열 규약의 소유자는 white1/driving.py 다.
     declare_parameter<std::string>("handover.ref_topic", "/lidar_ref");
     declare_parameter<std::string>("diag_topic", "/lidar_diag");
+    declare_parameter<std::string>("cones_topic", "/lidar_cones");
     //  ★회피 방향 결정 [2026-09-11]★ (updateLateralTarget)
     declare_parameter<double>("avoid.range_m", 8.0);      // 이 안의 장애물만 본다
     //  ★8 m 인 이유★ 콘 간격이 5~8 m 라(사용자), 5 m 면 #1 을 지난 뒤 #2 가
@@ -551,6 +557,7 @@ private:
     reference_path_topic_ = get_parameter("reference_path_topic").as_string();
     ref_topic_    = get_parameter("handover.ref_topic").as_string();
     diag_topic_   = get_parameter("diag_topic").as_string();
+    cones_topic_  = get_parameter("cones_topic").as_string();
     lat_target_range_ = get_parameter("avoid.range_m").as_double();
     lat_cone_half_    = get_parameter("avoid.cone_half_m").as_double();
     lat_margin_       = get_parameter("avoid.margin_m").as_double();
@@ -1783,9 +1790,21 @@ private:
   /// ★이것이 있어야 '콘마다 따로' 가 성립한다★ 콘 #1 과 #2 가 각자의 x 를
   /// 가지므로, #1 을 지나면 목록에서 빠지고 #2 가 자동으로 첫 번째가 된다 —
   /// '있다/없다' 가 아니라 ★거리 순서★ 로 다음 콘이 정해진다.
-  std::vector<ConeObs> detectCones(const CostmapSnapshot & snap) const
+  /// ★[2026-09-12] 검출 통계★ — '콘이 없었다' 와 '있는데 못 잡았다' 를 가른다.
+  ///  2026-09-12 인계 분석에서 ld_n_cones 가 0~1 이었는데, 그것이 콘이 실제로
+  ///  없어서인지 군집이 cone_min_cells 문턱에 못 미쳐서인지 기록만으로는
+  ///  갈리지 않았다. 그 구분에 필요한 최소 세 값이다.
+  struct ConeStats {
+    int lethal_cells = 0;     // 치사 셀 총수 (점군이 아예 없으면 0)
+    int clusters_all = 0;     // 찾은 군집 수 (문턱 적용 전)
+    int clusters_rejected = 0;  // 문턱 미달로 버린 군집 수
+  };
+
+  std::vector<ConeObs> detectCones(
+    const CostmapSnapshot & snap, ConeStats * stats = nullptr) const
   {
     std::vector<ConeObs> out;
+    if (stats) *stats = ConeStats{};
     if (!snap.valid || snap.cells_x <= 0 || snap.cells_y <= 0) return out;
     const double res = snap.resolution;
     const double thr = EgoCostmap::kLethalCost * 0.99;   // ★치사 셀만★
@@ -1819,7 +1838,12 @@ private:
             }
           }
         }
-        if (cnt >= cone_min_cells_) out.push_back({sx / cnt, sy / cnt, cnt});
+        if (stats) { stats->lethal_cells += cnt; ++stats->clusters_all; }
+        if (cnt >= cone_min_cells_) {
+          out.push_back({sx / cnt, sy / cnt, cnt});
+        } else if (stats) {
+          ++stats->clusters_rejected;
+        }
       }
     }
     std::sort(out.begin(), out.end(),
@@ -1869,18 +1893,33 @@ private:
       //  않으면 ★뒤쪽 물체가 제일 먼저 나온다★ — 실측에서 210틱 중 163틱이
       //  음수 x(최소 −8.70 m)였다. 기록이 통째로 못 쓰게 된다.
       //  updateLateralTarget 은 이미 같은 필터를 쓰고 있었다 — 진단만 빠져 있었다.
-      const std::vector<ConeObs> cs = detectCones(snap);
+      ConeStats st;
+      const std::vector<ConeObs> cs = detectCones(snap, &st);
+      cone_stats_ = st;
+      //  ★회피 대상만 골라 목록으로 낸다★ (진단 ox/oy 와 같은 필터)
+      std_msgs::msg::Float64MultiArray cm;
+      cm.data.reserve(cs.size() * 3);
       for (const auto & c : cs) {
         if (c.x < lat_pass_x_ || std::abs(c.y) > cone_y_max_) continue;
-        ox = c.x; oy = c.y; break;              // x 오름차순 — 가장 가까운 앞쪽 콘
+        if (std::isnan(ox)) { ox = c.x; oy = c.y; }   // x 오름차순 — 가장 가까운 앞쪽
+        cm.data.push_back(c.x);
+        cm.data.push_back(c.y);
+        cm.data.push_back(static_cast<double>(c.cells));
       }
+      cones_pub_->publish(cm);      // ★콘이 0개여도 빈 배열을 낸다★ — 그래야
+                                    //   '안 보였다' 와 '노드가 죽었다' 가 갈린다
     }
     std_msgs::msg::Float64MultiArray m;
     m.data = {
       pose.y, pose.yaw * 180.0 / M_PI, road_deg,
       actuator_->lastPotDeg(), static_cast<double>(actuator_->lastPulse()),
       avg_cost, gps_ref_live_ ? 1.0 : 0.0, ox, oy,
-      mppi_params_.lateral_target, static_cast<double>(n_cones_ahead_)};
+      mppi_params_.lateral_target, static_cast<double>(n_cones_ahead_),
+      //  ★[2026-09-12] 검출 진단 3개 추가 (11 → 14)★
+      //  ⚠️ white1/record.py 의 _array(14) 와 ★짝★ 이다 — 한쪽만 고치지 말 것.
+      static_cast<double>(cone_stats_.lethal_cells),
+      static_cast<double>(cone_stats_.clusters_all),
+      static_cast<double>(cone_stats_.clusters_rejected)};
     diag_pub_->publish(m);
   }
 
@@ -1961,6 +2000,9 @@ private:
   double ref_zone_left_ = std::numeric_limits<double>::quiet_NaN();
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr ref_sub_;
   std::string diag_topic_ = "/lidar_diag";
+  std::string cones_topic_ = "/lidar_cones";
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr cones_pub_;
+  ConeStats cone_stats_;         // 마지막 검출 통계 (diag 12~14열)
   //  ★회피 방향 결정 [2026-09-11]★
   double lat_target_range_ = 8.0, lat_cone_half_ = 0.20, lat_margin_ = 0.30;
   double lat_max_offset_ = 1.35;  // 회피 목표 상한 (횡벽과 ★다른 값★)
