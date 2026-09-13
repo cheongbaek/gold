@@ -8,8 +8,8 @@
 
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║ ⚠️ ★★ 이 런치는 '실행 = 출발' 이다 ★★                                   ║
-║    외장 iAHRS 헤딩 잠금(차 정지, ~1.5초)이 끝나면 ★2펄스(≈6.4 km/h)로   ║
-║    스스로 직진한다. 전방에 장애물이 있으면 원본 MPPI 와 같이 S커브로     ║
+║    OS1 내장 IMU 자이로 바이어스 보정(차 정지, ~1초)이 끝나면             ║
+║    ★2펄스(≈6.4 km/h)로 스스로 직진한다. 전방에 장애물이 있으면 S커브로  ║
 ║    감아 피하고 IMU 기준선으로 돌아온다. 피할 길이 없으면 리니어 2단.     ║
 ║    세우는 수단 :  Ctrl-C  ·  E-STOP  ·  D5 수동조종                      ║
 ╚══════════════════════════════════════════════════════════════════════════╝
@@ -18,7 +18,7 @@
     nxde/sound            음성 안내 (구독 전용)      use_sound
     nxde/arduino          A/B 2보드 시리얼 브리지    use_arduino
     lidar/ouster.launch   OS1-32 드라이버            use_ouster
-    white1/iahrs          외장 iAHRS → /imu          use_iahrs
+    white1/iahrs          외장 iAHRS → /imu          use_iahrs (기본 끔)
     mppi_local_planner_node
     rviz2                                            use_rviz
     white1/hud            차량 상면도 HUD            use_hud
@@ -27,7 +27,7 @@
 ★실차 전 점검★
     1) D5 스위치가 ★자율주행★ 인가
     2) E-STOP 이 풀려 있는가 (해제가 곧 출발이다)
-    3) 런치 직후 차가 ★정지해 있는가★ — 외장 iAHRS 헤딩 잠금
+    3) 런치 직후 차가 ★정지해 있는가★ — OS1 내장 IMU 바이어스 보정
     4) 차 앞이 비어 있는가
 """
 
@@ -94,8 +94,8 @@ def generate_launch_description():
     print("\n=====================================================")
     print(" 🚗 mppi_local_planner one_launch — ★MPPI 장애물 회피★")
     print("    순항 = 2펄스 = 1.768 m/s ≈ 6.4 km/h")
-    print("    주행 = 런치 후 외장 iAHRS 헤딩 잠금(~1.5초, 정지) → 스스로 직진")
-    print("    헤딩 = /imu (white1 iahrs, AHRS 쿼터니언). /ouster/imu 가 아님")
+    print("    주행 = 런치 후 OS1 내장 IMU 바이어스 보정(~1초, 정지) → 스스로 직진")
+    print("    헤딩 = /ouster/imu (OS1 내장 자이로 적분). 외장 iAHRS 를 쓰지 않는다")
     print("    회피 = 원본 MPPI S커브 / 실패 시 리니어 2단")
     print(f"    음원 = {snd or '(못 찾음 — 안내음 없이 돕니다)'}")
     print("    라이다는 유선 LAN 이다 — 안 뜨면 먼저:")
@@ -116,9 +116,8 @@ def generate_launch_description():
             'use_ouster', default_value='true',
             description='라이다 드라이버를 함께 띄울지. false 면 rosbag 재생·별 터미널'),
         DeclareLaunchArgument(
-            'use_iahrs', default_value='true',
-            description='white1 iahrs(외장 iAHRS → /imu). 끄면 imu_topic 을 '
-                        '/ouster/imu 로 바꿔 라이다 내장 자이로를 쓴다(드리프트 큼)'),
+            'use_iahrs', default_value='false',
+            description='white1 iahrs(외장 iAHRS → /imu). 헤딩은 OS1 내장이라 기본 끔'),
         DeclareLaunchArgument(
             'imu_port', default_value=imu_dev,
             description='iAHRS 시리얼 경로'),
@@ -126,8 +125,8 @@ def generate_launch_description():
             'imu_sync_period_ms', default_value='50',
             description='iAHRS 출력주기[ms]. 50 = 20Hz'),
         DeclareLaunchArgument(
-            'imu_topic', default_value='/imu',
-            description='헤딩 IMU 토픽. 기본 /imu = 외장 iAHRS'),
+            'imu_topic', default_value='/ouster/imu',
+            description='헤딩 IMU 토픽. 기본 /ouster/imu = OS1 내장 자이로'),
         DeclareLaunchArgument(
             'use_rviz', default_value='false',
             description='RViz 로 코스트맵·롤아웃을 보면서 시험'),
@@ -214,7 +213,8 @@ def generate_launch_description():
                 'kasa.require_estop_clear': drive,
                 'flip_lidar_xy': LaunchConfiguration('flip_lidar_xy'),
                 'imu_topic': LaunchConfiguration('imu_topic'),
-                'imu_use_orientation': True,
+                'imu_use_orientation': False,
+                'use_os1_imu': True,
             },
         ],
     )

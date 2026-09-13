@@ -39,6 +39,7 @@ void MPPIController::reset()
   for (auto & u : nominal_) {
     u = Control{};
   }
+  last_executed_ = Control{};
   last_trajectory_.clear();
 }
 
@@ -170,12 +171,11 @@ double MPPIController::rolloutCost(
       const double over = y_abs - params_.lateral_hard;
       cost += params_.weight_lateral_hard * over * over;
     }
-    //  ★헤딩 벽 [2026-09-11]★ ★S 를 완만하게 만드는 직접적인 수단이다.★
-    //  횡위치는 헤딩의 적분이라, 헤딩을 묶으면 횡위치가 달아나는 ★속도★ 가
-    //  묶인다. 위 두 벽은 이미 벗어난 뒤에 되돌리는 힘이지만 이것은 애초에
-    //  크게 벗어나지 못하게 한다(실측에서 헤딩이 ±73° 까지 갔다).
+    //  ★헤딩 벽★ 기준은 경로 절대헤딩이 아니라 ★스탠리 목표 헤딩과의 차★ 다.
+    //  yaw_odom 에 걸면 회피 중 필요한 17~25° 도 벽으로 읽고, 기하 조향이
+    //  조금만 열어도 stop latch 가 차를 세운다(실측 yaw 38~44° / cost 750+).
     {
-      const double h_abs = std::abs(yaw_odom);
+      const double h_abs = std::abs(heading_err);
       if (h_abs > params_.max_heading_dev) {
         const double over = h_abs - params_.max_heading_dev;
         cost += params_.weight_heading_wall * over * over;

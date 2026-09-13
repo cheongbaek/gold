@@ -152,6 +152,11 @@ public:
   //  over several cycles instead of being absent.
   void reset();
 
+  // 노드가 매 틱 정한 회피 횡목표. 생성 때 params_ 는 복사본이라, 이걸 안 부르면
+  // 비용함수의 lateral_target 이 영원히 0 이다 → 회피 자세를 경로이탈로 읽어
+  // stop latch 가 걸린다.
+  void setLateralTarget(double y) { params_.lateral_target = y; }
+
   double dt() const { return params_.dt; }
 
 private:
