@@ -129,6 +129,25 @@ FPS_PROBE_MAX_S = 4.0    # 그 안에 못 모으면 모은 것으로 확정한�
 FPS_MIN, FPS_MAX = 1.0, 120.0   # 실측이 이 범위를 벗어나면 못 믿는다 → 폴백
 FPS_FALLBACK    = 30.0   # camera_launch 의 framerate 와 같은 값
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-13] 세그먼트 분할 — SIGKILL 을 맞아도 직전 조각은 살아남는다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★mp4 는 인덱스(moov atom)를 파일 ★끝★ 에 쓴다★ — release() 가 안 불리면 파일
+#  전체가 재생 불가가 된다("moov atom not found"). 아래 신호 핸들러·atexit·finally
+#  삼중 방어가 있지만 ★SIGKILL 은 그 셋을 전부 건너뛴다★:
+#      · `ros2 run nxde kill` 은 ★처음부터 SIGKILL★ 이다(그 파일 주석에 명시)
+#      · Ctrl-C 여도 런치가 유예 안에 안 죽으면 SIGKILL 로 에스컬레이트한다 —
+#        큰 파일일수록 release() 가 오래 걸려 그 경계에 걸리기 쉽다
+#  2026-09-13 실측 : video/ 의 mp4 4개 중 ★3개가 깨져 있었다★
+#      236M · 181M · 55M → moov 없음(재생 불가)   /   8.5M → 정상
+#  ★큰 파일만 깨졌다★ — 위 두 경로가 정확히 그렇게 작동한다는 증거다.
+#
+#  ★그래서 파일을 잘게 나눈다.★ 이 주기마다 닫고 다음 파일을 연다. 닫는 순간
+#  그 조각은 ★완결된 mp4★ 이므로, 그 뒤에 SIGKILL 을 맞아도 잃는 것은 마지막
+#  조각(최대 SEGMENT_S 초)뿐이다. 분당 15~25MB 이므로 120초면 조각당 30~50MB 다.
+#  ⚠️ 0 으로 두면 분할하지 않는다(종전 거동) — 그때는 SIGKILL 에 전부 잃는다.
+SEGMENT_S = 120.0        # [s] 이 주기마다 파일을 닫고 새로 연다. 0 = 분할 안 함
+
 LOG_PERIOD_S = 10.0      # 진행 상황 로그 주기
 NO_FRAME_WARN_S = 5.0    # 이 시간 동안 프레임이 없으면 경고(usb_cam 확인 안내)
 MIN_FREE_MB = 500.0      # 남은 디스크가 이 밑이면 스스로 종료
@@ -181,6 +200,8 @@ class VideoNode(Node):
         self.declare_parameter('codec', DEFAULT_CODEC)
         #   파일 이름 앞머리. 여러 대를 동시에 녹화하거나 시험을 구분할 때 바꾼다.
         self.declare_parameter('prefix', 'cam')
+        #  ★[2026-09-13] 세그먼트 분할★ 상수절 참고. 0 이면 종전처럼 한 파일에 쓴다.
+        self.declare_parameter('segment_s', SEGMENT_S)
 
         self.topic  = str(self.get_parameter('image_topic').value)
         self.fps_p  = float(self.get_parameter('fps').value)
@@ -225,6 +246,13 @@ class VideoNode(Node):
         self._t_free = time.time()
         self._warned_no_frame = False
         self._stop_reason = None
+        #  ── 세그먼트 상태 [2026-09-13] ──
+        self.segment_s = max(0.0, float(self.get_parameter('segment_s').value))
+        self.path0 = self.path        # 첫 조각의 경로 — 이후 조각 이름의 뿌리
+        self._seg_i = 1               # 지금 쓰고 있는 조각 번호(1 부터)
+        self._seg_t0 = 0.0            # 이 조각을 연 시각
+        self._seg_frames = 0          # 이 조각에 쓴 프레임 수
+        self._seg_done = 0            # 완결된 조각 수(로그용)
 
         # ── 구독 ──
         #   ★QoS 를 usb_cam 에 맞춘다★ BEST_EFFORT / KEEP_LAST / depth=1.
@@ -264,10 +292,19 @@ class VideoNode(Node):
             self._say(f"신호 {signum} 수신 — 파일을 닫는다")
             self.close()
             raise SystemExit(0)
-        try:
-            signal.signal(signal.SIGTERM, _term)
-        except (ValueError, OSError):
-            pass            # 메인 스레드가 아니면 등록할 수 없다 — atexit 이 받는다
+        #  ★[2026-09-13] SIGINT 도 여기서 직접 잡는다★
+        #  종전에는 "Ctrl-C 는 rclpy 가 KeyboardInterrupt 로 올려 주므로 finally 가
+        #  받는다" 에 맡겼는데, 그 경로는 ★rclpy 가 스핀을 풀고 → 예외가 올라가고 →
+        #  finally 가 도는★ 동안 시간이 걸린다. 그 사이 런치가 유예를 넘겼다고 보고
+        #  SIGKILL 을 보내면 파일이 그대로 깨진다(2026-09-13 실측: 큰 파일만 깨졌다 —
+        #  release() 가 오래 걸릴수록 그 경계에 걸린다).
+        #  → ★신호를 받은 그 자리에서 먼저 닫는다.★ close() 는 멱등이므로 뒤따르는
+        #  finally·atexit 과 겹쳐도 안전하고, 이미 닫혔으면 즉시 돌아온다.
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _term)
+            except (ValueError, OSError):
+                pass        # 메인 스레드가 아니면 등록할 수 없다 — atexit 이 받는다
         atexit.register(self.close)
 
     def _say(self, text, warn=False):
@@ -321,11 +358,20 @@ class VideoNode(Node):
         vid_s = self._video_seconds()
         wall_s = (time.time() - self.t_first) if self.t_first else 0.0
         mb = self._size_mb()
+        #  ★[2026-09-13] 조각으로 나눠 적었으면 그 사실을 같이 말한다★ — 사람이
+        #  파일을 하나만 찾다가 '뒷부분이 없다' 고 오해하지 않게.
+        seg = ""
+        if self._seg_done:
+            seg = (f"  ※ 앞서 {self._seg_done}조각을 따로 저장했다 — "
+                   f"{os.path.basename(self._segment_path(1))} … "
+                   f"{os.path.basename(self.path)} (총 {self._seg_i}개)")
         self._say(
             f"✅ 저장 완료 — {os.path.basename(self.path)}  "
-            f"{self.n_written}프레임 / ★영상 {vid_s:.1f}초★ / {mb:.1f}MB / "
-            f"fps {self.fps_used:g}"
-            + (f" / 버린 프레임 {self.n_dropped}" if self.n_dropped else ""))
+            f"{self._seg_frames if self._seg_done else self.n_written}프레임 / "
+            f"★영상 {(self._seg_frames / self.fps_used) if (self._seg_done and self.fps_used) else vid_s:.1f}초★ / "
+            f"{mb:.1f}MB / fps {self.fps_used:g}"
+            + (f" / 버린 프레임 {self.n_dropped}" if self.n_dropped else "")
+            + seg)
         # ★둘이 다르면 그만큼 프레임이 안 온 것이다★ 그것 자체가 진단이므로 알려 준다
         #   (usb_cam 이 중간에 죽었거나, 인코딩이 밀려 BEST_EFFORT 로 버려졌거나).
         if wall_s > 0.5 and abs(wall_s - vid_s) > max(1.0, 0.1 * wall_s):
@@ -382,8 +428,14 @@ class VideoNode(Node):
                                         throttle_duration_sec=5.0)
                 return
             self.n_written += 1
+            self._seg_frames += 1
             if self.t_first is None:
                 self.t_first = now
+            #  ★[2026-09-13] 세그먼트 롤오버★ 상수절 참고. 여기서 하는 이유는
+            #  ★프레임을 쓴 직후가 조각을 끊기에 가장 안전한 지점★ 이기 때문이다
+            #  (writer 가 반쯤 쓴 프레임을 들고 있지 않다). _lock 을 이미 쥐고 있다.
+            if self.segment_s > 0.0 and (now - self._seg_t0) >= self.segment_s:
+                self._roll_segment(now)
 
     def _open_writer(self, frame, now) -> bool:
         """→ 열었으면 True. 실측이 아직 안 끝났으면 False(그 프레임은 버린다).
@@ -428,10 +480,70 @@ class VideoNode(Node):
         self.writer = writer
         self.size = (w, h)
         self.fps_used = round(float(fps), 3)
+        self._seg_t0 = now
+        self._seg_frames = 0
+        seg = (f"  (조각당 {self.segment_s:.0f}초씩 나눠 적는다 — "
+               f"중간에 죽어도 직전 조각까지는 남는다)"
+               if self.segment_s > 0 else "  (분할 없음 — 끝까지 한 파일)")
         self.get_logger().info(
             f"🔴 녹화 시작 {w}x{h} @ {self.fps_used:g}fps → "
-            f"{os.path.basename(self.path)}")
+            f"{os.path.basename(self.path)}{seg}")
         return True
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  세그먼트 분할 [2026-09-13]
+    # ══════════════════════════════════════════════════════════════════════════
+    def _segment_path(self, i):
+        """i 번째 조각의 경로. ★첫 조각은 종전 이름 그대로다★ — record CSV 와
+        시각을 맞추는 규칙(tl-<시각>.mp4)을 깨지 않기 위해서다."""
+        if i <= 1:
+            return self.path0
+        root, ext = os.path.splitext(self.path0)
+        return f"{root}-{i:02d}{ext}"
+
+    def _roll_segment(self, now):
+        """지금 조각을 ★완결★ 하고 다음 조각을 연다. ★_lock 을 쥔 채로 불린다.★
+
+        ★이 함수가 이 노드의 내구성 전부다★ — 여기서 release() 가 끝나는 순간
+        그 조각은 moov 까지 갖춘 온전한 mp4 가 된다. 그 뒤에 SIGKILL 이 와도
+        잃는 것은 그 시점 이후에 쓴 마지막 조각뿐이다.
+
+        ★close() 를 재사용하지 않는다★ close() 는 `_closed` 를 세워 '녹화 끝' 을
+        뜻하고 멱등이라, 롤오버에 쓰면 다음 조각을 열 수 없게 된다.
+        """
+        w = self.writer
+        if w is None:
+            return
+        self.writer = None              # 먼저 떼어 둔다(콜백이 죽은 writer 를 안 보게)
+        done_path = self.path
+        frames = self._seg_frames
+        try:
+            w.release()
+        except Exception as e:
+            self._say(f"❌ 조각 닫기 실패: {e}", warn=True)
+            return
+        self._seg_done += 1
+        try:
+            mb = os.path.getsize(done_path) / 1e6
+        except OSError:
+            mb = 0.0
+        vid_s = (frames / self.fps_used) if self.fps_used else 0.0
+        self._say(f"💾 조각 {self._seg_i:02d} 저장 — {os.path.basename(done_path)}  "
+                  f"{frames}프레임 / {vid_s:.1f}초 / {mb:.1f}MB")
+        # ── 다음 조각을 연다 ── fps·크기는 ★재측정하지 않는다★ (재측정하면 그
+        #    프레임들을 또 버리고, 조각마다 fps 가 달라져 이어 보기가 어려워진다)
+        self._seg_i += 1
+        self.path = self._segment_path(self._seg_i)
+        fourcc = cv2.VideoWriter_fourcc(*self.codec)
+        writer = cv2.VideoWriter(self.path, fourcc, float(self.fps_used), self.size)
+        if not writer.isOpened():
+            self._say(f"❌ 다음 조각을 열 수 없다: {self.path} — 녹화를 여기서 끝낸다",
+                      warn=True)
+            self._closed = True
+            return
+        self.writer = writer
+        self._seg_t0 = now
+        self._seg_frames = 0
 
     # ══════════════════════════════════════════════════════════════════════════
     #  주기 점검 — 진행 상황 · 프레임 두절 · 디스크

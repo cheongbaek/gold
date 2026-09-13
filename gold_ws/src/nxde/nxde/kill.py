@@ -287,9 +287,52 @@ def alive(pid):
 # ═══════════════════════════════════════════════════════════════════════════
 #  죽이기
 # ═══════════════════════════════════════════════════════════════════════════
-def kill_all(targets):
-    """SIGKILL 을 순서대로 ★유예 없이★ 보낸다. (죽은 수, 못 죽인 목록)"""
+#  ★[2026-09-13] 단 하나의 예외 — 녹화 노드에는 닫을 틈을 준다★
+#  이 파일의 원칙은 '유예 없이 SIGKILL' 이고 그 근거는 위에 적힌 그대로다.
+#  그런데 ★mp4 는 인덱스(moov atom)를 파일 끝에 쓴다★ — SIGKILL 로 죽이면
+#  정리 코드가 안 돌아 ★파일 전체가 재생 불가★ 가 된다("moov atom not found").
+#  2026-09-13 실측으로 video/ 의 mp4 4개 중 3개(236M·181M·55M)가 그렇게 깨져 있었다.
+#  잃는 것이 '프로세스 하나' 가 아니라 ★주행 전체의 인지 기록★ 이라 값이 다르다.
+#  → 녹화 노드에만 SIGTERM 을 먼저 보내고 아래 유예만큼 기다린 뒤, 그래도 살아
+#    있으면 원칙대로 SIGKILL 한다. ★유예는 짧게★ — 이 도구는 빨라야 한다.
+#  (video.py 는 SIGTERM 핸들러에서 파일을 닫고 즉시 나간다 — 보통 즉시 끝난다.)
+RECORDER_COMMS = ('video',)      # comm 에 이 문자열이 들어가면 녹화 노드로 본다
+RECORDER_GRACE_S = 2.0           # [s] 그 노드에만 주는 SIGTERM 유예
+
+
+def kill_all(targets, log=None):
+    """SIGKILL 을 순서대로 ★유예 없이★ 보낸다. (죽은 수, 못 죽인 목록)
+
+    ★예외 하나★ 녹화 노드(RECORDER_COMMS)는 SIGTERM 을 먼저 받고
+    RECORDER_GRACE_S 만큼 기다린다 — 위 주석 참고.
+    ★log 은 main 안의 중첩 함수라 인자로 받는다★ (없으면 조용히 넘어간다).
+    """
+    if log is None:
+        def log(_msg):
+            pass
     denied, missing = [], 0
+    # ── 녹화 노드 먼저 : SIGTERM → 유예 ──
+    recs = [t for t in targets
+            if any(k in (t[1] or '') for k in RECORDER_COMMS)]
+    if recs:
+        log(f"🎥 녹화 노드 {len(recs)}개에 SIGTERM 을 먼저 보낸다 "
+            f"(mp4 를 닫을 틈 — 최대 {RECORDER_GRACE_S:.0f}s)")
+        for pid, _comm, _cmd, _why in recs:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        deadline = time.monotonic() + RECORDER_GRACE_S
+        while time.monotonic() < deadline:
+            if not any(alive(t[0]) for t in recs):
+                log("   ✅ 녹화 노드가 스스로 끝났다 — 파일이 정상으로 닫혔다")
+                break
+            time.sleep(0.1)
+        else:
+            log("   ⚠️ 유예 안에 안 끝났다 — 원칙대로 SIGKILL 한다 "
+                "(그 파일은 재생이 안 될 수 있다)")
+
+    # ── 나머지(그리고 아직 살아 있는 녹화 노드)는 원칙대로 ──
     for pid, comm, _cmd, _why in targets:
         try:
             os.kill(pid, signal.SIGKILL)
@@ -492,7 +535,7 @@ def main(args=None):
             f"({len(targets)}개가 대상이었습니다).")
         return 0
 
-    missing, denied, survived = kill_all(targets)
+    missing, denied, survived = kill_all(targets, log)
     killed = len(targets) - len(survived) - missing
 
     if not quiet:

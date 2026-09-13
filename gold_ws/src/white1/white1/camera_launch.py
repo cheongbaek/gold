@@ -243,6 +243,15 @@ def declare_args(cam_dev):
                         '= 용량·인코딩 비용 약 1/4. ★판정은 이 값과 무관하다★ — 녹화만 '
                         '줄인다. 캔버스는 원본 1920x1080 이 아니라 tl_window_width 기준'
                         '(960 → 1248x610)이므로 대개 1.0 으로 충분하다'),
+        #  ★[2026-09-13] 세그먼트 분할 — 녹화가 통째로 날아가지 않게★
+        DeclareLaunchArgument(
+            'tl_video_segment_s', default_value='120.0',
+            description='이 초마다 mp4 를 닫고 다음 조각을 연다(0 = 분할 안 함). '
+                        '★mp4 는 인덱스를 파일 끝에 쓰므로 SIGKILL 을 맞으면 파일 '
+                        '전체가 재생 불가가 된다★ — 조각으로 나눠 두면 잃는 것이 '
+                        '마지막 조각뿐이다. 첫 조각은 종전 이름 그대로이고 이후는 '
+                        'tl-<시각>-02.mp4 … 로 이어진다. 분당 15~25MB 이므로 '
+                        '120초면 조각당 30~50MB'),
         DeclareLaunchArgument(
             'tl_video_topic', default_value='/tl/debug_image',
             description='녹화할 이미지 토픽. 기본은 인지 디버그 화면이다. '
@@ -462,7 +471,16 @@ def actions(package_name, cam_format, node_env, respawn_delay):
             'scale':       LaunchConfiguration('tl_video_scale'),
             'fps':         0.0,          # 0 = 실측(권장)
             'prefix':      'tl',         # → tl-<날짜>_<시각>.mp4
+            #  ★[2026-09-13] 세그먼트 분할★ mp4 는 인덱스를 파일 끝에 쓰므로
+            #  SIGKILL 을 맞으면 통째로 재생 불가가 된다(실측: 4개 중 3개가 깨졌다).
+            #  이 주기마다 조각을 완결해 두면 잃는 것이 마지막 조각뿐이다.
+            'segment_s':   LaunchConfiguration('tl_video_segment_s'),
         }],
+        #  ★[2026-09-13] 닫을 틈을 준다★ 런치는 SIGINT → 유예 → SIGTERM → 유예 →
+        #  SIGKILL 로 올라간다. 기본 유예로는 큰 파일의 release() 가 못 끝나
+        #  파일이 깨졌다. 이 노드에만 넉넉히 준다 — 다른 노드는 그대로다.
+        sigterm_timeout='10',
+        sigkill_timeout='10',
         condition=IfCondition(AndSubstitution(use_camera, rec_video)),
     )
 
