@@ -443,6 +443,77 @@ STEER_UNDERSTEER   = 5.17    # [deg/(m/s²)] 언더스티어 계수
 #     순수추종이 그 조합을 안 내기 때문이다. 생기면 이 클램프부터 다시 볼 것.
 UNDERSTEER_V_CLAMP_PULSE = 4   # [펄스] 언더스티어 항의 v 를 이 속도에서 묶는다
 #                                (= 3.536 m/s. 0 이하로 두면 클램프를 끈다)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-13] 조향 트림 자동 추정 — '직진을 만드는 pot' 이 0 이 아니다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★증상★ 자율주행이 실 차선 기준으로 오른쪽에 치우쳐 달렸다. 2026-09-13 네 주행
+#  전부 CTE 부호가 ★73~80% 오른쪽★ 이었고, 사용자가 지적한 세 구간에서는
+#  85~100% 였다(한 구간은 단 한 틱도 왼쪽에 있지 않았다).
+#
+#  ★원인★ 요레이트가 거의 0 인 표본(직진)만 2824개 모으면 실측 pot 의 중앙값이
+#  ★정확히 −3.00°★ 다 — 네 주행 전부. 즉 ★이 차는 pot 을 −3° 로 물고 있어야
+#  직진한다.★ pot=0 이 직진이 아니다(도로휠로 −1.9°, 보정 없이 100 m 에 3.4 m).
+#  원인은 조향 영점 편의이거나 차량 쏠림(얼라인먼트·공기압·좌우 인휠 출력차)인데,
+#  ★로그로는 둘을 못 가른다 — 둘 다 실측 pot −3° 로 똑같이 나타난다.★
+#  어느 쪽이든 '직진을 만드는 pot' 을 찾아 더해 주면 증상은 사라진다.
+#
+#  ★어떻게 재나 — 절편이 곧 트림이다★
+#        r·L/v = tan((pot − trim)/G)   →  작은 각에서  pot = G·δ + ★trim★
+#  실측 pot(/steer_angle_measured)과 투영 요레이트, GPS 속도로 선형회귀를 하면
+#  ★기울기가 전달비 G, 절편이 트림★ 이다. 직진 구간만 골라낼 필요가 없다 —
+#  코너 표본이 오히려 기울기를 잡아 준다.
+#
+#  ★13개 로그로 검증했다 (2026-09-12~13)★
+#      9/12 오전   trim −4.6 ~ −4.9°   G 1.09~1.31   잔차 RMS 1.6~1.8°
+#      9/12 낮     trim −7.5 ~ −7.9°   G 1.26~1.34   잔차 RMS 1.3~1.6°
+#      ★9/12 늦음~9/13 (6개)  trim −2.63 ~ −2.90°  G 1.40~1.43★  ← 표준편차 0.1°
+#  날짜별로 −7.9 → −4.9 → −2.9 로 계단처럼 바뀌었다 — ★코드가 아니라 하드웨어
+#  상태가 바뀐 것★ 이고, 추정이 그것을 따라갔다는 뜻이다.
+#
+#  ★수렴은 5초면 끝난다★  5s(100표본) −2.82° / 10s(200) −2.89° / 292s(4167) −2.90°
+#  표준오차는 표본 300개에 0.083°, 4167개에 0.022° 다.
+#
+#  ★위험 넷 다 작다 (실측)★
+#      자이로 바이어스 −0.006~+0.071°/s → trim 오차 ★0.01° 미만★
+#      한쪽으로만 도는 코스 → 좌/우 표본만으로 나눠 회귀해도 차이 0.38~0.65°
+#      불감대 잡음 → 잔차 RMS 1.3~1.8°(불감대 1.78° 수준)이나 평균은 위 표준오차
+#      속도 오차 → 기울기에만 영향, ★절편에는 거의 무영향★
+#
+#  ★CTE 적분과 중복이 아니다 — 역할 분담이다★
+#  trim 이 −7.9° 이던 날은 CTE 적분이 CTE_I_CLAMP(8.0)에 ★포화★ 해 있었고
+#  (142144·120439·141338 전부 적분상태 −8.000), 못 지운 나머지가 그대로 CTE 편향
+#  −0.24~−0.33 m 로 남았다. ★트림이 상수분을 가져가면 적분이 본래 일(노면 경사·
+#  바람 같은 잔여 외란)을 할 여유를 되찾는다.★
+#
+#  ★되먹임 루프가 아예 성립하지 않는다★ `pot_meas` 는 ★트림이 이미 포함된 실측값★
+#  이므로, 트림을 적용해도 절편은 제자리다:
+#        트림 0   : 직진하려면 지령 −2.9 → 실측 −2.9 → 절편 −2.9
+#        트림 −2.9: 지령 0 + 트림 −2.9 → 실측 −2.9 → ★절편 여전히 −2.9★
+#  즉 절편은 '직진을 만드는 실측 pot' 이라는 ★하드웨어의 절대량★ 이고 그것이 곧
+#  목표다. 적용값이 스스로를 키우는 경로가 없어 ★폭주가 불가능하다.★
+#  ⚠️ 처음에는 `target = 적용값 + 절편` 으로 두고 '자기소멸' 이라 보았는데 틀렸다 —
+#     로그 재생 검증에서 적용값이 상한까지 폭주해 그 자리에서 드러났다(apply_trim).
+#
+#  ⚠️ ★이것이 영점 캘리브를 대신하지 않는다★ trim −2.9° 는 조향 권한의 7%(±40 중)
+#     를 상시 한쪽으로 쓰는 것이라, 반대쪽 최대 조향이 그만큼 줄어든다. 자동 트림은
+#     '남은 오차를 지우는 장치' 이고, 하드웨어 영점은 그 값 자체를 0 에 가깝게
+#     만드는 일이다. BOARD_B.md 3절의 `a` 캘리브와 ★둘 다★ 해야 한다.
+TRIM_ENABLE      = True
+TRIM_MIN_V_MS    = 2.0    # 이 밑 속도의 표본은 받지 않는다(요레이트가 잡음이다)
+TRIM_MIN_N       = 300.0  # 유효표본이 이만큼 모이기 전에는 ★적용하지 않는다★(≈15s)
+TRIM_FORGET      = 0.999  # 지수 망각. 유효표본 ≈1/(1−λ) = 1000 (≈50 s)
+#   ★망각을 두는 이유★ 트림을 적용하면 그 뒤 표본은 ★다른 조건★ 에서 얻은 것이다.
+#   전체 누적이면 옛 조건이 계속 남아 수렴이 느려진다. 50초 창이면 위 표준오차가
+#   0.046° 라 충분하고, 하드웨어가 주행 중에 변해도 따라간다.
+TRIM_SLEW_DPS    = 0.3    # [pot deg/s] 적용값 변화 속도 상한 — 3° 를 10초에 간다
+TRIM_MAX_POT_DEG = 5.0    # 절대 상한. 이 밖이면 ★추정을 버리고 경고한다★
+#   ★5° 의 뜻★ 실측 최댓값이 −7.9° 였지만 그건 하드웨어가 크게 틀어져 있던 날이다.
+#   그만큼 필요하다는 것은 ★캘리브로 고칠 일★ 이지 소프트웨어가 덮을 일이 아니다.
+TRIM_MIN_SXX     = 50.0   # 조향 변화(분산)가 이보다 작으면 회귀가 성립하지 않는다
+TRIM_G_MIN, TRIM_G_MAX = 0.8, 4.0   # 기울기가 이 밖이면 그 표본 묶음을 안 믿는다
+TRIM_LAG_TICKS   = 2      # pot → 요레이트 지연 [틱] = 0.10 s (실측 상관 최대 지점)
+TRIM_LOG_PERIOD_S = 20.0  # 추정 경과를 이 주기로 남긴다
 #  도로휠각 상한 = 40 / 1.26 = 31.7°  →  최소회전반경 L/tan(31.7°) = ★2.02 m★
 #  (구 매핑 기준으로는 22.8° / 2.97m 이었다. 예전에 1.49m 로 적어 두었던 값은
 #   pot 지령을 도로휠각으로 오인한 결과였고 그건 지금도 틀린 값이다)
@@ -1693,6 +1764,9 @@ class DrivingNode(Node):
         #   lfd_omega_n_fast 가 정한다 — 둘 사이는 펄스로 선형보간한다.
         self.declare_parameter('lfd_omega_n_fast', LFD_OMEGA_N_FAST)
         self.declare_parameter('understeer_v_clamp_pulse', UNDERSTEER_V_CLAMP_PULSE)
+        #  ★[2026-09-13] 조향 트림 자동 추정★ 상수절 참고. false 면 종전 거동.
+        self.declare_parameter('trim_enable', TRIM_ENABLE)
+        self.declare_parameter('trim_max_pot_deg', TRIM_MAX_POT_DEG)
         self.declare_parameter('lfd_min_m', LFD_MIN_M)
         self.declare_parameter('wheelbase_m', WHEELBASE_M)
         # ★조향 전달계 실측 보정★ 상단 상수 주석의 126표본 최소자승 결과.
@@ -1736,6 +1810,8 @@ class DrivingNode(Node):
         #  0 이하면 클램프를 끈다(= 종전 거동). 음수 방지로 max(0,·).
         self.understeer_v_max = max(0.0, float(
             self.get_parameter('understeer_v_clamp_pulse').value) * MS_PER_PULSE)
+        self.trim_enable = bool(self.get_parameter('trim_enable').value)
+        self.trim_max = abs(float(self.get_parameter('trim_max_pot_deg').value))
         self.lfd_min = float(self.get_parameter('lfd_min_m').value)
         self.wheelbase = float(self.get_parameter('wheelbase_m').value)
         self.plant_gain = max(0.1, float(self.get_parameter('steer_plant_gain').value))
@@ -1813,6 +1889,12 @@ class DrivingNode(Node):
         #  실측 +0.155°/s (상단 '자이로 바이어스 학습' 절). 주행 사이에도
         #  들고 간다 — 온도로 천천히 변할 뿐 매 주행 새로 배울 이유가 없다.
         self.gyro_bias_dps = 0.0          # [deg/s]
+        # ── ★[2026-09-13] 조향 트림 자동 추정★ 상수절 참고 ──
+        self.steer_trim = 0.0             # [pot deg] ★지금 지령에 더하고 있는 값★
+        self.pot_meas = float('nan')      # /steer_angle_measured 실측 pot
+        self.pot_meas_t = 0.0
+        self._pot_hist = []               # 지연 정합용 (TRIM_LAG_TICKS)
+        self._trim_reset_stats()
         self._last_road_deg = 0.0         # 직전 틱의 도로휠각 (조향 반응 감속용)
         self._cte_last = float('nan')     # 이번 틱의 signed_cte (감속이 재사용)
         self.gyro_raw = (0.0, 0.0, 0.0)   # [rad/s] IMU 원시 3축 (x, y, z)
@@ -1974,6 +2056,10 @@ class DrivingNode(Node):
                                  self.cb_gps_fused, 10)
         self.create_subscription(Imu,       '/imu',          self.cb_imu,     10)
         self.create_subscription(Int32,     '/encoder',      self.cb_encoder, 10)
+        #  ★[2026-09-13] 실측 조향각★ 트림 자동 추정의 유일한 입력(상수절 TRIM_*).
+        #   종전에는 record 만 구독하던 토픽이다 — 제어가 처음으로 쓴다.
+        self.create_subscription(Int32, '/steer_angle_measured',
+                                 self.cb_steer_measured, 10)
         # 신호등 노드의 브레이크 요구 — 내 요청과 max 로 합쳐서 낸다(cb_tl_brake_req)
         self.create_subscription(Int32,     '/tl_brake_req', self.cb_tl_brake_req, 10)
         self.create_subscription(Float32,   '/speed',        self.cb_speed,   10)
@@ -2988,6 +3074,12 @@ class DrivingNode(Node):
         # ★상태가 바뀌면 CTE 적분을 지운다★ 이전 구간의 누적이 다음 구간 첫 틱에
         #   실리면 출발하자마자 한쪽으로 튄다(reset_cte_integral 주석).
         self.reset_cte_integral()
+        #  ★[2026-09-13] 조향 트림도 ★주행 시작에서★ 0 부터 다시 추정한다★
+        #  (사용자 결정 — 상수절 _trim_reset_stats 주석에 근거). 주행 중 상태 전이
+        #  (예: L 구간 왕복)에서는 지우지 않는다 — 그때마다 지우면 15초를 다시
+        #  기다리게 되고, 그 사이 트림이 0 이라 오히려 편향이 되살아난다.
+        if new_state == S_DRIVE_HEADING or new_state == S_IDLE:
+            self.reset_trim()
         # ★종점 접근도 함께 지운다★ 이것이 없으면 한 번 크립까지 갔던 세션 뒤에
         #   다음 주행이 시작부터 CREEP 인 채로 출발한다(1펄스로 기어간다).
         self._goal_phase = GOAL_PHASE_NONE
@@ -3143,6 +3235,14 @@ class DrivingNode(Node):
             return
 
         now = time.time()
+
+        #  ★[2026-09-13] 조향 트림 자동 추정★ 상수절 TRIM_* 참고.
+        #  ★DRIVE_RUN 에서만 관측한다★ — 매핑·헤딩 초기화 구간은 조향이 0 이거나
+        #  사람이 몰고 있어 '내 지령이 만든 요레이트' 라는 전제가 성립하지 않는다.
+        #  적용(슬루)은 관측이 없어도 계속 돌아 값이 튀지 않는다.
+        if self.state == S_DRIVE_RUN:
+            self.update_trim_estimate(now)
+        self.apply_trim(now, 1.0 / CONTROL_HZ)
 
         # ★[2026-08-21] E-STOP 일시정지 게이트★ 상태를 버리지 않고 여기서 붙잡는다.
         #   ★GPS 두절 판정보다 앞에 둔다★ 서 있는 동안 GPS 가 끊겨도 할 말은 하나뿐
@@ -4288,6 +4388,146 @@ class DrivingNode(Node):
         return LFD_CURVE_CAP_K + (LFD_CURVE_CAP_K_FAST - LFD_CURVE_CAP_K) \
             * self.speed_blend(v_ms)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  조향 트림 자동 추정 [2026-09-13] — 근거·검증은 전부 상수절 TRIM_* 주석에
+    # ══════════════════════════════════════════════════════════════════════════
+    def _trim_reset_stats(self):
+        """회귀 누적을 지운다. ★주행마다 0 에서 다시 추정한다★(사용자 결정).
+
+        저장해 두고 다음 주행 첫 틱부터 쓰는 방법도 있지만, 실측값이 날짜마다
+        −7.9 → −4.9 → −2.9 로 실제로 바뀌어 왔다. ★하드웨어를 만진 뒤에도 옛 값을
+        쓰는 것★ 보다 5초 기다리는 편이 낫다.
+        """
+        self._tr_n = self._tr_sx = self._tr_sy = 0.0
+        self._tr_sxx = self._tr_sxy = 0.0
+        self._tr_obs = float('nan')   # 마지막 회귀 절편(= 더 필요한 양)
+        self._tr_g = float('nan')     # 마지막 회귀 기울기(= 전달비)
+        self._tr_t_log = 0.0
+        self._tr_ready = False        # TRIM_MIN_N 을 넘긴 적이 있는가(로그 1회용)
+
+    def reset_trim(self):
+        """추정과 적용값을 함께 지운다. 상태 전이에서 부른다."""
+        self._trim_reset_stats()
+        self.steer_trim = 0.0
+
+    def cb_steer_measured(self, msg):
+        """B보드 실측 조향각(pot deg). ★트림 추정의 유일한 입력★
+
+        ⚠️ 부호 규약은 지령과 같다(− 좌 / + 우) — arduino 가 같은 축으로 낸다.
+        """
+        self.pot_meas = float(msg.data)
+        self.pot_meas_t = time.time()
+
+    def update_trim_estimate(self, now):
+        """실측 pot ↔ 투영 요레이트 선형회귀. ★절편이 트림이다★
+
+            pot = G·δ + trim,   δ = atan(r·L/v)   (부호: pot + = 우 → r −)
+
+        ★매 틱 O(1)★ 이다 — 표본을 쌓지 않고 Σx·Σy·Σxx·Σxy·n 만 들고 있으며,
+        매 틱 TRIM_FORGET 을 곱해 50초 창을 만든다(상수절 '망각을 두는 이유').
+
+        ★적용은 여기서 하지 않는다★ 슬루로 따라가는 것은 apply_trim() 이다 —
+        관측과 적용을 나눠야 '지금 무엇을 보고 있고 무엇을 내고 있는지' 가 갈린다.
+        """
+        if not self.trim_enable:
+            return
+        # ── 표본 자격 ──
+        v = self.gps_ms()
+        if v is None or v < TRIM_MIN_V_MS:
+            return
+        if not math.isfinite(self.pot_meas) or self.pot_meas_t <= 0.0:
+            return
+        if now - self.pot_meas_t > 1.0:          # 실측이 낡았다
+            return
+        #  IMU 신선도 — cb_imu 가 매 수신마다 imu_time 을 갱신한다
+        if self.imu_time <= 0.0 or (now - self.imu_time) > 0.5:
+            return
+        #  ★축을 못 쟀으면 요레이트가 z축 단독이라 믿지 않는다★ (4.7절)
+        if self.imu_up is None:
+            return
+        # ── 지연 정합 ── pot → 요레이트는 0.10 s 뒤에 나타난다(실측 상관 최대)
+        self._pot_hist.append(self.pot_meas)
+        if len(self._pot_hist) <= TRIM_LAG_TICKS:
+            return
+        pot = self._pot_hist.pop(0)
+        r_dps = math.degrees(self.gyro_z)        # ★투영·바이어스 보정된 요레이트★
+        #  x = 그 요레이트를 만드는 도로휠각, 부호를 pot 축에 맞춘다
+        x = -math.degrees(math.atan(math.radians(r_dps) * self.wheelbase / v))
+        y = pot
+        f = TRIM_FORGET
+        self._tr_n = self._tr_n * f + 1.0
+        self._tr_sx = self._tr_sx * f + x
+        self._tr_sy = self._tr_sy * f + y
+        self._tr_sxx = self._tr_sxx * f + x * x
+        self._tr_sxy = self._tr_sxy * f + x * y
+        if self._tr_n < TRIM_MIN_N:
+            return
+        n = self._tr_n
+        mx = self._tr_sx / n
+        my = self._tr_sy / n
+        sxx = self._tr_sxx - n * mx * mx
+        if sxx < TRIM_MIN_SXX:
+            return                               # 조향이 거의 안 움직였다 — 회귀 불가
+        g = (self._tr_sxy - n * mx * my) / sxx
+        if not (TRIM_G_MIN <= g <= TRIM_G_MAX):
+            return                               # 기울기가 물리 범위 밖 — 안 믿는다
+        self._tr_g = g
+        self._tr_obs = my - g * mx
+        if not self._tr_ready:
+            self._tr_ready = True
+            self.event(f"🎯 조향 트림 추정 시작 — 관측 {self._tr_obs:+.2f}° "
+                       f"(전달비 {g:.2f}, 유효표본 {n:.0f}). "
+                       f"{TRIM_SLEW_DPS:.1f}°/s 로 따라간다")
+
+    def apply_trim(self, now, dt):
+        """관측된 트림을 ★슬루로★ 따라간다. → 지금 적용 중인 값 [pot deg]
+
+        ★목표는 관측절편 그 자체다 — 적용값을 더하지 않는다★
+        [2026-09-13 설계 수정] 처음에는 `target = steer_trim + obs` 로 두고 "적용이
+        맞아 가면 절편이 0 으로 수렴한다(자기소멸)" 고 보았는데 ★틀렸다.★
+        로그 재생 검증에서 적용값이 상한까지 폭주해 그 자리에서 드러났다.
+
+        ★절편은 트림을 적용해도 변하지 않는다★ 이유는 하나다 — `pot_meas` 는
+        ★트림이 이미 포함된 실측값★ 이다:
+              트림 0   : 직진하려면 지령 −2.9 → 실측 −2.9 → 절편 −2.9
+              트림 −2.9: 지령 0 + 트림 −2.9 → 실측 −2.9 → ★절편 여전히 −2.9★
+        즉 절편은 '직진을 만드는 실측 pot' 이라는 ★하드웨어의 절대량★ 이고,
+        우리가 지령에 더해야 하는 값과 같다. 그래서 목표가 곧 절편이다.
+
+        ★이 성질이 안전의 근거다★ 관측이 적용에 영향받지 않으므로 ★되먹임 루프가
+        아예 성립하지 않는다.★ 적용값이 스스로를 키우는 경로가 없어 폭주가 불가능하고,
+        슬루는 '얼마나 빨리 따라갈까' 만 정한다.
+        """
+        if not self.trim_enable or not math.isfinite(self._tr_obs):
+            return self.steer_trim
+        target = self._tr_obs
+        if abs(target) > self.trim_max:
+            #  ★상한 밖은 소프트웨어가 덮을 일이 아니다★ — 캘리브로 고칠 크기다.
+            self.throttle_warn(
+                f"⚠️ 조향 트림 {target:+.1f}° 가 상한 {self.trim_max:.1f}° 를 넘는다 "
+                f"— {self.trim_max:.1f}° 로 자른다. ★조향 영점 캘리브가 필요하다★ "
+                f"(BOARD_B.md 3절: arduino 를 내리고 시리얼 'a')")
+            target = math.copysign(self.trim_max, target)
+        step = TRIM_SLEW_DPS * dt
+        if target > self.steer_trim:
+            self.steer_trim = min(target, self.steer_trim + step)
+        else:
+            self.steer_trim = max(target, self.steer_trim - step)
+        if now - self._tr_t_log >= TRIM_LOG_PERIOD_S:
+            self._tr_t_log = now
+            self.event(f"🎯 조향 트림 {self.steer_trim:+.2f}° 적용 중 "
+                       f"(관측 잔여 {self._tr_obs:+.2f}°, 전달비 {self._tr_g:.2f}, "
+                       f"유효표본 {self._tr_n:.0f})")
+        return self.steer_trim
+
+    def throttle_warn(self, text, period=10.0):
+        """같은 경고를 도배하지 않는다."""
+        t = time.time()
+        if t - getattr(self, '_warn_t', 0.0) < period:
+            return
+        self._warn_t = t
+        self.get_logger().warn(text)
+
     def steer_command(self, road_deg, v_ms):
         """도로휠각 → B보드 pot 지령. ★실측 역모델★ (상단 STEER_PLANT_GAIN 주석)
 
@@ -4300,8 +4540,10 @@ class DrivingNode(Node):
         코너에서 34° 가 필요한데 21° 만 내고 이탈한 원인이다.
         """
         d = abs(float(road_deg))
+        #  ★[2026-09-13] 조향 0 에서도 트림은 나가야 한다★ — 직진이 곧 트림이
+        #  제일 필요한 구간이다. 종전에는 여기서 0.0 으로 즉시 반환해 버렸다.
         if d < 1e-6:
-            return 0.0
+            return self._with_trim(0.0)
         #  ★[2026-09-13] 언더스티어 항의 속도만 묶는다★ — 상수절 참고.
         #  실측 전달비는 큰 각(7~20°)에서 pot/도로휠 ≈ 1.5 로 ★속도와 무관하게
         #  평평하다★. 4펄스 위로 이 항을 더 키우면 7펄스에서 루프이득이 2.57배로
@@ -4311,7 +4553,19 @@ class DrivingNode(Node):
             v_eff = min(v_eff, self.understeer_v_max)
         pot = self.plant_gain * d + self.understeer * v_eff * v_eff \
             * math.tan(math.radians(d)) / self.wheelbase
-        return math.copysign(min(STEER_MAX_DEG, pot), road_deg)
+        return self._with_trim(math.copysign(min(STEER_MAX_DEG, pot), road_deg))
+
+    def _with_trim(self, pot_signed):
+        """지령 pot 에 트림을 더하고 상한을 다시 지킨다. [2026-09-13]
+
+        ★트림은 부호 있는 최종값에 더한다★ — 크기(abs)에 더하면 좌우가 뒤집힌다.
+        더한 뒤 다시 클램프하는 이유는, 트림이 붙어 B보드 수용 상한(±40)을 넘는
+        값이 나가면 그 줄이 통째로 무시될 수 있기 때문이다.
+        """
+        if not self.trim_enable:
+            return pot_signed
+        out = pot_signed + self.steer_trim
+        return max(-float(STEER_MAX_DEG), min(float(STEER_MAX_DEG), out))
 
     def advance_wp_idx(self):
         """진행 포인터를 ★창 안의 최근접점★ 으로 옮긴다.
