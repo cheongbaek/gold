@@ -369,9 +369,12 @@ def generate_launch_description():
             description='언더스티어 항의 v 를 이 펄스 속도에서 묶는다(= 3.536 m/s). '
                         '★4펄스 이하는 종전과 완전히 같다★. 0 이면 클램프를 끈다'),
         DeclareLaunchArgument(
-            'lfd_min_m', default_value='2.3',
-            description='LFD 하한[m]. ★최소회전반경(1.49m)보다 넉넉히 커야 한다★ — '
-                        '낮추면 목표점이 회전반경 안으로 들어와 제자리를 돈다'),
+            'lfd_min_m', default_value='4.04',
+            description='LFD 하한[m]. ★[2026-09-13] 2.3 → 4.04 = 2 × 최소회전반경★ '
+                        '이 값에서 순수추종 최대각 atan(2L/LFD) 가 도로휠 상한 31.7° 와 '
+                        '정확히 일치한다 — ★조향 권한을 잃지 않으면서 포화만 사라지는 '
+                        '유일한 점★. 종전 2.3 은 1/5카 실측값이라 금색차에서는 최대각이 '
+                        '47.4° 로 상한을 넘어(= 포화 가능) 계전기 진동의 통로였다'),
         DeclareLaunchArgument(
             'wheelbase_m', default_value='1.25',
             description='축거[m] 실측 1250mm. 순수추종 조향식의 L'),
