@@ -751,8 +751,8 @@ class TrafficLight(Node):
         self.declare_parameter('hsv_val_low',      60)
 
         # ── 판단(camera_judgment.py RED 확정 필터에서 이식) ───ㄴ──────────────
-        self.declare_parameter('tl_hold_s',        0.4)   # 이만큼 연속으로 봐야 확정
-        self.declare_parameter('tl_gap_grace_s',   0.3)   # 이 이내의 끊김은 봐준다
+        self.declare_parameter('tl_hold_s',        0.1)   # 이만큼 연속으로 봐야 확정
+        self.declare_parameter('tl_gap_grace_s',   0.05)   # 이 이내의 끊김은 봐준다
         self.declare_parameter('tl_state_max_age', 3.0)   # 이보다 낡은 판정은 무시
         self.declare_parameter('green_hold_s',     0.4)   # 재출발용 GREEN 확정 시간
         # ★해제 유예 [2026-08-14]★ 빨간불을 이만큼 못 봐야 놓는다. 무는 쪽(tl_hold_s)은

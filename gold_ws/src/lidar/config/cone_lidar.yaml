@@ -49,11 +49,26 @@ cone_lidar_node:
     stop_distance_threshold: 15.0
 
     # ⚠️ ★금색차 차폭 미실측★ 전폭 1.5~1.6 m 가정 → 반폭+여유 0.80.
-    #   너무 좁으면 옆 장애물을 놓치고, 너무 넓으면 갓길 풀에 헛 AEB 가 뜬다.
+    #   가로줄이 차를 막는지만 본다. 세로줄 관측 폭은 observe_half_width.
     path_corridor_half_width: 0.8
     corridor_center_y: 0.0
+    # ㄷ 자 양옆 세로줄까지 넣어야 "가로 vs 세로" 를 가릴 수 있다.
+    #   경로 코리도(0.8 m)만 보면 GPS 흔들림 때 옆 콘이 전방 장애물이 된다.
+    observe_half_width: 3.0
 
-    min_point_count: 1     # 원거리 1~2점이라도 확정. 8 m ≈6점, 6 m ≈14점
+    cluster_cell_size: 0.35
+    min_cluster_points: 2
+    max_cluster_extent: 0.8
+    # 가로줄(정지선): 같은 깊이에서 콘 ≥3, 좌우 ≥1.2 m, 깊이 두께 ≤1.0 m.
+    #   좌·우 한 쌍(n=2, 가운데 공백)은 차선이지 종단이 아니다.
+    min_row_cones: 3
+    min_row_y_span: 1.2
+    max_row_x_span: 1.0
+    row_x_gate: 0.70
+    transverse_aspect: 1.2
+    straddle_margin: 0.40   # 가로줄이 중심선을 좌우 이만큼씩 넘어야 함
+
+    min_point_count: 1     # 가로줄 점 합. 1 이면 사실상 꺼짐. 8 m ≈6점, 6 m ≈14점
     confirm_frames: 1      # 연속 프레임 확인 — 깜빡임 오탐 완화
 
     # 콘이 2 m 안으로 들어가 ROI 에서 사라져도 정지신호를 유지한다.

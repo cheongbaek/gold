@@ -167,9 +167,10 @@ void EgoCostmap::clearEgoOccupancy(std::vector<float> & grid) const
     for (int ix = ix0; ix <= ix1; ++ix) {
       const double wx = -params_.size_x / 2.0 + (ix + 0.5) * res;
       const double wy = -params_.size_y / 2.0 + (iy + 0.5) * res;
-      //  ★앞차축 뒤에서는 더 넓게 지운다 [2026-09-11]★ (헤더 주석의 실측 근거)
+      //  ★pass_x 뒤에서만 더 넓게 지운다★ (헤더 주석의 실측 근거)
       //  지나친 콘은 조향으로 피할 대상이 아닌데, 남아 있으면 ★복귀하는 쪽★
-      //  롤아웃만 비용을 먹어 차가 영영 돌아오지 못한다.
+      //  롤아웃만 비용을 먹어 차가 영영 돌아오지 못한다. pass_x 가 앞차축보다
+      //  앞이면 아직 피해야 할 콘까지 지운다.
       const bool passed = (params_.ego_clear_pass_x > 0.0 &&
                            params_.ego_clear_y_half_passed > params_.ego_clear_y_half &&
                            wx <= params_.ego_clear_pass_x);

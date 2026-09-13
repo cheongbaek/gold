@@ -1,0 +1,42 @@
+# ══════════════════════════════════════════════════════════════════════════
+#  cone_lidar_txa1.yaml — ~/rosbag/txa1 재생용 (1/5카 기하)
+# ══════════════════════════════════════════════════════════════════════════
+#  txa1 은 2026-07-15 1/5카 e_stop 녹화다. 센서 높이 0.80 m, 점군 10 Hz.
+#  금색차 yaml(H=1.17, z 슬랩 −0.92..−0.42)을 이 백에 그대로 쓰면 지면 링이
+#  슬랩에 들어가 가로줄 판정이 깨진다. ★이 파일은 재생 시험 전용★ 이다.
+# ══════════════════════════════════════════════════════════════════════════
+cone_lidar_node:
+  ros__parameters:
+    use_sim_time: true
+    lidar_topic: /ouster/points
+    flip_lidar_xy: true
+
+    sensor_height_m: 0.80
+    roi_agl_min: 0.20
+    roi_agl_max: 0.70
+    fov_bottom_deg: -21.38
+    cone_height_m: 0.70
+    vehicle_front_m: 0.40
+    roi_x_min: 0.50
+    stop_distance_threshold: 15.0
+
+    path_corridor_half_width: 1.2
+    corridor_center_y: 0.0
+    observe_half_width: 3.0
+
+    cluster_cell_size: 0.35
+    min_cluster_points: 2
+    max_cluster_extent: 0.8
+    min_row_cones: 3
+    min_row_y_span: 1.2
+    max_row_x_span: 1.0
+    row_x_gate: 0.70
+    transverse_aspect: 1.2
+    straddle_margin: 0.40
+
+    min_point_count: 1
+    confirm_frames: 1
+    blind_zone_latch: true
+    blind_latch_hold_s: 3.0
+    blind_latch_near_m: 0.5
+    publish_debug: true

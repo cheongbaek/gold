@@ -206,7 +206,7 @@ def declare_args(cam_dev):
                         '(평상시 비용 0). ★튜닝할 때는 크게 준다★ — 신호등 없이 정지선만 '
                         '보고 싶으면 sl_gate_red_s:=99999 로 상시 추론시킨다(todo 9-1)'),
         DeclareLaunchArgument(
-            'tl_show_window', default_value='true',
+            'tl_show_window', default_value='false',
             description='인지 결과 창(OpenCV)을 띄울지. ★기본 true★ [2026-09-10 재조정 — '
                         '한때 false 였다가 되돌렸다]. 녹화(tl_record_video)가 같은 그림을 '
                         '파일로도 남기므로 창을 꼭 켜야 하는 것은 아니지만, 화면이 있는 '
@@ -215,7 +215,7 @@ def declare_args(cam_dev):
                         '★화면 없는 터미널(SSH)이면 tl_show_window:=false★ — 안 그러면 '
                         'cv2 가 창을 못 열어 에러를 남긴다'),
         DeclareLaunchArgument(
-            'tl_record_video', default_value='true',
+            'tl_record_video', default_value='false',
             description='★인지 디버그 화면을 주행 내내 mp4 로 적는다 [2026-09-10]★ '
                         '창(tl_show_window)과 ★같은 캔버스★ 다 — YOLO 박스·ROI 음영·'
                         'BEV 사다리꼴·정지선·게이지·한글 HUD 가 전부 들어 있다. '

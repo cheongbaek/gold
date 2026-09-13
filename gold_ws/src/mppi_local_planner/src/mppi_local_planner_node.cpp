@@ -296,11 +296,19 @@ private:
     declare_parameter<double>("avoid.max_offset_m", 1.35); // ★회피 목표 상한★
     //  ★이보다 가까운 콘은 "지나쳤다" 로 본다 [2026-09-11]★ 앞차축 1.25 m.
     declare_parameter<double>("avoid.pass_x_m", 0.90);
+    //  ★둘째 콘 미리보기 [2026-09-13]★ 최근접 콘이 이 거리 안으로 오면
+    //  다음 콘의 통과 y 를 목표로 슬루한다. 조향 상한을 키우지 않고 S 를 일찍 연다.
+    declare_parameter<double>("avoid.preview_x_m", 3.0);
+    //  ★목표 크기 고정 [2026-09-13]★ 이보다 가까우면 통과 y 를 중심선 쪽으로
+    //  줄이지 않는다. 매 틱 재계산이 목표를 0 으로 붕괴시키던 경로.
+    declare_parameter<double>("avoid.freeze_x_m", 4.0);
     //  ★기하 조향 [2026-09-11]★ false 면 종전 MPPI 조향으로 되돌아간다.
     declare_parameter<bool>("avoid.geometric_steer", true);
     declare_parameter<double>("avoid.k_psi", 1.0);    // 방향항 (감쇠) — 도에 곱함
     declare_parameter<double>("avoid.k_cte", 1.0);    // 위치항 스케일 (atan(k·e/L))
     declare_parameter<double>("avoid.v_min", 1.0);    // 구식 분모. 지금은 L 을 쓴다
+    //  미리보기 중에만. 첫 콘에서 켜면 헤딩이 안 접혀 와리가리(실측 144027).
+    declare_parameter<double>("avoid.steer_hold_e_m", 0.30);
     declare_parameter<double>("avoid.target_slew_mps", 1.5);  // 횡목표 변화 상한
     //  ★붙들고 있던 콘보다 이만큼 멀어지면 "다음 콘" 으로 본다★
     declare_parameter<double>("avoid.new_cone_dx_m", 1.5);
@@ -423,8 +431,9 @@ private:
     declare_parameter<double>("costmap.ego_clear_x_max", 1.95);
     declare_parameter<double>("costmap.ego_clear_y_half", 0.85);
     //  ★지나친 콘이 복귀를 막지 않게 [2026-09-11]★ (ego_costmap.hpp 주석의 실측)
-    //  앞차축(1.25) 뒤에서는 더 넓게 지운다 — 그 뒤는 조향으로 피할 대상이 아니다.
-    declare_parameter<double>("costmap.ego_clear_pass_x", 1.30);
+    //  ★[2026-09-13] 1.30 → 0.90★ 1.30 은 앞차축(1.25) 앞이라, 아직 피해야 할
+    //  둘째 콘을 맵에서 지웠다. avoid.pass_x 와 맞춰 앞바퀴가 지난 뒤에서만 넓힌다.
+    declare_parameter<double>("costmap.ego_clear_pass_x", 0.90);
     declare_parameter<double>("costmap.ego_clear_y_half_passed", 1.60);
     declare_parameter<double>("costmap.ego_cost_clear_radius", 1.00);
 
@@ -564,10 +573,19 @@ private:
     lat_max_offset_   = get_parameter("avoid.max_offset_m").as_double();
     lat_inflation_    = get_parameter("avoid.inflation_m").as_double();
     lat_pass_x_       = get_parameter("avoid.pass_x_m").as_double();
+    lat_preview_x_    = get_parameter("avoid.preview_x_m").as_double();
+    lat_freeze_x_     = get_parameter("avoid.freeze_x_m").as_double();
+    if (lat_preview_x_ < lat_pass_x_) {
+      lat_preview_x_ = lat_pass_x_;
+    }
+    if (lat_freeze_x_ < lat_pass_x_) {
+      lat_freeze_x_ = lat_pass_x_;
+    }
     geometric_steer_  = get_parameter("avoid.geometric_steer").as_bool();
     geo_k_psi_        = get_parameter("avoid.k_psi").as_double();
     geo_k_cte_        = get_parameter("avoid.k_cte").as_double();
     geo_v_min_        = get_parameter("avoid.v_min").as_double();
+    geo_hold_e_m_     = std::max(0.0, get_parameter("avoid.steer_hold_e_m").as_double());
     lat_target_slew_mps_ = std::max(0.0, get_parameter("avoid.target_slew_mps").as_double());
     lat_new_cone_dx_  = get_parameter("avoid.new_cone_dx_m").as_double();
     cone_min_cells_   = static_cast<int>(get_parameter("avoid.cone_min_cells").as_int());
@@ -837,6 +855,9 @@ private:
     lat_latched_ = false;              // 회피 방향 래치도 푼다 [2026-09-11]
     lat_last_side_ = 0;                // 교대 기억도 지운다
     lat_locked_ox_ = 0.0;
+    lat_locked_target_ = 0.0;
+    lat_target_frozen_ = false;
+    lat_previewing_ = false;
     lat_lost_n_ = 0;
     mppi_params_.lateral_target = 0.0;
     lat_target_filt_ = 0.0;
@@ -1565,6 +1586,9 @@ private:
   ///
   /// ★한 번 정하면 그 장애물을 지날 때까지 유지한다★ 매 틱 다시 고르면 콘이
   /// 좌우 경계에 있을 때 목표가 왕복해 조향이 떨린다(래치).
+  /// ★[2026-09-13] 둘째 콘 미리보기 + 목표 고정★ 최근접만 보면 첫 콘을 지난
+  /// 뒤에야 S 가 열려 둘째에서 직진한다. preview_x 안에서 다음 콘 통과 y 를
+  /// 미리 걸고, freeze_x 안에서는 통과 y 를 중심선 쪽으로 줄이지 않는다.
   void updateLateralTarget(const CostmapSnapshot & snap)
   {
     OdomPose odom;
@@ -1573,45 +1597,22 @@ private:
       odom = odom_pose_;
     }
     //  ★콘을 하나씩 분리해 ★거리 순★ 으로 본다★ (detectCones 주석의 근거)
-    //  앞쪽(pass_x 이상)에 있는 것 중 ★가장 가까운 콘★ 이 지금 상대다.
-    //  #1 을 지나면 목록에서 빠지고 #2 가 자동으로 첫 번째가 된다.
-    const std::vector<ConeObs> cones = detectCones(snap);
-    double ox = std::numeric_limits<double>::quiet_NaN();
-    double oy = std::numeric_limits<double>::quiet_NaN();
-    for (const auto & c : cones) {
-      if (c.x < lat_pass_x_ || std::abs(c.y) > cone_y_max_) continue;
-      ox = c.x; oy = c.y; break;                 // 이미 x 오름차순이다
+    //  앞쪽(pass_x 이상) · 자기 차로(기준선 |y| ≤ cone_y_max).
+    //  ★[2026-09-13] 옆 제한을 ego y 가 아니라 기준선 y 로 본다★ 첫 회피 후
+    //  헤딩이 열리면 둘째 콘의 ego y 가 ±2 m 를 넘겨 목록에서 빠졌다.
+    const std::vector<ConeObs> raw = detectCones(snap);
+    std::vector<ConeObs> ahead;
+    ahead.reserve(raw.size());
+    for (const auto & c : raw) {
+      if (coneInAvoidLane(odom, c)) {
+        ahead.push_back(c);
+      }
     }
-    n_cones_ahead_ = 0;
-    for (const auto & c : cones) {
-      if (c.x >= lat_pass_x_ && c.x <= lat_target_range_ &&
-          std::abs(c.y) <= cone_y_max_) ++n_cones_ahead_;
-    }
-    //  ══════════════════════════════════════════════════════════════════
-    //  ★지나친 콘은 판단에서 뺀다 [2026-09-11 — 사용자 지시]★
-    //  ══════════════════════════════════════════════════════════════════
-    //  "라바콘을 지나치는 ★즉시★ 그 반대쪽으로 꺾는다. 그대로 벗어나지 말고."
-    //  ★앞차축(1.25 m)을 지난 콘은 조향으로 피할 대상이 아니다★ — 앞바퀴가
-    //  이미 지나갔다. 그런데 종전에는 그 콘이 사거리(8 m) 안이라는 이유로
-    //  ★계속 래치를 붙들고 있어서★, 차가 목표를 한참 넘어 나가도 목표가
-    //  갱신되지 않았다. 실측(20260911_001017)에서 목표 −0.39 인데 −2.31 까지
-    //  갔고, 그 콘이 costmap 에 남아 복귀 방향 롤아웃만 비용을 먹었다.
-    //  → 앞쪽에 있는 콘만 본다. 지나친 순간 래치가 풀리고, 다음 콘(반대쪽)이나
-    //    중심선으로 목표가 ★그 틱에 바로★ 바뀐다.
-    const bool seen = std::isfinite(ox) && ox <= lat_target_range_;
+    n_cones_ahead_ = static_cast<int>(ahead.size());
+    const bool seen = !ahead.empty();
 
     if (!seen) {
-      //  ══════════════════════════════════════════════════════════════════
-      //  ★한두 틱 끊긴 것과 정말 지나간 것을 구별한다 [2026-09-11]★
-      //  ══════════════════════════════════════════════════════════════════
-      //  ★실측 20260911_003740★ n_cones 가 1 → ★0 → 0★ → 1 로 두 틱 끊겼고,
-      //  그 사이 목표가 −0.50 → ★+0.00★ → −0.93 으로 튀었다. 조향이 따라
-      //  +14 → +21 → +17 → +12 → +8 → +4 → −4 로 되돌아 ★콘을 친 뒤에 피하는★
-      //  모습이 됐다(사용자 관찰과 일치).
-      //  끊기는 이유는 콘이 가까워지며 치사 원반이 ego 클리어 박스에 잘려
-      //  군집이 cone_min_cells 밑으로 내려가기 때문이다 — 콘이 사라진 것이 아니다.
-      //  → ★연속 lost_max 틱★ 동안 안 보여야 '지나갔다' 로 인정한다.
-      //    그전에는 직전 목표를 그대로 유지한다(버리지 않는다).
+      //  한두 틱 끊긴 것과 정말 지나간 것을 구별한다 [2026-09-11]
       if (lat_latched_ && ++lat_lost_n_ < lat_lost_max_) {
         return;                       // 잠깐 놓쳤다 — 목표를 지킨다
       }
@@ -1623,117 +1624,139 @@ private:
       }
       lat_latched_ = false;
       lat_lost_n_ = 0;
+      lat_target_frozen_ = false;
+      lat_locked_target_ = 0.0;
+      lat_previewing_ = false;
       mppi_params_.lateral_target = 0.0;
       return;
     }
-    lat_lost_n_ = 0;                  // 보인다 — 미검출 카운터를 지운다
-    //  ══════════════════════════════════════════════════════════════════
-    //  ★래치는 '이 콘' 에 대한 것이다 — 콘이 바뀌면 다시 정한다 [2026-09-11]★
-    //  ══════════════════════════════════════════════════════════════════
-    //  ★종전 버그★ 해제 조건이 '앞에 콘이 하나도 없을 때' 였다. 그런데 콘 간격이
-    //  5~8 m 이고 사거리가 8 m 라 ★항상 다음 콘이 보인다★ — 래치가 영영 안 풀린다.
-    //  시뮬레이션(콘 3개, 6.5 m 간격 좌우 교대)에서 첫 콘 목표 −0.59 를 슬라럼
-    //  내내 붙들고, 두 번째 콘(y −0.50)을 ★같은 쪽으로 지나갔다.★
-    //  실차에서 "지나쳐도 안 돌아온다" 로 보이던 것의 정체가 이것이다.
-    //
-    //  ★콘이 바뀐 것을 어떻게 아는가★ 다가가는 동안 ox 는 계속 ★줄어든다.★
-    //  그것이 ★늘어나면★ 보고 있던 콘을 지나쳐 다음 콘을 새로 잡은 것이다.
-    //  (GPS·라이다 잡음으로 조금 늘 수 있으므로 문턱을 둔다.)
+    lat_lost_n_ = 0;
+
+    const ConeObs & c1 = ahead.front();
+    const double ox = c1.x;
+    const double clear = 0.5 * vehicle_params_.track_width
+                         + std::max(lat_cone_half_, lat_inflation_) + lat_margin_;
+    //  미리보기 keep-out 은 차체+콘 (팽창 제외). 팽창까지 넣으면 둘째 목표로
+    //  한 발도 못 옮긴다. 0.20 은 첫 콘을 스치지 않을 만큼만.
+    const double body_clear = 0.5 * vehicle_params_.track_width
+                              + lat_cone_half_ + 0.20;
+
+    struct Pass
+    {
+      double target = 0.0;
+      double cone_y = 0.0;
+      int side = 0;
+    };
+    auto cone_y_of = [&](const ConeObs & c) {
+      return odom.y + c.x * std::sin(odom.yaw) + c.y * std::cos(odom.yaw);
+    };
+    auto pick = [&](const ConeObs & c, int locked_side, int tie_opp) -> Pass {
+      const double cy = cone_y_of(c);
+      const double cand_r = cy - clear;
+      const double cand_l = cy + clear;
+      double target;
+      int side;
+      if (locked_side != 0) {
+        side = locked_side;
+        target = cy + static_cast<double>(side) * clear;
+      } else if (std::abs(std::abs(cand_r) - std::abs(cand_l)) < 1e-3) {
+        if (tie_opp != 0) {
+          target = (tie_opp > 0) ? cand_r : cand_l;
+        } else if (lat_last_side_ != 0) {
+          target = (lat_last_side_ > 0) ? cand_r : cand_l;
+        } else {
+          target = (odom.y >= 0.0) ? cand_l : cand_r;
+        }
+        side = (target < cy) ? -1 : +1;
+      } else {
+        target = (std::abs(cand_r) <= std::abs(cand_l)) ? cand_r : cand_l;
+        side = (target < cy) ? -1 : +1;
+      }
+      target = std::clamp(target, -lat_max_offset_, lat_max_offset_);
+      return {target, cy, side};
+    };
+    auto apply_freeze = [&](double t, int /*side*/, double cx) {
+      if (cx > lat_freeze_x_) {
+        lat_locked_target_ = t;
+        lat_target_frozen_ = false;
+        return t;
+      }
+      if (!lat_target_frozen_) {
+        lat_locked_target_ = t;
+        lat_target_frozen_ = true;
+        return t;
+      }
+      //  부호 유지 + |y| 를 중심선 쪽으로 줄이지 않는다.
+      //  종전 '콘에서 여유 확대' 는 헤딩이 돌면 cone_y 가 움직여
+      //  목표가 0.67 → 0.21 로 붕괴했다(실측 144027).
+      if (lat_locked_target_ * t > 0.0 &&
+          std::abs(t) > std::abs(lat_locked_target_) + 0.02)
+      {
+        lat_locked_target_ = t;
+      }
+      return lat_locked_target_;
+    };
+
+    //  래치는 '이 콘' 에 대한 것. ox 가 멀어지면 다음 콘이다 [2026-09-11]
     if (lat_latched_) {
       if (ox <= lat_locked_ox_ + lat_new_cone_dx_) {
         lat_locked_ox_ = std::min(lat_locked_ox_, ox);
-        //  ══════════════════════════════════════════════════════════════
-        //  ★쪽만 고정한다 — 목표 크기는 매 틱 다시 잰다 [2026-09-11]★
-        //  ══════════════════════════════════════════════════════════════
-        //  ★왜★ cone_y = y + ox·sin(ψ) + oy·cos(ψ) 에서 ★ox 가 지렛대★ 다.
-        //  8 m 앞 콘을 헤딩오차 5° 로 보면 위치가 0.70 m 틀린다. 그런데 래치를
-        //  값까지 걸면 ★제일 멀 때(= 제일 부정확할 때) 정한 값을 끝까지 쓴다.★
-        //  시뮬에서 콘 #2 목표가 +0.59 여야 하는데 +0.46 으로 나와 여유가
-        //  1.09 → 0.96 m 로 깎였다.
-        //  → 좌/우 ★결정★ 만 유지하고(그것이 왕복을 막는 목적이다), 목표
-        //    위치는 콘이 가까워질수록 ★계속 정확해지게★ 다시 계산한다.
-        const double clear2 = 0.5 * vehicle_params_.track_width
-                              + std::max(lat_cone_half_, lat_inflation_) + lat_margin_;
-        const double so2 = std::sin(odom.yaw), co2 = std::cos(odom.yaw);
-        const double cone_y2 = odom.y + ox * so2 + oy * co2;
-        mppi_params_.lateral_target = std::clamp(
-          cone_y2 + lat_last_side_ * clear2, -lat_max_offset_, lat_max_offset_);
-        return;                       // 같은 콘 — 정한 쪽을 지킨다
+      } else {
+        RCLCPP_INFO(
+          get_logger(),
+          "🛞 다음 콘 — %.2f m 에서 %.2f m 로 멀어졌다(이전 콘 통과). 방향을 다시 정한다",
+          lat_locked_ox_, ox);
+        lat_latched_ = false;
+        lat_target_frozen_ = false;
       }
+    }
+
+    if (!lat_latched_) {
+      const Pass p_new = pick(c1, 0, 0);
+      lat_latched_ = true;
+      lat_locked_ox_ = ox;
+      lat_last_side_ = p_new.side;
+      lat_locked_target_ = p_new.target;
+      lat_target_frozen_ = false;
       RCLCPP_INFO(
         get_logger(),
-        "🛞 다음 콘 — %.2f m 에서 %.2f m 로 멀어졌다(이전 콘 통과). 방향을 다시 정한다",
-        lat_locked_ox_, ox);
-      lat_latched_ = false;           // 새 콘이다 — 아래에서 다시 정한다
+        "🛞 회피 방향 결정 — 콘 %.2f m 앞, 기준선 y=%+.2f m (중심선 %s) → "
+        "★콘의 %s 으로 통과★ 목표 y=%+.2f m (콘과 %.2f m, 필요 %.2f m)",
+        ox, p_new.cone_y, p_new.cone_y >= 0.0 ? "왼쪽" : "오른쪽",
+        p_new.side < 0 ? "오른쪽" : "왼쪽", p_new.target,
+        std::abs(p_new.target - p_new.cone_y), clear);
     }
-    //  ══════════════════════════════════════════════════════════════════
-    //  ★여유는 ★비용함수가 요구하는 값★ 에서 유도한다 [2026-09-11 수정]★
-    //  ══════════════════════════════════════════════════════════════════
-    //  종전에는 반폭 + 콘반폭 + 여유 = 0.99 m 였는데, ★그것이 폭주의 원인이었다.★
-    //  비용함수가 실제로 요구하는 것은 다르다:
-    //    · 풋프린트 앞 모서리가 ±half_w(0.54) 에 있고 (vehicle_model.hpp)
-    //    · 코스트맵이 장애물을 inflation_radius(0.40) 만큼 부풀린다
-    //    → 차 중심이 콘에서 ★0.94 m★ 안이면 비용이 붙는다
-    //  0.99 는 그 경계에서 ★5 cm★ 떨어져 있을 뿐이라, 플래너가 목표 지점에서도
-    //  잔여 비용을 보고 계속 밖으로 나간다. 실측(20260910_234828): 목표 −0.49
-    //  인데 ★−2.04★ 까지 갔고 그 지점 avg_cost 가 3084 였다.
-    //  ★그래서 팽창반경을 그대로 넣는다★ — 콘 반폭은 이미 팽창에 포함돼 있으므로
-    //  둘 중 큰 쪽만 센다(이중계산 방지).
-    const double clear = 0.5 * vehicle_params_.track_width
-                         + std::max(lat_cone_half_, lat_inflation_) + lat_margin_;
-    //  ══════════════════════════════════════════════════════════════════
-    //  ★콘을 ★기준선 좌표★ 로 옮긴 뒤에 판정한다 [2026-09-11 — 프레임 버그]★
-    //  ══════════════════════════════════════════════════════════════════
-    //  detectCones 의 (ox, oy) 는 ★차체 기준★ 이다(코스트맵이 ego 중심).
-    //  그런데 lateral_target 은 ★기준선 기준★ 으로 쓰인다
-    //  (컨트롤러: cross_track = y_odom − lateral_target). 종전에는 차체 기준
-    //  oy 로 좌우를 골라 놓고 그 값을 기준선 목표로 썼다 — ★차가 중심선에서
-    //  벗어나 있을수록 판정이 틀어진다.★
-    //  실측 상황 그대로의 예: 콘 #2 가 기준선 −0.50, 차가 −0.57 일 때
-    //     차체 기준 : r −1.02 / l +1.16 → |r| 작다 → ★오른쪽(틀림)★
-    //     기준선 기준: r −1.59 / l +0.59 → |l| 작다 → ★왼쪽(맞음)★
-    //  왼쪽으로 가야 S 가 되는데 오른쪽을 골라 계속 같은 쪽으로 밀려 나갔다.
-    //
-    //  ★변환★ 차체 (ox, oy) → 기준선 횡좌표. 컨트롤러가 롤아웃을 옮길 때
-    //  쓰는 식과 ★같은 식★ 이다 (y_odom = odom.y + s.x·sin + s.y·cos).
-    const double so = std::sin(odom.yaw), co = std::cos(odom.yaw);
-    const double cone_y = odom.y + ox * so + oy * co;   // ★기준선 기준★
-    const double cand_r = cone_y - clear;      // 콘의 오른쪽으로 비킨다
-    const double cand_l = cone_y + clear;      // 콘의 왼쪽으로 비킨다
-    double target;
-    //  ★|목표| 가 작은 쪽 = 중심선에서 제일 덜 벗어나는 쪽★ (둘 다 기준선 기준)
-    if (std::abs(std::abs(cand_r) - std::abs(cand_l)) < 1e-3) {
-      //  ★좌우가 같다(콘이 정면) — 이때만 다른 근거가 필요하다★
-      //  ① 직전 콘을 지난 반대쪽 : 사용자가 말한 배치 그대로다 —
-      //     "첫 콘 왼쪽이면 그 오른쪽 통과, 다음 콘은 왼쪽 통과" = ★교대★.
-      //     콘이 좌우로 번갈아 서 있으면 |target| 비교만으로도 교대가 나오지만,
-      //     정면이라 좌우가 같을 때는 그 비교가 답을 못 준다. 그때 이것이 정한다.
-      //  ② 직전 정보가 없으면 차가 이미 있는 쪽 — 앞을 가로지르지 않는다.
-      if (lat_last_side_ != 0) {
-        target = (lat_last_side_ > 0) ? cand_r : cand_l;   // 지난번 반대쪽
+
+    const Pass p1 = pick(c1, lat_last_side_, 0);
+    const bool have2 = ahead.size() >= 2;
+    const bool preview = have2 && c1.x <= lat_preview_x_;
+    double desired = p1.target;
+    if (preview) {
+      const ConeObs & c2 = ahead[1];
+      const Pass p2 = pick(c2, 0, p1.side);
+      desired = p2.target;
+      //  첫 콘 차체를 침범하지 않는 한도에서만 둘째 목표로 옮긴다.
+      if (p1.side < 0) {
+        desired = std::min(desired, p1.cone_y - body_clear);
       } else {
-        target = (odom.y >= 0.0) ? cand_l : cand_r;
+        desired = std::max(desired, p1.cone_y + body_clear);
+      }
+      desired = std::clamp(desired, -lat_max_offset_, lat_max_offset_);
+      if (!lat_previewing_) {
+        RCLCPP_INFO(
+          get_logger(),
+          "🛞 미리보기 — 현재 콘 %.2f m 목표 %+.2f → 다음 콘 %.2f m 목표 %+.2f "
+          "(keep-out 후 %+.2f)",
+          c1.x, p1.target, c2.x, p2.target, desired);
       }
     } else {
-      target = (std::abs(cand_r) <= std::abs(cand_l)) ? cand_r : cand_l;
+      if (lat_previewing_) {
+        lat_target_frozen_ = false;    // 미리보기가 끝나면 현재 콘 기준으로 다시 고정
+      }
+      desired = apply_freeze(p1.target, p1.side, c1.x);
     }
-    //  ★횡벽(max_lateral_offset)이 아니라 전용 상한으로 자른다 [2026-09-11]★
-    //  같은 값을 쓰면 회피 목표가 정확히 벽 위에 앉아 ★서로 밀어낸다★ —
-    //  목표로 가려는 힘과 벽이 되미는 힘이 같은 자리에서 싸운다.
-    //  벽은 목표보다 바깥에 있어야 한다(params.yaml 의 두 값을 함께 볼 것).
-    target = std::clamp(target, -lat_max_offset_, lat_max_offset_);
-    mppi_params_.lateral_target = target;
-    lat_latched_ = true;
-    lat_locked_ox_ = ox;                        // 이 콘을 붙들었다 (멀어지면 새 콘)
-    lat_last_side_ = (target < cone_y) ? -1 : +1;  // 콘 대비 어느 쪽으로 지나는가
-    RCLCPP_INFO(
-      get_logger(),
-      "🛞 회피 방향 결정 — 콘 %.2f m 앞, 기준선 y=%+.2f m (중심선 %s) → "
-      "★콘의 %s 으로 통과★ 목표 y=%+.2f m (콘과 %.2f m, 필요 %.2f m)",
-      ox, cone_y, cone_y >= 0.0 ? "왼쪽" : "오른쪽",
-      //  ★'어느 쪽 통과' 는 목표의 부호가 아니라 ★콘 대비★ 로 판정한다★
-      //  콘이 +1.0 이고 목표가 +0.01 이면 목표는 양수지만 콘의 '오른쪽' 이다.
-      target < cone_y ? "오른쪽" : "왼쪽", target, std::abs(target - cone_y), clear);
+    lat_previewing_ = preview;
+    mppi_params_.lateral_target = desired;
   }
 
   /// ★목표 횡위치로 붙이는 기하 조향★ → 도로휠각 [deg, + = 좌]
@@ -1751,8 +1774,16 @@ private:
     const double L = std::max(2.5, mppi_params_.stanley_lookahead);
     const double e = pose.y - mppi_params_.lateral_target;   // + = 목표보다 왼쪽
     const double psi_deg = pose.yaw * 180.0 / M_PI;          // + = 기준선보다 왼쪽
-    const double right_deg = geo_k_psi_ * psi_deg
-                             + std::atan(geo_k_cte_ * e / L) * 180.0 / M_PI;
+    const double cte_deg = std::atan(geo_k_cte_ * e / L) * 180.0 / M_PI;
+    const double head_deg = geo_k_psi_ * psi_deg;
+    double right_deg = head_deg + cte_deg;
+    //  미리보기 중에만 CTE 부호를 지킨다. 첫 콘에서 켜면 헤딩이 안 접혀
+    //  29°까지 열린 뒤 반대 풀락이 났다(실측 144027).
+    if (lat_previewing_ && geo_hold_e_m_ > 1e-6 && std::abs(e) >= geo_hold_e_m_ &&
+        cte_deg * right_deg < 0.0)
+    {
+      right_deg = cte_deg;
+    }
     const double max_deg = vehicle_params_.max_steering_angle * 180.0 / M_PI;
     return std::clamp(-right_deg, -max_deg, max_deg);        // + = 좌
   }
@@ -1772,6 +1803,21 @@ private:
   }
 
   struct ConeObs { double x, y; int cells; };
+
+  /// 회피 대상인가 — 앞쪽 + 자기 차로.
+  /// ego |y| 와 기준선 |y| 둘 다 cone_y_max 안. 기준선만 보면 옆 물체
+  /// (실측 144027: ego y +2.70)가 들어오고, ego 만 보면 헤딩 후 둘째가 빠진다.
+  bool coneInAvoidLane(const OdomPose & odom, const ConeObs & c) const
+  {
+    if (c.x < lat_pass_x_ || c.x > lat_target_range_) {
+      return false;
+    }
+    if (std::abs(c.y) > cone_y_max_) {
+      return false;
+    }
+    const double cy = odom.y + c.x * std::sin(odom.yaw) + c.y * std::cos(odom.yaw);
+    return std::abs(cy) <= cone_y_max_;
+  }
 
   /// ★라바콘을 하나씩 분리해서 각자의 거리를 낸다★ (x 오름차순)
   /// [2026-09-11 신설 — 사용자 지적: "거리는 안 보고 있다/없다만 보면 근본적인
@@ -1900,7 +1946,7 @@ private:
       std_msgs::msg::Float64MultiArray cm;
       cm.data.reserve(cs.size() * 3);
       for (const auto & c : cs) {
-        if (c.x < lat_pass_x_ || std::abs(c.y) > cone_y_max_) continue;
+        if (!coneInAvoidLane(pose, c)) continue;
         if (std::isnan(ox)) { ox = c.x; oy = c.y; }   // x 오름차순 — 가장 가까운 앞쪽
         cm.data.push_back(c.x);
         cm.data.push_back(c.y);
@@ -2008,13 +2054,19 @@ private:
   double lat_max_offset_ = 1.35;  // 회피 목표 상한 (횡벽과 ★다른 값★)
   double lat_inflation_ = 0.40;   // 코스트맵 팽창반경 (같은 값을 두 곳에 둔다)
   double lat_pass_x_ = 0.90;      // 이보다 가까우면 "지나쳤다"
+  double lat_preview_x_ = 3.0;    // 이 안에서 다음 콘 목표를 미리 건다
+  double lat_freeze_x_ = 4.0;     // 이보다 가까우면 통과 y 를 줄이지 않는다
   bool   geometric_steer_ = true; // ★조향을 기하로 만든다 [2026-09-11]★
   double geo_k_psi_ = 1.0, geo_k_cte_ = 1.0, geo_v_min_ = 1.0;
+  double geo_hold_e_m_ = 0.30;    // |e| 이상이면 헤딩항이 CTE 를 역전 못 함
   double lat_target_slew_mps_ = 1.5;
   double lat_target_filt_ = 0.0;
   int    lat_last_side_ = 0;      // 직전 콘을 어느 쪽으로 지났나 (−1 우 / +1 좌)
   bool   lat_latched_ = false;   // 이 장애물에 대해 쪽을 정했나
   double lat_locked_ox_ = 0.0;   // 붙들고 있는 콘까지의 거리 (늘면 새 콘)
+  double lat_locked_target_ = 0.0;  // freeze 한 통과 y
+  bool   lat_target_frozen_ = false;
+  bool   lat_previewing_ = false;
   int    lat_lost_n_ = 0;        // 연속 미검출 틱 (깜빡임과 통과를 가른다)
   int    lat_lost_max_ = 6;      // 이만큼 연속이어야 "지나갔다"
   double lat_new_cone_dx_ = 1.5; // 이만큼 멀어지면 다른 콘으로 본다
