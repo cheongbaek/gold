@@ -142,7 +142,9 @@ def _sound_dir():
     ③ 못 찾으면 빈 문자열 → sound 노드가 자기 기본값(<nxde>/sound)을 본다.
        그쪽은 비어 있어서 '음원 없음' 경고만 한 번 나고 노드는 계속 돈다.
     ※ .gitignore 가 *.mp3 를 막으므로 새로 clone 하면 음원이 아예 없다. 그때는
-      `ros2 run nxde tts` 로 다시 만든다 — 없어도 시험 자체는 된다.
+      edge-tts 로 다시 만든다(`edge-tts --voice ko-KR-InJoonNeural --text "문장"
+      --write-media x.mp3`) — 없어도 시험 자체는 된다. ★`ros2 run nxde tts` 는
+      더 이상 mp3 제작 도구가 아니다★(domichat 채팅방을 읽는 노드로 바뀌었다).
     """
     try:
         share = os.path.join(get_package_share_directory('white1'), 'sound')

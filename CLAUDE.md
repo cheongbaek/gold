@@ -362,7 +362,9 @@ gold_ws/src/
                  화면 /tl/debug_image 도 — 후자를 one_launch 가 자동으로 띄운다)
     check.py     ★런치 전 하드웨어 점검★ 보고하고 종료
     kill.py      돌고 있는 ROS2 를 한 번에 끝낸다 + 포트 초기화
-    tts.py       안내 음성 mp3 제작 도구
+    tts.py       ★domichat 채팅방을 읽어 주는 TTS★ <PC명>_TTS_M(남성)·
+                 <PC명>_TTS_W(여성) 두 방을 구독해 올라오는 말을 그대로
+                 읽는다. 방 비밀번호는 PC 이름. GUI 없음(구독 전용)
 
   mppi_local_planner/   ★라바콘 회피 — /lstatus 가 'L' 인 구간만 몬다★ (C++)
     src/mppi_local_planner_node.cpp   게이트·조종권·지령층 (1203줄)

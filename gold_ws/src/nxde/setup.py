@@ -61,10 +61,14 @@ setup(
             #   초기화한다. ★ROS 노드가 아니다★ (rclpy 를 import 하지 않는다)
             #   미리 볼 때: ros2 run nxde kill --dry-run
             'kill     = nxde.kill:main',
-            # ★대화형 TTS★ 문장을 입력하면 그 자리에서 읽어 준다(edge-tts + tkinter).
-            #   sound/*.mp3 안내 음성을 만들거나 문구를 귀로 확인하는 작업용 도구다.
-            #   ROS 노드가 아니고 ★인터넷이 필요하다★.  ros2 run nxde tts
-            #   필요: pip install --user edge-tts pygame
+            # ★domichat 채팅방을 읽어 주는 TTS★  ros2 run nxde tts
+            #   <PC명>_TTS_M(남성) / <PC명>_TTS_W(여성) 두 방을 없으면 만들어
+            #   구독하고, 올라오는 대화를 그대로 읽는다(방 비밀번호 = PC 이름).
+            #   ROS 노드가 아니고 ★인터넷이 필요하다★(edge-tts 온라인 합성).
+            #   서버·계정은 tts.py 상단 [1] 파라미터 절에서 고친다.
+            #   필요: pip install --user edge-tts  +  ffplay(ffmpeg) 나 mpg123
+            #   ※ ★pygame 은 더 이상 쓰지 않는다★ — 오디오 장치를 붙들어
+            #     nxde/sound 의 안내 음성과 서로 밀어냈다(tts.py 헤더 참고).
             'tts      = nxde.tts:main',
         ],
     },
