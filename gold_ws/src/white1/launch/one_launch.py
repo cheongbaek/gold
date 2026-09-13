@@ -352,6 +352,22 @@ def generate_launch_description():
             description='순수추종 목표 고유진동수[rad/s] → LFD = v·√2/ω_n. '
                         '★낮추면 LFD 가 길어져 조향이 완만해진다★ (사행·발산 시 낮춘다). '
                         '구 white 로스백 실측 발산임계가 1.2 이므로 그 위로 올리지 말 것'),
+        #  ★[2026-09-13] 고속에서 더 멀리 본다 — ω_n 속도 스케줄★
+        #   lfd_omega_n 은 이제 ★중저속(4펄스 이하) 기준값★ 이고, 7펄스 이상은
+        #   아래 값이 정한다(사이는 펄스로 선형보간). 중저속 거동은 종전 그대로다.
+        DeclareLaunchArgument(
+            'lfd_omega_n_fast', default_value='0.78',
+            description='고속(7펄스 이상) ω_n [rad/s]. 7펄스 LFD = 11.22 m '
+                        '(종전 9.02 m 대비 +24%). ★lfd_omega_n 보다 크게 주면 '
+                        'driving.py 가 lfd_omega_n 으로 묶는다★ — 뒤집히지 않게'),
+        #  ★[2026-09-13] 언더스티어 항의 속도 클램프★ 실측 전달비는 큰 각에서
+        #   pot/도로휠 ≈ 1.5 로 ★속도와 무관하게 평평하다★(21340표본). 4펄스 위로
+        #   v² 항을 더 키우면 7펄스 루프이득이 2.57배 과다가 되어 조향이 발산한다
+        #   (2026-09-12 실차, 조향 부호반전 22.8회/분).
+        DeclareLaunchArgument(
+            'understeer_v_clamp_pulse', default_value='4',
+            description='언더스티어 항의 v 를 이 펄스 속도에서 묶는다(= 3.536 m/s). '
+                        '★4펄스 이하는 종전과 완전히 같다★. 0 이면 클램프를 끈다'),
         DeclareLaunchArgument(
             'lfd_min_m', default_value='2.3',
             description='LFD 하한[m]. ★최소회전반경(1.49m)보다 넉넉히 커야 한다★ — '
@@ -369,7 +385,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'steer_understeer', default_value='5.17',
             description='언더스티어 계수 [deg/(m/s²)]. 같은 반경이라도 속도가 오르면 '
-                        '더 꺾어야 하는 양. 고속 코너에서 부족하면 올린다'),
+                        '더 꺾어야 하는 양. ★[2026-09-13] 이 항의 v 는 '
+                        'understeer_v_clamp_pulse 에서 묶인다★ — 계수를 올려도 '
+                        '4펄스 위로는 더 세지지 않는다'),
         DeclareLaunchArgument(
             'cte_ki', default_value='0.30',
             description='CTE 적분 게인 [deg(도로휠)/(m·s)]. ★크게 잡지 말 것★ — '
@@ -561,6 +579,9 @@ def generate_launch_description():
             'drive_pulse':   LaunchConfiguration('drive_pulse'),
             'heading_pulse': LaunchConfiguration('heading_pulse'),
             'lfd_omega_n':   LaunchConfiguration('lfd_omega_n'),
+            'lfd_omega_n_fast': LaunchConfiguration('lfd_omega_n_fast'),
+            'understeer_v_clamp_pulse':
+                LaunchConfiguration('understeer_v_clamp_pulse'),
             'lfd_min_m':     LaunchConfiguration('lfd_min_m'),
             'wheelbase_m':   LaunchConfiguration('wheelbase_m'),
             'steer_plant_gain': LaunchConfiguration('steer_plant_gain'),

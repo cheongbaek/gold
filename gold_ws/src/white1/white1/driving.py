@@ -388,6 +388,61 @@ STEER_MAX_DEG = 40           # [deg] B보드 수용 상한 = STEER_ANGLE_MAX (ka
 #     추종을 반드시 확인할 것(부족하면 plant_gain 을 올린다 = 더 꺾는다).
 STEER_PLANT_GAIN   = 1.26    # pot 지령 / 도로휠각
 STEER_UNDERSTEER   = 5.17    # [deg/(m/s²)] 언더스티어 계수
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-13] 언더스티어 항의 속도를 4펄스에서 묶는다 — 고속 과조향의 원인 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★증상★ 2026-09-12 7펄스 주행(161745·145723)에서 출발 직후 가속 구간부터 조향이
+#  ★주기 1.7 s 로 발산★ 했다. 헤딩오차 진폭이 3° → 5.6 → 6.9 → 8.0 → 13.8 → 23°
+#  로 매 주기 1.4배씩 커진다. 같은 경로 4펄스(142144)는 조향 부호반전 0.6회/분인데
+#  7펄스는 ★22.8회/분★(38배), 요레이트 std 3.48 → 6.80 °/s.
+#  ⚠️ 직전 [2026-09-12] curve_cap 계단 수정(680b1b3)으로는 ★해결되지 않았다★ —
+#     그 커밋 뒤에 달린 161745 가 여전히 22.8회/분이다. CTE 는 좋아졌지만
+#     (max 6.25 → 0.98 m) 조향 떨림 자체는 그대로였다. 원인이 다른 데 있었다.
+#
+#  ★원인 — 이 식의 언더스티어 항이 실측으로 성립하지 않는다★
+#  record CSV 의 ★실측 pot★(/steer_angle_measured)과 ★투영 요레이트★ 로 전달비를
+#  직접 회귀했다(4개 로그 21340표본, pot→요레이트 지연 0.10 s 에서 상관 최대):
+#
+#        실측 G = |pot| / |atan(r·L/v)|          모델 G = 1.26 + 5.17·v²·tanδ/(L·δ)
+#     ┌────────┬──────────────────────────────┬──────────────────────────────┐
+#     │  |δ|   │  2-3   3-4   4-5 m/s  (실측) │  2-3   3-4   4-5 m/s  (모델) │
+#     ├────────┼──────────────────────────────┼──────────────────────────────┤
+#     │  1~ 2° │  5.52  4.86  3.06            │  1.63  2.14  2.72            │
+#     │  2~ 4° │  3.20  2.43  1.63            │  1.63  2.15  2.72            │
+#     │  4~ 7° │  1.85  1.58  1.51            │  1.63  2.15  2.73            │
+#     │  ★7~12°│  1.48  1.52  1.42★           │  1.63  2.15  2.74            │
+#     │  12~20°│  1.48   --    --             │  1.64  2.17  2.76            │
+#     └────────┴──────────────────────────────┴──────────────────────────────┘
+#  ★큰 각에서 G 가 1.42~1.52 로 수렴하고 속도에 따라 늘지 않는다★ — 즉 이 차의
+#  참 전달비는 ★pot ≈ 1.5 × 도로휠각★ 이고, v² 언더스티어 항은 실측되지 않는다.
+#  작은 각에서 G 가 커지는 것은 물리가 아니라 ★조향 불감대★ 다(pot 은 움직였는데
+#  요레이트가 아직 안 나온 표본). 물리 전달비라면 각도와 무관해야 하는데 단조
+#  감소하는 것이 그 증거다.
+#  ⚠️ braketest 절(CLAUDE.md 5.1)의 '회귀 실측 5.89' 는 ★고속 직선의 1~2° 표본★ 이라
+#     위 표 첫 행과 같은 불감대 아티팩트다. 그쪽은 조향 권한을 ay_max 로 따로 묶고
+#     있어 당장 위험하지 않지만, 같은 회귀를 큰 각으로 다시 할 것.
+#
+#  ★그래서 무슨 일이 벌어졌나★ 순수추종이 δ=5° 를 원하면
+#      7펄스(6.19 m/s) : 코드가 내는 pot = 3.86·δ → 차가 실제로 만드는 도로휠각은
+#                        3.86/1.50 = ★2.57배★  → 루프이득 2.57배 과다
+#      4펄스(3.54 m/s) : 2.15/1.50 = 1.44배    → 과다하지만 PM 이 버틴다
+#  실효 ω_n = (v√2/LFD)·과조향배율 로 보면 :
+#      4펄스 1.40 (발산임계 2.3 아래) / ★7펄스 2.61 (임계 초과 = 발산)★
+#      진동 구간(t=15~21 s, 곡률캡 LFD 7.0 m, v 5.3 m/s) : ★2.35 — 임계 초과★
+#  ★관측된 발산이 계산으로 그대로 재현된다★ 4펄스만 멀쩡했던 이유까지 설명된다.
+#
+#  ★고친 방법 — 계수를 낮추지 않고 '속도를 묶는다'★
+#  0 으로 지우거나 계수를 깎으면 ★4펄스 이하의 검증된 거동까지 같이 약해진다★
+#  (142144 는 max|CTE| 0.71 m 로 잘 돌았다 — 그 이득을 건드릴 이유가 없다).
+#  속도만 4펄스에서 클램프하면 :
+#      v ≤ 3.536 m/s : ★식이 한 글자도 바뀌지 않는다★ (중저속 거동 완전 동일)
+#      v > 3.536 m/s : G 가 2.15 에 멈춘다 → 7펄스 과조향 2.57 → ★1.44배★
+#                      = 4펄스와 ★같은 실효 루프이득★
+#  ⚠️ 이것은 '언더스티어가 없다'는 주장이 아니라 ★실측되지 않는 구간까지
+#     외삽하지 않는다★ 는 것이다. 고속·큰각 표본(5~7 m/s, |δ|>7°)이 아직 없다 —
+#     순수추종이 그 조합을 안 내기 때문이다. 생기면 이 클램프부터 다시 볼 것.
+UNDERSTEER_V_CLAMP_PULSE = 4   # [펄스] 언더스티어 항의 v 를 이 속도에서 묶는다
+#                                (= 3.536 m/s. 0 이하로 두면 클램프를 끈다)
 #  도로휠각 상한 = 40 / 1.26 = 31.7°  →  최소회전반경 L/tan(31.7°) = ★2.02 m★
 #  (구 매핑 기준으로는 22.8° / 2.97m 이었다. 예전에 1.49m 로 적어 두었던 값은
 #   pot 지령을 도로휠각으로 오인한 결과였고 그건 지금도 틀린 값이다)
@@ -398,6 +453,38 @@ STEER_ROAD_MAX_DEG = STEER_MAX_DEG / STEER_PLANT_GAIN
 #   일정하게 유지한다★ 는 하나의 설계식에서 나온 값이다 — LFD = v·√2/ω_n.
 #   표를 옮기지 않고 식을 옮긴 이유는 lookahead_m() 주석에 적었다.
 LFD_OMEGA_N  = 0.97         # [rad/s] 목표 고유진동수. ★낮추면 LFD 가 길어진다★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-13] ω_n 을 ★속도 스케줄★ 로 — 고속에서 더 멀리 본다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 고정 ω_n 으로는 부족한가★ 설계식 LFD = v√2/ω_n 은 ω_n 을 속도와 무관하게
+#  일정히 유지한다. 그런데 ★위상을 깎는 지연은 속도와 무관하게 고정★ 이다
+#  (불감시간 0.250 s + 조향 1차지연). PM ≈ 65° − ω_n·τ·(180/π) 에서 τ 가 상수이므로
+#  ω_n 을 일정히 두면 PM 도 일정해야 맞지만, 실제로는 ★속도가 오를수록 전달계
+#  비선형(위 STEER_UNDERSTEER 절)과 타이어 이완이 이득을 키워★ 여유가 줄어든다.
+#  2026-09-12 7펄스 주행이 정확히 그렇게 떨었다.
+#  → ★고속에서는 ω_n 을 낮춰(=LFD 를 늘려) 여유를 되사 온다.★
+#
+#  ★중저속은 손대지 않는다★ 4펄스 이하는 142144 로그로 검증된 거동이다
+#  (조향 부호반전 0.6회/분, max|CTE| 0.71 m). 그 구간의 ω_n 은 0.97 그대로다.
+#
+#     펄스   v[m/s]   ω_n     LFD[m]      비고
+#      2      1.77   0.970     2.58      하한 2.3 근처
+#      4      3.54   0.970     5.16      ★종전과 완전히 같다★
+#      5      4.42   0.907     6.89      보간 구간
+#      6      5.30   0.843     8.89      보간 구간
+#      7      6.19   0.780    11.22      ★종전 9.02 m → +24%★
+#      8      7.07   0.780    11.30      상한
+#     10      8.84   0.780    11.30      상한 (ω_n 실효 1.41)
+#
+#  ⚠️ LFD 를 늘리면 ★조향 불감대가 만드는 잔류 CTE 도 함께 늘어난다★ —
+#     도로휠 1.41° 불감대는 LFD 5.16 m 에서 측방 0.26 m, 11.2 m 에서 0.57 m 다.
+#     그것을 지우는 것이 CTE 적분(Ki 단독)이고, 161745 실측 mean|CTE| 가 0.142 m
+#     이므로 여유가 있다. ★실차에서 이 값을 먼저 볼 것.★
+#  ⚠️ 코너에서는 이 값이 지배하지 않는다 — 곡률캡이 LFD 를 더 짧게 누른다.
+#     즉 이 스케줄이 실제로 효과를 내는 곳은 ★고속을 유지하는 완만한 구간★ 뿐이다.
+LFD_OMEGA_N_FAST   = 0.78   # [rad/s] 고속(LFD_OMEGA_HI_PULSE 이상)에서의 ω_n
+LFD_OMEGA_LO_PULSE = 4      # 이 펄스 이하는 LFD_OMEGA_N 그대로 (중저속 거동 보존)
+LFD_OMEGA_HI_PULSE = 7      # 이 펄스 이상은 LFD_OMEGA_N_FAST. 사이는 선형보간
 #  ★LFD 하한의 의미 — 조향 포화가 시작되는 α★
 #    순수추종은 δ = atan(2·L·sinα / d) 이므로, d 가 짧으면 조금만 옆을 봐도 δ 가
 #    ±40° 에 포화되고 그때부터 '기하'가 아니라 '한계'가 조향을 정한다. 금색차에서
@@ -423,7 +510,10 @@ LFD_MIN_M    = 2.3          # [m] 하한 (구 white min_lfd — 진동유발 영
 #  8펄스 이상을 상시로 쓸 생각이면 이 값을 다시 계산할 것.
 #  ⚠️ LFD 를 늘리면 코너 진입에서 안쪽을 자른다(코너 컷). 그것을 막는 것이
 #     곡률캡(LFD_CURVE_CAP_K, lookahead_m 안)이므로 실차에서 함께 볼 것.
-LFD_MAX_M    = 9.1          # [m] 상한 (설계식 7펄스 = 9.02 m 를 담는다)
+#  ★[2026-09-13] 9.1 → 11.3★ 위 ω_n 속도 스케줄로 7펄스 설계식이 11.22 m 가
+#  되었다. 11.3 은 그 값을 담는다(8펄스 이상은 여기에 잘린다 — 10펄스에서 실효
+#  ω_n 1.41, PM ≈ +19°/τ0.5. 상한 10 은 '여유'지 '목표'가 아니라는 규칙 그대로다).
+LFD_MAX_M    = 11.3         # [m] 상한 (ω_n 스케줄 7펄스 = 11.22 m 를 담는다)
 LFD_GOAL_A   = 0.45         # 종점 접근 캡 : max(LFD_GOAL_MIN, 남은거리·A + B)
 LFD_GOAL_B   = 1.30
 LFD_GOAL_MIN = 2.2          # 이 구간만은 포화 임계(2.98m) 아래다 — 위 ★ 참고
@@ -891,6 +981,17 @@ GOAL_KICK_MAX_N  = 3      # 이만큼 시도해도 못 움직이면 구동을 �
 #     CTE ≤ 약 K/8 = 0.19m 를 보장한다. ★코너에서 조향 권한을 되찾는 장치이기도 하다★
 #     (LFD 가 짧아지면 순수추종이 낼 수 있는 최대 도로휠각 atan(2L/LFD) 가 커진다)
 LFD_CURVE_CAP_K = 1.5
+#  ★[2026-09-13] 곡률캡도 ★속도 스케줄★ 로 — 고속에서만 완만하게 푼다★
+#  위 ω_n 스케줄로 lfd_speed 를 11.2 m 까지 늘려도, 요구곡률이 조금만 있으면
+#  곡률캡이 먼저 눌러 ★고속에서 더 멀리 본다★ 가 성립하지 않는다. 실제로
+#  2026-09-12 161745 의 초기 가속 진동 구간은 lfd_speed 9.02 m 가 아니라
+#  ★곡률캡 7.0 m★ 가 LFD 를 정하고 있었다(요구곡률 2.19°).
+#  코너컷 오차는 ≈ LFD²/(8R) = K/8 이므로 K 를 키운 대가는 그 오차뿐이다:
+#        K 1.5 → 0.19 m      ★K 2.2 → 0.275 m★      (이탈 문턱 2.0 m 의 14%)
+#  ⚠️ K 를 키우면 순수추종이 낼 수 있는 최대 도로휠각 atan(2L/LFD) 가 줄어든다
+#     (R=10 m 에서 32.9° → 28.0°). ★그래서 고속에서만 푼다★ — 코너에서는
+#     corner_speed 가 속도를 내리고, 그러면 이 K 도 1.5 로 돌아와 권한이 복구된다.
+LFD_CURVE_CAP_K_FAST = 2.2   # 고속(LFD_OMEGA_HI_PULSE 이상)에서의 곡률캡 K
 #  ★[2026-09-12] curve_cap 의 수치 가드각★ 이 아래에서는 tan 이 0 에 수렴해
 #  나눗셈이 폭발한다. 이 각의 cap 은 √(1.5×1.25/tan0.05°) ≈ 46 m 로 LFD_MAX_M 보다
 #  한참 크므로 min() 에 잘린다 — ★거동에는 영향이 없는 순수 수치 가드다★.
@@ -1542,6 +1643,11 @@ class DrivingNode(Node):
         #   조향 세기를 만지는 곳은 이제 lfd_omega_n 이다(낮추면 LFD↑ → 조향 완만).
         #   CTE-PID 트림은 아직 이식하지 않았으므로 Kp 가 들어갈 자리 자체가 없다.
         self.declare_parameter('lfd_omega_n', LFD_OMEGA_N)
+        #  ★[2026-09-13] 고속 ω_n 과 언더스티어 속도 클램프★ 상수절 참고.
+        #   lfd_omega_n 은 ★중저속(4펄스 이하) 기준값★ 이 되었고, 고속은
+        #   lfd_omega_n_fast 가 정한다 — 둘 사이는 펄스로 선형보간한다.
+        self.declare_parameter('lfd_omega_n_fast', LFD_OMEGA_N_FAST)
+        self.declare_parameter('understeer_v_clamp_pulse', UNDERSTEER_V_CLAMP_PULSE)
         self.declare_parameter('lfd_min_m', LFD_MIN_M)
         self.declare_parameter('wheelbase_m', WHEELBASE_M)
         # ★조향 전달계 실측 보정★ 상단 상수 주석의 126표본 최소자승 결과.
@@ -1578,6 +1684,13 @@ class DrivingNode(Node):
         self.wp_reach = float(self.get_parameter('wp_reach_m').value)
         self.require_rtk = bool(self.get_parameter('require_rtk').value)
         self.lfd_omega_n = max(0.05, float(self.get_parameter('lfd_omega_n').value))
+        #  ★고속 ω_n 은 중저속 값보다 크지 않게 묶는다★ — 뒤집히면 '고속에서
+        #  더 멀리 본다' 가 반대로 작동한다(오타 한 글자가 조용히 발산시킨다).
+        self.lfd_omega_fast = min(self.lfd_omega_n,
+                                  max(0.05, float(self.get_parameter('lfd_omega_n_fast').value)))
+        #  0 이하면 클램프를 끈다(= 종전 거동). 음수 방지로 max(0,·).
+        self.understeer_v_max = max(0.0, float(
+            self.get_parameter('understeer_v_clamp_pulse').value) * MS_PER_PULSE)
         self.lfd_min = float(self.get_parameter('lfd_min_m').value)
         self.wheelbase = float(self.get_parameter('wheelbase_m').value)
         self.plant_gain = max(0.1, float(self.get_parameter('steer_plant_gain').value))
@@ -3834,8 +3947,12 @@ class DrivingNode(Node):
                 # 코너 도착 시점의 LFD(곡률캡)와 ω_n 정합 속도로 '미리' 낮춘다 —
                 # 진입 순간 LFD 급감 + 속도 잔존으로 ω_n 이 튀는 것을 예방한다.
                 r_far = self.wheelbase / math.tan(math.radians(min(far_peak, self.road_max)))
+                #  ★[2026-09-13] lookahead_m 과 ★같은 K★ 를 써야 한다★ — 여기서
+                #  예측하는 cap_far 는 '코너에 도착했을 때 lookahead_m 이 낼 LFD' 다.
+                #  둘이 갈라지면 예측과 실제가 어긋나 진입 직전에 속도가 튄다.
                 cap_far = min(LFD_MAX_M, max(self.lfd_min,
-                                             math.sqrt(LFD_CURVE_CAP_K * r_far)))
+                                             math.sqrt(self.curve_cap_k_at(
+                                                 self.drive_pulse * MS_PER_PULSE) * r_far)))
                 v_corner = min(v_corner, OMEGA_N_MAX * cap_far / math.sqrt(2.0))
             brake_d = max(0.0, gate_dist - BRAKE_GATE_MARGIN)
             v_brake = math.sqrt(max(0.0, v_corner * v_corner
@@ -4103,10 +4220,34 @@ class DrivingNode(Node):
         self._cte_i_term = 0.0
         self._cte_prev = 0.0
 
+    def speed_blend(self, v_ms):
+        """중저속(LFD_OMEGA_LO_PULSE) 0.0 ~ 고속(LFD_OMEGA_HI_PULSE) 1.0 [2026-09-13]
+
+        ω_n 과 곡률캡 K 를 ★같은 저울★ 로 섞는다 — 두 스케줄이 서로 다른 경계를
+        쓰면 그 사이 어딘가에서 'LFD 는 길어졌는데 캡은 아직 짧다' 같은 조합이
+        생기고, 그것이 바로 [2026-09-12] curve_cap 계단과 같은 종류의 버그다.
+        """
+        lo = LFD_OMEGA_LO_PULSE * MS_PER_PULSE
+        hi = LFD_OMEGA_HI_PULSE * MS_PER_PULSE
+        if hi <= lo:
+            return 0.0
+        return max(0.0, min(1.0, (v_ms - lo) / (hi - lo)))
+
+    def lfd_omega_at(self, v_ms):
+        """이 속도에서 쓸 ω_n [rad/s]. 중저속은 lfd_omega_n 그대로 [2026-09-13]"""
+        return self.lfd_omega_n + (self.lfd_omega_fast - self.lfd_omega_n) \
+            * self.speed_blend(v_ms)
+
+    def curve_cap_k_at(self, v_ms):
+        """이 속도에서 쓸 곡률캡 K. 중저속은 LFD_CURVE_CAP_K 그대로 [2026-09-13]"""
+        return LFD_CURVE_CAP_K + (LFD_CURVE_CAP_K_FAST - LFD_CURVE_CAP_K) \
+            * self.speed_blend(v_ms)
+
     def steer_command(self, road_deg, v_ms):
         """도로휠각 → B보드 pot 지령. ★실측 역모델★ (상단 STEER_PLANT_GAIN 주석)
 
-            pot = plant_gain · δ_road  +  understeer · v²/R,   R = L/tan(δ_road)
+            pot = plant_gain · δ_road  +  understeer · v_eff²/R,   R = L/tan(δ_road)
+            v_eff = min(v, understeer_v_max)     ★[2026-09-13] 4펄스에서 묶는다★
 
         순수추종 공식이 내는 것은 '이 곡률을 만들려면 도로휠을 몇 도 꺾어야 하나'
         이고, B보드가 받는 것은 가변저항 행정 기준 값이다. 둘이 1:1 이 아니라서
@@ -4116,7 +4257,14 @@ class DrivingNode(Node):
         d = abs(float(road_deg))
         if d < 1e-6:
             return 0.0
-        pot = self.plant_gain * d + self.understeer * v_ms * v_ms \
+        #  ★[2026-09-13] 언더스티어 항의 속도만 묶는다★ — 상수절 참고.
+        #  실측 전달비는 큰 각(7~20°)에서 pot/도로휠 ≈ 1.5 로 ★속도와 무관하게
+        #  평평하다★. 4펄스 위로 이 항을 더 키우면 7펄스에서 루프이득이 2.57배로
+        #  과다해져 조향이 발산한다(2026-09-12 실차). 4펄스 이하는 식이 그대로다.
+        v_eff = abs(float(v_ms))
+        if self.understeer_v_max > 0.0:
+            v_eff = min(v_eff, self.understeer_v_max)
+        pot = self.plant_gain * d + self.understeer * v_eff * v_eff \
             * math.tan(math.radians(d)) / self.wheelbase
         return math.copysign(min(STEER_MAX_DEG, pot), road_deg)
 
@@ -4270,7 +4418,12 @@ class DrivingNode(Node):
         곡률(평활 창)만 본다. 구 white 의 lfd_win_only 와 같은 이유·같은 구조다.
         """
         v = max(0.1, self.drive_pulse * MS_PER_PULSE)
-        lfd_speed = v * math.sqrt(2.0) / self.lfd_omega_n
+        #  ★[2026-09-13] ω_n 과 곡률캡 K 를 속도로 스케줄한다★ 상수절 참고.
+        #  기준속도는 종전과 같이 ★지령속도★ 다(실측을 넣으면 LFD 가 노이즈로 떨고,
+        #  출발 램프에서 짧아져 이 이식이 고치려던 상황을 되살린다 — 아래 ★ 주석).
+        omega_n = self.lfd_omega_at(v)
+        cap_k = self.curve_cap_k_at(v)
+        lfd_speed = v * math.sqrt(2.0) / omega_n
 
         def curve_cap(demand_deg):
             #  ★[2026-09-12] 임계각 분기를 걷어내고 min() 으로 잇는다★
@@ -4294,7 +4447,7 @@ class DrivingNode(Node):
             if demand_deg <= CURVE_CAP_EPS_DEG:
                 return LFD_MAX_M
             r = self.wheelbase / math.tan(math.radians(min(demand_deg, self.road_max)))
-            return min(LFD_MAX_M, math.sqrt(LFD_CURVE_CAP_K * r))
+            return min(LFD_MAX_M, math.sqrt(cap_k * r))
 
         lfd_win_only = min(LFD_MAX_M, max(self.lfd_min,
                                           min(lfd_speed, curve_cap(near_win))))
