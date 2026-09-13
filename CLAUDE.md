@@ -987,6 +987,48 @@ e_p = e + L_p·sin ψ                 L_p = t_preview × v   ★정속 프리뷰
 **클램프를 없앴다.** 저속은 회귀값(4.96)이 모델(1.9)보다 크므로 `PLANT_GAIN_MIN 4.0`
 이 하한으로 받는다.
 
+> ### ⚠️ **[2026-09-13 정정] 위 두 문단의 결론은 틀렸다 — 클램프를 되살렸다**
+>
+> 회귀 **5.89** 는 **고속 직선의 1~2° 표본**이라 **조향 불감대 아티팩트**다.
+> 같은 날 `driving` 쪽 21340표본 회귀가 그것을 보여 준다(4.1b절) — 전달비가
+> 1~2° 에서 5.5, **7~12° 에서 1.4~1.5 로 수렴**한다. 물리 전달비라면 각도와
+> 무관해야 하는데 단조 감소하는 것이 증거다.
+>
+> **그리고 이 노드 자신이 주행 중에 그것을 재고 있었다** — 2026-09-13 로그의
+> `update_plant_estimate` 결과가 **`g_est` 2.1 → 3.2 (표본 51)** 로, 클램프 없는
+> 모델값 7.1 의 **1/2.6** 이다.
+>
+> **증상** — 조향 부호반전 **129.9 회/분**(같은 날 `driving` 7펄스 22.8, 4펄스 0.6),
+> 요레이트 std 15.97 °/s, 진동 주기 **1.00 s**. 횡오차는 작았다(max 0.56 m) —
+> **궤적은 맞는데 조향만 계속 떨었다.** 이벤트 로그가 원인을 그대로 말한다:
+>
+> ```
+> t=2.3~9.5s 내내 :  조향 -6.0°/6.0   (조준 -0.92 + 댐핑 -0.80 도로휠)
+>                    조향 -5.7°/5.7   (조준 -1.14 + 댐핑 -0.22 도로휠)
+> ```
+>
+> 요구는 도로휠 1~2° 인데 pot 지령이 상한에 **붙박이**다. **포화한 제어기는
+> 계전기(bang-bang)가 되고, 계전기는 반드시 떤다.**
+>
+> **고친 값** — `UNDERSTEER_V_CLAMP_MS = 4.42`(5펄스)로 언더스티어 항의 `v` 를 묶고,
+> `PLANT_GAIN_MIN` 을 **4.0 → 2.6** 으로 내린다(하한이 4.0 이면 **하한이 늘 이겨**
+> 클램프가 무의미해진다). 두 값 모두 이 노드가 실제로 잰 `g_est ≈ 2.7` 에 맞춘 것이다:
+> `G(4.42) = 1.26 + 0.0724 × 19.5 = 2.67`.
+>
+> | 로그 시점 | v | 요구 δ | 종전 pot | 신규 pot | 상한 | 실제 도로휠(G=2.7) |
+> |---|---|---|---|---|---|---|
+> | t=4.39 | 4.61 | 1.67° | 6.68 ★포화★ | **4.46** | 6.00 | — |
+> | t=9.49 | 8.31 | 1.36° | 8.49 ★포화★ | **3.63** | 5.54 | 2.05° → **1.35°** |
+> | t=12.64 | 9.28 | 1.71° | 12.78 ★포화★ | **4.57** | 4.44 | 1.65° → 1.65° |
+>
+> **4.42 m/s 이하에서는 모델식이 한 글자도 바뀌지 않는다**(하한만 내려간다).
+>
+> ⚠️ **속도를 모를 때 pot 상한이 최대로 열리던 것도 함께 고쳤다** — `pot_limit` 은
+> `δ_max = atan(ay_max·L/v²)` 로 상한을 얻는데, `v` 를 모르면 하한 2.0 m/s 로 보므로
+> `δ_max` 가 32° 까지 열려 **상한이 `pot_hard_max`(12°)가 된다.** 2026-09-13 로그에서
+> GPS 가 게이트에 막힌 t=10.5 s 부터 정확히 그렇게 됐다(5.7° → **12.0°**).
+> `POT_NOSPEED_MAX_DEG = 6.0` 으로 묶는다 — **모르면 낮게 본다.**
+
 #### ★상한은 '각도'가 아니라 '횡가속도' — 그리고 전달비를 주행 중에 잰다★
 
 - `ay_max`(기본 2.0 m/s²)에서 pot 상한을 유도한다(8.84 m/s 에서 ≈12.6°).
@@ -1030,9 +1072,24 @@ ouster ─/ouster/points─▶ cone_lidar_node ─/…/stop_signal─▶ pedal_d
 > (`/cmd_vel_raw`·`/control_state`·`/brake_level` 을 하나도 안 낸다 — 그 파일 헤더).
 > 그래서 braketest 의 주행 지령과 겹치지 않는다.
 
-**braketest 가 `/aeb_stop` 을 구독하는 것은 계측 때문이다** — 제동을 걸기 위해서가
-아니다(이미 arduino 가 했다). 언제 물렸는지를 알아야 거리·시간을 재고 런치를 끝낼
-시점을 안다. **그 값으로 브레이크를 만지지 않는다.**
+> ### ⚠️ **[2026-09-13 정정] 라이다 정지에서도 braketest 가 `/brake_level` 2단을 낸다**
+>
+> 종전에는 *"braketest 가 `/aeb_stop` 을 구독하는 것은 계측 때문이고 그 값으로
+> 브레이크를 만지지 않는다"* 였다(`own_brake=False`). **그 결과 2026-09-13 로그의
+> `/brake_level` 이 전 구간 0 이었다.**
+>
+> `arduino.compose()` 의 **(4) 정상 자율주행** 분기에는
+> ```python
+> pulse = 0 if brake > 0 else self.cmd_pulse     # arduino.py — 구동 무력화
+> ```
+> 가 있는데 그 `brake` 는 **`/brake_level`** 이다. AEB 분기 **(1-1)** 이 따로 구동을
+> 끊어 주긴 하지만 그것은 **`/aeb_stop` 이 신선할 때만**이다(`aeb_stale_s` 1.0 s).
+> 판단 노드가 한 틱이라도 끊기면 그 순간 (4) 로 떨어지고, `/brake_level`=0 이면
+> **구동이 되살아난다** — 리니어는 물려 있는데 인휠이 다시 미는, 제일 나쁜 조합이다.
+>
+> → **둘 다 건다.** 같은 값을 두 경로로 내는 것은 발행자 경합이 아니다
+> (arduino 가 각 분기에서 그대로 쓰고 `max` 로 합치지 않는다).
+> 계측(체결 시각·속도·거리)은 종전과 똑같이 `/aeb_stop` 으로 잡는다.
 
 > ### ⚠️ AEB 로 섰을 때는 braketest 가 리니어를 못 푼다 — 설계상 그렇다
 >
@@ -1071,8 +1128,28 @@ ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
   `white1/white1/braketest.py` 다.
 - **런치 = 출발.** 준비되면 스스로 헤딩을 잡고 굴러간다
   (`auto_start:=false` → `/braketest_go` 를 기다린다).
-- 속도는 **`braketest.py` 상단 두 값**이 전부다 : `DRIVE_PULSE = 10` /
-  `DRIVE_PWM = 0`. 런치 인자가 이긴다.
+- 속도는 **`braketest.py` 상단**이 소유한다 : `DRIVE_PULSE = 10`(순항) /
+  `LAUNCH_PULSE = 15`(출발) / `DRIVE_PWM = 0`. 런치 인자가 이긴다.
+
+> ### ★[2026-09-13] 2단 속도 루틴 — 출발 15펄스 → 30 km/h 에서 10펄스★
+>
+> **제동검차는 30 km/h 를 넘겨야 통과한다.** 2026-09-13 로그는 10펄스 고정으로
+> 달려 0 → 30 km/h 에 **9.1 초 · 48 m** 를 썼다(목표까지 89 m 중 절반).
+> 그래서 **출발만 15펄스**(A보드 `TARGET_MAX` 와 같은 값)로 밀고, **GPS 로**
+> 30 km/h 를 확인하는 순간 순항(10펄스)으로 내린 뒤 제동한다.
+>
+> 판정의 단일 소유자는 `braketest.drive_value()` 하나다. 내려오는 조건이 셋이지만
+> **전부 '내리는 방향'** 이라 어느 것이 먼저 걸려도 위험해지지 않는다:
+>
+> | 조건 | 상수 | 뜻 |
+> |---|---|---|
+> | **GPS 속도 ≥ 30 km/h** | `CRUISE_SWITCH_KMH` | **본선** |
+> | 엔코더 ≥ 10펄스 | `LAUNCH_SWITCH_ENC_PULSE` | GPS 폴백. 엔코더는 기동 허수로 **위로** 튀므로 조금 일찍 내릴 뿐 |
+> | 경과 ≥ 12 s | `LAUNCH_MAX_S` | 15펄스로 무한정 달리지 않게 하는 마지막 줄 |
+>
+> **★한 번 내려오면 다시 올리지 않는다★**(래치). 올렸다 내렸다 하면 그것이 곧
+> 속도 되먹임이고, 제동거리를 재려는 이 시험이 재려는 것이 아니다.
+> `launch_pulse` 를 `drive_pulse` 이하로 주면 루틴 자체가 꺼진다(단일 속도 주행).
 - **완전정지하면 리니어를 푼다**(`BRAKE_RELEASE_WAIT_S = 1.5 s` 기다린 뒤 종료).
   물린 채로 런치를 내리면 arduino 가 없어져 D5 를 내렸다 올리는 것 말고는 풀
   방법이 없다.
@@ -1224,6 +1301,10 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | IMU 중력축 투영 (4.7절) [2026-09-09] | `driving.py cb_imu` · `solve_imu_axis` |
 | **고속 조향 발산 — 언더스티어 항 속도 클램프 (4.1b) [2026-09-13]** | `driving.py steer_command` · `UNDERSTEER_V_CLAMP_PULSE` |
 | **LFD ω_n · 곡률캡 K 속도 스케줄 (4.1) [2026-09-13]** | `driving.py speed_blend` · `lfd_omega_at` · `curve_cap_k_at` · `LFD_MAX_M` 9.1 → **11.3** |
+| **GPS 속도 게이트 8.0 → 11.2 m/s (40.3 km/h) [2026-09-13]** | `gps.py GATE_SPEED_MAX_MS` — 30 km/h 이상 fix 를 전부 기각해 **제동검차 계측을 지우고 있었다** |
+| **braketest 2단 속도 루틴 (5.1) [2026-09-13]** | `braketest.py drive_value()` · `LAUNCH_PULSE` · `CRUISE_SWITCH_KMH` |
+| **braketest 라이다 정지에서도 `/brake_level` 2단 (5.1) [2026-09-13]** | `braketest.py run_follow` ① · `begin_brake(own_brake=True)` |
+| **braketest 조향 포화 — 언더스티어 클램프 복원 (5.1) [2026-09-13]** | `braketest.py plant_pot` · `UNDERSTEER_V_CLAMP_MS` · `PLANT_GAIN_MIN` 4.0 → **2.6** · `POT_NOSPEED_MAX_DEG` |
 | 브레이크 제동거리 측정 (5.1절) [2026-09-09] | `braketest.py` · `braketest.launch.py` |
 | **제동검차 — 목표 좌표 1점 + 직선 프리뷰 추종 (5.1절) [2026-09-12]** | `braketest.py` 상단 `GOAL_LAT/GOAL_LON` · `t_preview` · `ay_max` |
 | braketest 정지 트리거를 ★라이다+종점★ 으로 (terrain 무시) [2026-09-09] | `braketest.py` · `aeb.launch.py` include |
@@ -2303,7 +2384,9 @@ ping -c2 192.168.6.11
 | `MAX_PULSE_LIMIT` / `drive_pulse` | `driving.py` **+** `one_launch.py` **+** `kasa_units.hpp:89 PULSE_OPERATING_MAX` |
 | **LFD ω_n 속도 스케줄** [2026-09-13] | `driving.py` 의 `LFD_OMEGA_N`·`LFD_OMEGA_N_FAST`·`LFD_OMEGA_LO/HI_PULSE` **+** `LFD_MAX_M`(고속 설계식을 담아야 한다) **+** `one_launch.py` 의 `lfd_omega_n`·`lfd_omega_n_fast` — **ω_n 을 낮추면 LFD 상한도 같이 올려야 한다.** 안 올리면 상한에 잘려 ω_n 이 의도보다 높아진다(그 실수가 2026-09-12 의 `LFD_MAX_M 7.8` 이었다) |
 | **곡률캡 `LFD_CURVE_CAP_K`** [2026-09-13] | `lookahead_m` 의 `curve_cap()` **+** `corner_speed` 의 `cap_far` — **둘 다 `curve_cap_k_at(v)` 를 쓴다.** `cap_far` 는 '코너에 도착했을 때 `lookahead_m` 이 낼 LFD' 를 미리 계산하는 것이라, 갈라지면 예측과 실제가 어긋나 진입 직전에 속도가 튄다 |
-| **`steer_understeer`** [2026-09-13] | `driving.py steer_command()` **+** `understeer_v_clamp_pulse` — **계수만 보고 판단하지 말 것.** 이 항의 `v` 는 4펄스에서 묶여 있어 계수를 올려도 고속에서는 더 세지지 않는다(4.1b) |
+| **`steer_understeer`** [2026-09-13] | `driving.py steer_command()` **+** `understeer_v_clamp_pulse` — **계수만 보고 판단하지 말 것.** 이 항의 `v` 는 4펄스에서 묶여 있어 계수를 올려도 고속에서는 더 세지지 않는다(4.1b). `braketest.py` 는 같은 일을 `UNDERSTEER_V_CLAMP_MS`(5펄스)로 따로 한다 — **두 노드의 클램프 속도가 다른 것은 의도다**(잰 각도 대역이 다르다: driving 은 큰 각 회귀 1.5, braketest 는 주행 중 추정 2.7) |
+| **GPS 속도 게이트** [2026-09-13] | `gps.py GATE_SPEED_MAX_MS` **+** 실제 운용 최고속도 — **게이트가 운용속도보다 낮으면 정상 fix 를 전부 버린다.** 그러면 `/gps_fused` 의 속도가 아예 안 나오고(0 이 아니라 `None`), 그 값을 쓰는 쪽(`braketest` 의 `v0`·`driving` 의 코너 제동)이 조용히 멈춘다 — 에러는 없다 |
+| **braketest 제동 경로** [2026-09-13] | `braketest.begin_brake(own_brake)` **+** `arduino.compose()` (4) 의 `pulse = 0 if brake > 0` — **`/brake_level` 을 안 내면 그 구동 무력화가 한 번도 타지 않는다.** `/aeb_stop` (1-1) 은 신선할 때만 듣는다(`aeb_stale_s`) |
 | B보드 텔레메트리 필드 수 | `arduino.py parse_b()` **+** 상태변수/퍼블리셔 **+** `record.py RECORD_TOPICS` |
 | `KEEPALIVE_S`(ROS) | A보드 `RX_TIMEOUT_MS`(3000) — **한 쌍이다** |
 | `/gps_fused` 배열 | `gps.py GPS_FUSED_FIELDS` **+** `driving.py cb_gps_fused` **+** `record.py _array(n)` |

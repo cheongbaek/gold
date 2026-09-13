@@ -6,6 +6,7 @@ braketest.launch.py ― ★제동검차 전용 런치★ [white1 / 2026-09-12 �
     ros2 launch white1 braketest.launch.py
     ros2 launch white1 braketest.launch.py goal_lat:=37.1234567 goal_lon:=127.1234567
     ros2 launch white1 braketest.launch.py drive_pulse:=8
+    ros2 launch white1 braketest.launch.py launch_pulse:=12       # ★출발만 낮춘다★
     ros2 launch white1 braketest.launch.py t_preview:=1.2       # ★좁은 차로★
     ros2 launch white1 braketest.launch.py drive_pwm:=140       # ★직접 PWM★
 
@@ -197,6 +198,9 @@ def _setup(context, *args, **kwargs):
             'goal_lon':      num('goal_lon'),
             'drive_pulse':   cfg('drive_pulse'),
             'drive_pwm':     cfg('drive_pwm'),
+            'launch_pulse':       cfg('launch_pulse'),
+            'cruise_switch_kmh':  cfg('cruise_switch_kmh'),
+            'launch_max_s':       cfg('launch_max_s'),
             'cte_abort_m':   cfg('cte_abort_m'),
             'steer_limit_deg': cfg('steer_limit_deg'),
             't_preview':     cfg('t_preview'),
@@ -301,8 +305,24 @@ def generate_launch_description():
                         '경로를 추종하지는 않는다 — 이 노드는 ★직선 한 줄★ 만 본다'),
         DeclareLaunchArgument(
             'drive_pulse', default_value='10',
-            description='★주행 목표펄스 0~15★ 기본 10 = 31.8 km/h. '
-                        'braketest.py 상단 DRIVE_PULSE 와 같은 값이며 여기가 이긴다'),
+            description='★순항 목표펄스 0~15★ 기본 10 = 31.8 km/h. '
+                        'braketest.py 상단 DRIVE_PULSE 와 같은 값이며 여기가 이긴다. '
+                        '★출발은 launch_pulse 로 민다★ (2단 속도 루틴)'),
+        #  ★[2026-09-13] 2단 속도 루틴 — 제동검차는 30 km/h 를 넘겨야 한다★
+        #   출발만 15펄스로 밀어 30 km/h 도달을 앞당기고, GPS 로 그 속도를 확인하는
+        #   순간 순항(drive_pulse)으로 내린 뒤 제동한다. 한 번 내려오면 래치된다.
+        DeclareLaunchArgument(
+            'launch_pulse', default_value='15',
+            description='★출발 구간 목표펄스★ 기본 15 (A보드 TARGET_MAX 와 같다). '
+                        'drive_pulse 이하로 주면 2단 루틴이 꺼진다(단일 속도 주행)'),
+        DeclareLaunchArgument(
+            'cruise_switch_kmh', default_value='30.0',
+            description='★GPS 속도★ 가 이 값을 넘으면 순항으로 내린다. '
+                        '제동검차 통과선이 30 km/h 라 그 값이 기본이다'),
+        DeclareLaunchArgument(
+            'launch_max_s', default_value='12.0',
+            description='출발 구간 시간 상한[s] — GPS·엔코더가 둘 다 안 걸려도 '
+                        '이 시간이 지나면 순항으로 내린다(내리는 방향 방벽)'),
         DeclareLaunchArgument(
             'drive_pwm', default_value='0',
             description='0 이 아니면 ★이쪽이 이긴다★ — A보드 직접 PWM 16~255. '

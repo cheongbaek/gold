@@ -185,11 +185,35 @@ from white1.gps import GPS_FUSED_TOPIC, Q_LABEL, Q_NONE
 #    · 0.0 을 그대로 두면 ★출발하지 않는다★ (아래 resolve_goal 이 사유를 말한다).
 #    · 런치 인자 goal_lat / goal_lon 이 이 값을 덮는다.
 #    · 둘 다 비어 있고 route 가 주어지면 ★그 CSV 의 마지막 점★ 을 목표로 쓴다.
-GOAL_LAT = 0.0            # ★★ 여기에 목표 위도 ★★  예) 37.1234567
-GOAL_LON = 0.0            # ★★ 여기에 목표 경도 ★★  예) 127.1234567
+GOAL_LAT = 37.23900890    # ★★ 여기에 목표 위도 ★★  [2026-09-13 설정]
+GOAL_LON = 126.77539272   # ★★ 여기에 목표 경도 ★★  [2026-09-13 설정]
 
-DRIVE_PULSE = 10          # A보드 목표펄스 0~15. ★10펄스 = 31.8 km/h★
+DRIVE_PULSE = 10          # A보드 목표펄스 0~15. ★10펄스 = 31.8 km/h★ (순항)
 DRIVE_PWM   = 0           # 0 아니면 이쪽이 이긴다. A보드 직접 PWM 16~255
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-13] 2단 속도 루틴 — 출발 15펄스 → 30 km/h 에서 10펄스 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★제동검차는 30 km/h 를 ★넘겨야★ 통과한다(사용자 지시).★ 2026-09-13 로그는
+#  10펄스 고정으로 달려 최고 33.37 km/h 까지 갔지만, 거기까지 ★9.1 초·48 m★ 가
+#  걸렸다(0 → 30 km/h). 목표까지 89 m 밖에 없으니 절반을 가속에 쓴 셈이고,
+#  제동을 걸 무렵 속도가 막 30 을 넘긴 참이라 여유가 없다.
+#
+#      t=0 출발 → t=9.1 s 에 30 km/h (48.2 m 소모) → 제동 시작 t=13.6 s
+#
+#  ★그래서 출발만 15펄스로 민다★ A보드 FF 테이블에서 15펄스는 PWM ≈147 이라
+#  10펄스(≈130)보다 훨씬 세게 밀고, 30 km/h 도달이 눈에 띄게 앞당겨진다.
+#  30 km/h 를 ★GPS 로★ 확인하는 순간 순항(10펄스)으로 내리고, 그 뒤에 제동한다.
+#  ⚠️ 15펄스는 A보드 TARGET_MAX 와 같은 값이다(그 위는 없다).
+#  ⚠️ 내려가기만 한다 — 한 번 순항으로 내려오면 ★다시 올리지 않는다★(래치).
+#     올렸다 내렸다 하면 그것이 곧 속도 되먹임이고, 이 시험이 재려는 것이 아니다.
+LAUNCH_PULSE      = 15    # 출발 구간 목표펄스 (A보드 상한과 같다)
+CRUISE_SWITCH_KMH = 30.0  # ★GPS 속도★ 가 이 값을 넘으면 순항(DRIVE_PULSE)으로 내린다
+#  ── 내려오는 방벽 둘 — 어느 쪽이든 ★내리는 방향★ 이라 안전하다 ──
+#  ⓐ GPS 가 끝내 안 오면 엔코더로도 본다. 엔코더는 기동 허수로 ★위로★ 튀므로
+#     (실측 중앙 16, 최대 34) 이쪽이 먼저 걸리면 조금 일찍 내려가는 것뿐이다.
+#  ⓑ 그래도 안 걸리면 시간으로 내린다. 15펄스로 무한정 달리지 않게 하는 마지막 줄.
+LAUNCH_SWITCH_ENC_PULSE = 10.0  # 엔코더(바퀴 기준) 이 펄스를 넘어도 내린다
+LAUNCH_MAX_S            = 12.0  # [s] 이 시간이 지나면 무조건 순항으로 내린다
 #  ★목표 좌표를 CSV 에서 빌릴 때만 쓴다★ (GOAL_LAT/LON 이 0 일 때의 폴백)
 ROUTE = ''
 #   ※ 넷 다 런치 인자로도 덮을 수 있다:
@@ -204,6 +228,36 @@ KMH_PER_PULSE = 3.182
 WHEELBASE_M      = 1.25   # 축거
 STEER_PLANT_GAIN = 1.26   # pot 지령 / 도로휠각 (링키지비)
 STEER_UNDERSTEER = 5.17   # [deg/(m/s²)] 언더스티어 보정
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-13] 언더스티어 항의 속도를 다시 묶는다 — 조향이 포화한 채 떨었다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★2026-09-13 로그 실측★ 조향 부호반전 ★129.9 회/분★ (같은 날 driving 7펄스가
+#  22.8, 4펄스가 0.6). 요레이트 std 15.97 °/s, 진동 주기 ★1.00 s = 6.28 rad/s★.
+#  횡오차는 작았다(max 0.56 m) — ★궤적은 맞는데 조향만 계속 떨었다.★
+#
+#  ★원인은 포화다★ 이벤트 로그가 그대로 말한다 — t=2.3~9.5 s 내내 :
+#      조향 -6.0°/6.0   (조준 -0.92 + 댐핑 -0.80 도로휠)
+#      조향 -5.7°/5.7   (조준 -1.14 + 댐핑 -0.22 도로휠)
+#  요구는 도로휠 1~2° 인데 pot 지령이 상한에 ★붙박이★ 다. 포화한 제어기는
+#  계전기(bang-bang)가 되고, 계전기는 반드시 떤다.
+#
+#  ★왜 포화하나 — 이 식이 고속에서 pot 을 4~5배로 부풀린다★
+#      v=8.3 m/s, 도로휠 1.62° 요구 :
+#        pot = 1.26×1.62 + 5.17×69×tan1.62°/1.25 = 2.04 + 8.07 = ★10.1°★
+#      그런데 ★이 노드가 주행 중에 스스로 잰 전달비★(update_plant_estimate)는
+#      같은 구간에서 ★g_est 2.1 → 3.2 (표본 51)★ 였다. 모델 7.1 의 ★1/2.6★ 이다.
+#      즉 pot 10.1 은 실제로 도로휠 ★3.7°★ 를 만든다 — 요구의 2.3배.
+#  ⚠️ 헤더 '전달비' 절의 회귀 5.89 는 ★고속 직선의 1~2° 표본★ 이라 조향 불감대
+#     아티팩트다(같은 날 driving 21340표본 회귀: 1~2° 에서 G 5.5, 7~12° 에서
+#     ★1.4~1.5 로 수렴★ — 물리 전달비라면 각도와 무관해야 한다). 그 값을 근거로
+#     [2026-09-12] 에 클램프를 없앤 것이 이번 진동을 만들었다. ★되살린다.★
+#
+#  ★값의 근거★ 이 노드가 잰 g_est 중앙 ≈2.7 에 모델을 맞춘다:
+#      G(v_eff) = 1.26 + 5.17·v_eff²·0.01745/1.25 = 1.26 + 0.0724·v_eff²
+#      v_eff = 4.42 (5펄스) → G = ★2.67★   ← 실측 2.7 과 일치
+#  4.42 m/s 이하에서는 ★식이 한 글자도 바뀌지 않는다.★
+UNDERSTEER_V_CLAMP_MS = 4.42   # [m/s] 언더스티어 항의 v 를 여기서 묶는다(5펄스)
+#                                (0 이하면 클램프를 끈다 = [2026-09-12] 거동)
 STEER_MAX_DEG    = 40     # B보드 수용 상한 (여기까지 갈 일은 없다)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -224,7 +278,12 @@ RATE_T_S = 0.30           # ≈ B보드 조향 불감시간 0.250 s
 
 #  ★전달비 하한★ pot/도로휠. 로그 회귀 실측이 저속에서 4.96 인데 모델은 1.9 라,
 #  가속 구간에서 지령이 불감대 밑으로 죽는 것을 막는다(헤더 '전달비' 절).
-PLANT_GAIN_MIN = 4.0
+#  ★[2026-09-13] 4.0 → 2.6★ 위 클램프를 되살리면 모델이 전 속도대역에서 2.67 로
+#  평평해지는데, 하한이 4.0 이면 ★하한이 늘 이겨★ 클램프가 무의미해진다(4.0/2.7 =
+#  1.5배 과조향이 그대로 남는다). 2.6 은 이 노드가 실제로 잰 g_est(2.1~3.2, 중앙
+#  2.7)의 아래쪽이고, 전달비 추정의 하한(PLANT_EST_CLAMP 1.5)보다는 위다.
+#  ⚠️ 종전 근거였던 '저속 회귀 4.96' 도 작은 각 표본이라 위 불감대 아티팩트다.
+PLANT_GAIN_MIN = 2.6
 
 #  ══════════════════════════════════════════════════════════════════════════════
 #  ★★ 전달비를 주행 중에 ★잰다★ — 이 시험 최대의 미지수를 스스로 지운다 ★★
@@ -257,6 +316,12 @@ POT_HARD_MAX_DEG = 12.0
 POT_START_MAX_DEG = 6.0
 #  ★자이로가 없으면 이만큼만★ 요레이트 가드가 못 도니 권한을 줄인다 — 모르면 낮게.
 POT_NOIMU_MAX_DEG = 6.0
+#  ★[2026-09-13] 속도를 모를 때도 같은 상한으로 묶는다★ pot_limit 은 δ_max 를
+#  atan(ay_max·L/v²) 로 얻는데, v 를 모르면 하한 2.0 m/s 로 보므로 δ_max 가 32° 까지
+#  열려 ★상한이 pot_hard_max(12°) 로 최대가 된다.★ 2026-09-13 로그에서 GPS 가
+#  게이트에 막힌 t=10.5 s 부터 정확히 그렇게 됐다(상한 5.7 → ★12.0★).
+#  '모르면 낮게 본다' 를 여기에도 적용한다 — 속도를 모르는 동안은 권한을 주지 않는다.
+POT_NOSPEED_MAX_DEG = 6.0
 
 #  ★조향 저역통과를 쓰지 않는다★ (1.0 = 통과) 기준에서 계단이 사라졌으므로
 #  거를 것이 없고, 필터는 곧 지연이다(τ = dt/α). 슬루만 안전용으로 남긴다.
@@ -387,6 +452,11 @@ class BrakeTestNode(Node):
         self.declare_parameter('goal_lon', float('nan'))
         self.declare_parameter('drive_pulse', DRIVE_PULSE)
         self.declare_parameter('drive_pwm', DRIVE_PWM)
+        #  ★[2026-09-13] 2단 속도 루틴★ 상수절 참고. launch_pulse 를 drive_pulse
+        #   이하로 주면 루틴 자체가 꺼진다(= 종전의 단일 속도 주행).
+        self.declare_parameter('launch_pulse', LAUNCH_PULSE)
+        self.declare_parameter('cruise_switch_kmh', CRUISE_SWITCH_KMH)
+        self.declare_parameter('launch_max_s', LAUNCH_MAX_S)
         self.declare_parameter('cte_abort_m', CTE_ABORT_M)
         #  ★pot 절대 상한★ (종전 이름 그대로 — 뜻만 '횡가속 유도값의 뚜껑' 이 됐다)
         self.declare_parameter('steer_limit_deg', POT_HARD_MAX_DEG)
@@ -399,6 +469,11 @@ class BrakeTestNode(Node):
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
         self.drive_pulse = int(self.get_parameter('drive_pulse').value)
         self.drive_pwm = int(self.get_parameter('drive_pwm').value)
+        self.launch_pulse = int(clamp(
+            int(self.get_parameter('launch_pulse').value), 0, 15))
+        self.cruise_switch_kmh = float(
+            self.get_parameter('cruise_switch_kmh').value)
+        self.launch_max_s = float(self.get_parameter('launch_max_s').value)
         self.cte_abort = float(self.get_parameter('cte_abort_m').value)
         self.pot_hard_max = abs(float(self.get_parameter('steer_limit_deg').value))
         self.t_preview = max(0.5, float(self.get_parameter('t_preview').value))
@@ -407,16 +482,29 @@ class BrakeTestNode(Node):
         self.require_lidar = bool(self.get_parameter('require_lidar').value)
         self.auto_start = bool(self.get_parameter('auto_start').value)
 
-        #  ★지령값을 한 번만 정해 둔다★ 주행 중에 바뀌지 않는다 — 그게 이 시험의 전제다.
+        #  ★순항 지령값은 한 번만 정한다★ — 주행 중에 이 값이 바뀌지는 않는다.
+        #  [2026-09-13] 바뀌는 것은 ★출발 구간에서만★ 이고, 그것도 ★한 번 내려오면
+        #  끝★ 이다(래치). 아래 drive_value() 하나가 그 판정의 단일 소유자다.
         if self.drive_pwm > 0:
             self.cmd_value = float(clamp(self.drive_pwm, 16, 255))
             self.cmd_kind = f"직접 PWM {int(self.cmd_value)}"
             self.nominal_ms = float('nan')      # PWM 은 속도를 예측할 수 없다
+            self.launch_value = self.cmd_value  # ★PWM 모드에는 2단 루틴이 없다★
         else:
             self.cmd_value = float(clamp(self.drive_pulse, 0, 15))
             self.cmd_kind = (f"{int(self.cmd_value)}펄스 "
                              f"≈ {self.cmd_value * KMH_PER_PULSE:.1f} km/h")
             self.nominal_ms = self.cmd_value * MS_PER_PULSE
+            self.launch_value = float(max(self.cmd_value, self.launch_pulse))
+            if self.launch_value > self.cmd_value:
+                self.cmd_kind += (
+                    f" (출발 {int(self.launch_value)}펄스 "
+                    f"≈ {self.launch_value * KMH_PER_PULSE:.1f} km/h → "
+                    f"GPS {self.cruise_switch_kmh:.0f} km/h 에서 내린다)")
+        #  ★래치★ True 가 되면 다시 False 가 되지 않는다 — 올렸다 내렸다 하면
+        #  그것이 곧 속도 되먹임이고, 이 시험이 재려는 것이 아니다.
+        self._cruise_latched = (self.launch_value <= self.cmd_value)
+        self._launch_t0 = 0.0     # 출발 구간 시작 시각 (S_RUN 진입에서 잡는다)
 
         # ── 발행 ──
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel_raw', 10)
@@ -924,6 +1012,40 @@ class BrakeTestNode(Node):
             float(self._cte_i_term),                      # cte_i_term_deg [도로휠]
         ]))
 
+    def drive_value(self, now):
+        """지금 A보드로 낼 구동 지령. ★출발 15펄스 → 순항 10펄스★ [2026-09-13]
+
+        ★판정의 단일 소유자다★ — 이 함수 밖에서 cmd_value/launch_value 를 직접
+        고르지 않는다. 내려가는 조건이 셋이지만 ★전부 '내리는 방향'★ 이라,
+        어느 것이 먼저 걸려도 위험해지지 않는다:
+
+          ⓐ ★GPS 속도 ≥ cruise_switch_kmh★  — 사용자 지시의 본선
+          ⓑ 엔코더 ≥ LAUNCH_SWITCH_ENC_PULSE — GPS 가 안 올 때의 폴백. 엔코더는
+            기동 허수로 ★위로★ 튀므로(실측 중앙 16, 최대 34) 조금 일찍 내릴 뿐이다.
+          ⓒ 시간 ≥ launch_max_s              — 15펄스로 무한정 달리지 않게 하는 줄
+
+        ★한 번 내려오면 다시 올리지 않는다★(_cruise_latched). 올렸다 내렸다 하면
+        그것이 곧 속도 되먹임이고, 제동거리를 재려는 이 시험이 재려는 것이 아니다.
+        """
+        if self._cruise_latched:
+            return self.cmd_value
+        why = None
+        if self.gps_kmh is not None and self.gps_kmh >= self.cruise_switch_kmh:
+            why = f"GPS {self.gps_kmh:.1f} km/h ≥ {self.cruise_switch_kmh:.0f}"
+        elif self.enc_pulse >= LAUNCH_SWITCH_ENC_PULSE:
+            why = (f"엔코더 {self.enc_pulse:.1f}펄스 ≥ "
+                   f"{LAUNCH_SWITCH_ENC_PULSE:.0f} (GPS 폴백)")
+        elif self._launch_t0 > 0.0 and (now - self._launch_t0) >= self.launch_max_s:
+            why = f"출발 {now - self._launch_t0:.1f}s 경과 ≥ {self.launch_max_s:.0f}s"
+        if why is None:
+            return self.launch_value
+        self._cruise_latched = True
+        self.event(f"⏬ 순항 전환 — {why} → "
+                   f"{int(self.launch_value)}펄스에서 ★{int(self.cmd_value)}펄스"
+                   f"({self.cmd_value * KMH_PER_PULSE:.1f} km/h)★ 로 내린다. "
+                   f"여기서부터가 제동 대상 속도다")
+        return self.cmd_value
+
     def speed_ms(self):
         return None if self.gps_kmh is None else self.gps_kmh / 3.6
 
@@ -974,17 +1096,24 @@ class BrakeTestNode(Node):
         return (2.0 * WHEELBASE_M / lp) * RATE_T_S * self.yaw_rate
 
     def plant_pot(self, road_deg, v_ms):
-        """도로휠각 → pot 지령의 크기 [deg]. ★속도를 자르지 않는다★
+        """도로휠각 → pot 지령의 크기 [deg]. ★[2026-09-13] 속도를 다시 자른다★
 
-        pot = 1.26·δ + 5.17·v²·tan δ / L,  단 ★PLANT_GAIN_MIN·δ 를 하한★ 으로 둔다.
-        종전 코드는 이 식의 v 를 4펄스로 잘라 써서 ★지령의 31% 만 실제로 꺾였다★
-        (헤더 '전달비' 절 — 실측 회귀 5.89 vs 클램프값 2.16). 고속에서는 클램프
-        없는 모델이 실측과 맞고, 저속에서는 모델이 실측보다 작아 하한이 받는다.
+        pot = 1.26·δ + 5.17·v_eff²·tan δ / L,  v_eff = min(v, UNDERSTEER_V_CLAMP_MS)
+        단 ★PLANT_GAIN_MIN·δ 를 하한★ 으로 둔다.
+
+        ★[2026-09-12] 에 이 클램프를 없앴다가 [2026-09-13] 에 되살렸다★ — 없앤
+        근거였던 '회귀 실측 5.89' 가 ★고속 직선의 1~2° 표본★ 이라 조향 불감대
+        아티팩트였기 때문이다(상수절 UNDERSTEER_V_CLAMP_MS 주석에 전말). 클램프
+        없는 식은 v=8.3 m/s 에서 도로휠 1.62° 요구에 pot 10.1° 를 내는데, 이 노드가
+        같은 구간에서 스스로 잰 전달비는 g_est 2.7 이라 실제로 도로휠 3.7° 가 된다 —
+        요구의 2.3배. 그 결과가 ★조향 부호반전 129.9회/분★ 이었다.
         """
         d = abs(road_deg)
         if d < 1e-9:
             return 0.0
         v = abs(v_ms) if (v_ms is not None and math.isfinite(v_ms)) else 0.0
+        if UNDERSTEER_V_CLAMP_MS > 0.0:
+            v = min(v, UNDERSTEER_V_CLAMP_MS)
         pot_model = (STEER_PLANT_GAIN * d
                      + STEER_UNDERSTEER * v * v * math.tan(math.radians(d))
                      / WHEELBASE_M)
@@ -1023,7 +1152,8 @@ class BrakeTestNode(Node):
         δ_max = atan(AY_MAX·L / v²) 를 pot 으로 환산한 값과 pot_hard_max 중 작은 것.
         자이로가 없으면 요레이트 가드가 못 도니 POT_NOIMU_MAX_DEG 로 더 조인다.
         """
-        v = abs(v_ms) if (v_ms is not None and math.isfinite(v_ms)) else 0.0
+        known = v_ms is not None and math.isfinite(v_ms) and abs(v_ms) > 1e-6
+        v = abs(v_ms) if known else 0.0
         v = max(v, 2.0)                       # 저속에서 δ_max 가 발산하는 것만 막는다
         d_max = math.degrees(math.atan(self.ay_max * WHEELBASE_M / (v * v)))
         lim = min(self.plant_pot(d_max, v), self.pot_hard_max, float(STEER_MAX_DEG))
@@ -1037,6 +1167,12 @@ class BrakeTestNode(Node):
             lim = min(lim, POT_START_MAX_DEG)
         if not self.imu_fresh(now):
             lim = min(lim, POT_NOIMU_MAX_DEG)
+        #  ★[2026-09-13] 속도를 모르면 권한을 주지 않는다★ 상수절 POT_NOSPEED 참고.
+        #  v 를 모르면 위 하한 2.0 m/s 때문에 δ_max 가 32° 로 열려 상한이 최대가
+        #  된다 — 2026-09-13 로그에서 GPS 가 게이트에 막힌 뒤 5.7° → ★12.0°★ 가
+        #  그것이다. '모르면 낮게 본다' 를 여기에도 적용한다.
+        if not known:
+            lim = min(lim, POT_NOSPEED_MAX_DEG)
         return lim
 
     def yaw_rate_max(self, v_ms):
@@ -1269,6 +1405,7 @@ class BrakeTestNode(Node):
             d_stop = v * 0.30 + v * v / (2.0 * 2.2)
             note = (f" 이 속도의 2단 정지거리 ≈ {d_stop:.1f}m — "
                     f"★목표 좌표 뒤로 그만큼이 비어 있어야 한다★.")
+        self._launch_t0 = time.time()      # ★[2026-09-13] 출발 구간 시계 시작★
         self.enter(S_RUN,
                    f"▶ ★질주 시작★ 목표까지 {d:.1f}m, 선 방위 {self.line_brg:+.1f}° "
                    f"(이 방위를 출발 헤딩으로 쓴다 — 1초 뒤 GPS 코스로 검산한다). "
@@ -1289,13 +1426,22 @@ class BrakeTestNode(Node):
         vv = v if (v is not None and math.isfinite(v)) else 0.0
 
         # ══════════════════════════════════════════════════════════════════════
-        #  ① 라이다 사슬이 세웠다 — ★관찰만 한다★
+        #  ① 라이다 사슬이 세웠다 — ★우리도 2단을 낸다★ [2026-09-13 변경]
         # ══════════════════════════════════════════════════════════════════════
-        #  /aeb_stop 이 서는 순간 arduino 가 ★이미★ 구동을 끊고 리니어를 물었다
-        #  (compose 우선순위 (1-1)). 여기서 /brake_level 을 또 내면 발행자만 늘고
-        #  아무 이득이 없다 — ★계측 시점만 잡는다.★
+        #  ★종전★ own_brake=False 로 두고 '계측 시점만 잡았다' — arduino 가
+        #  /aeb_stop 으로 이미 물었으니 발행자만 늘 뿐이라는 판단이었다.
+        #  ★그런데 2026-09-13 로그에서 `/brake_level` 이 ★전 구간 0★ 이었다.★
+        #  arduino 의 (4) 정상자율 분기에는
+        #       pulse = 0 if brake > 0 else self.cmd_pulse
+        #  라는 ★구동 무력화★ 가 있는데, 그 brake 는 `/brake_level` 이다.
+        #  AEB 분기 (1-1) 이 따로 구동을 끊어 주긴 하지만, 그것은 ★/aeb_stop 이
+        #  신선할 때만★ 이다(aeb_stale_s 1.0 s). 판단 노드가 한 틱이라도 끊기면
+        #  그 순간 (4) 로 떨어지고, `/brake_level`=0 이면 ★구동이 되살아난다★ —
+        #  리니어는 물려 있는데 인휠이 다시 미는, 제일 나쁜 조합이다.
+        #  → ★둘 다 건다.★ 같은 값을 두 경로로 내는 것은 발행자 경합이 아니다
+        #    (arduino 가 max 로 합치지 않고 각 분기에서 그대로 쓴다).
         if self.aeb_stop:
-            self.begin_brake(WHY_LIDAR, now, s, e, psi, own_brake=False)
+            self.begin_brake(WHY_LIDAR, now, s, e, psi)
             return
 
         # ══════════════════════════════════════════════════════════════════════
@@ -1387,7 +1533,7 @@ class BrakeTestNode(Node):
         steer = self.smooth_steer(pot, now, lim)
 
         self.pub_diag_now(e, psi, d2goal, lp)
-        self.send(self.cmd_value, steer, control=True)
+        self.send(self.drive_value(now), steer, control=True)
         self.throttle(
             f"🅑 질주 중 — 남은 {d2goal:.1f}m, "
             f"{'?' if self.gps_kmh is None else f'{self.gps_kmh:.1f}'}km/h, "
@@ -1403,10 +1549,12 @@ class BrakeTestNode(Node):
     def begin_brake(self, why, now, s, e, psi, own_brake=True):
         """정지 트리거.
 
-        ★own_brake★ 는 '리니어를 내가 무는가' 다:
-          · 목표 좌표 도달 → True  : 이 노드가 /brake_level 2단을 낸다 (FAIL-SAFE)
-          · 라이다        → False : ★arduino 가 이미 물었다★ (/aeb_stop 경로).
-                                     여기서 또 내면 발행자만 늘고 이득이 없다.
+        ★own_brake★ 는 '리니어를 내가 무는가' 다. [2026-09-13] ★기본이 True 이고
+        두 트리거 모두 True 를 쓴다★ — 목표 좌표든 라이다든 이 노드가 직접
+        /brake_level 2단을 낸다. 라이다에서 False 로 두었던 종전 판단이
+        `/brake_level` 을 ★전 구간 0★ 으로 만들었고, 그러면 arduino (4) 분기의
+        `pulse = 0 if brake > 0` 구동 무력화가 ★한 번도 타지 않는다★
+        (run_follow ① 주석에 그 사고 경위가 있다). False 는 남겨 두지만 쓰지 않는다.
         """
         self.why = why
         self.hit_dist = self.lidar_dist if why == WHY_LIDAR else float('nan')
@@ -1423,7 +1571,7 @@ class BrakeTestNode(Node):
             self.publish_brake(force=True)
         #  ★조향은 유지한다★ 정지 직전에 앞바퀴를 정면으로 꺾으면 제동 중 거동이
         #  바뀌어 측정이 오염된다. 펄스는 arduino 가 0 으로 덮는다(send docstring).
-        self.send(self.cmd_value, self._last_steer, control=True)
+        self.send(self.drive_value(now), self._last_steer, control=True)
         v0kmh = (float('nan') if not math.isfinite(self.brake_v0)
                  else self.brake_v0 * 3.6)
         extra = (f", 장애물 {self.hit_dist:.2f}m"
@@ -1435,7 +1583,7 @@ class BrakeTestNode(Node):
                    f"진입속도 {v0kmh:.2f} km/h ({self.brake_v0:.3f} m/s)")
 
     def run_brake(self, now):
-        self.send(self.cmd_value, self._last_steer, control=True)
+        self.send(self.drive_value(now), self._last_steer, control=True)
         held = now - self.brake_t0
         if self.stopped(now):
             self.report(now, held)
