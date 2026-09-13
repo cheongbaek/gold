@@ -7,6 +7,7 @@ braketest.launch.py ― ★제동검차 전용 런치★ [white1 / 2026-09-12 �
     ros2 launch white1 braketest.launch.py goal_lat:=37.1234567 goal_lon:=127.1234567
     ros2 launch white1 braketest.launch.py drive_pulse:=8
     ros2 launch white1 braketest.launch.py launch_pulse:=12       # ★출발만 낮춘다★
+    ros2 launch white1 braketest.launch.py lateral_offset_m:=0.0  # ★선을 안 옮긴다★
     ros2 launch white1 braketest.launch.py t_preview:=1.2       # ★좁은 차로★
     ros2 launch white1 braketest.launch.py drive_pwm:=140       # ★직접 PWM★
 
@@ -201,6 +202,7 @@ def _setup(context, *args, **kwargs):
             'launch_pulse':       cfg('launch_pulse'),
             'cruise_switch_kmh':  cfg('cruise_switch_kmh'),
             'launch_max_s':       cfg('launch_max_s'),
+            'lateral_offset_m':   cfg('lateral_offset_m'),
             'cte_abort_m':   cfg('cte_abort_m'),
             'steer_limit_deg': cfg('steer_limit_deg'),
             't_preview':     cfg('t_preview'),
@@ -304,8 +306,9 @@ def generate_launch_description():
                         '★마지막 점★ 을 목표로 쓴다(기록 파일명도 이 이름이 된다). '
                         '경로를 추종하지는 않는다 — 이 노드는 ★직선 한 줄★ 만 본다'),
         DeclareLaunchArgument(
-            'drive_pulse', default_value='10',
-            description='★순항 목표펄스 0~15★ 기본 10 = 31.8 km/h. '
+            'drive_pulse', default_value='9',
+            description='★순항 목표펄스 0~15★ 기본 9 → ★실측 ≈31.8 km/h★ '
+                        '(A보드 PID 가 지령보다 +1펄스 높게 돈다 — 2026-09-13 실측). '
                         'braketest.py 상단 DRIVE_PULSE 와 같은 값이며 여기가 이긴다. '
                         '★출발은 launch_pulse 로 민다★ (2단 속도 루틴)'),
         #  ★[2026-09-13] 2단 속도 루틴 — 제동검차는 30 km/h 를 넘겨야 한다★
@@ -323,6 +326,12 @@ def generate_launch_description():
             'launch_max_s', default_value='12.0',
             description='출발 구간 시간 상한[s] — GPS·엔코더가 둘 다 안 걸려도 '
                         '이 시간이 지나면 순항으로 내린다(내리는 방향 방벽)'),
+        #  ★[2026-09-13 저녁] 기준선을 옆으로 평행이동한다★
+        DeclareLaunchArgument(
+            'lateral_offset_m', default_value='0.20',
+            description='S→G 직선을 ★진행방향 기준 왼쪽★ 으로 이만큼 평행이동한다 '
+                        '[m]. + = 왼쪽 / − = 오른쪽 / 0 = 옮기지 않는다. '
+                        '평행이동이라 진행거리·목표 도달 판정은 바뀌지 않는다'),
         DeclareLaunchArgument(
             'drive_pwm', default_value='0',
             description='0 이 아니면 ★이쪽이 이긴다★ — A보드 직접 PWM 16~255. '

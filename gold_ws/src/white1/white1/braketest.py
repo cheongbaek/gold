@@ -188,7 +188,29 @@ from white1.gps import GPS_FUSED_TOPIC, Q_LABEL, Q_NONE
 GOAL_LAT = 37.23900890    # ★★ 여기에 목표 위도 ★★  [2026-09-13 설정]
 GOAL_LON = 126.77539272   # ★★ 여기에 목표 경도 ★★  [2026-09-13 설정]
 
-DRIVE_PULSE = 10          # A보드 목표펄스 0~15. ★10펄스 = 31.8 km/h★ (순항)
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-13 저녁] 순항 10 → 9 펄스 — 33.9 km/h 는 ROI 15 m 의 한계였다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★A보드가 지령보다 ★+1펄스★ 높게 돈다 — 실측으로 확인됐다★
+#  2026-09-13 두 주행(111151·111403) 모두 지령 10펄스인데 :
+#        엔코더 11.0~11.5펄스   GPS 33.9 / 33.5 km/h
+#        11.0펄스 × 3.182 = ★35.0 km/h★ — 엔코더 환산과 GPS 가 정확히 맞는다
+#  즉 환산이 틀린 게 아니라 ★A보드 PID 가 목표를 넘어 돌고 있다.★
+#  → 지령 9펄스면 엔코더 ≈10펄스 = ★31.8 km/h★ 로, 원하는 31~32 대역에 들어온다.
+#
+#  ★왜 낮추나 — 33.9 km/h 는 라이다 ROI 의 한계 속도다★
+#  실측 2단 감속도는 ★4.0~4.2 m/s²★ 로 아주 좋다(제동력은 문제가 아니다).
+#  그래도 필요 감지거리가 v·0.35 + v²/8 이라 :
+#        33.9 km/h → 14.4 m   (ROI 상한 15.0 m, ★여유 0.6 m = 4%★)
+#        31.8 km/h → 13.0 m   (여유 2.0 m)
+#  실제로 두 주행의 첫 감지가 14.65 m 와 ★12.87 m★ 로 갈렸고, 뒤쪽이
+#  목표를 0.49 m 넘겼다. 한 프레임(0.47 m)만 늦어도 넘기는 대역이었다.
+#  ⚠️ 감지 거리가 흔들리는 이유는 따로 있다 — cone_lidar_node.cpp 주석이
+#     "min_point_count=5 기준 유효 검출한계 ≈6.5 m" 라고 적고 있는데 지금 YAML 은
+#     stop_distance_threshold 15.0 · min_point_count 1 이다. ★점 1개로 문턱을 낮춰
+#     15 m 까지 늘린 상태★ 라 그 거리에서는 리턴 유무가 프레임마다 갈린다.
+#     그쪽은 이번에 손대지 않았다(검출률 실측이 없다).
+DRIVE_PULSE = 9           # A보드 목표펄스 0~15. ★실측 ≈31.8 km/h★ (순항)
 DRIVE_PWM   = 0           # 0 아니면 이쪽이 이긴다. A보드 직접 PWM 16~255
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-13] 2단 속도 루틴 — 출발 15펄스 → 30 km/h 에서 10펄스 ★★
@@ -213,9 +235,33 @@ CRUISE_SWITCH_KMH = 30.0  # ★GPS 속도★ 가 이 값을 넘으면 순항(DRI
 #     (실측 중앙 16, 최대 34) 이쪽이 먼저 걸리면 조금 일찍 내려가는 것뿐이다.
 #  ⓑ 그래도 안 걸리면 시간으로 내린다. 15펄스로 무한정 달리지 않게 하는 마지막 줄.
 LAUNCH_SWITCH_ENC_PULSE = 10.0  # 엔코더(바퀴 기준) 이 펄스를 넘어도 내린다
+#  ★[2026-09-13 저녁] 엔코더 폴백에 기동 블랭킹을 건다★
+#  ⚠️ 이것을 빼먹어서 첫 시험에서 ★출발 1초 만에 순항으로 내려갔다.★
+#     로그(111151·111403) :
+#         t=1.09s  엔코더 ★19.0펄스★ → 순항 전환   그런데 GPS 는 0.59 km/h
+#         t=0.99s  엔코더 ★14.0펄스★ → 순항 전환   그런데 GPS 는 0.69 km/h
+#     ★차는 서 있었다.★ 이 19·14 는 CLAUDE.md 1.2절의 ★기동 초반 허수 펄스★ 다
+#     ("코일에 힘은 들어갔는데 바퀴가 아직 안 도는" 구간, 실측 중앙 16 · 최대 34).
+#     그래서 15펄스 구간이 1초뿐이었고 30 km/h 도달이 전혀 앞당겨지지 않았다.
+#  ★고친 방법★ 엔코더 폴백은 ★출발 후 이 시간이 지나야★ 본다. A보드 기동
+#  블랭킹의 타임아웃(LAUNCH_MAX_MS = 3000)과 같은 값이라, 그 구간이 끝난 뒤에만
+#  엔코더를 믿는다는 뜻이 된다. GPS 본선은 이 블랭킹을 받지 않는다 —
+#  GPS 는 허수 펄스와 무관하고, 애초에 그쪽이 사용자가 지시한 판정이다.
+LAUNCH_ENC_BLANK_S      = 3.0   # [s] 이 시간 전에는 엔코더 폴백을 보지 않는다
 LAUNCH_MAX_S            = 12.0  # [s] 이 시간이 지나면 무조건 순항으로 내린다
 #  ★목표 좌표를 CSV 에서 빌릴 때만 쓴다★ (GOAL_LAT/LON 이 0 일 때의 폴백)
 ROUTE = ''
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-13 저녁] 기준선을 옆으로 평행이동한다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  S(출발점)와 G(목표 좌표)로 그은 직선을 ★진행방향 기준 왼쪽★ 으로 이 거리만큼
+#  통째로 옮긴다. 차는 원래 선이 아니라 ★옮긴 선★ 을 따라간다.
+#      + = 왼쪽   −  = 오른쪽   0 = 종전(옮기지 않는다)
+#  ★평행이동이라 진행거리 s 는 바뀌지 않는다★ — 목표 도달 판정(s ≥ D)도, 남은
+#  거리도 종전과 같다. 바뀌는 것은 횡오차 e 의 영점 하나뿐이다.
+#  ⚠️ 중단 방벽(cte_abort)도 ★옮긴 선 기준★ 으로 잰다 — 그게 맞다. 새 선이
+#     추종 대상이므로, 그 선에서 벗어난 양이 판정 대상이어야 한다.
+LATERAL_OFFSET_M = 0.20   # [m] ★왼쪽으로 20 cm★ (런치 인자 lateral_offset_m 이 이긴다)
 #   ※ 넷 다 런치 인자로도 덮을 수 있다:
 #      goal_lat:=37.1 goal_lon:=127.1 / drive_pulse:=8 / drive_pwm:=140 / route:=...
 
@@ -457,6 +503,8 @@ class BrakeTestNode(Node):
         self.declare_parameter('launch_pulse', LAUNCH_PULSE)
         self.declare_parameter('cruise_switch_kmh', CRUISE_SWITCH_KMH)
         self.declare_parameter('launch_max_s', LAUNCH_MAX_S)
+        #  ★[2026-09-13 저녁] 기준선 횡 평행이동★ + = 왼쪽. 상수절 참고.
+        self.declare_parameter('lateral_offset_m', LATERAL_OFFSET_M)
         self.declare_parameter('cte_abort_m', CTE_ABORT_M)
         #  ★pot 절대 상한★ (종전 이름 그대로 — 뜻만 '횡가속 유도값의 뚜껑' 이 됐다)
         self.declare_parameter('steer_limit_deg', POT_HARD_MAX_DEG)
@@ -474,6 +522,7 @@ class BrakeTestNode(Node):
         self.cruise_switch_kmh = float(
             self.get_parameter('cruise_switch_kmh').value)
         self.launch_max_s = float(self.get_parameter('launch_max_s').value)
+        self.lateral_offset = float(self.get_parameter('lateral_offset_m').value)
         self.cte_abort = float(self.get_parameter('cte_abort_m').value)
         self.pot_hard_max = abs(float(self.get_parameter('steer_limit_deg').value))
         self.t_preview = max(0.5, float(self.get_parameter('t_preview').value))
@@ -720,11 +769,19 @@ class BrakeTestNode(Node):
         return True
 
     def line_state(self):
-        """선 기준 스칼라 셋. s = 진행거리, e = 횡오차(+ = 선의 왼쪽)."""
+        """선 기준 스칼라 셋. s = 진행거리, e = 횡오차(+ = 선의 왼쪽).
+
+        ★[2026-09-13 저녁] lateral_offset 만큼 기준선을 평행이동한다★
+        e 에서 오프셋을 빼는 것이 곧 '선을 왼쪽으로 옮기는' 것이다 — 차가 원래 선의
+        왼쪽 0.20 m 에 있을 때 e_eff = 0 이 되므로, 제어기는 그 자리를 붙든다.
+        ★s 는 건드리지 않는다★ — 평행이동은 진행거리를 바꾸지 않는다(목표 도달
+        판정 s ≥ D 도 종전 그대로다). 이 함수 하나만 고치면 조준·적분·중단 방벽·
+        진단 출력이 전부 같은 새 기준을 쓴다 — ★영점의 단일 소유자다.★
+        """
         dx, dy = self.x - self.sx, self.y - self.sy
         s = dx * self.ux + dy * self.uy
         e = -dx * self.uy + dy * self.ux
-        return s, e
+        return s, e - self.lateral_offset
 
     # ══════════════════════════════════════════════════════════════════════════
     #  구독 콜백
@@ -1032,9 +1089,14 @@ class BrakeTestNode(Node):
         why = None
         if self.gps_kmh is not None and self.gps_kmh >= self.cruise_switch_kmh:
             why = f"GPS {self.gps_kmh:.1f} km/h ≥ {self.cruise_switch_kmh:.0f}"
-        elif self.enc_pulse >= LAUNCH_SWITCH_ENC_PULSE:
+        elif (self._launch_t0 > 0.0
+              and (now - self._launch_t0) >= LAUNCH_ENC_BLANK_S
+              and self.enc_pulse >= LAUNCH_SWITCH_ENC_PULSE):
+            #  ★기동 블랭킹을 지난 뒤에만 엔코더를 믿는다★ 출발 직후의 허수 펄스
+            #  (실측 중앙 16 · 최대 34)가 이 문턱을 그냥 넘긴다 — 상수절 참고.
             why = (f"엔코더 {self.enc_pulse:.1f}펄스 ≥ "
-                   f"{LAUNCH_SWITCH_ENC_PULSE:.0f} (GPS 폴백)")
+                   f"{LAUNCH_SWITCH_ENC_PULSE:.0f} (GPS 폴백, "
+                   f"기동 블랭킹 {LAUNCH_ENC_BLANK_S:.0f}s 경과)")
         elif self._launch_t0 > 0.0 and (now - self._launch_t0) >= self.launch_max_s:
             why = f"출발 {now - self._launch_t0:.1f}s 경과 ≥ {self.launch_max_s:.0f}s"
         if why is None:

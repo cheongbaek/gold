@@ -1128,8 +1128,75 @@ ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
   `white1/white1/braketest.py` 다.
 - **런치 = 출발.** 준비되면 스스로 헤딩을 잡고 굴러간다
   (`auto_start:=false` → `/braketest_go` 를 기다린다).
-- 속도는 **`braketest.py` 상단**이 소유한다 : `DRIVE_PULSE = 10`(순항) /
+- 속도는 **`braketest.py` 상단**이 소유한다 : `DRIVE_PULSE = 9`(순항) /
   `LAUNCH_PULSE = 15`(출발) / `DRIVE_PWM = 0`. 런치 인자가 이긴다.
+- **기준선을 옆으로 옮길 수 있다** : `LATERAL_OFFSET_M = 0.20`(+ = 왼쪽).
+  S→G 직선을 통째로 평행이동한다 — **진행거리 `s` 와 목표 도달 판정은 바뀌지 않는다**
+  (영점의 단일 소유자는 `line_state()` 하나다).
+
+> ### ★[2026-09-13 저녁] 순항 10 → 9 펄스 — A보드가 지령보다 +1펄스 높게 돈다★
+>
+> 2026-09-13 두 주행(`111151`·`111403`) 모두 **지령 10펄스인데 엔코더 11.0~11.5**,
+> GPS 33.9 / 33.5 km/h 였다. `11.0 × 3.182 = 35.0 km/h` 로 **엔코더 환산과 GPS 가
+> 정확히 맞는다** — 환산이 틀린 게 아니라 **A보드 PID 가 목표를 넘어 돈다.**
+> → **지령 9펄스 → 엔코더 ≈10펄스 = 31.8 km/h.**
+>
+> **왜 낮췄나** — 실측 2단 감속도는 **4.0~4.2 m/s²** 로 아주 좋다(d·t 로 역산,
+> 지연 0.35 s 는 리니어 2단 도달 시각과 일치). 제동력은 문제가 아니었다.
+> 문제는 **필요 감지거리가 ROI 상한에 거의 닿아 있었다**는 것이다:
+>
+> | 속도 | 필요 감지거리 `v·0.35 + v²/8` | ROI 15.0 m 대비 |
+> |---|---|---|
+> | **33.9 km/h** (지령 10) | **14.4 m** | **여유 0.6 m = 4%** |
+> | **31.8 km/h** (지령 9) | **12.9 m** | 여유 **2.1 m** |
+>
+> 실제로 두 주행의 첫 감지가 **14.65 m** 와 **12.87 m** 로 갈렸고, 뒤쪽이 목표를
+> **0.49 m** 넘겼다. **한 프레임(0.47 m)만 늦어도 넘기는 대역**이었다.
+>
+> ### ⚠️ 감지 거리가 흔들리는 진짜 이유 — 아직 고치지 않았다
+>
+> `cone_lidar_node.cpp` 의 판정은 **ROI 박스 안의 점 수 ≥ `min_point_count`** 하나뿐인데
+> (`confirm_frames` 1), 그 파일 주석이 이렇게 적고 있다:
+>
+> > `min_point_count=5` 기준 유효 검출한계가 **≈6.5 m** 라 6.0 으로 잡았다
+>
+> **코드 기본값은 6.0 m 인데 현재 YAML 은 `stop_distance_threshold: 15.0` ·
+> `min_point_count: 1` 이다** — 점 1개로 문턱을 낮춰 15 m 까지 늘린 상태라 그 거리에서는
+> 리턴 유무가 프레임마다 갈린다(OS1-32 는 15 m 에서 ROI 높이창 0.25~0.75 m 에 수직
+> 채널이 1~2개밖에 안 들어간다 — 채널 간격 1.45°, 창 1.91°).
+> **ROI 를 넓히는 쪽은 그 거리의 검출률 실측이 없어 손대지 않았다.**
+
+> ### ★[2026-09-13 저녁] 엔코더 폴백에 기동 블랭킹을 건다 — 첫 시험에서 15펄스가 안 먹었다★
+>
+> 2단 속도 루틴을 넣은 첫 주행에서 **출발 1초 만에 순항으로 내려갔다**:
+>
+> ```
+> t=1.09s  엔코더 ★19.0펄스★ → 순항 전환     그런데 GPS 는 0.59 km/h
+> t=0.99s  엔코더 ★14.0펄스★ → 순항 전환     그런데 GPS 는 0.69 km/h
+> ```
+>
+> **차는 서 있었다.** 이 19·14 는 1.2절의 **기동 초반 허수 펄스**다(실측 중앙 16 ·
+> 최대 34). 그래서 15펄스 구간이 1초뿐이었고 30 km/h 도달이 전혀 앞당겨지지 않았다.
+> → **엔코더 폴백은 `LAUNCH_ENC_BLANK_S = 3.0 s` 가 지나야 본다**(A보드
+> `LAUNCH_MAX_MS = 3000` 과 같은 값). **GPS 본선은 이 블랭킹을 받지 않는다** —
+> GPS 는 허수 펄스와 무관하고, 애초에 그쪽이 지시받은 판정이다.
+
+> ### ★라이다 제동 사슬은 `lidar one_launch.py` 와 ★완전히 같다★ (2026-09-13 대조)★
+>
+> | | `lidar/one_launch.py` | `braketest.launch.py` |
+> |---|---|---|
+> | 감지 | `aeb.launch.py` → `cone_lidar_node` | **같음** (둘 다 통째로 include) |
+> | 감지 설정 | `lidar/config/cone_lidar.yaml` | **같은 파일** (넘기지 않아 `aeb.launch.py` 기본값 = 같은 경로) |
+> | 드라이버 | `ouster_driver.yaml` `1024x20` | **같음** |
+> | `engage_frames`·`min_engage_s`·`release_clear_s`·`signal_stale_s` | 1 / 1.0 / 1.5 / 1.0 | **전부 같음** |
+> | `aeb_brake_level`·`aeb_stale_s` | 2 / 1.0 | **같음** |
+>
+> 로그도 그것을 뒷받침한다 — `cone_stop=True` 와 `aeb_stop=True` 가 **같은 틱**이고
+> A보드 펄스가 0.05 s 뒤 0이 된다. **사슬에 지연이 끼어들지 않았다.**
+>
+> **차이는 속도 하나뿐이다.** `lidar/one_launch.py` 의 설계 속도는
+> `linear_speed: 6.188` = **7펄스(22.3 km/h)** 이고, 그 속도에서 15 m ROI 는
+> 여유가 **4.7 m** 라 "최대거리에서 감지 즉시 정지" 가 성립한다.
 
 > ### ★[2026-09-13] 2단 속도 루틴 — 출발 15펄스 → 30 km/h 에서 10펄스★
 >
@@ -1302,7 +1369,9 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | **고속 조향 발산 — 언더스티어 항 속도 클램프 (4.1b) [2026-09-13]** | `driving.py steer_command` · `UNDERSTEER_V_CLAMP_PULSE` |
 | **LFD ω_n · 곡률캡 K 속도 스케줄 (4.1) [2026-09-13]** | `driving.py speed_blend` · `lfd_omega_at` · `curve_cap_k_at` · `LFD_MAX_M` 9.1 → **11.3** |
 | **GPS 속도 게이트 8.0 → 11.2 m/s (40.3 km/h) [2026-09-13]** | `gps.py GATE_SPEED_MAX_MS` — 30 km/h 이상 fix 를 전부 기각해 **제동검차 계측을 지우고 있었다** |
-| **braketest 2단 속도 루틴 (5.1) [2026-09-13]** | `braketest.py drive_value()` · `LAUNCH_PULSE` · `CRUISE_SWITCH_KMH` |
+| **braketest 2단 속도 루틴 (5.1) [2026-09-13]** | `braketest.py drive_value()` · `LAUNCH_PULSE` · `CRUISE_SWITCH_KMH` · `LAUNCH_ENC_BLANK_S`(기동 허수 방어) |
+| **braketest 순항 10 → 9펄스 (5.1) [2026-09-13 저녁]** | `braketest.py DRIVE_PULSE` — A보드가 지령보다 **+1펄스** 높게 돈다(실측) |
+| **braketest 기준선 횡 평행이동 (5.1) [2026-09-13 저녁]** | `braketest.py line_state()` · `LATERAL_OFFSET_M` — **영점의 단일 소유자** |
 | **braketest 라이다 정지에서도 `/brake_level` 2단 (5.1) [2026-09-13]** | `braketest.py run_follow` ① · `begin_brake(own_brake=True)` |
 | **braketest 조향 포화 — 언더스티어 클램프 복원 (5.1) [2026-09-13]** | `braketest.py plant_pot` · `UNDERSTEER_V_CLAMP_MS` · `PLANT_GAIN_MIN` 4.0 → **2.6** · `POT_NOSPEED_MAX_DEG` |
 | 브레이크 제동거리 측정 (5.1절) [2026-09-09] | `braketest.py` · `braketest.launch.py` |
