@@ -368,17 +368,24 @@ def _make_getch():
     old = termios.tcgetattr(fd)
     tty.setcbreak(fd)
 
+    # ★[2026-09-15 수정] 화살표(ESC [ A/B) 후속 바이트 대기 시간★ 10ms 는
+    #   IDE 통합 터미널처럼 입력이 살짝 배치돼 오는 환경에서 자주 못 미친다.
+    #   그러면 "화살표를 눌렀는데 단독 ESC 로 보여 프로그램이 통째로 꺼지는"
+    #   사고가 난다 — 종료 키는 q/Q 뿐이어야 하므로, ★후속 바이트가 늦게 오거나
+    #   아예 안 오면 그냥 무시한다★(아무 일도 하지 않는다). 여유도 0.01 → 0.05 로.
+    ESC_SEQ_TIMEOUT_S = 0.05
+
     def poll():
         if not select.select([sys.stdin], [], [], 0)[0]:
             return ''
         ch = sys.stdin.read(1)
         if ch != '\x1b':                                  # ESC 로 시작하지 않으면 그대로
             return ch
-        if not select.select([sys.stdin], [], [], 0.01)[0]:
-            return '\x03'                                 # 단독 ESC = 종료
+        if not select.select([sys.stdin], [], [], ESC_SEQ_TIMEOUT_S)[0]:
+            return ''                                     # 단독/지연된 ESC → 무시(종료 아님)
         if sys.stdin.read(1) != '[':
             return ''
-        if not select.select([sys.stdin], [], [], 0.01)[0]:
+        if not select.select([sys.stdin], [], [], ESC_SEQ_TIMEOUT_S)[0]:
             return ''
         return {'A': 'w', 'B': 's'}.get(sys.stdin.read(1), '')  # 화살표(ESC [ A/B)
 
