@@ -45,10 +45,17 @@ Thumbs.db
 .~lock.*#
 ~$*
 
-# 음성 안내 음원 (nxde/sound/*.mp3) — CSV 와 같은 취급으로 추적하지 않는다
+# 음성 안내 음원 (white1/sound/*.mp3) — CSV 와 같은 취급으로 추적하지 않는다
 #   ⚠️ 새로 clone 하면 sound/ 가 비어 있다. sound 노드는 '음원 없음' 경고만 남기고
 #     조용히 도는데, 안내가 필요하면 `ros2 run nxde tts` 로 다시 만들면 된다.
 *.mp3
+
+# ★[2026-09-14] wav 도 같은 취급★ E-STOP 경고음(estop.wav/estop_re.wav) · 종료
+#   안내음(kill.wav) · VESS 가상 배기음 원본(sound/layers/*.wav) 이 전부 여기 걸린다.
+#   음원(mp3/wav)은 모두 '사람이 직접 채워 넣는 자원' 이라는 같은 이유로 이력에서
+#   뺀다 — 새로 clone 한 기계는 이 파일들이 없는 채로 시작하고, VESS 는 layers/
+#   가 비어 있으면 exhaust.py 가 스스로 synth 모드(내장 합성음)로 떨어진다.
+*.wav
 
 # 녹화 영상 (nxde video 노드 산출물)
 #   · white1/video/tl-<시각>.mp4  ★신호등 인지 디버그 화면★ — one_launch·master.launch

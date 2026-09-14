@@ -94,13 +94,42 @@ nxde/check.py       하드웨어 연결 점검 (자립형 — 어떤 패키지�
 nxde/video.py       ★인지 카메라 화면 녹화★ /image_raw → video/cam-<시각>.mp4
                     구독만 한다(제어에 끼어들지 않는다). 장치를 직접 열지 않아
                     usb_cam 과 다투지 않는다 — 그쪽이 죽으면 신호등 인지가 죽는다.
-nxde/sound.py       ★음성 안내★ 사건 → mp3 재생. 음원은 white1/sound/ 에 있고
+nxde/sound.py       ★음성 안내★ 사건 → mp3/wav 재생. 음원은 white1/sound/ 에 있고
                     one_launch.py 가 sound_dir 로 그 경로를 넘긴다. 뜨는 즉시
                     폴더를 점검해 '음원 N개 확인' 또는 무엇이 없는지를 찍는다.
+                    [2026-09-14] estop/estop_re 는 사람이 녹음/합성해 온 wav
+                    (siren_rev.wav/siren.wav 를 그대로 옮긴 것)로 바뀌었다.
+nxde/soundutil.py   ★음원 재생 공통부★ sound_dir()·Player 를 여기 한 곳에 둔다.
+                    [2026-09-14 신설] ★rclpy 를 import 하지 않는다★ — kill.py
+                    (그 자신도 rclpy 를 안 쓴다)가 종료음(kill.wav) 하나를
+                    재생하려고 sound.py 에서 뽑아냈다. sound.py·braketest.py
+                    (white1)는 이 Player 를 가져다 쓴다.
 nxde/kill.py        ★돌고 있는 ROS2 를 한 번에 끝낸다★ /proc 의 maps 를 보고
                     ROS 프로세스를 찾아 전부 SIGKILL 하고, 시리얼 큐와 FastDDS
                     공유메모리를 초기화한다. ★rclpy 를 import 하지 않는다★ —
                     자기 자신을 죽이지 않는 것이 구조로 보장된다(3절).
+                    [2026-09-14] 모든 노드 종료가 확인되면 kill.wav 를 한 번
+                    재생한다(soundutil.Player, 실패해도 종료 자체엔 영향 없음).
+nxde/exhaust.py     ★가상 배기음(VESS) 엔진★ 펄스(0~20) → layers/{idle,high}.wav
+                    를 같은 기본주파수로 변조·크로스페이드하는 합성기. 원래
+                    /home/mad1/sound 의 독립 튜닝 도구였던 것을 [2026-09-14]
+                    이 패키지로 들여왔다 — `python3 exhaust.py` 로 지금도 키보드
+                    조종·스윕 시청·wav 렌더가 된다. LAYER_DIR 은 white1/sound/
+                    layers 를 가리킨다(음원의 단일 소유자, soundutil.sound_dir
+                    을 빌린다). 실차 연동은 vess.py 가 한다.
+nxde/loopify.py     ★가상 배기음 원본 다듬기★ AI 로 뽑은 wav 를 exhaust.py 용
+                    심리스 루프로 자르고 기준 펄스를 알려주는 작업용 도구.
+                    layers/idle·high·low.wav 를 새로 딸 때만 쓴다.
+nxde/vess.py        ★가상 배기음 실차 연동★ [2026-09-14 신설] arduino.py 가
+                    `import nxde.vess` 한 줄로 켠다 — 이 모듈이 자기 rclpy 노드를
+                    만들어 백그라운드 스레드에서 돌며 `/encoder`(A보드 좌+우
+                    펄스의 합, ×0.5)만큼 exhaust.py 엔진의 펄스를 올린다. 가속
+                    페달이 아니라 ★실제 바퀴 속도★ 기준이다. `/estop` 이 True 인
+                    동안은 렌더 결과를 무음으로 덮어써 정말 소리를 내지 않는다.
+                    sounddevice/soundfile 이 없거나 오디오 장치가 없어도 예외를
+                    삼키고 경고만 남긴다 — arduino(차량 구동의 필수 노드)는
+                    그대로 뜬다. 필요: `pip install --user sounddevice soundfile`
+                    + 시스템 패키지 `libportaudio2`(apt).
 nxde/tts.py         ★domichat 채팅방 → 음성★ <PC명>_TTS_M / <PC명>_TTS_W 두 방을
                     (없으면 만들어) 구독하고, 올라오는 대화를 각각 남성·여성
                     목소리로 그대로 읽는다. 방 비밀번호는 PC 이름. 서버·계정은

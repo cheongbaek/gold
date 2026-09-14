@@ -115,6 +115,16 @@ import time
 import glob
 
 
+def _play_kill_sound():
+    """★정리 완료 안내음★ 실패해도 이 도구의 핵심 동작(종료)에 영향이 없어야
+    하므로, import 부터 재생까지 전부 여기 안에서 감싼다."""
+    try:
+        from nxde.soundutil import Player, sound_dir
+        Player(sound_dir()).play(SND_KILL)
+    except Exception:
+        pass
+
+
 # ── ROS2 런타임 판정 : /proc/<pid>/maps 에서 찾을 이름 (1순위) ────────────────
 #   librcl.so  : C·C++·파이썬 공통의 최하층. 사실상 이것 하나로 충분하다.
 #   나머지는 안전망이다 — 배포판이 이름을 바꾸거나 정적 링크한 경우를 위해 둔다.
@@ -158,6 +168,13 @@ SHM_GLOBS = ('/dev/shm/fastrtps_*', '/dev/shm/sem.fastrtps_*')
 # 이 시간은 '좀비를 부모가 거둘 때까지' 를 보는 것이다 — 길 필요가 없다.
 REAP_WAIT_S = 0.4
 REAP_POLL_S = 0.02
+
+# ★[2026-09-14] 정리 완료 안내음★ — 모든 ROS2 프로세스가 사라진 것을 확인한
+# 그 자리에서 한 번 재생한다. Player 는 nxde/soundutil.py 에 있다 — 그 파일도
+# ★rclpy 를 import 하지 않는다★(헤더 그대로 유지, 이 파일과 같은 이유). 재생은
+# subprocess 로 던지고 기다리지 않으므로, 이 도구의 존재 이유인 '빠른 종료'가
+# 그대로 유지된다.
+SND_KILL = 'kill'
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -522,6 +539,7 @@ def main(args=None):
         if do_ports and not dry:
             summary = reset_ports(log, quiet)
             log(f"🔌 포트 초기화 — {summary}")
+        _play_kill_sound()
         return 0
 
     if not quiet:
@@ -568,6 +586,9 @@ def main(args=None):
         return 1
     if not quiet:
         log("✅ 정리 완료 — 다시 런치해도 됩니다.")
+    # ★모든 노드 종료가 확인된 시점에만 재생한다★ (survived/denied 가 있으면
+    #   위에서 이미 return 1 로 빠진다 — 아직 안 끝난 것을 '끝났다'고 말하지 않는다)
+    _play_kill_sound()
     # ★자신도 즉시 끝낸다★ 이 시점에 우리가 붙잡고 있는 자원은 없다.
     return 0
 

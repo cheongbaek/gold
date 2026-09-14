@@ -81,12 +81,18 @@ sound.py ― 음성 안내 [nxde]
   · ★없는 파일은 경고 한 번만★ 파일 이름이 틀려도 노드는 계속 돈다.
   · 재생기는 있는 것을 골라 쓴다(ffplay → mpg123 → mpv → cvlc). 출력 장치를 지정
     하지 않으므로 ★시스템 기본 스피커★ 로 나간다.
+
+  ★[2026-09-14] estop/estop_re 가 wav 로 바뀌었다★ 사람이 녹음/합성해 온
+  siren_rev.wav(발동) · siren.wav(해제) 를 이름만 estop/estop_re 로 맞춰 그대로
+  쓴다 — mp3 로 다시 인코딩하지 않았다. `Player._path()` 가 같은 이름의 mp3 를
+  먼저 찾고, 없으면 wav 를 보므로 확장자를 가리지 않는다(nxde/soundutil.py).
+  braketest.py 는 제동 중 반복재생에 ★같은 estop.wav★ 를 그대로 빌려 쓴다.
+
+  ★[2026-09-14] Player·sound_dir 이 nxde/soundutil.py 로 옮겨 갔다★ kill.py(rclpy
+  를 import 하지 않는 도구)도 종료음(kill.wav)을 재생해야 해서, ROS 에 의존하지
+  않는 부분만 뽑아냈다. 이 파일은 그 재수출(import)만 쓴다.
 """
 
-import os
-import shutil
-import subprocess
-import threading
 import time
 
 import rclpy
@@ -94,6 +100,8 @@ import rclpy.executors
 from rclpy.node import Node
 
 from std_msgs.msg import Bool, String
+
+from nxde.soundutil import Player, sound_dir
 
 
 # ── 음원 이름 (확장자 없이. sound/ 안의 파일명과 같아야 한다) ──────────────────
@@ -127,12 +135,6 @@ ALL_SOUNDS = (
 EVENT_ARRIVED  = '🎯 도착'
 EVENT_DEVIATED = '경로이탈'
 
-# 반복재생 사이의 간격 [s] — 0 이면 파일 경계가 붙어 한 덩어리로 들린다
-#   ※ [2026-08-21] 지금 loop() 를 쓰는 곳은 없다(E-STOP 이 1회 재생이 되면서
-#     마지막 사용처가 사라졌다). Player 는 prompt 도 함께 쓰는 범용 클래스라
-#     기능은 남겨 둔다.
-LOOP_GAP_S = 0.35
-
 # ★/aeb_stop 신선도 [s]★ [2026-08-25] 이 시간 넘게 안 오면 '해제'로 본다.
 #   판단 노드(lidar manual_aeb_node)는 20Hz 로 상태를 계속 낸다. 그 노드가 죽으면
 #   arduino 도 같은 판단으로 리니어를 푸는데(그쪽 aeb_stale_s), 여기서 안 풀면
@@ -144,187 +146,6 @@ AEB_STALE_S = 1.0
 #   prompt 는 자기 루프(0.4s)마다 값을 다시 보낸다 — 그보다 넉넉히 잡되, 화면이
 #   죽었을 때 억제가 오래 남지 않을 만큼 짧게. cb_estop 주석 참고.
 PROMPT_WAIT_STALE_S = 2.0
-
-# 있는 것을 위에서부터 고른다. 전부 '창 없이 한 번 재생하고 끝'.
-PLAYERS = (
-    ('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet']),
-    ('mpg123', ['-q']),
-    ('mpv',    ['--no-video', '--really-quiet']),
-    ('cvlc',   ['--intf', 'dummy', '--play-and-exit']),
-)
-
-
-def sound_dir(explicit: str = "") -> str:
-    """음원 폴더. white1/paths.py 와 같은 규칙이다.
-
-    1) 명시 경로  2) 환경변수 NXDE_SOUND_DIR  3) ★소스 트리★ <...>/src/nxde/sound
-    (★있을 때만★ — [2026-08-14] 이후 이 폴더는 보통 없다)  4) ★white1 의 음원 폴더★
-    5) 못 찾으면 ~/nxde_sound.
-
-    ★[2026-09-04] 4) 를 새로 넣었다★ 근거는 둘이다.
-      ① 음원의 주인이 white1 로 옮겨 가면서(헤더 [2026-08-14] 절) <nxde>/sound 는
-         빈 폴더도 아니고 ★아예 없는 폴더★ 가 됐다. 그런데 3) 이 실패하면 곧바로
-         ~/nxde_sound 로 떨어져, 헤더가 지원한다고 적어 둔 `ros2 run nxde sound`
-         단독 실행이 ★항상★ 벙어리였다(런치는 sound_dir 을 넘겨 주므로 무사했다).
-      ② white1/paths.sound_dir() 이 소스트리·설치본 share 를 모두 훑으므로, 그
-         한 줄을 빌리면 이쪽에 같은 탐색 논리를 복제하지 않아도 된다.
-    ★import 를 감싼다★ white1 은 이 패키지의 의존이 아니다(package.xml 에 없다).
-    nxde 만 빌드한 기계에서도 이 함수가 예외 없이 돌아야 한다 — 그때는 5) 로 간다.
-    """
-    if explicit:
-        return os.path.abspath(os.path.expanduser(explicit))
-    env = os.environ.get('NXDE_SOUND_DIR', '').strip()
-    if env:
-        return os.path.abspath(os.path.expanduser(env))
-    here = os.path.dirname(os.path.realpath(__file__))   # .../src/nxde/nxde
-    root = os.path.dirname(here)                         # .../src/nxde
-    own = os.path.join(root, 'sound')
-    if os.path.isfile(os.path.join(root, 'package.xml')) and os.path.isdir(own):
-        return own
-    try:
-        from white1 import paths as white1_paths
-        borrowed = white1_paths.sound_dir()
-    except Exception:
-        borrowed = ''
-    if borrowed and os.path.isdir(borrowed):
-        return borrowed
-    return os.path.expanduser('~/nxde_sound')
-
-
-def _find_player():
-    for name, args in PLAYERS:
-        path = shutil.which(name)
-        if path:
-            return [path] + args
-    return None
-
-
-class Player:
-    """mp3 재생기. ★어디서든 쓸 수 있게 ROS 에 의존하지 않는다★ (prompt 도 쓴다)
-
-    play()  한 번 재생. 재생 중이던 것은 끊는다(늦게 온 사건이 더 중요하다).
-    loop()  멈추라고 할 때까지 반복. 반복 중에는 play() 를 받지 않는다.
-    stop()  전부 정지.
-    """
-
-    def __init__(self, directory: str = "", log=None, enabled: bool = True):
-        self.dir = directory or sound_dir()
-        self.log = log or (lambda msg: None)
-        self.enabled = enabled
-        self._cmd = _find_player()
-        self._proc = None
-        self._loop = None            # 반복재생 중인 음원 이름
-        self._lock = threading.RLock()
-        self._warned = set()
-        if self.enabled and self._cmd is None:
-            self.log("재생기를 찾지 못했다(ffplay/mpg123/mpv/cvlc) — 음성 안내 없이 돈다")
-
-    # ── 내부 ──────────────────────────────────────────────────────────────────
-    def _path(self, name):
-        p = os.path.join(self.dir, f"{name}.mp3")
-        if not os.path.isfile(p):
-            if name not in self._warned:
-                self._warned.add(name)
-                self.log(f"음원 없음: {p}")
-            return None
-        return p
-
-    def _kill(self):
-        if self._proc is not None and self._proc.poll() is None:
-            try:
-                self._proc.kill()
-            except Exception:
-                pass
-        self._proc = None
-
-    def _spawn(self, path):
-        try:
-            self._proc = subprocess.Popen(
-                self._cmd + [path],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL)
-            return True
-        except Exception as e:                    # 재생 실패로 노드를 죽이지 않는다
-            self.log(f"재생 실패({os.path.basename(path)}): {e}")
-            self._proc = None
-            return False
-
-    # ── 바깥에서 부르는 것 ─────────────────────────────────────────────────────
-    def play(self, name):
-        if not self.enabled or self._cmd is None:
-            return
-        with self._lock:
-            if self._loop is not None:
-                return                            # ★E-stop 반복 중에는 아무것도 끼지 않는다★
-            path = self._path(name)
-            if path is None:
-                return
-            self._kill()
-            self._spawn(path)
-
-    def loop(self, name):
-        if not self.enabled or self._cmd is None:
-            return
-        with self._lock:
-            if self._loop == name:
-                return                            # 이미 같은 것을 돌리고 있다
-            path = self._path(name)
-            if path is None:
-                return
-            self._kill()
-            self._loop = name
-            threading.Thread(target=self._loop_worker, args=(name, path),
-                             daemon=True).start()
-
-    def _loop_worker(self, name, path):
-        while True:
-            with self._lock:
-                if self._loop != name:
-                    return
-                if not self._spawn(path):
-                    self._loop = None
-                    return
-                proc = self._proc
-            try:
-                proc.wait()
-            except Exception:
-                return
-            # 간격을 두되, 그 사이에 stop() 이 오면 곧바로 빠진다
-            for _ in range(max(1, int(LOOP_GAP_S * 20))):
-                with self._lock:
-                    if self._loop != name:
-                        return
-                time.sleep(0.05)
-
-    def audit(self, names):
-        """★음원 폴더를 뜨는 즉시 점검한다★ (폴더가 없나, 빠진 이름 목록) 을 돌려준다.
-
-        [2026-09-04] 왜 필요한가 — 종전에는 _path() 가 ★재생을 시도할 때★ 처음
-        '음원 없음' 을 경고했다. 그러면 폴더 경로가 통째로 틀린 경우(복사설치에서
-        white1/paths.py 가 ~/white1/sound 를 돌려주던 [0904] 버그)에도 런치 로그에는
-        시작 안내를 시도한 한 줄만 남고, 나머지 안내는 사건이 일어날 때마다 한 줄씩
-        흩어져 찍힌다 — 수십 줄이 흐르는 런치 화면에서 그건 사실상 안 보인다.
-        '지금 이 폴더에 음원이 몇 개 있는가' 를 뜰 때 한 번 말하게 한다.
-        """
-        if not os.path.isdir(self.dir):
-            return True, list(names)
-        missing = [n for n in names
-                   if not os.path.isfile(os.path.join(self.dir, f"{n}.mp3"))]
-        return False, missing
-
-    def stop_loop(self):
-        with self._lock:
-            if self._loop is None:
-                return False
-            self._loop = None
-            self._kill()
-            return True
-
-    def stop(self):
-        with self._lock:
-            self._loop = None
-            self._kill()
 
 
 class SoundNode(Node):

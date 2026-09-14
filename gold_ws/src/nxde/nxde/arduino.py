@@ -2029,6 +2029,18 @@ def main(args=None):
         if rclpy.ok():
             rclpy.shutdown()
         return
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  ★[2026-09-14] 가상 배기음(VESS)★ — arduino 가 실행되는 자리(단독 실행·
+    #  one_launch 공통)마다 함께 켠다. import 한 줄이 전부다(vess.py 헤더 참고) —
+    #  그 모듈이 자기 노드를 스스로 만들어 백그라운드 스레드에서 돈다.
+    #  ★실패해도 이 노드(차량 구동의 필수 노드)는 계속 뜬다★ — sounddevice/
+    #  soundfile 이 없거나 오디오 장치가 없는 기계에서도 주행에는 영향이 없다.
+    try:
+        import nxde.vess  # noqa: F401
+    except Exception as e:
+        node.get_logger().warning(f"VESS 가상 배기음을 켜지 못했습니다: {e}")
+
     code = 0
     try:
         rclpy.spin(node)

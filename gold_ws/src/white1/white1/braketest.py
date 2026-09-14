@@ -582,6 +582,15 @@ class BrakeTestNode(Node):
         self.create_subscription(Imu, IMU_TOPIC, self.cb_imu, 20)
         self.create_subscription(Bool, LIDAR_SIGNAL_TOPIC, self.cb_lidar_signal, 5)
 
+        # ★[2026-09-14] 제동 경고음★ begin_brake() 가 물리는 순간부터 siren_rev.wav
+        # (= nxde/sound.py 의 'estop' — E-STOP 발동음과 같은 파일을 그대로 빌려
+        # 쓴다) 를 ★반복재생★ 한다. 멈추는 지점을 따로 두지 않았다 — 요구사항이
+        # "파일(이 노드)이 끝날 때까지" 이고, 이 노드는 리니어를 해제한 뒤 곧
+        # 종료한다(destroy_node 에서 함께 끊는다).
+        from nxde.sound import Player, SND_ESTOP
+        self._siren = Player(paths.sound_dir(), log=self.get_logger().warning)
+        self._siren_name = SND_ESTOP
+
         # ── 상태 ──
         self.state = S_WAIT
         self.state_t0 = time.time()
@@ -1631,6 +1640,8 @@ class BrakeTestNode(Node):
         if own_brake:
             self.set_brake(BRAKE_FULL)
             self.publish_brake(force=True)
+        #  ★제동 경고음★ 여기서부터 이 노드가 끝날 때까지 반복한다(위 __init__ 주석).
+        self._siren.loop(self._siren_name)
         #  ★조향은 유지한다★ 정지 직전에 앞바퀴를 정면으로 꺾으면 제동 중 거동이
         #  바뀌어 측정이 오염된다. 펄스는 arduino 가 0 으로 덮는다(send docstring).
         self.send(self.drive_value(now), self._last_steer, control=True)
@@ -1779,6 +1790,7 @@ class BrakeTestNode(Node):
             self.pub_brake.publish(Int32(data=BRAKE_NONE))
         except Exception:            # noqa: BLE001
             pass
+        self._siren.stop()
         super().destroy_node()
 
 
