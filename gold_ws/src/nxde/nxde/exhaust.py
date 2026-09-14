@@ -337,32 +337,86 @@ class VirtualExhaust:
 
 
 # ---------------------------------------------------------------- 실행 모드
-def run_keyboard(eng):
-    import msvcrt
+def _make_getch():
+    """콘솔에서 한 글자를 논블로킹으로 읽는 (poll, restore) 한 쌍을 만든다.
 
+    ★[2026-09-15] msvcrt 는 Windows 전용이다★ 이 프로젝트는 Ubuntu 22.04
+    전용이라(CLAUDE.md) 원래 코드(외부에서 그대로 들여온 것)가 `python3
+    exhaust.py` 단독 실행에서 곧바로 ModuleNotFoundError 로 죽었다. POSIX
+    쪽은 termios 로 캐노니컬/에코를 끄고(cbreak) select 로 논블로킹 폴링한다.
+    ISIG 는 그대로 두므로 Ctrl+C(SIGINT)는 여전히 KeyboardInterrupt 로 온다
+    — run_keyboard 가 그것을 받아 터미널 설정을 반드시 복원한다.
+    """
+    if sys.platform == 'win32':
+        import msvcrt
+
+        def poll():
+            if not msvcrt.kbhit():
+                return ''
+            ch = msvcrt.getch()
+            if ch in (b"\x00", b"\xe0"):                  # 화살표 = 2바이트
+                ch = {b"H": b"w", b"P": b"s"}.get(msvcrt.getch(), b"")
+            return ch.decode(errors='ignore') if isinstance(ch, bytes) else ch
+
+        return poll, (lambda: None)
+
+    import select
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+
+    def poll():
+        if not select.select([sys.stdin], [], [], 0)[0]:
+            return ''
+        ch = sys.stdin.read(1)
+        if ch != '\x1b':                                  # ESC 로 시작하지 않으면 그대로
+            return ch
+        if not select.select([sys.stdin], [], [], 0.01)[0]:
+            return '\x03'                                 # 단독 ESC = 종료
+        if sys.stdin.read(1) != '[':
+            return ''
+        if not select.select([sys.stdin], [], [], 0.01)[0]:
+            return ''
+        return {'A': 'w', 'B': 's'}.get(sys.stdin.read(1), '')  # 화살표(ESC [ A/B)
+
+    def restore():
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    return poll, restore
+
+
+def run_keyboard(eng):
     print("W/S(또는 위/아래) = 펄스 증감,  0~9 = 직접 지정(x2),  Q = 종료")
-    eng.start()
+    poll, restore = _make_getch()
+    # ★eng.start() 를 try 안으로★ _make_getch() 가 이미 터미널을 cbreak 로
+    # 바꿔 놨다 — 여기서 실패하면(오디오 장치 없음 등) finally 의 restore() 가
+    # 반드시 돌아야 터미널이 원상태(에코 켜짐)로 돌아온다. try 밖에서 부르면
+    # 예외가 restore() 를 건너뛰어 ★터미널이 망가진 채로 스크립트가 죽는다★.
     try:
+        eng.start()
         while True:
-            if msvcrt.kbhit():
-                ch = msvcrt.getch()
-                if ch in (b"\x00", b"\xe0"):                  # 화살표 = 2바이트
-                    ch = {b"H": b"w", b"P": b"s"}.get(msvcrt.getch(), b"")
-                if ch in (b"q", b"Q", b"\x03"):
-                    break
-                if ch in (b"w", b"W"):
-                    eng.set_pulse(eng.pulse + 1)
-                elif ch in (b"s", b"S"):
-                    eng.set_pulse(eng.pulse - 1)
-                elif ch.isdigit():
-                    eng.set_pulse(int(ch) * 2)
+            ch = poll()
+            if ch in ('q', 'Q', '\x03'):
+                break
+            if ch in ('w', 'W'):
+                eng.set_pulse(eng.pulse + 1)
+            elif ch in ('s', 'S'):
+                eng.set_pulse(eng.pulse - 1)
+            elif ch.isdigit():
+                eng.set_pulse(int(ch) * 2)
             n = int(eng.pulse)
             stage = "공회전" if n == 0 else ("저속 " if n <= 4 else "고속 ")
             print(f"\r펄스 {n:2d}/{MAX_PULSE} [{'#' * n}{'.' * (MAX_PULSE - n)}] "
                   f"{stage}  f0={pulse_to_f0(eng.pulse):6.1f}Hz ", end="", flush=True)
             time.sleep(0.03)
+    except KeyboardInterrupt:
+        pass
     finally:
         eng.stop()
+        restore()
         print()
 
 
