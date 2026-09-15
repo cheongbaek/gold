@@ -356,7 +356,16 @@ gold_ws/src/
   nxde/       아두이노 계층 (런치파일 없음, 전부 ros2 run)
     arduino.py   ★차량 구동의 필수 노드★ A/B 2보드 시리얼 브리지
     master.py    마우스·키보드 GUI 조종 (하드웨어 검증용)
-    joystick.py  조이스틱 조종 (자율모드 한정 + 영점→SWA)
+                 ★[2026-09-15] 최하단 '조이스틱으로 조종하기' 체크박스★ — 켜면
+                 "J," 보드를 스스로 찾아 붙고 레버가 그 계기판이 된다(L 위=펄스
+                 0~15 / L 아래=브레이크 1·2단 / R=조향 / ★SWA=시작·일시정지★).
+                 끄면 그 자리에서 포트를 놓는다 — 그래서 `master.launch.py` 하나로
+                 마우스·조이스틱을 다 쓴다(발행자는 여전히 이 창 하나뿐).
+    joyread.py   ★조이스틱 읽기의 단일 소유자★ (노드가 아니다) — "J," 프로토콜
+                 (joy4.ino 9토큰 / 구 joy.ino 12토큰), 포트 탐색·영점·환산.
+                 master.py 가 쓴다.
+    joystick.py  조이스틱 조종 ★별 노드★ (자율모드 한정 + 영점→SWA). joy.launch.py
+                 전용이고 U 보드(joy2.ino)까지 받는다 — 화면 없는 자리에서 쓴다
     sound.py     음성 안내 (구독 전용). 음원의 주인은 white1/sound/
     video.py     ★아무 Image 토픽이나 mp4 녹화★ (원본 /image_raw 도, 인지 디버그
                  화면 /tl/debug_image 도 — 후자를 one_launch 가 자동으로 띄운다)
