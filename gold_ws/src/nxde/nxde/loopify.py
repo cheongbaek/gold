@@ -15,11 +15,11 @@ AI 로 뽑은 음원은 그냥 쓰면 세 가지가 문제다.
     python loopify.py raw_low.wav  <sound_dir>/layers/low.wav  --start 1.5 --len 2.0 \
         --tune-to-pulse 3
     python loopify.py raw_high.wav <sound_dir>/layers/high.wav --start 1.5 --len 2.0 \
-        --tune-to-pulse 11
+        --tune-to-pulse 6     # [2026-09-15] 음역 46~400Hz 기준 (종전 11)
 
 그 다음 (기준 펄스는 위 실행이 마지막 줄에 찍어 준다)
 -------
-    python exhaust.py --mode sample --ref-low 3 --ref-high 11
+    python exhaust.py --mode sample --ref-high 6
 
 ★[2026-09-14] /home/mad1/sound 에서 이 패키지(nxde)로 옮겨 왔다★ exhaust.py 를
 nxde.exhaust 로 절대 import 한다(이 패키지의 다른 파일들과 같은 스타일).
@@ -31,7 +31,47 @@ import os
 import numpy as np
 import soundfile as sf
 
-from nxde.exhaust import MAX_PULSE, SR, F_IDLE, F_TOP
+from nxde.exhaust import MAX_PULSE, SR, F_IDLE, F_TOP, P_IDLE_OUT
+
+# 재생 배율이 이 밖으로 나가면 음색이 눈에 띄게 상한다(늘어지거나 얇아진다)
+RATE_MIN, RATE_MAX = 0.5, 2.0
+
+
+def f0_at(pulse):
+    return F_IDLE + (F_TOP - F_IDLE) * (pulse / MAX_PULSE)
+
+
+def to_pulse(f0):
+    return (f0 - F_IDLE) / (F_TOP - F_IDLE) * MAX_PULSE
+
+
+def safe_ref_range():
+    """(하한, 상한, 기하중심) 기준 펄스. ★표로 박지 않고 상수에서 유도한다★
+
+    ★[2026-09-15] 종전에는 {"low": (1.5, 5.2), "high": (7.5, 12.0)} 이 하드
+    코딩돼 있었는데, 그 값은 F_TOP=225 시절에 뽑은 것이라 음역을 400 으로
+    넓히자 그대로 거짓말이 됐다.★ pulse_to_f0 가 바뀌면 함께 바뀌어야 하는
+    값이므로 유도한다(CLAUDE.md 7절 '한쪽만 고치면 안 되는 짝').
+
+      하한 : 펄스 20       배율 ≤ RATE_MAX  →  f_ref ≥ F_TOP / RATE_MAX
+      상한 : 펄스 P_IDLE_OUT 배율 ≥ RATE_MIN  →  f_ref ≤ f0_at(3) / RATE_MIN
+
+    ★저역 제약을 펄스 1 이 아니라 P_IDLE_OUT(=3) 에서 따지는 이유★ 그 아래는
+    공회전음이 아직 살아 있어 주행음을 덮는다 — 배율이 늘어져도 들리지 않는
+    구간이라 제약으로 칠 것이 아니다(exhaust.py 헤더의 "아래쪽은 공회전음이
+    덮는 구간이라 감당할 만하다" 가 같은 이야기다).
+    ↳ 검산 : F_TOP 을 종전 225 로 되돌리면 이 식이 7.4~11.1 을 돌려준다.
+      하드코딩돼 있던 옛 표가 (7.5, 12.0) 이었으니 그 값을 재현한다.
+      (펄스 1 로 따지면 7.4~7.1 이 나와 옛 표와 어긋난다 — 그래서 3 이 맞다)
+
+    음역이 넓으면 두 조건이 겹치지 않는다(하한 > 상한). 지금 46~400Hz 가
+    딱 그 경계다(8.70 > 8.60). 그때는 기하중심(배율이 위아래로 똑같이
+    벌어지는 지점)이 유일한 답이다.
+    """
+    lo = to_pulse(F_TOP / RATE_MAX)
+    hi = to_pulse(f0_at(P_IDLE_OUT) / RATE_MIN)
+    center = to_pulse(float(np.sqrt(f0_at(1) * F_TOP)))
+    return lo, hi, center
 
 
 def load_mono(path, target_sr=SR):
@@ -156,8 +196,9 @@ def main():
     ap.add_argument("--gain", type=float, default=0.95, help="정규화 목표 피크")
     ap.add_argument("--tune-to-pulse", type=int, default=None, metavar="N",
                     help="이 펄스의 음높이로 맞춰 리샘플한다. "
-                         "low 는 2~4, high 는 10~12 권장. idle 은 리샘플 없이 "
-                         "그대로 울리므로, 저속음과 음역을 맞추려면 1~2 를 준다")
+                         "high 는 5~7 권장(음역 46~400Hz 기준 — 마지막 줄이 "
+                         "지금 상수로 계산한 값을 찍어 준다). idle 은 리샘플 "
+                         "없이 그대로 울리므로, 음역을 맞추려면 1~2 를 준다")
     ap.add_argument("--tune-centroid-to", type=float, default=None, metavar="HZ",
                     help="스펙트럼 중심을 이 주파수로 맞춰 리샘플한다. 화음이나 "
                          "노이즈처럼 음정이 불분명한 소리에는 이쪽이 확실하다. "
@@ -235,12 +276,19 @@ def main():
         pulse = (f0 - F_IDLE) / (F_TOP - F_IDLE) * MAX_PULSE
         print(f"  기본주파수 {f0:.1f}Hz  ->  exhaust.py 에 --ref-{name} {round(pulse)} "
               f"(정확값 {pulse:.1f})")
-        # 재생 배율이 0.5~2.0배 안에 들어오는 기준 펄스 범위 (레이어별로 다르다)
-        safe = {"low": (1.5, 5.2), "high": (7.5, 12.0)}.get(name)
-        if safe and not safe[0] <= pulse <= safe[1]:
-            print(f"  주의: {name} 의 안전 범위는 펄스 {safe[0]}~{safe[1]} 입니다. "
-                  f"벗어나면 재생 배율이 0.5~2.0배를 넘어 소리가 뭉개집니다.\n"
-                  f"        --tune-to-pulse {round(sum(safe) / 2)} 로 다시 돌리세요.")
+        lo, hi, center = safe_ref_range()
+        if lo <= hi:
+            if not lo <= pulse <= hi:
+                print(f"  주의: {name} 의 안전 범위는 펄스 {lo:.1f}~{hi:.1f} 입니다. "
+                      f"벗어나면 재생 배율이 {RATE_MIN}~{RATE_MAX}배를 넘어 소리가 "
+                      f"뭉개집니다.\n"
+                      f"        --tune-to-pulse {round(center)} 로 다시 돌리세요.")
+        else:
+            print(f"  참고: 지금 음역({F_IDLE:.0f}~{F_TOP:.0f}Hz)은 펄스 1~20 배율 폭이 "
+                  f"{F_TOP / f0_at(1):.1f}배라, ★어떤 기준을 잡아도★ "
+                  f"{RATE_MIN}~{RATE_MAX}배 안에 다 들어오지 않습니다.\n"
+                  f"        위아래로 고르게 나누는 지점은 펄스 {center:.1f} "
+                  f"(--tune-to-pulse {round(center)}) 입니다.")
 
     print(f"\n완료: {args.dst}  ({len(loop) / SR:.3f}s, 크로스페이드 {xf / SR * 1000:.0f}ms)")
 
