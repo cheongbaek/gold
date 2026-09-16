@@ -1626,7 +1626,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | `lidar_speed` 인자 삭제, `lidar_pulse` 하나로 | `one_launch.py` |
 | `/lstatus` 기록 열 · HUD 표시 | `record.py` · `hud.py` |
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
-| **HUD 에 '라이다 대기' 를 실제로 표시 [2026-09-16]** — docstring 은 처음부터 그 상태를 적고 있었는데 코드에 경로가 없어, mppi 가 20Hz 로 `/lidar_active` 를 내며 살아 있어도 화면엔 `GPS` 만 떴다(= 라이다가 붙었는지 HUD 로 알 수 없었다). ⚠️ **`AEB —` 는 라이다 미연결이 아니다** — `one_launch` 는 `cone_lidar_node` 를 띄우지 않으므로 그것이 정상이다(6.4⑦) | `hud.py _drive_by_pill` |
+| **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
 | IMU 중력축 투영 (4.7절) [2026-09-09] | `driving.py cb_imu` · `solve_imu_axis` |
 | **고속 조향 발산 — 언더스티어 항 속도 클램프 (4.1b) [2026-09-13]** | `driving.py steer_command` · `UNDERSTEER_V_CLAMP_PULSE` |
 | **LFD ω_n · 곡률캡 K 속도 스케줄 (4.1) [2026-09-13]** | `driving.py speed_blend` · `lfd_omega_at` · `curve_cap_k_at` · `LFD_MAX_M` 9.1 → **11.3** |

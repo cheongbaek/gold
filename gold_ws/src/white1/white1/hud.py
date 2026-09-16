@@ -49,7 +49,13 @@ from nav_msgs.msg import OccupancyGrid, Path
 from sensor_msgs.msg import Image, Imu, NavSatFix
 from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
 
+#  ★라이다 판정 상수의 소유자는 driving.py 다★ [2026-09-16]
+#  LDR LED 가 '주행을 시작할 수 있는 라이다 상태' 와 ★같은 판정★ 을 해야
+#  "LED 는 녹색인데 왜 출발을 안 하지" 가 생기지 않는다. 리터럴을 여기 베끼면
+#  반드시 어긋난다(prompt.py 도 같은 이유로 그쪽 상수를 가져온다).
+
 from white1.gps import GPS_FUSED_FIELDS, Q_LABEL  # fused 길이·품질 라벨의 단일 소유자
+from white1 import driving as dv
 from white1 import paths as wpaths
 
 try:
@@ -265,6 +271,10 @@ class HudNode(Node):
         self.estop = Sample()
         self.aeb = Sample()
         self.aeb_dist = Sample()
+        #  라이다 센서 생존 (LDR LED). 누적 수를 함께 센다 — driving 이
+        #  LIDAR_SENSOR_MIN_N 개를 요구하므로 같은 기준으로 판정한다.
+        self.ouster = Sample()
+        self._ouster_n = 0
         self.aeb_sig = Sample()
         self.boards = Sample()
         self.ctrl = Sample()
@@ -377,6 +387,15 @@ class HudNode(Node):
         self.create_subscription(Float32, '/tl/near_metric',
                                  lambda m: self.tl_near.set(float(m.data)), qos)
         self.create_subscription(Imu, '/imu', self._cb_imu, qos)
+        #  ★[2026-09-16] 라이다 센서가 실제로 흐르는가 — LDR LED 의 근거★
+        #  ★/ouster/points 가 아니라 /ouster/imu 를 본다★ 포인트클라우드는 한 프레임이
+        #  수 MB 라 화면 노드가 20Hz 로 받을 이유가 없다. IMU 는 작고 100Hz 이며,
+        #  둘 다 같은 드라이버가 낸다 — driving.py 가 게이트에서 이 토픽을 보는 것과
+        #  같은 이유다(그쪽 OUSTER_IMU_TOPIC 주석).
+        #  ★QoS 는 sensor_data 여야 한다★ ouster 드라이버가 use_system_default_qos:
+        #  false 로 BEST_EFFORT 를 쓰므로, 기본 QoS 로 구독하면 ★조용히 안 붙는다★.
+        self.create_subscription(Imu, dv.OUSTER_IMU_TOPIC, self._cb_ouster_imu,
+                                 qos_profile_sensor_data)
         self.create_subscription(TwistStamped, '/vel',
                                  lambda m: self.vel.set(float(m.twist.linear.x)),
                                  qos)
@@ -513,6 +532,11 @@ class HudNode(Node):
         st = self.drive_state.get(5.0)
         if st in MAP_STATES:
             self._append_trail(lat, lon)
+
+    def _cb_ouster_imu(self, msg: Imu):
+        """라이다 드라이버 생존 신호. ★값은 쓰지 않는다 — 온다는 사실만 본다★"""
+        self._ouster_n += 1
+        self.ouster.set(self._ouster_n)
 
     def _cb_imu(self, m):
         q = m.orientation
@@ -773,17 +797,6 @@ class HudApp:
                 flash = int(time.monotonic() * 4) % 2
                 return '라이다?', RED if flash else '#5a1020', '#ffffff'
             return '라이다', '#12331f', GREEN
-        # ★[2026-09-16] '라이다 대기' 를 실제로 표시한다★
-        #   위 docstring 은 처음부터 이 상태를 적고 있었는데 ★코드에 그 경로가
-        #   없었다★ — mppi 가 20Hz 로 /lidar_active 를 보내며 멀쩡히 살아 있어도
-        #   화면에는 'GPS' 만 떠서, 라이다가 붙었는지 여부가 HUD 어디에도 나타나지
-        #   않았다(실제로 "HUD 상으로 라이다 연결이 확인되지 않는다" 로 올라왔다).
-        #   ★L 구간 전에는 이것이 정상 상태다★ — mppi 는 살아서 회피 구간을 기다리고,
-        #   차를 모는 것은 GPS 추종이다. 그 둘을 한 칸에 같이 적는다.
-        #   AEB 칸(cone_lidar)과 혼동하지 말 것 — one_launch 는 그 노드를 띄우지
-        #   않으므로 'AEB —' 가 뜨는 것이 정상이고, 라이다 연결과 무관하다.
-        if a is not None:
-            return 'GPS·라이다대기', PANEL2, CYAN
         return 'GPS', PANEL2, CYAN
 
     def _aeb_pill(self, stale):
@@ -1701,7 +1714,12 @@ class HudApp:
             ('MOD', n.mode),
             ('EST', n.estop),
             ('AEB', n.aeb),
-            ('LDR', n.aeb_dist),
+            #  ★[2026-09-16] LDR 은 라이다 연결이다 — AEB 노드가 아니다★
+            #  종전에는 n.aeb_dist(/cone_lidar_node/obstacle_distance)를 봤는데,
+            #  white1/one_launch.py 는 cone_lidar_node 를 ★띄우지 않는다★(6.4⑦).
+            #  그래서 라이다가 멀쩡히 돌아도 이 LED 는 ★구조상 절대 켜지지 않았다★.
+            #  이제 driving 의 주행 게이트와 같은 것을 본다(아래 lidar_* 계산).
+            ('LDR', None),
             ('TL', n.tl),
             ('CAM', None),
             ('NAV', None),
@@ -1712,13 +1730,25 @@ class HudApp:
                     (time.monotonic() - n._img_t) < stale)
         with n._nav_lock:
             nav_live = len(n.route_wps) >= 2 or len(n.map_trail) >= 2
+        #  ★LDR — driving.lidar_wait_reason() 과 ★같은 판정★ 이다★
+        #  센서(/ouster/imu 가 충분히·신선하게 온다) + 플래너(mppi 의 /lidar_active).
+        #  둘 다여야 녹색 = ★이 상태면 주행이 라이다 게이트를 통과한다★.
+        #  하나라도 받은 적이 있는데 지금 아니면 빨강(끊긴 것), 아예 없으면 회색.
+        lidar_sensor = (n._ouster_n >= dv.LIDAR_SENSOR_MIN_N
+                        and n.ouster.fresh(dv.LIDAR_SENSOR_STALE_S))
+        lidar_live = lidar_sensor and n.lidar_active.fresh(dv.LIDAR_ACTIVE_STALE_S)
+        lidar_ever = (n.ouster.t > 0) or (n.lidar_active.t > 0)
+
         mppi_live = False
         mppi_ever = False
         if n.nav_mode == 'mppi':
             mppi_ever = n._mppi_grid_t > 0
             mppi_live = mppi_ever and (time.monotonic() - n._mppi_grid_t) < stale
         for name, samp in leds:
-            if name == 'CAM':
+            if name == 'LDR':
+                live = lidar_live
+                ever = lidar_ever
+            elif name == 'CAM':
                 live = cam_live
                 ever = n._img_t > 0
             elif name == 'NAV':
