@@ -117,8 +117,19 @@ VOICE_MALE   = 'ko-KR-InJoonNeural'
 VOICE_FEMALE = 'ko-KR-SunHiNeural'
 
 RATE   = '+0%'                    # 말 빠르기 / 크기 / 높이 (edge-tts 규격)
-VOLUME = '+0%'
+VOLUME = '+100%'                  # ★최대★ [2026-09-16] edge-tts 규격 상한(−100~+100%)
 PITCH  = '+0Hz'
+
+# ★[2026-09-16] 재생 단계에서 한 번 더 키운다★
+#   edge-tts 의 VOLUME 은 ★합성 음성 자체의 크기★ 라 +100% 라도 한계가 있다
+#   (SSML prosody volume — 원본을 넘어서 증폭하지는 않는다). 차 안에서 주행 소음
+#   위로 들리게 하려면 재생기에서 실제로 증폭해야 한다.
+#   ★리미터를 함께 건다★ 단순 증폭만 하면 큰 음절에서 파형이 잘려(클리핑) 찌그러진
+#   소리가 난다 — 말이 커지는 게 아니라 알아듣기 어려워진다. ffplay 는 alimiter
+#   (lookahead limiter)로 천장을 눌러 주므로 배수를 올려도 소리가 깨지지 않는다.
+#   ⚠️ 그래도 찌그러져 들리면 이 값을 내린다(2.0 → 1.5). 1.0 이면 증폭하지 않는다.
+PLAY_GAIN = 3.0
+PLAY_LIMIT = 0.97                 # 리미터 천장(0~1). 1.0 에 가까울수록 크고 위험하다
 
 # TLS. 서버가 평문이면 자동으로 평문으로 다시 붙는다(전환기 대응).
 USE_TLS = True
@@ -153,12 +164,38 @@ RECONNECT_BACKOFF = (1, 2, 5, 10, 30)     # 재연결 대기[s] — 마지막 �
 ROOM_NAME_MAX = 30                        # domiserver 의 같은 이름 상수와 맞춘 값
 ROOM_PW_MAX = 19
 
+def _gain_args(name):
+    """재생기별 증폭 인자. ★PLAY_GAIN 한 곳만 고치면 전부 따라온다★ [2026-09-16]
+
+    네 재생기가 각자 다른 단위를 쓴다 — 여기서 한 번 환산해 두지 않으면 재생기가
+    바뀔 때마다 음량이 조용히 달라진다(있는 것을 위에서부터 고르는 구조라, 어느
+    것이 걸릴지는 기계마다 다르다).
+    """
+    g = max(1.0, float(PLAY_GAIN))
+    if g <= 1.0:
+        return []
+    if name == 'ffplay':
+        #  ★증폭 + 리미터★ 클리핑 없이 키우는 유일한 조합이다(상수 주석 참고).
+        return ['-af', 'volume=%.2f,alimiter=limit=%.2f' % (g, PLAY_LIMIT)]
+    if name == 'mpg123':
+        #  -f 는 ★출력 스케일★ 이고 32768 이 1배다(그래서 배수 × 32768).
+        return ['-f', str(int(32768 * g))]
+    if name == 'mpv':
+        #  --volume 은 % 이고 기본 상한이 130 이라 --volume-max 를 함께 올려야 한다.
+        return ['--volume-max=%d' % int(g * 100), '--volume=%d' % int(g * 100)]
+    if name == 'cvlc':
+        return ['--gain', '%.2f' % g]
+    return []
+
+
 # 있는 것을 위에서부터 고른다. 전부 '창 없이 한 번 재생하고 끝' (sound.py 와 같은 표).
-PLAYERS = (
-    ('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet']),
-    ('mpg123', ['-q']),
-    ('mpv',    ['--no-video', '--really-quiet']),
-    ('cvlc',   ['--intf', 'dummy', '--play-and-exit']),
+PLAYERS = tuple(
+    (name, args + _gain_args(name)) for name, args in (
+        ('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet']),
+        ('mpg123', ['-q']),
+        ('mpv',    ['--no-video', '--really-quiet']),
+        ('cvlc',   ['--intf', 'dummy', '--play-and-exit']),
+    )
 )
 
 
@@ -458,6 +495,11 @@ class Speaker:
         self._thread = threading.Thread(target=self._run, daemon=True)
         if self._cmd is None:
             log('재생기를 찾지 못했다(ffplay/mpg123/mpv/cvlc) — 소리 없이 돈다')
+        else:
+            #  ★어느 재생기로 얼마나 키워 트는지 한 줄 남긴다★ 음량이 기대와 다를 때
+            #  제일 먼저 볼 곳이 여기다(재생기마다 증폭 단위가 다르다 — _gain_args).
+            log('재생기 %s · 합성음량 %s · 재생증폭 x%.1f'
+                % (os.path.basename(self._cmd[0]), VOLUME, PLAY_GAIN))
 
     def start(self):
         self._thread.start()
