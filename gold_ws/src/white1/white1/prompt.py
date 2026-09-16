@@ -26,7 +26,11 @@ prompt.py ― CLI 메인화면 [white1]
   1)매핑·2)주행 을 고르면 아래 두 조건을 ★이 순서로★ 확인하고, 하나라도 어긋나면
   그 자리에서 기다린다. 둘 다 맞는 순간 START 명령이 나간다.
 
-      ① 스위치   매핑=수동조종 / 주행=자율주행     안 맞으면 → mapping.mp3 / driving.mp3
+      ① 스위치   ★주행만★ 자율주행이어야 한다     안 맞으면 → driving.mp3
+                 ★[2026-09-16] 매핑은 스위치를 보지 않는다★ (사용자 지시) —
+                 수동조종(페달·핸들) 도, 자율주행의 ★조이스틱★ 도 다 된다.
+                 그래서 매핑 전환 안내(mapping.mp3)는 이제 나오지 않고,
+                 매핑에서 들리는 것은 '시작되었다'(prompt_2) 하나다.
       ② E-STOP   해제되어 있을 것                  물려 있으면 → estop_x.mp3
 
   ★순서가 곧 안내 우선순위다★ 스위치가 틀린 채로 E-STOP 까지 물려 있으면 먼저
@@ -46,12 +50,14 @@ prompt.py ― CLI 메인화면 [white1]
   나온다 — 그때는 겹칠 시작 안내가 없으니 그게 맞다.
 
   ┌ 조작 요령 ────────────────────────────────────────────────────────────────┐
-  │  1) 매핑 : 스위치가 수동조종이면 바로 시작, 자율주행이면 내릴 때까지 대기.   │
-  │            E-STOP 이 물려 있으면 해제할 때까지 한 번 더 대기.               │
+  │  1) 매핑 : ★스위치는 어느 쪽이어도 된다★ E-STOP 만 해제되면 즉시 시작.     │
+  │            수동조종이면 페달·핸들로, 자율주행이면 ★조이스틱★ 으로 몬다      │
+  │            (자율주행 로직이 아니다 — nxde/arduino 의 조이스틱 분기다).      │
   │            시작되면 그 순간부터(헤딩이 잡히기 전부터) CSV 에 기록된다 —      │
   │            기록되는 좌표가 이 화면에 그대로 표시된다.                       │
   │            헤딩은 ★사람이 페달+핸들을 일자로★ 잡는다(driving 은 관찰만).    │
-  │            아무 키나 누르면 중단(저장) + 메뉴로. 스위치를 올려도 종료.      │
+  │            아무 키나 누르면 중단(저장) + 메뉴로. ★스위치를 넘겨도 계속된다★ │
+  │            — 그것은 '그만두기' 가 아니라 조종 수단을 바꾸는 일이다.         │
   │                                                                            │
   │  2) 주행 : 경로 파일을 고른 뒤, 스위치가 자율주행이면 바로 시작, 수동조종   │
   │            이면 올릴 때까지 대기. E-STOP 이 물려 있으면 해제까지 대기.       │
@@ -87,6 +93,9 @@ from white1 import driving as dv
 #   토픽을 보고 낸다 — 그래야 이 화면을 안 띄워도 같은 안내가 나온다.
 #   ★nxde 가 없어도 이 화면은 그대로 돈다★ (exec_depend 이지만 방어한다)
 try:
+    #  ★SND_WAIT_MAP(mapping.mp3) 은 이제 재생하지 않는다★ [2026-09-16] 매핑에
+    #  스위치 게이트가 없어졌기 때문이다(gate_for). 이름은 계속 가져온다 —
+    #  음원 목록의 소유자는 sound.py 이고, 여기서 빼면 그 목록과 갈라진다.
     from nxde.sound import (Player, SND_PROMPT, SND_WAIT_MAP, SND_WAIT_DRIVE,
                             SND_ESTOP_HOLD)
 except Exception:                       # noqa: BLE001 — 음성이 없다고 CLI 를 막지 않는다
@@ -214,8 +223,12 @@ class PromptNode(Node):
         if not pending:
             return None
         want_auto = (pending == 'DRIVE')
-        # 미수신(None)도 '아직 맞지 않았다'로 본다 — 모르는 채로 출발시키지 않는다.
-        if self.auto_mode is not want_auto:
+        #  ★[2026-09-16] 매핑은 스위치를 보지 않는다 (사용자 지시)★
+        #  수동조종(페달·핸들)으로도, 자율주행 모드의 ★조이스틱★ 으로도 경로를 딸 수
+        #  있다 — 어느 쪽이든 driving 은 펄스를 내지 않고 GPS 변위를 관찰만 하므로
+        #  이 노드가 가릴 이유가 없다. 주행은 종전대로 자율주행이어야 한다.
+        #  ※ 미수신(None)도 '아직 맞지 않았다'로 본다 — 모르는 채로 출발시키지 않는다.
+        if want_auto and self.auto_mode is not True:
             return GATE_SWITCH
         if self.estop:
             return GATE_ESTOP
@@ -252,7 +265,10 @@ class PromptNode(Node):
             return
         self._gate_said = key
         if gate == GATE_SWITCH:
-            self.play(SND_WAIT_MAP if pending == 'MAP' else SND_WAIT_DRIVE)
+            #  ★매핑에는 이 게이트가 생기지 않는다★ [2026-09-16] 그래서 전환 안내
+            #  (mapping.mp3 = SND_WAIT_MAP)는 더 이상 나오지 않는다 — 매핑에서
+            #  사람이 들을 말은 '시작되었다'(prompt_2) 하나다(사용자 지시).
+            self.play(SND_WAIT_DRIVE)
         elif gate == GATE_ESTOP:
             self.play(SND_ESTOP_HOLD)
 
@@ -294,7 +310,8 @@ class PromptNode(Node):
                          " (거절되지 않는다)")
         lines += [
             " 1) 매핑 시작   2) 주행 시작   |  r = 새로고침  |  s = 정지(리니어 2단)  |  q = 종료",
-            " ▶ 매핑: ①스위치 수동조종 → ②E-STOP 해제  (둘 다 되면 즉시 시작)",
+            " ▶ 매핑: E-STOP 해제만 되면 즉시 시작"
+            "  (수동조종=페달·핸들 / 자율주행=조이스틱 — 스위치는 어느 쪽이어도 된다)",
             " ▶ 주행: 경로 선택 후 ①스위치 자율주행 → ②E-STOP 해제 → ③라이다 준비",
             ""]
         return "\n".join(lines)
@@ -318,13 +335,15 @@ class PromptNode(Node):
         남은 단계는 아래 줄에 작게 보여 준다(무엇이 더 남았는지는 알아야 한다).
         """
         label = "매핑" if pending == 'MAP' else "주행"
-        need = "수동조종" if pending == 'MAP' else "자율주행"
+        need = "자율주행"                            # ★스위치 게이트는 주행에만 있다★
         if self.auto_mode is None:
             cur = "미수신"
         else:
             cur = "자율주행" if self.auto_mode else "수동조종"
 
-        nstep = 3 if pending == 'DRIVE' else 2      # 주행만 ③라이다가 있다
+        #  ★[2026-09-16] 매핑은 E-STOP 한 단계뿐이다★ 스위치를 보지 않으므로
+        #  ①스위치 단계가 통째로 사라졌다(gate_for 참고).
+        nstep = 3 if pending == 'DRIVE' else 1
         if gate == GATE_SWITCH:
             head = (f" ⏳ {label} 대기 ①/{nstep} — 스위치를 ★{need}★ 로 전환하세요 "
                     f"(현재: {cur})")
@@ -344,9 +363,11 @@ class PromptNode(Node):
                 rest = ("   센서는 흐르는데 mppi 의 /lidar_active 가 없다 — "
                         "mppi_local_planner 가 떠 있는지 확인 (use_lidar:=true 인가)")
         else:
-            head = (f" 🚨 {label} 대기 ②/{nstep} — ★E-STOP 을 해제하세요★ "
-                    f"(스위치: {cur} ✔)")
-            rest = ("   해제하는 즉시 매핑이 시작됩니다 — 페달로 몰 준비를 하고 해제할 것"
+            step = 2 if pending == 'DRIVE' else 1
+            suffix = f" (스위치: {cur} ✔)" if pending == 'DRIVE' else ""
+            head = (f" 🚨 {label} 대기 {step}/{nstep} — ★E-STOP 을 해제하세요★{suffix}")
+            rest = ("   해제하는 즉시 매핑이 시작됩니다 — 몰 준비를 하고 해제할 것"
+                    " (페달·핸들 또는 조이스틱, 스위치는 어느 쪽이어도 된다)"
                     if pending == 'MAP' else
                     "   다음 단계: ③라이다 준비 — 그것까지 되면 ★차가 출발합니다★")
         lines = [self.header(), head, rest,
@@ -370,7 +391,8 @@ class PromptNode(Node):
         if self.state in ('MAP_HEADING', 'DRIVE_HEADING'):
             lines.append(" 🧭 헤딩 초기화 중 — 조향 0°로 곧게 굴러간다. 확정되면 자동 진행.")
         elif self.state == 'MAP_RUN':
-            lines.append(" 🗺️ 매핑 중 — 페달로 운전하세요.")
+            lines.append(" 🗺️ 매핑 중 — 페달·핸들 또는 조이스틱으로 운전하세요"
+                         " (스위치는 어느 쪽이어도 됩니다).")
         elif self.state == 'DRIVE_RUN':
             lines.append(" 🚗 자율주행 중.")
         elif self.state == 'DRIVE_DONE':

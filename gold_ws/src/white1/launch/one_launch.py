@@ -273,6 +273,18 @@ def generate_launch_description():
             'stop_brake_level', default_value='0',
             description='/control_state=False 일 때 arduino 가 걸 브레이크 단계. '
                         '★0 을 권한다★ — 정지 시 리니어는 driving 이 직접 지시한다'),
+        # ── ★[2026-09-16] 조이스틱 조종★ ───────────────────────────────
+        #   arduino 노드가 A/B 와 함께 "J," 보드를 잡는다 — 꽂혀 있으면 자동으로
+        #   붙고, 없으면 조용히 아무 일도 안 한다. 자율주행 모드에서 ★SWA 를 한 번★
+        #   누르면 그때부터 스틱이 차를 몬다(L 위=엑셀 / L 아래=브레이크 / R=조향).
+        DeclareLaunchArgument(
+            'use_joystick', default_value='true',
+            description='조이스틱 보드("J,")를 arduino 노드가 함께 잡을지. '
+                        'false 면 포트를 열지 않는다(구 nxde/joystick 노드를 쓸 때)'),
+        DeclareLaunchArgument(
+            'joy_pulse_max', default_value='15',
+            description='조이스틱 L스틱을 끝까지 밀었을 때의 목표펄스. '
+                        '★초기 시험에서는 3~5 로 낮출 것★ (15 ≈ 47km/h)'),
         DeclareLaunchArgument(
             'manual_pulse_max', default_value='15',
             description='수동조종에서 페달 최대치가 대응할 펄스. '
@@ -489,6 +501,8 @@ def generate_launch_description():
             'throttle_raw_min': LaunchConfiguration('throttle_raw_min'),
             'throttle_raw_max': LaunchConfiguration('throttle_raw_max'),
             'throttle_gamma':   LaunchConfiguration('throttle_gamma'),
+            'use_joystick':     LaunchConfiguration('use_joystick'),
+            'joy_pulse_max':    LaunchConfiguration('joy_pulse_max'),
             'exclude_ports':    exclude_for_arduino,
         }],
         condition=IfCondition(use_arduino),

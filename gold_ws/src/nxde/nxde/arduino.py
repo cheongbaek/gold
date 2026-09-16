@@ -64,7 +64,13 @@
 #                                               그 외(자율·정지·페달 놓음)에는 0 이다
 #                                               (= 직접 PWM 경로를 쓰지 않는 상태).
 #                 /estop (Bool)                 A·B 중 한쪽이라도 STOP 이면 True
-#                 /board_status (String)        "A:1,B:1,ESTOP:0,MODE:1" (진단·로스백용)
+#                 /board_status (String)        "A:1,B:1,ESTOP:0,MODE:1,J:0" (진단·로스백용)
+#                 /joy_active (Bool)            ★[2026-09-16] 조이스틱이 지금 몰고 있는가★
+#                 /joy_buttons (Int32)          조이스틱 버튼 비트마스크(joyread.BTN_*).
+#                                               ★지금은 아무도 구독하지 않는다★ — 추후
+#                                               prompt 를 이 스위치로 조작하기 위한 자리
+#   ROS → 보드 :  /gps_fused (Float64MultiArray) ★조이스틱 LCD 표시 전용★ [8]=GPS km/h.
+#                                               제어에는 쓰지 않는다(없어도 무해).
 #
 #   ※ /motor_pwm, /steer_pwm 은 발행하지 않는다 — kasa 펌웨어가 PWM 을 텔레메트리로
 #     내보내지 않는다. white 쪽 구독자도 없었으므로(로스백 진단 전용이었다) 그냥 사라진다.
@@ -109,6 +115,38 @@
 #       2 = 풀브레이킹(A5 raw 850)
 #     ★[0813-1] 이후 단계는 '행정 몇 분의 몇' 이 아니라 ★가변저항 절대위치★ 다★
 #     범위 밖 값은 B보드가 브레이크 필드만 무시한다.
+#
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-16] 조이스틱 조종 — 세 번째 보드를 이 노드가 함께 잡는다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 여기로 왔나★ 종전에는 master 창의 체크박스가 조이스틱 포트를 직접 열었다.
+#  그러면 ① 조이스틱 조종이 그 창을 띄운 자리에서만 되고 ② A/B 탐색과 조이스틱
+#  탐색이 ★같은 포트 풀을 각자 두드려★ 서로의 보드를 DTR 로 리셋시킨다.
+#  이제 A·B·J 를 이 노드 하나가 찾는다 → ★arduino 가 뜨는 자리면 어디서나★
+#  (one_launch·master.launch 공통) 조이스틱으로 몰 수 있다.
+#
+#  ┌ 조작 ───────────────────────────────────────────────────────────────────┐
+#  │  L스틱 위쪽   주행 펄스 0~joy_pulse_max                                  │
+#  │  L스틱 아래쪽 브레이크 0/1/2 단 (중앙~맨아래 3등분)                      │
+#  │  R스틱 좌우   조향 −40~+40 (− 좌 / + 우)                                 │
+#  │  ★SWA 짧게 = 시작 / 일시정지★  ★기본은 꺼짐★ (붙는 순간에도 꺼짐)      │
+#  │  보드 리셋 버튼 = 스틱 영점 재보정 ("J,RESET" 한 줄이 그 신호다)         │
+#  └──────────────────────────────────────────────────────────────────────────┘
+#
+#  ★안전장치 (전부 '끄는 방향' 이다)★
+#    · ★자율주행 모드(D5)에서만 작동한다★ 수동조종에서는 사람이 페달·핸들을 쥐고
+#      있고 (2) 분기가 그 경로를 직접 넘긴다 — 거기에 조이스틱이 끼면 사람과 싸운다.
+#      수동으로 내려가면 그 자리에서 꺼지고, 자율로 돌아와도 ★SWA 를 다시 눌러야★ 한다.
+#    · 영점이 끝나기 전에는 SWA 를 눌러도 켜지지 않는다(스틱이 512 에 있지 않다).
+#    · 입력이 끊기거나(0.6s) 보드가 빠지거나 E-STOP 이면 즉시 꺼진다.
+#    · 끄는 순간 /cmd_vel_raw 캐시를 0 으로 지운다(_set_joy_on 주석).
+#
+#  ★조이스틱이 없어도 아무것도 바뀌지 않는다★ 못 찾는 것은 경고가 아니며
+#  (A/B 와 달리 '없는 것이 정상' 인 장치다), use_joystick:=false 로 아예 끌 수 있다.
+#
+#  ★LCD (joyled.ino)★ 이 노드가 "D,<on>,<pulse>,<steer>,<kmh>" 로 ★실제로 보드에
+#  나간 명령★ 과 GPS 속도를 보내면 조이스틱이 그것을 화면에 비춘다. 그 줄이 끊기면
+#  보드가 스스로 OFF·00 으로 되돌린다 — 화면이 죽은 값을 붙들지 않는다.
 #
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ 주행 상태 판단 (우선순위 순서 그대로) ★★
@@ -208,6 +246,14 @@
 #                페달을 떼면 "0" → 코스트(서서히 감속). 펌웨어 PWM_MAX=170 에 묶인다.
 #        기본 True — white1·lidar 런치 모두 2026-08-27 이후 PWM 을 전제로 넘긴다.
 #
+#  (2-5) ★조이스틱 조종★ : A="<스틱 펄스>", B="<스틱 조향각>,<스틱 브레이크>"
+#      자율주행 모드에서 SWA 로 켜 둔 동안. ★/cmd_vel_raw·/control_state 보다 먼저다★
+#      — 사람이 스틱을 잡고 몰겠다고 누른 상태이므로 판단 노드가 무엇을 내든 스틱이
+#      이긴다. 그 위의 (1) E-STOP·(1-1) AEB 는 여전히 이긴다.
+#      ★브레이크는 스틱 값만 쓴다★ /brake_level 과 합치지 않는다 — 직전 주행이
+#      DRIVE_DONE 으로 2단을 주장하고 있으면 조이스틱을 켜도 차가 안 움직이고 그
+#      이유가 화면 어디에도 없다. "리니어가 왜 물렸나" 의 답을 스틱 하나로 좁힌다.
+#
 #  (3) /control_state=False : A="0", B="<마지막 조향각>,<stop_brake_level>"
 #      driving.py 가 정지를 지시한 상태(instant_stop / 경로 미로드 / STOP 명령).
 #      조향각을 0 으로 리셋하지 않고 마지막 값을 유지한다 — 정지 순간에 바퀴가 정면으로
@@ -295,7 +341,7 @@ from collections import deque
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool, Int32, String
+from std_msgs.msg import Bool, Float64MultiArray, Int32, String
 from geometry_msgs.msg import Twist
 
 import serial
@@ -309,6 +355,9 @@ except Exception:      # POSIX 가 아닌 곳에서는 HUPCL 을 못 끈다
     termios = None
 
 from nxde.proc_guard import watch_parent
+# ★조이스틱 해석의 단일 소유자★ [2026-09-16] — 프로토콜("J,")·영점·환산이 전부
+#   그쪽이고, ★포트는 이 파일이 소유한다★ (joyread.py 헤더 참고).
+from nxde import joyread
 
 
 BAUD_RATE = 115200
@@ -343,6 +392,21 @@ MANUAL_PWM_MAX = PWM_DIRECT_MAX
 STEER_DEG_MAX = 40           # 입력 조향각 클램프 (STEER_ANGLE_MAX 와 동일해야 한다)
 BRAKE_LEVEL_MAX = 2          # 0 = 놓음 / 1 = 약 / 2 = 풀
 STEER_RELEASE_TOKEN = 'x'    # 조향 힘빼기 (B보드 isReleaseToken)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★[2026-09-16] 조이스틱 보드("J,") — 이 노드가 세 번째 보드로 함께 잡는다★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★왜 여기로 옮겼나★ 종전에는 master 창의 체크박스가 조이스틱 포트를 직접 열었다.
+#  그러면 ① 조이스틱 조종이 그 창을 띄운 자리에서만 되고 ② A/B 탐색과 조이스틱
+#  탐색이 ★같은 포트 풀을 각자 두드려★ 서로의 보드를 DTR 리셋시킨다.
+#  세 보드를 한 노드가 찾으면 그 두 문제가 동시에 사라지고, one_launch 든
+#  master.launch 든 ★arduino 가 뜨는 자리면 어디서나★ 조이스틱으로 몰 수 있다.
+JOY_PREFIX = joyread.JOY_PREFIX          # 'J,' — identify_port 가 역할을 가르는 접두어
+#  LCD 표시값을 보내는 줄. "D,<on>,<pulse>,<steer>,<kmh>" (joyled.ino handleDisplayLine)
+#    on    0/1  지금 조이스틱 입력이 실제로 차에 나가고 있는가
+#    kmh   ★음수 = 값 없음★ → 보드가 00 으로 찍는다(GPS 가 없는 스택에서 그렇다)
+JOY_DISPLAY_STALE_S = 1.0    # /gps_fused 가 이보다 낡으면 '속도를 모른다'로 본다
+JOY_KMH_MAX = 99             # LCD 가 두 자리다 — 그 위는 접는다
 
 # ── 쓰로틀 페달 raw → 펄스 환산 ──
 #   데드존은 여기 최솟값 하나다. 이보다 작거나 같은 raw 는 개도 0 → 지령 0.
@@ -439,6 +503,11 @@ DETECT_READ_S  = 8.0         # 포트 하나를 A/B 로 식별하기 위해 읽�
 #     포트를 닫지 않고 이 시간까지 해제를 기다린다. 풀리는 즉시 식별된다.
 DETECT_ESTOP_HOLD_S = 15.0
 DETECT_RETRY_S = 3.0         # 두 보드를 아직 못 찾았을 때 재스캔 간격
+#  ★조이스틱만 없을 때는 느리게 다시 본다★ [2026-09-16] 조이스틱은 '없는 것이
+#  정상' 인 장치라, A/B 와 같은 3초로 두면 안 꽂은 차에서 남은 포트를 계속 두드린다
+#  (포트를 여는 것 자체가 그 보드를 DTR 로 리셋시킨다 — 다른 USB 시리얼이 꽂혀
+#  있으면 그쪽이 3초마다 재부팅된다).
+JOY_RESCAN_S = 15.0
 DETECT_OPEN_RETRY   = 5      # open 간헐 실패 시 재시도 횟수
 DETECT_OPEN_DELAY_S = 1.0
 PORT_SETTLE_S       = 0.5    # 한 보드를 이미 연 상태에서 다음 포트를 열기 전 USB 안정화 대기
@@ -806,6 +875,14 @@ def identify_port(port, baud, logger, reclaim=True):
 
        반환: (role, serial.Serial 또는 None)
          role = 'A' | 'B'      : 식별 + 핸드셰이크 모두 성공 (ser 유효)
+                'J'            : ★조이스틱 보드★ [2026-09-16]. ser 유효.
+                                 ★핸드셰이크를 요구하지 않는다★ — A/B 에 그것을
+                                 요구하는 이유는 "PC→보드 방향이 죽으면 명령이
+                                 안 나가는데 텔레메트리만 보고 연결로 인정하면
+                                 안 된다" 였다. 조이스틱은 반대다: 조종은
+                                 ★보드→PC 한 방향★ 으로 성립하고, PC→보드는
+                                 LCD 표시값뿐이라 죽어도 차는 정상으로 몬다.
+                                 (겸사겸사 핸드셰이크가 없는 구 joy4.ino 도 붙는다)
                 'NOACK'        : 역할은 알았는데 "YES" 가 안 왔다 → 포트를 닫았다.
                                  호출측이 다음 스캔에서 다시 열어 재확인한다.
                 'ESTOP'        : 보드는 있는데 STOP 만 보내 역할을 모른다.
@@ -832,7 +909,12 @@ def identify_port(port, baud, logger, reclaim=True):
                 line, buf = buf.split(b'\n', 1)
                 text = line.decode('ascii', errors='ignore').strip()
                 role = 'A' if text.startswith('S,') else (
-                       'B' if text.startswith('P,') else None)
+                       'B' if text.startswith('P,') else (
+                       'J' if text.startswith(JOY_PREFIX) else None))
+                if role == 'J':
+                    # ★조이스틱은 핸드셰이크 없이 바로 인정한다★ (위 docstring)
+                    logger.info(f"[조이스틱 연결] {port}")
+                    return 'J', ser
                 if role is not None:
                     # ★출력이 정상이어도 여기서 끝내지 않는다★ '-' → "YES" 로
                     #   PC→보드 방향까지 확인해야 연결로 인정한다.
@@ -975,6 +1057,18 @@ class Arduino(Node):
         self.exclude_ports = [
             str(p) for p in self.declare_parameter('exclude_ports', ['']).value if str(p)]
 
+        # ── ★[2026-09-16] 조이스틱 조종★ ───────────────────────────────────
+        #   ★기본으로 켜 둔다★ 꽂혀 있으면 붙고, 없으면 조용히 아무 일도 안 한다
+        #   (조이스틱 보드를 못 찾는 것은 경고가 아니다 — 아래 _link_loop).
+        #   그래서 one_launch·master.launch 어느 쪽이든 인자를 주지 않아도 된다.
+        self.use_joystick = _as_bool(
+            self.declare_parameter('use_joystick', True).value, True)
+        #   조이스틱으로 낼 수 있는 최대 펄스. ★초기 시험에서는 3~5 로 낮출 것★
+        #   기본 15 는 A보드 상한(≈47km/h)이라 실내·저속 시험에는 과하다.
+        self.joy_pulse_max = max(1, min(PULSE_MAX,
+                                        int(self.declare_parameter('joy_pulse_max',
+                                                                   PULSE_MAX).value)))
+
         if self.manual_use_pwm:
             self.get_logger().info(
                 f"수동조종 구동 = 직접 PWM {self.manual_pwm_min}~{self.manual_pwm_max} "
@@ -995,8 +1089,10 @@ class Arduino(Node):
         self._link_thread = None
         self.ser_a = None
         self.ser_b = None
+        self.ser_j = None          # ★조이스틱 보드★ (없어도 A/B 는 정상이다)
         self.rx_buf_a = b''
         self.rx_buf_b = b''
+        self.rx_buf_j = b''
         self.last_line_a = None
         self.last_line_b = None
         self._last_s_t = 0.0           # 마지막 유효 S, 수신 (monotonic). 0 = 아직 없음
@@ -1075,6 +1171,29 @@ class Arduino(Node):
         #   가리키지 않는다. 기본값 0 에서는 어느 쪽이든 체결이 없다.
         self._stop_brake_armed = False
 
+        # ── ★[2026-09-16] 조이스틱 조종 상태★ ─────────────────────────────
+        #   joy      : 줄을 먹고 영점·환산을 하는 상태기계 (포트는 이 파일이 소유)
+        #   joy_on   : SWA 로 사람이 켠 '조종 중' 상태. ★시작은 항상 꺼짐★
+        #   joy_gate : 지금 조종할 수 없는 이유(없으면 None). 화면·로그용이고
+        #              이 값이 있으면 joy_on 은 강제로 꺼진다.
+        #   joy_cmd  : 이번 틱에 조이스틱이 요구하는 (펄스, 조향, 브레이크)
+        self.joy = joyread.JoystickState(pulse_max=self.joy_pulse_max,
+                                         log=self.get_logger().info) \
+            if self.use_joystick else None
+        self.joy_on = False
+        self.joy_gate = None
+        self.joy_cmd = (0, 0, 0)
+        self.joy_buttons = 0
+        self._last_j = None            # 마지막으로 보낸 D 줄 (변경 감지)
+        self._last_j_t = 0.0
+
+        # ── GPS 속도 (조이스틱 LCD 표시 전용) ──────────────────────────────
+        #   ★제어에는 쓰지 않는다★ /gps_fused[8] = 원시 fix 변위속도 [km/h]
+        #   (white1/gps.py 의 배열 규약). 그 노드가 없는 스택(master.launch 등)에서는
+        #   영영 안 오고, 그때 LCD 는 00 을 찍는다 — 사용자 지시 그대로다.
+        self.gps_kmh = None
+        self.gps_kmh_t = 0.0
+
         # ── 전송 변경 감지 ──
         self._last_a = None
         self._last_b = None
@@ -1110,6 +1229,14 @@ class Arduino(Node):
         self.pub_drive_pwm = self.create_publisher(Int32, '/drive_pwm_cmd', 10)
         self.pub_estop = self.create_publisher(Bool, '/estop', 10)
         self.pub_status = self.create_publisher(String, '/board_status', 10)
+        # ★[2026-09-16] 조이스틱이 지금 차를 몰고 있는가★ 화면(master·hud)이 이것을
+        #   보고 '레버가 아니라 스틱이 몰고 있다' 를 표시한다. 제어에는 쓰이지 않는다.
+        self.pub_joy_active = self.create_publisher(Bool, '/joy_active', 10)
+        # ★[2026-09-16] 조이스틱 버튼 비트마스크 (joyread.BTN_*)★
+        #   ★지금은 아무도 구독하지 않는다★ — 추후 prompt.py 를 이 스위치로 조작하기
+        #   위해 '보낼 준비' 만 해 둔 자리다(사용자 지시 6항). 소비자가 생기면
+        #   그때 엣지 판정을 그쪽에서 한다(여기서 상태를 그대로 낸다).
+        self.pub_joy_buttons = self.create_publisher(Int32, '/joy_buttons', 10)
 
         # ── 서브스크라이버 ──
         self.create_subscription(Twist, '/cmd_vel_raw', self.cb_cmd_vel, 10)
@@ -1123,6 +1250,11 @@ class Arduino(Node):
         # ★[2026-08-25] AEB 비상정지★ aeb_brake_level=0(기본)이면 받아도 무시한다.
         #   구독 자체는 항상 걸어 둔다 — 파라미터로 켠 순간부터 바로 듣게.
         self.create_subscription(Bool, self.aeb_topic, self.cb_aeb_stop, 10)
+        # ★[2026-09-16] GPS 속도 — 조이스틱 LCD 에 비추기 위해서만 구독한다★
+        #   제어에 쓰지 않으므로 이 토픽이 없어도 거동이 전혀 바뀌지 않는다.
+        if self.use_joystick:
+            self.create_subscription(Float64MultiArray, '/gps_fused',
+                                     self.cb_gps_fused, 10)
         if self.aeb_brake_level > 0:
             self.get_logger().warn(
                 f"🛑 AEB 비상정지 켜짐 — {self.aeb_topic} 가 True 면 구동을 끊고 "
@@ -1165,14 +1297,15 @@ class Arduino(Node):
         제어 타이머(on_tx_timer/on_rx_timer)를 막지 않는다."""
         first_round = True
         while self._running and rclpy.ok():
-            if self.ser_a is not None and self.ser_b is not None:
+            if self._all_boards_linked():
                 time.sleep(DETECT_RETRY_S)
                 first_round = False
                 continue
 
             missing = [n for n, s in (('A', self.ser_a), ('B', self.ser_b)) if s is None]
             if first_round:
-                self.get_logger().info(f"{'/'.join(missing)}보드 탐색 시작...")
+                self.get_logger().info(
+                    f"{'/'.join(missing) if missing else 'J'}보드 탐색 시작...")
             self.publish_status()
 
             self._scan_once()
@@ -1203,13 +1336,28 @@ class Arduino(Node):
                         f"(연결·전원·USB 케이블 확인)", throttle_duration_sec=15.0)
                 self.publish_status()
                 time.sleep(DETECT_RETRY_S)
+            elif self.use_joystick and self.ser_j is None:
+                # ★조이스틱이 없는 것은 정상이다 — 경고하지 않는다★ [2026-09-16]
+                #   A/B 가 없으면 차가 아예 안 움직이지만, 조이스틱이 없으면
+                #   그냥 '조이스틱으로 안 모는 날' 이다. 꽂으면 알아서 붙는다.
+                self.get_logger().info(
+                    f"조이스틱 보드 미발견 — 꽂으면 자동으로 붙습니다 "
+                    f"(A/B 는 정상, {JOY_RESCAN_S:.0f}초마다 확인)",
+                    throttle_duration_sec=120.0)
+                time.sleep(JOY_RESCAN_S)
             elif not first_round:
                 self.get_logger().info("A/B 보드 모두 연결됨")
             first_round = False
 
+    def _all_boards_linked(self):
+        """더 스캔할 것이 남았는가. ★조이스틱은 켜져 있을 때만 센다★"""
+        if self.ser_a is None or self.ser_b is None:
+            return False
+        return not (self.use_joystick and self.ser_j is None)
+
     def _scan_once(self):
         """후보 포트를 한 바퀴 돌며 아직 못 찾은 보드를 채운다."""
-        owned = {s.port for s in (self.ser_a, self.ser_b) if s is not None}
+        owned = {s.port for s in (self.ser_a, self.ser_b, self.ser_j) if s is not None}
         exclude = list(self.exclude_ports) + list(owned)
         # ★이번 바퀴에서 'E-STOP 때문에 역할을 못 읽은' 포트★ (매 바퀴 새로 판단한다 —
         #   해제되면 다음 바퀴에서 정상 식별되어야 하므로 남겨두면 안 된다)
@@ -1221,11 +1369,11 @@ class Arduino(Node):
         for port in candidate_ports(exclude=exclude):
             if not (self._running and rclpy.ok()):
                 return
-            if self.ser_a is not None and self.ser_b is not None:
+            if self._all_boards_linked():
                 return
 
             # 이미 한 보드를 연 상태면 USB 컨트롤러가 안정되도록 잠깐 쉰다
-            if self.ser_a is not None or self.ser_b is not None:
+            if self.ser_a is not None or self.ser_b is not None or self.ser_j is not None:
                 time.sleep(PORT_SETTLE_S)
 
             try:
@@ -1245,7 +1393,21 @@ class Arduino(Node):
                 self._noack_ports.append(port)
                 continue
 
-            if role == 'A' and self.ser_a is None:
+            if role == 'J' and self.use_joystick and self.ser_j is None:
+                # ★조이스틱 보드★ [2026-09-16] 핸드셰이크 없이 바로 쓴다(identify_port).
+                ser.timeout = 0
+                self.rx_buf_j = b''
+                self._last_j = None        # D 줄 변경감지 초기화 → 다음 TX 에 즉시 갱신
+                self.ser_j = ser
+                self.joy_on = False        # ★붙는 순간은 언제나 꺼짐★ (SWA 로 켠다)
+                if self.joy is not None:
+                    self.joy.reset('조이스틱 연결')
+                self.get_logger().info(
+                    f"[조이스틱 보드 연결] {port} — 스틱을 건드리지 말고 기다리십시오"
+                    f"(영점). 그 다음 ★SWA 를 한 번 누르면 조종이 시작됩니다★ "
+                    f"(자율주행 모드에서만 / 최대 {self.joy_pulse_max}펄스)")
+                self.publish_status()
+            elif role == 'A' and self.ser_a is None:
                 ser.timeout = 0            # 이후 폴링은 논블로킹
                 self.rx_buf_a = b''        # 재연결이면 이전 버퍼 잔재를 버린다
                 self._last_a = None        # 변경감지 캐시 초기화 → 다음 TX 에서 즉시 재전송
@@ -1276,7 +1438,7 @@ class Arduino(Node):
         것이 STOP·형식오류 처리와 같은 태도이고, 재연결 직후 값이 0 으로 튀는 것보다 낫다.
         단, 최신 줄(last_line_*)은 지운다 — 'STOP' 이 남아 있으면 보드가 빠진 뒤에도
         e-stop 이 걸린 것으로 오판한다."""
-        ser = self.ser_a if which == 'a' else self.ser_b
+        ser = self._ser(which)
         if ser is None:
             return
         self.get_logger().error(
@@ -1291,11 +1453,23 @@ class Arduino(Node):
             self.last_line_a = None
             self._last_s_t = 0.0
             self._thr_buf.clear()
+        elif which == 'j':
+            # ★조이스틱이 빠지면 그 자리에서 조종을 끈다★ 입력을 잃은 채 마지막
+            #   펄스가 남으면 차가 계속 간다(A보드는 신선도를 보지 않고 래치한다).
+            self.ser_j = None
+            self.rx_buf_j = b''
+            self._set_joy_on(False, '조이스틱 단절')
+            if self.joy is not None:
+                self.joy.reset('조이스틱 단절')
         else:
             self.ser_b = None
             self.rx_buf_b = b''
             self.last_line_b = None
         self.publish_status()
+
+    def _ser(self, which):
+        """'a'/'b'/'j' → 그 보드의 serial 객체 (없으면 None)."""
+        return {'a': self.ser_a, 'b': self.ser_b, 'j': self.ser_j}.get(which)
 
     # ═══════════════════════════════════════════════════════════════
     #  ROS 콜백
@@ -1350,6 +1524,88 @@ class Arduino(Node):
             # 해제 유예의 기준 — ★마지막으로 '물어라' 를 받은 시각·단계★
             self._brake_hold_level = level
             self._brake_hold_t = self._brake_rx_t
+
+    def cb_gps_fused(self, msg: Float64MultiArray):
+        """/gps_fused[8] = 원시 fix 변위속도 [km/h]. ★조이스틱 LCD 표시 전용★
+
+        ★제어에는 쓰지 않는다★ 이 값이 없거나 낡아도 차의 거동은 하나도 바뀌지
+        않는다 — LCD 의 속도 칸이 00 이 될 뿐이다(사용자 지시 그대로).
+        NaN = '아직 값이 없다' 는 그쪽 규약이다(gps.py 배열 규약).
+        """
+        data = msg.data
+        if len(data) <= 8:
+            return
+        kmh = float(data[8])
+        if kmh != kmh:              # NaN — 값 없음
+            return
+        self.gps_kmh = max(0.0, kmh)
+        self.gps_kmh_t = time.monotonic()
+
+    # ═══════════════════════════════════════════════════════════════
+    #  ★[2026-09-16] 조이스틱 조종★
+    # ═══════════════════════════════════════════════════════════════
+    def _set_joy_on(self, on, reason=''):
+        """조이스틱 조종 ON/OFF 의 ★단일 지점★ — SWA 도, 게이트 강제해제도 여기로.
+
+        ★끄는 쪽에서 /cmd_vel_raw 캐시를 지운다★ 조이스틱을 끄면 판단은 (3)/(4)
+        분기로 돌아가는데, 그 캐시에 옛 펄스가 남아 있으면 ★손을 뗀 순간 차가
+        그 값으로 다시 나간다★. 자율주행이 실제로 몰고 있었다면 다음 틱에 같은
+        값이 곧바로 다시 들어오므로 잃는 것이 없다.
+        """
+        on = bool(on)
+        if on == self.joy_on:
+            return
+        self.joy_on = on
+        if on:
+            self.get_logger().info(
+                f"🕹️ ★조이스틱 조종 시작★ — L스틱 위=엑셀(최대 {self.joy_pulse_max}펄스) "
+                f"/ 아래=브레이크 / R스틱=조향. SWA 를 다시 누르면 일시정지")
+        else:
+            self.cmd_pulse = 0
+            self.get_logger().info(
+                f"⏸ 조이스틱 조종 정지{f' — {reason}' if reason else ''}")
+
+    def _joy_tick(self):
+        """조이스틱 상태를 한 틱 굴린다. ★on_tx_timer 가 compose 앞에서 부른다★
+
+        compose() 는 '지금 상태로 페이로드를 만드는' 순수 판정만 하게 두고, 상태를
+        바꾸는 일(SWA 토글·게이트 강제해제)은 전부 여기서 한다 —
+        _disarm_brakes_on_mode_edge() 와 같은 규칙이다.
+        """
+        if self.joy is None:
+            return
+        snap = self.joy.snapshot()      # ★한 틱에 한 번★ (SWA 카운터를 비운다)
+        self.joy_buttons = self.joy.buttons(snap)
+
+        # ★게이트 — 조종할 수 없는 이유★ 순서가 곧 안내 우선순위다.
+        if self.ser_j is None:
+            gate = '조이스틱 미연결'
+        else:
+            gate = self.joy.gate_reason(snap)
+        #  차량 쪽 사정은 상태기계가 모른다 — 여기서 얹는다.
+        #  ★자율주행 모드에서만 작동한다★ (사용자 지시 2항) — 수동조종에서는 사람이
+        #  페달·핸들을 잡고 있고 arduino 가 그 경로를 직접 넘긴다. 그때 조이스틱까지
+        #  명령을 쏘면 사람과 싸운다.
+        if gate is None and not self.auto_mode:
+            gate = '수동조종 모드 (스위치를 자율주행으로)'
+        if gate is None and self.estop_active:
+            gate = 'E-STOP'
+        self.joy_gate = gate
+
+        # ── SWA 릴리즈 = 시작 / 일시정지 토글 ──
+        #   ★횟수로 받는다★ 이 틱은 50ms 마다 도는데 짧게 누르면 그 사이에 눌렸다
+        #   떼어지므로 '지금 눌려 있나' 로는 놓친다(joyread.snapshot 참고).
+        for _ in range(snap['swa_releases']):
+            if gate is not None:
+                self.get_logger().warn(f"SWA 입력 무시 — {gate}")
+                break
+            self._set_joy_on(not self.joy_on, 'SWA')
+
+        # ★게이트가 걸리면 그 자리에서 끈다★ (단절·영점 상실·모드 전환·E-STOP)
+        if gate is not None and self.joy_on:
+            self._set_joy_on(False, gate)
+
+        self.joy_cmd = self.joy.command(snap) if self.joy_on else (0, 0, 0)
 
     def cb_aeb_stop(self, msg: Bool):
         """/aeb_stop — 전방 장애물 확정. ★수동조종 중에도 통하는 제동 경로★
@@ -1624,6 +1880,28 @@ class Arduino(Node):
                     self.get_logger().info(engaged_msg)
             return a_payload, f'{STEER_RELEASE_TOKEN},0', pulse
 
+        # (2-5) ★조이스틱 조종 — 자율주행 모드에서 SWA 로 켠 동안★ [2026-09-16]
+        #
+        #   ★/cmd_vel_raw 와 /control_state 보다 먼저 판정한다★ 사람이 스틱을 잡고
+        #   차를 몰겠다고 SWA 를 누른 상태이므로, 그 동안 판단 노드(driving)가 무엇을
+        #   내든 차는 스틱을 따른다. 위의 (1) E-STOP · (1-1) AEB 는 여전히 이긴다 —
+        #   그 둘은 '사람의 조종'보다 위에 있는 안전 경로다.
+        #
+        #   ★브레이크는 스틱 값만 쓴다★ /brake_level 과 max 로 합치지 않는다.
+        #     · 그 토픽은 발행자가 여럿이고(driving·traffic_light·master), 직전 주행이
+        #       DRIVE_DONE 으로 2단을 계속 주장하고 있으면 ★조이스틱을 켜도 차가 안
+        #       움직이고 그 이유가 화면 어디에도 없다★.
+        #     · "지금 리니어가 왜 물렸나" 의 답을 ★스틱 하나★ 로 좁히는 것이 이 분기의
+        #       값이다. 수동조종 (2) 가 브레이크를 항상 0 으로 보내는 것과 같은 태도다.
+        #   구동과 제동을 동시에 걸지 않는 규칙은 (4) 와 같다 — 제동이 걸리면 REF 는 0.
+        if self.joy_on:
+            pulse, steer, brake = self.joy_cmd
+            brake = max(0, min(BRAKE_LEVEL_MAX, int(brake)))
+            pulse = 0 if brake > 0 else max(0, min(self.joy_pulse_max, int(pulse)))
+            return (str(pulse),
+                    f'{self.to_board_angle(steer)},{brake}',
+                    pulse)
+
         # (3) ROS 가 정지를 지시한 상태. 조향각은 마지막 값을 유지한다(정면 급조향 방지).
         #     브레이크는 stop_brake_level 이 /brake_level 보다 우선한다 — '정지 지시'가
         #     더 강한 의도이므로, 그때 0 을 받고 있었다고 브레이크를 풀면 안 된다.
@@ -1675,6 +1953,9 @@ class Arduino(Node):
         # 모드 전환 엣지 정리를 compose() 앞에 둔다 — compose() 는 '지금 상태로 페이로드를
         # 만드는' 순수 판정만 하게 유지한다(상태 변경은 이 함수에서).
         self._disarm_brakes_on_mode_edge()
+        #  ★조이스틱도 compose 앞에서 한 틱 굴린다★ [2026-09-16] SWA 토글·게이트
+        #  해제가 여기서 끝나야 compose() 가 순수 판정으로 남는다.
+        self._joy_tick()
         a_payload, b_payload, drive_pulse = self.compose()
         now = time.monotonic()
 
@@ -1703,13 +1984,47 @@ class Arduino(Node):
         drive_pwm = int(a_payload.split(',')[0]) if ',' in a_payload else 0
         self.pub_drive_pwm.publish(Int32(data=drive_pwm))
 
+        # ★[2026-09-16] 조이스틱 : 상태 발행 + LCD 표시값 송신★
+        if self.use_joystick:
+            self.pub_joy_active.publish(Bool(data=bool(self.joy_on)))
+            self.pub_joy_buttons.publish(Int32(data=int(self.joy_buttons)))
+            self._tx_joystick(b_payload, drive_pulse, now)
+
+    def _tx_joystick(self, b_payload, drive_pulse, now):
+        """조이스틱 보드로 LCD 표시값을 보낸다 — "D,<on>,<pulse>,<steer>,<kmh>".
+
+        ★보내는 값은 '지금 보드로 실제 나간 명령' 이다★ (/cmd_vel_raw 원값이 아니다)
+        화면 이름이 REF 인 이유이고, 브레이크가 걸려 펄스가 0 으로 덮인 경우까지
+        그대로 보인다 — 화면과 차가 어긋나지 않는 유일한 값이 이것이다.
+
+        ★GPS 속도는 모르면 −1 을 보낸다★ 보드가 그것을 00 으로 찍는다. 0 을 보내면
+        '멈춰 있다' 와 '모른다' 가 같은 그림이 되어 화면이 거짓말을 한다(모르면
+        낮게 보는 것과, 모른다고 말하는 것은 다르다).
+        """
+        if self.ser_j is None:
+            return
+        head = b_payload.split(',')[0]
+        steer = 0 if head == STEER_RELEASE_TOKEN else int(head)
+        if self.gps_kmh is not None and (now - self.gps_kmh_t) <= JOY_DISPLAY_STALE_S:
+            kmh = max(0, min(JOY_KMH_MAX, int(round(self.gps_kmh))))
+        else:
+            kmh = -1                      # ★모른다★ → 보드가 00 으로 찍는다
+        line = (f'D,{1 if self.joy_on else 0},{int(drive_pulse)},{steer},{kmh}')
+        #  A/B 와 같은 전송 정책 — 값이 바뀌었거나 KEEPALIVE_S 가 지났을 때만 쓴다.
+        #  ★보드는 이 줄이 끊기면(LINK_STALE_MS 1.5s) 화면을 OFF·00 으로 되돌린다★
+        #  그래서 keepalive 를 그보다 짧게 두는 것이 규약이다(KEEPALIVE_S = 1.0).
+        if line != self._last_j or (now - self._last_j_t) >= KEEPALIVE_S:
+            if self.send_line('j', line):
+                self._last_j = line
+                self._last_j_t = now
+
     def send_line(self, which, text):
         """한 보드에 한 줄 전송. 성공하면 True.
 
         전송 실패는 곧 포트 단절이므로 _drop_board 로 넘겨 재연결 대상으로 만든다.
         False 를 돌려주면 호출측이 변경감지 캐시를 갱신하지 않아, 재연결 직후 같은 값이
         다시 전송된다(= 명령이 유실되지 않는다)."""
-        ser = self.ser_a if which == 'a' else self.ser_b
+        ser = self._ser(which)
         if ser is None:
             return False
         try:
@@ -1725,6 +2040,7 @@ class Arduino(Node):
     def on_rx_timer(self):
         self.poll_port('a')
         self.poll_port('b')
+        self.poll_joystick()
         self.update_estop()
         self._warn_stale_throttle()
         self.publish_telemetry()
@@ -1750,6 +2066,33 @@ class Arduino(Node):
                 f"(마지막 줄={self.last_line_a!r}). 스로틀 raw 가 갱신되지 않습니다 "
                 f"— E-STOP 이 STOP 만 보내거나, TX 에코가 S, 를 가리고 있을 수 있습니다",
                 throttle_duration_sec=5.0)
+
+    def poll_joystick(self):
+        """조이스틱 보드 수신 — 줄을 그대로 상태기계에 먹인다. [2026-09-16]
+
+        ★A/B 의 poll_port 와 따로 둔다★ 저쪽은 'STOP'·에코 판정·텔레메트리 캐시
+        같은 A/B 전용 규칙이 붙어 있는데, 조이스틱 줄에는 그 규칙이 하나도
+        해당하지 않는다(파싱은 joyread 가 한다). 억지로 합치면 두 프로토콜의
+        예외가 한 함수에 쌓인다.
+        """
+        ser = self.ser_j
+        if ser is None or self.joy is None:
+            return
+        try:
+            data = ser.read(4096)
+        except (serial.SerialException, OSError) as e:
+            self._drop_board('j', f"수신 실패: {e}")
+            return
+        buf = self.rx_buf_j + (data or b'')
+        if b'\n' not in buf:
+            self.rx_buf_j = buf
+            return
+        lines = buf.split(b'\n')
+        self.rx_buf_j = lines[-1]           # 미완성 줄은 버퍼에 보존
+        for raw in lines[:-1]:
+            text = raw.decode('ascii', errors='ignore').strip()
+            if text:
+                self.joy.feed_line(text)
 
     def poll_port(self, which):
         ser = self.ser_a if which == 'a' else self.ser_b
@@ -1927,9 +2270,13 @@ class Arduino(Node):
         msg = String()
         # [2026-08-07] SRC:ovr / SW: 필드가 사라졌다 — 오버라이드가 없으니 MODE 가
         #   곧 물리 스위치 값이고, 둘이 어긋날 방법이 없다.
+        #  ★[2026-09-16] J 칸을 뒤에 붙였다★ 앞의 네 칸은 자리도 뜻도 그대로라
+        #  기존 파서(master·sound·record)는 아무것도 바뀌지 않는다.
+        #  J:0 = 조이스틱 미연결 / J:1 = 연결 / J:2 = ★연결 + 지금 조종 중★
         msg.data = (f"A:{1 if self.ser_a else 0},B:{1 if self.ser_b else 0},"
                     f"ESTOP:{1 if self.estop_active else 0},"
-                    f"MODE:{1 if self.auto_mode else 0}")
+                    f"MODE:{1 if self.auto_mode else 0},"
+                    f"J:{(2 if self.joy_on else 1) if self.ser_j else 0}")
         self.pub_status.publish(msg)
 
     # ═══════════════════════════════════════════════════════════════
@@ -2007,7 +2354,7 @@ class Arduino(Node):
         if wrote:
             time.sleep(STOP_FLUSH_S)   # 정지값이 실제로 나갈 시간을 준 뒤 닫는다
 
-        for ser in (self.ser_a, self.ser_b):
+        for ser in (self.ser_a, self.ser_b, self.ser_j):
             try:
                 if ser is not None and ser.is_open:
                     ser.close()

@@ -354,18 +354,16 @@ gold_ws/src/
     BOARD_B.md  BRAKING.md  GPS_HEADING.md  STOPLINE_TEST.md  CHANGELOG.md
 
   nxde/       아두이노 계층 (런치파일 없음, 전부 ros2 run)
-    arduino.py   ★차량 구동의 필수 노드★ A/B 2보드 시리얼 브리지
-    master.py    마우스·키보드 GUI 조종 (하드웨어 검증용)
-                 ★[2026-09-15] 최하단 '조이스틱으로 조종하기' 체크박스★ — 켜면
-                 "J," 보드를 스스로 찾아 붙고 레버가 그 계기판이 된다(L 위=펄스
-                 0~15 / L 아래=브레이크 1·2단 / R=조향 / ★SWA=시작·일시정지★).
-                 끄면 그 자리에서 포트를 놓는다 — 그래서 `master.launch.py` 하나로
-                 마우스·조이스틱을 다 쓴다(발행자는 여전히 이 창 하나뿐).
-    joyread.py   ★조이스틱 읽기의 단일 소유자★ (노드가 아니다) — "J," 프로토콜
-                 (joy4.ino 9토큰 / 구 joy.ino 12토큰), 포트 탐색·영점·환산.
-                 master.py 가 쓴다.
-    joystick.py  조이스틱 조종 ★별 노드★ (자율모드 한정 + 영점→SWA). joy.launch.py
-                 전용이고 U 보드(joy2.ino)까지 받는다 — 화면 없는 자리에서 쓴다
+    arduino.py   ★차량 구동의 필수 노드★ A/B/★J★ 3보드 시리얼 브리지
+                 [2026-09-16] 조이스틱("J,")까지 이 노드가 잡고 ★직접 몬다★ (4.8절)
+    master.py    마우스·키보드 GUI 조종 (하드웨어 검증용). 조이스틱이 모는 동안은
+                 레버를 잠그고 ★비추기만★ 한다(/joy_active 구독)
+    joyread.py   ★조이스틱 해석의 단일 소유자★ (노드도 아니고 포트도 열지 않는다)
+                 — "J," 프로토콜(joyled.ino 9토큰 / 구 joy.ino 12토큰)·영점·환산.
+                 ★포트는 arduino.py 가 소유한다★ [2026-09-16]
+    joystick.py  조이스틱 조종 ★별 노드★ (구 방식, joy.launch.py 전용). U 보드
+                 (joy2.ino)까지 받는다. ★그 런치는 arduino 에 use_joystick:=false
+                 를 넘긴다★ — 안 그러면 같은 포트를 둘이 다툰다
     sound.py     음성 안내 (구독 전용). 음원의 주인은 white1/sound/
     video.py     ★아무 Image 토픽이나 mp4 녹화★ (원본 /image_raw 도, 인지 디버그
                  화면 /tl/debug_image 도 — 후자를 one_launch 가 자동으로 띄운다)
@@ -422,8 +420,11 @@ gold_ws/src/
 
 ```
 ROS → 보드 : /cmd_vel_raw  /control_state  /brake_level  /aeb_stop
+             /gps_fused  ← ★조이스틱 LCD 표시 전용★ [8]=GPS km/h (제어에 안 쓴다)
 보드 → ROS : /encoder  /steer_angle_measured  /vehicle_mode  /throttle_pedal
              /brake_pot  /drive_pulse_cmd  /drive_pwm_cmd  /estop  /board_status
+             /joy_active  ← ★조이스틱이 지금 차를 몰고 있는가★ (Bool)
+             /joy_buttons ← 조이스틱 버튼 비트마스크. ★아직 구독자가 없다★
 ```
 
 - **`/aeb_stop` (Bool)** — **수동조종 중에도 통하는 유일한 제동 경로.**
@@ -448,8 +449,12 @@ S_IDLE ──MAP_START──▶ S_MAP_HEADING ──헤딩 확정──▶ S_MAP
 - **시작은 `prompt` 의 메뉴뿐이다.** B보드 D5 스위치는 더 이상 아무것도 시작시키지
   않고 **취소·정리만** 한다(`on_mode_edge`). 시작 트리거가 두 곳에 있으면 "지금 뭐가
   방금 시작을 시켰는지" 추적이 안 된다.
-- **시작 대기는 2단 게이트** — ① 스위치 위치(매핑=수동 / 주행=자율) ② E-STOP 해제.
-  순서가 곧 안내 우선순위다.
+- **시작 대기 게이트** — ★[2026-09-16] 매핑은 스위치를 보지 않는다★(사용자 지시).
+  매핑 = ①E-STOP 해제 하나. 주행 = ①스위치 자율주행 → ②E-STOP → ③라이다.
+  순서가 곧 안내 우선순위다. **매핑은 수동조종(페달·핸들)과 자율주행(★조이스틱★,
+  자율주행 로직이 아니다) 둘 다로 딸 수 있고**, 매핑 중에 스위치를 넘겨도 끝나지
+  않는다(조종 수단을 바꾸는 일이라서다 — `on_mode_edge` 의 매핑 행이 비었다).
+  전환 안내음(`mapping.mp3`)은 더 이상 나오지 않는다.
 - **헤딩 초기화** — 조향 0°로 곧게 굴려 GPS 변위로 초기 헤딩을 잡는다. 거리를 미리
   정하지 않고 **추정 오차 σ 가 3° 밑으로 떨어지는 순간** 확정(RTK Fixed 면 대개 1 m
   남짓). 직선 잔차 RMS 상한 0.15 m 로 "곧게 갔는가"도 함께 본다.
@@ -1051,6 +1056,45 @@ S 지점 : driving 이 세운다 ·  /lstatus = 'S' → mppi 침묵
 > 댐핑 크기가 절반이 되어 **댐핑이 아니라 잡음**이 된다. 그래서 같은 방법으로
 > 축을 재고(출발 직전 정지 구간에서), **[2026-09-12] 같은 표본으로 자이로 바이어스도
 > 함께 뺀다**(바이어스는 헤딩 적분과 댐핑 양쪽에 동시에 실린다).
+
+---
+
+### 4.8 ★조이스틱 조종 — arduino 가 세 번째 보드를 잡고 직접 몬다★ [2026-09-16]
+
+**조이스틱은 `driving` 을 거치지 않는다.** `nxde/arduino` 가 A·B 와 함께 `"J,"` 보드를
+찾아 붙고, `compose()` 의 **(2-5) 분기**가 스틱 값을 그대로 A/B 로 내보낸다.
+그래서 **`arduino` 가 뜨는 자리면 어디서나**(one_launch·master.launch 공통) 몰 수 있다.
+
+| | |
+|---|---|
+| L스틱 위 | 주행 펄스 0~`joy_pulse_max`(기본 15) |
+| L스틱 아래 | 브레이크 0/1/2 단 (중앙~맨아래 3등분) |
+| R스틱 좌우 | 조향 −40~+40 (− 좌 / + 우) |
+| **SWA 짧게** | **시작 / 일시정지** — ★기본은 꺼짐, 붙는 순간에도 꺼짐★ |
+| SWB | **보드 안의 스톱워치**(짧게=시작/일시정지, 길게=00:00:00 초기화). ROS 는 안 쓴다 |
+| 보드 리셋 버튼 | **스틱 영점 재보정** (`"J,RESET"` 한 줄이 그 신호다) |
+
+**우선순위** — (1) E-STOP · (1-1) AEB · (2) 수동조종 **> (2-5) 조이스틱 >**
+(3) `/control_state` · (4) 자율주행. 즉 조이스틱 ON 이면 `driving` 이 무엇을 내든
+스틱이 이기고, E-STOP·AEB 는 여전히 스틱을 이긴다.
+
+> **★브레이크는 스틱 값만 쓴다★** `/brake_level` 과 `max` 로 합치지 않는다 —
+> 직전 주행이 `DRIVE_DONE` 으로 2단을 계속 주장하고 있으면 **조이스틱을 켜도 차가
+> 안 움직이고 그 이유가 화면 어디에도 없다.** "리니어가 왜 물렸나" 의 답을 스틱
+> 하나로 좁히는 것이 이 분기의 값이다(수동조종 (2) 가 브레이크를 항상 0 으로
+> 보내는 것과 같은 태도).
+
+**꺼지는 조건(전부 '끄는 방향')** — 자율주행 모드가 아님 · 영점 미완료 · 입력 끊김
+(0.6 s) · 보드 단절 · E-STOP. 자율로 되돌아와도 **SWA 를 다시 눌러야** 재개한다.
+끄는 순간 `/cmd_vel_raw` 캐시를 0 으로 지운다(손을 뗀 순간 옛 펄스로 튀어나가지 않게).
+
+**LCD (I2C 1602, `joyled.ino`)** — `arduino` 가 `D,<on>,<pulse>,<steer>,<kmh>` 로
+**실제로 보드에 나간 명령**과 GPS 속도(`/gps_fused[8]`)를 보내면 조이스틱이 그것을
+화면에 비춘다. 그 줄이 1.5 s 끊기면 보드가 스스로 `OFF`·`00` 으로 되돌린다.
+GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'와 '모른다'가 같은 그림이 된다).
+
+> ⚠️ **아두이노 코드는 이 저장소에 없다** — `~/Arduino/joyled.ino` (사용자 지시).
+> 외부 라이브러리 **`LiquidCrystal I2C`** 하나가 필요하고, Mega 의 I2C 는 **D20/D21** 이다.
 
 ---
 
@@ -2682,6 +2726,7 @@ ping -c2 192.168.6.11
 | `terrain` 규약 | `driving.py:963` **+** `one_launch.py` 헤더 **+** `lidar/README.md` **+** 이 문서 |
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |
 | **헤딩 출처** | **mppi = OS1 자체 IMU(`params.yaml` 의 `imu_topic`·`use_os1_imu`·`imu_yaw_sign`) / driving = 외장 iAHRS(`/imu`)** — ★섞지 않는다★. `one_launch.py` 는 mppi 에 IMU 를 **넘기지 않는다**(넘기면 `use_os1_imu` 가 무시하고 경고만 남는다). mppi 의 IMU 설정 단일 소유자는 `params.yaml` [2026-09-12] |
+| **조이스틱 프로토콜** [2026-09-16] | `~/Arduino/joyled.ino` **+** `nxde/joyread.py`(파싱·영점·환산) **+** `nxde/arduino.py`(포트·게이트·LCD 송신) — **필드를 늘리면 세 곳을 함께 고친다.** 지금은 `J,x1,y1,k1,x2,y2,k2,swa,swb`(9토큰) 이고 구 `joy.ino`(12토큰)도 받는다. ★`nxde/joystick.py`(구 별도 노드)는 자기 파서를 따로 갖고 있다 — 그쪽은 `joy.launch.py` 전용이고 `use_joystick:=false` 로 포트 충돌을 막는다★ |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
 

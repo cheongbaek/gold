@@ -176,6 +176,11 @@ def generate_launch_description():
             'throttle_raw_max': 950,
             'throttle_gamma':   1.4,
             'exclude_ports':    exclude_for_arduino,
+            #  ★[2026-09-16] 이 런치에서는 arduino 가 조이스틱을 잡지 않는다★
+            #  여기는 구 nxde/joystick 노드(J·U 보드 + 자체 GUI)가 포트를 잡는
+            #  런치라, 둘 다 켜면 같은 포트를 두고 다툰다. 새 방식(arduino 가
+            #  직접 모는 것)은 one_launch.py·master.launch.py 쪽이다.
+            'use_joystick':     False,
         }],
         condition=IfCondition(use_arduino),
     )

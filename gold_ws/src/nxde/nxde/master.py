@@ -119,22 +119,22 @@
 #       (수동 중에는 arduino 가 /cmd_vel_raw 를 아예 무시하므로 무엇을 보내도 무해하지만,
 #        '전환 직후 적용될 마지막 명령'을 안전하게 두는 것이 목적이다)
 #
-# ── ★[2026-09-15] 조이스틱으로 조종하기 (최하단 체크박스) ──
-#   체크하면 "J," 로 시작하는 조이스틱 메가 보드를 스스로 찾아 연결하고, 그 순간부터
-#   ★레버가 조이스틱의 계기판이 된다★ (마우스·키보드는 잠긴다). 끄면 그 자리에서
-#   포트를 놓고 레버가 다시 마우스 것이 된다 — 창을 다시 띄울 필요가 없다.
-#     L스틱 위쪽   주행 펄스 0~15
-#     L스틱 아래쪽 브레이크 0/1/2 단 (중앙~맨아래 3등분)
-#     R스틱 좌우   조향 −40~+40  (− 좌 / + 우)
-#     ★SWA 짧게 = 시작 / 일시정지★ — 발행 ON/OFF 토글과 ★같은 스위치★ 다.
-#   ★안전장치는 joystick 노드의 것을 그대로 옮겼다★
-#     · 자율주행 모드(B보드 D5)에서만 움직인다. 수동조종으로 내려가면 즉시 일시정지로
-#       재무장하고, 자율로 돌아와도 ★SWA 를 다시 눌러야★ 재개한다.
-#     · 연결 직후 영점(중앙값 20샘플)을 잡기 전에는 SWA 를 눌러도 시작하지 않는다 —
-#       스틱이 물리적으로 512 에 있지 않아서, 영점 없이 시작하면 '가만히 둔 스틱'이
-#       이미 펄스를 요구하는 상태일 수 있다.
-#     · 입력이 끊기면(0.6s) 그 자리에서 일시정지 + 정지값. E-STOP 도 같다.
-#   프로토콜·포트 탐색·영점·환산의 단일 소유자는 ★nxde/joyread.py★ 다.
+# ── ★[2026-09-16] 조이스틱 — 이 창은 이제 '비추기만' 한다 ──
+#   ★조이스틱 포트를 여는 것은 nxde/arduino 노드다★ (A·B 와 함께 잡는다)
+#   2026-09-15 에 잠시 이 창에 체크박스를 두고 직접 열었는데, 그러면
+#     ① 조이스틱 조종이 이 창을 띄운 자리에서만 되고
+#     ② A/B 탐색과 조이스틱 탐색이 같은 포트 풀을 각자 두드려 서로를 리셋시킨다.
+#   이제 arduino 가 뜨는 자리면 어디서나(one_launch 포함) SWA 한 번으로 몰 수 있고,
+#   이 창은 /joy_active 를 구독해 ★조종 중인지만★ 최하단에 표시한다.
+#
+#   ★조이스틱이 모는 동안 레버는 수동조종과 똑같이 잠긴다★ 둘 다 '내 레버 명령이
+#   차에 안 나가는 상태' 라 이 창이 할 일이 같다 — 잠그고 실측을 비춘다. 그동안
+#   발행값은 '펄스 0 + 실측 조향' 으로 두는데, ★조이스틱을 끄는 순간 적용될 마지막
+#   명령★ 을 안전한 값으로 남기는 것이 목적이다(수동조종 분기와 같은 이유).
+#
+#   조작(=arduino 가 해석한다) : L스틱 위=엑셀 / L스틱 아래=브레이크 1·2단 /
+#   R스틱=조향 / ★SWA 짧게 = 시작·일시정지★ / 보드 리셋 버튼 = 스틱 영점 재보정.
+#   프로토콜·영점·환산의 단일 소유자는 ★nxde/joyread.py★ 다.
 #
 # ── E-stop 표시 ──
 #   /estop 이 True 인 동안 상단이 굵은 빨간 'E-Stop 발동!!!' 으로 바뀐다. **표시 전용이다** —
@@ -152,8 +152,6 @@ from std_msgs.msg import Bool, Int32, String
 from geometry_msgs.msg import Twist
 
 from nxde.proc_guard import watch_parent
-# ★조이스틱 읽기의 단일 소유자★ — 프로토콜("J,")·포트 탐색·영점·환산이 전부 그쪽이다.
-from nxde.joyread import JoystickReader
 
 # ── 프로토콜 한계 (kasa_0904_A.ino / kasa_0909_B.ino, arduino.py 와 같은 값) ──
 PULSE_MAX = 15          # A보드 단일값 입력 상한 (TARGET_MAX)
@@ -293,6 +291,10 @@ class MasterNode(Node):
         self.create_subscription(Int32, '/drive_pwm_cmd', self._cb_drive_pwm, 10)
         self.create_subscription(Bool, '/vehicle_mode', self._cb_mode, 10)
         self.create_subscription(Bool, '/estop', self._cb_estop, 10)
+        # ★[2026-09-16] 조이스틱이 지금 차를 몰고 있는가★ arduino 노드가 낸다.
+        #   True 인 동안 이 창은 레버를 잠그고 '계기판' 이 된다 — 수동조종과 같은
+        #   처리다(내 명령이 나가지 않는 상태라는 점에서 성질이 같다).
+        self.create_subscription(Bool, '/joy_active', self._cb_joy_active, 10)
         self.create_subscription(String, '/board_status', self._cb_status, 10)
         # 신호등 판정 표시용(RED / RED_FAR / GREEN / UNKNOWN). 제어에는 쓰지 않는다.
         self.create_subscription(String, '/tl/state', self._cb_tl_state, 10)
@@ -319,7 +321,9 @@ class MasterNode(Node):
         #     내보내면 수동조종 중인 차에 자율 명령을 쏘는 셈이 된다 → 레버를 잠근다.
         self.auto_mode = None
         self.estop = False
-        self.board_status = None     # "A:1,B:1,ESTOP:0,MODE:1"
+        self.joy_active = False      # /joy_active (조이스틱이 몰고 있다)
+        self.joy_active_t = 0.0      # 마지막 수신 시각 — 0 이면 ★한 번도 못 받았다★
+        self.board_status = None     # "A:1,B:1,ESTOP:0,MODE:1,J:0"
         self.tl_state = ''           # /tl/state 마지막 판정 (표시 전용)
         self.tl_state_t = 0.0
         self.tl_brake_req = 0        # /tl_brake_req 신호등이 요구하는 단계 (제어에 반영)
@@ -337,6 +341,11 @@ class MasterNode(Node):
     def _cb_brake_pot(self, msg):      self.brake_pot = int(msg.data)
     def _cb_drive_pwm(self, msg):      self.drive_pwm_cmd = int(msg.data)
     def _cb_estop(self, msg):          self.estop = bool(msg.data)
+
+    def _cb_joy_active(self, msg):
+        self.joy_active = bool(msg.data)
+        self.joy_active_t = time.monotonic()
+
     def _cb_status(self, msg):         self.board_status = msg.data
 
     def _cb_tl_state(self, msg):
@@ -509,11 +518,10 @@ class MasterGui:
         self.conflict = False        # driving_node 와 발행자 충돌
         self._last_conflict_check = 0.0
 
-        # ── 조이스틱 조종 [2026-09-15] ──
-        #   체크박스를 켜는 순간에만 리더가 생긴다 — 꺼져 있으면 포트를 아예 열지
-        #   않으므로, 이 창이 arduino 노드의 A/B 보드 탐색을 방해할 일이 없다.
-        self.joy_reader = None
-        self.joy_gate = None         # 지금 조이스틱 입력을 못 쓰는 이유 (없으면 None)
+        # ── 조이스틱 [2026-09-16] ──
+        #   ★이 창은 조이스틱을 잡지 않는다★ arduino 노드가 잡고 몬다(_build_joystick).
+        #   여기서는 그 상태를 비추고, 조종 중에는 레버를 잠근다.
+        self.lever_locked = False    # 수동조종 또는 조이스틱 조종 = 내 명령이 안 나간다
 
         root.title("nxde master — 하드웨어 검증")
         root.configure(bg=BG)
@@ -649,118 +657,37 @@ class MasterGui:
             w.pack(side=tk.LEFT, padx=16)
 
     def _build_joystick(self, root):
-        """★[2026-09-15] 최하단 '조이스틱으로 조종하기' 체크박스★
+        """★[2026-09-16] 최하단 조이스틱 상태 줄 — ★표시 전용★
 
-        켜면 그때 비로소 "J," 보드를 찾아 연결한다 — ★꺼져 있는 동안은 포트를 하나도
-        열지 않는다★. 이 창이 늘 포트를 두드리면 arduino 노드가 A/B 보드를 잡는 것을
-        방해한다(joystick.py 가 2026-08-14 에 실차로 배운 것: 포트를 여는 순간 보드가
-        DTR 로 리셋되어 몇 초마다 리부팅됐다).
-
-        끄면 그 자리에서 포트를 놓고 레버가 다시 마우스 것이 된다 — 창을 닫았다 다시
-        띄울 필요가 없다.
+        ★이 창은 더 이상 조이스틱 포트를 열지 않는다★ 종전(2026-09-15)에는 여기에
+        체크박스가 있어서 이 창이 직접 "J," 보드를 찾아 붙었다. 그러면 ① 조이스틱
+        조종이 이 창을 띄운 자리에서만 되고 ② A/B 탐색과 조이스틱 탐색이 같은 포트
+        풀을 각자 두드려 서로의 보드를 DTR 로 리셋시킨다.
+        → 조이스틱은 이제 ★nxde/arduino 노드★ 가 A·B 와 함께 잡는다. 그쪽이 뜨는
+          자리면 어디서나(one_launch 포함) SWA 한 번으로 조종이 시작된다.
+        이 줄은 그 상태를 ★비추기만★ 한다(/joy_active).
         """
         row = tk.Frame(root, bg=BG)
         row.pack(side=tk.BOTTOM, fill='x', pady=(0, 12))
 
-        self.joy_var = tk.BooleanVar(value=False)
-        self.joy_check = tk.Checkbutton(
-            row, text=" 조이스틱으로 조종하기 (L 위=펄스 / L 아래=브레이크 / R=조향 / SWA=시작·정지)",
-            variable=self.joy_var, command=self._on_joy_toggle,
-            bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT,
-            selectcolor=TRACK_BG, font=("Consolas", 11, "bold"))
-        self.joy_check.pack(side=tk.LEFT, padx=(18, 10))
-
-        self.joy_state_label = tk.Label(row, text="꺼짐", bg=BG, fg=DISABLED_TEXT,
-                                        font=("Consolas", 11, "bold"), width=34, anchor='w')
+        tk.Label(row, text=" 🕹️ 조이스틱", bg=BG, fg=TEXT,
+                 font=("Consolas", 11, "bold")).pack(side=tk.LEFT, padx=(18, 10))
+        self.joy_state_label = tk.Label(
+            row, text="대기 — arduino 노드가 잡습니다", bg=BG, fg=DISABLED_TEXT,
+            font=("Consolas", 11, "bold"), width=52, anchor='w')
         self.joy_state_label.pack(side=tk.LEFT)
 
-    # ---------- 조이스틱 ----------
-    def _on_joy_toggle(self):
-        """체크박스 조작 — ★어느 방향이든 먼저 정지시킨다★
-
-        켜는 쪽: 아직 영점도 안 잡힌 상태이므로 발행은 무조건 OFF 로 시작한다
-                 (SWA 를 눌러야 시작한다 — joystick 노드의 안전장치 ②와 같다).
-        끄는 쪽: 조이스틱을 놓는 순간 그 입력으로 굴러가던 차가 남으면 안 된다.
-        """
-        self._set_enabled(False)
-        if self.joy_var.get():
-            if self.joy_reader is None:
-                self.joy_reader = JoystickReader(log=self.node.get_logger().info,
-                                                 pulse_max=PULSE_MAX)
-                self.joy_reader.start()
-                self.node.get_logger().info(
-                    "조이스틱 조종 켜짐 — 스틱을 건드리지 말고 기다리십시오(영점). "
-                    "그 다음 SWA 를 한 번 누르면 시작합니다")
-        else:
-            self._stop_joystick()
-
-    def _stop_joystick(self):
-        reader, self.joy_reader = self.joy_reader, None
-        self.joy_gate = None
-        if reader is not None:
-            reader.stop()
-            self.node.get_logger().info("조이스틱 조종 꺼짐 — 포트를 놓았습니다")
-
-    def _joy_tick(self, manual):
-        """조이스틱이 켜져 있으면 레버를 그 값으로 몰고 True. 아니면 False.
-
-        ★레버를 '계기판'으로 쓰는 것은 수동조종 분기와 같은 방식이다★ — 값이 어디서
-        오든 화면의 뜻이 하나로 유지된다(레버 = 지금 이 창이 내고 있는 값).
-        """
-        if self.joy_reader is None:
-            return False
-
-        #  ★수동조종일 때도 매 틱 부른다★ 여기서 스냅샷을 받아야 SWA 카운터가 비워진다.
-        #  안 부르면 수동 구간에서 누른 SWA 가 쌓여 있다가, 자율로 올리는 순간
-        #  한꺼번에 소비되어 ★사람이 지금 누르지 않은 시작★ 이 일어난다.
-        snap = self.joy_reader.snapshot()     # ★한 틱에 한 번만★ (SWA 카운터를 비운다)
-        gate = self.joy_reader.gate_reason(snap)
-        # 차량 쪽 사정은 리더가 모른다 — 여기서 얹는다.
-        #   ★자율주행 모드에서만 작동한다★ (joystick 노드 안전장치 ①과 같은 규약) —
-        #   수동조종에서는 사람이 페달·핸들을 잡고 있고 arduino 가 그 경로를 직접
-        #   넘긴다. 그때 조이스틱까지 명령을 쏘면 사람과 싸운다.
-        if gate is None and manual:
-            gate = "수동조종 모드 — 자율로 올린 뒤 SWA"
-        if gate is None and self.node.estop:
-            gate = "E-STOP"
-        self.joy_gate = gate
-
-        # ── SWA 릴리즈 = 시작 / 일시정지 토글 ──
-        #   ★횟수로 받는다★ 이 틱은 50ms 마다 도는데 짧게 누르면 그 사이에 눌렸다
-        #   떼어지므로, '지금 눌려 있나' 로는 놓친다.
-        for _ in range(snap['swa_releases']):
-            if gate is not None:
-                self.node.get_logger().warn(f"SWA 입력 무시 — {gate}")
-                break
-            self._set_enabled(not self.enabled)
-            self.node.get_logger().info(
-                "▶ 시작 — 조이스틱 입력이 반영됩니다" if self.enabled else "⏸ 일시정지")
-
-        # ★게이트가 걸리면 그 자리에서 일시정지★ (연결 끊김·영점 상실·E-STOP)
-        if gate is not None and self.enabled:
-            self._set_enabled(False)
-            self.node.get_logger().warn(f"조이스틱 일시정지 — {gate}")
-
-        if manual:
-            return False      # 레버는 수동조종 분기가 '실측을 비추는 계기판'으로 쓴다
-
-        pulse, steer, brake = self.joy_reader.command(snap)
-        self.throttle.set_value(pulse)
-        self.steering.set_value(steer)
-        self.brake.set_value(brake)
-        return True
-
     def _update_joy_label(self):
-        """최하단 조이스틱 상태 한 줄."""
-        if self.joy_reader is None:
-            self.joy_state_label.config(text="꺼짐", fg=DISABLED_TEXT)
-        elif self.joy_gate is not None:
-            self.joy_state_label.config(text=f"⚠️ {self.joy_gate}", fg=WARN_COLOR)
-        elif self.enabled:
-            self.joy_state_label.config(text="▶ 조종 중 (SWA = 일시정지)", fg=OK_COLOR)
+        """조이스틱이 지금 차를 몰고 있는가 (/joy_active). ★표시 전용★"""
+        if self.node.joy_active:
+            self.joy_state_label.config(
+                text="▶ 조종 중 — SWA 로 일시정지 (레버는 잠깁니다)", fg=OK_COLOR)
+        elif self.node.joy_active_t <= 0.0:
+            self.joy_state_label.config(
+                text="대기 — arduino 노드가 잡습니다", fg=DISABLED_TEXT)
         else:
-            self.joy_state_label.config(text="⏸ 일시정지 — SWA 를 한 번 누르십시오",
-                                        fg=TEXT)
+            self.joy_state_label.config(
+                text="⏸ 정지 — 자율주행 모드에서 SWA 를 한 번 누르십시오", fg=TEXT)
 
     def _build_traffic_light(self, root):
         """★[2026-08-14] 최하단 '신호등 인지' 체크박스★
@@ -848,14 +775,9 @@ class MasterGui:
             self._last_pub_t = time.monotonic()
 
     def _on_toggle_click(self):
-        if self.manual_active:
-            # 수동조종 중에는 발행 게이트가 의미가 없다(arduino 가 /cmd_vel_raw 를 무시한다).
-            return
-        if self.joy_reader is not None and not self.enabled:
-            # ★조이스틱 조종 중에 '켜는' 것은 SWA 뿐이다★ 손이 스틱에 없는 채로 화면에서
-            #   시작시키면 그 순간의 스틱 위치가 그대로 명령이 된다. 끄는 쪽은 언제나
-            #   안전하므로 버튼으로도 막지 않는다.
-            self.node.get_logger().warn("조이스틱 조종 중 — 시작은 SWA 로 하십시오")
+        if self.lever_locked:
+            # 수동조종·조이스틱 조종 중에는 발행 게이트가 의미가 없다
+            # (arduino 가 /cmd_vel_raw 를 아예 보지 않는다).
             return
         self._set_enabled(not self.enabled)
 
@@ -866,7 +788,7 @@ class MasterGui:
     #   소유자는 B보드 D5 물리 스위치다(arduino.py 의 auto_mode 참고).
 
     def _kb_nudge(self, which, delta):
-        if self.manual_active or self.joy_reader is not None:
+        if self.lever_locked:
             return   # 수동조종·조이스틱 조종 중에는 마우스와 마찬가지로 키보드도 무시
         {'throttle': self.throttle,
          'steering': self.steering,
@@ -892,9 +814,9 @@ class MasterGui:
         elif self.node.auto_mode is None:
             text = ("주행모드 확인 중... B보드가 연결되면 조작할 수 있습니다. "
                     "(`ros2 run nxde arduino` 와 /board_status 를 확인하세요)")
-        elif self.joy_reader is not None:
-            text = ("조이스틱 조종 — L스틱 위=엑셀(0~15펄스) / 아래=브레이크(1·2단) / "
-                    "R스틱=조향. ★SWA 를 한 번 누르면 시작·정지★ (레버는 잠깁니다)")
+        elif self.node.joy_active:
+            text = ("🕹️ 조이스틱이 몰고 있습니다 — L스틱 위=엑셀 / 아래=브레이크 / "
+                    "R스틱=조향. ★SWA 를 한 번 더 누르면 일시정지★ (레버는 잠깁니다)")
         else:
             text = ("마우스로 엑셀·조향 레버를 움직여보세요 (키보드 ↑↓←→ 도 됩니다). "
                     "발행 토글을 ON 으로 두어야 차가 움직입니다.")
@@ -926,24 +848,28 @@ class MasterGui:
         #   ★ None(미수신)도 '수동'처럼 잠근다 ★ 모드를 모르는 상태에서 마우스 명령을
         #     내보내면 수동조종 중인 차에 자율 명령을 쏘는 셈이 된다.
         manual = (self.node.auto_mode is not True)
-        if manual != self.manual_active:
+        #  ★조이스틱이 몰고 있으면 수동조종과 같은 취급이다★ [2026-09-16]
+        #  둘 다 '내 레버 명령이 차에 안 나가는 상태' 이고, 그때 이 창이 할 일은
+        #  똑같다 — 레버를 잠그고 실측을 비춘다. arduino 는 조이스틱 ON 동안
+        #  /cmd_vel_raw 를 아예 보지 않으므로 여기서 무엇을 내도 무해하지만,
+        #  ★조이스틱을 끄는 순간 적용될 마지막 명령★ 을 정지값으로 두는 것이 목적이다.
+        joy = bool(self.node.joy_active)
+        locked = manual or joy
+        if locked != self.lever_locked or manual != self.manual_active:
             self.manual_active = manual
+            self.lever_locked = locked
             #  ★전환 엣지에서는 반드시 끈다★ 자율로 돌아와도 자동으로 재개하지 않는다
             #    — 조이스틱이면 SWA 를, 마우스면 토글을 다시 눌러야 한다.
             self._set_enabled(False)
             self._update_status_text()
 
-        # ★조이스틱이 켜져 있으면 레버는 그쪽 계기판이 된다★
-        #   수동조종이면 False 를 돌려주고 아래 수동 분기가 실측으로 레버를 채운다.
-        joy_on = self._joy_tick(manual)
         self._update_joy_label()
 
-        locked = manual or joy_on
         for sl in (self.throttle, self.steering, self.brake):
             sl.readonly = locked
-            sl.set_handle_color(DISABLED_TEXT if manual else HANDLE_COLOR)
+            sl.set_handle_color(DISABLED_TEXT if locked else HANDLE_COLOR)
 
-        if manual:
+        if locked:
             # ── 수동조종 : 레버가 '실측을 비추는 계기판'이 된다 ──
             #   엑셀 = 페달 환산 목표펄스, 조향 = 가변저항 실측 각도(같은 부호라 그대로)
             #   ★[2026-09-08] 브레이크도 이제 실측을 비춘다★ 종전 주석은 "arduino.py 의
@@ -966,11 +892,6 @@ class MasterGui:
             enabled = self.enabled
             if not enabled:
                 pulse_cmd = 0   # OFF 동안에는 정지값을 계속 내보낸다(헤더 참고)
-                if joy_on:
-                    # ★조이스틱 일시정지 중에는 제동도 내지 않는다★ 손을 떼 둔 스틱이
-                    #   우연히 아래에 있으면 리니어가 물린 채 굳어, 사람이 차를 밀 수
-                    #   없게 된다(joystick 노드의 정지값과 같은 규약).
-                    brake_cmd = 0
 
         # ── 신호등 요구를 합친다 [2026-08-14] ──
         #   ★max 로 합친다★ 우리가 0 을 내는 사이 신호등의 2단이 덮이지 않게, 그리고
@@ -1072,9 +993,6 @@ class MasterGui:
     def stop(self):
         """종료 정리. 창 닫기와 proc_guard(부모 사망) 양쪽에서 호출된다."""
         self.running = False
-        # ★시리얼 포트를 놓는다★ 안 놓으면 다음에 뜨는 노드(또는 이 창 자신)가
-        #   배타 open 에 막혀 조이스틱을 못 잡는다.
-        self._stop_joystick()
 
     def _on_close(self):
         self.stop()
