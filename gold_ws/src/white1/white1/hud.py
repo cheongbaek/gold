@@ -773,6 +773,17 @@ class HudApp:
                 flash = int(time.monotonic() * 4) % 2
                 return '라이다?', RED if flash else '#5a1020', '#ffffff'
             return '라이다', '#12331f', GREEN
+        # ★[2026-09-16] '라이다 대기' 를 실제로 표시한다★
+        #   위 docstring 은 처음부터 이 상태를 적고 있었는데 ★코드에 그 경로가
+        #   없었다★ — mppi 가 20Hz 로 /lidar_active 를 보내며 멀쩡히 살아 있어도
+        #   화면에는 'GPS' 만 떠서, 라이다가 붙었는지 여부가 HUD 어디에도 나타나지
+        #   않았다(실제로 "HUD 상으로 라이다 연결이 확인되지 않는다" 로 올라왔다).
+        #   ★L 구간 전에는 이것이 정상 상태다★ — mppi 는 살아서 회피 구간을 기다리고,
+        #   차를 모는 것은 GPS 추종이다. 그 둘을 한 칸에 같이 적는다.
+        #   AEB 칸(cone_lidar)과 혼동하지 말 것 — one_launch 는 그 노드를 띄우지
+        #   않으므로 'AEB —' 가 뜨는 것이 정상이고, 라이다 연결과 무관하다.
+        if a is not None:
+            return 'GPS·라이다대기', PANEL2, CYAN
         return 'GPS', PANEL2, CYAN
 
     def _aeb_pill(self, stale):
