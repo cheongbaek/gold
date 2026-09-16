@@ -37,8 +37,12 @@ setup(
             #   ⚠️ joystick / one_launch.py(driving_node) 와 동시에 쓰지 말 것 —
             #      /cmd_vel_raw 발행자가 겹친다(창 상단에 경고가 뜬다).
             'master   = nxde.master:main',
-            # 조이스틱 메가 보드("J,"/"U,") 조종.  ros2 run nxde joystick
-            #   ★자율주행 모드(B보드 D5)에서만 작동하고, 영점 후 SWA 를 눌러야 시작한다★
+            # ★조이스틱 + LCD 단독 점검 도구★  ros2 run nxde joystick
+            #   [2026-09-16] 조종 노드가 아니다 — ★차를 움직이는 명령을 하나도
+            #   발행하지 않는다★(/cmd_vel_raw·/control_state·/brake_level 전부).
+            #   스틱·버튼을 화면에 그리고, 환산값(펄스·조향·제동)을 조이스틱 LCD 로
+            #   직접 보내 배선을 눈으로 확인한다. ★단독 실행 전용★ — 실제 주행에서
+            #   조이스틱을 잡고 모는 것은 arduino 노드다(use_joystick, 기본 켜짐).
             'joystick = nxde.joystick:main',
             # ★런치 전 하드웨어 연결 점검★ 보고하고 종료한다.  ros2 run nxde check
             #   메가 A/B · 조이스틱 · GPS(NMEA GGA 의 RTK quality) · IMU · 카메라

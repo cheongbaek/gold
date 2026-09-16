@@ -361,9 +361,11 @@ gold_ws/src/
     joyread.py   ★조이스틱 해석의 단일 소유자★ (노드도 아니고 포트도 열지 않는다)
                  — "J," 프로토콜(joyled.ino 9토큰 / 구 joy.ino 12토큰)·영점·환산.
                  ★포트는 arduino.py 가 소유한다★ [2026-09-16]
-    joystick.py  조이스틱 조종 ★별 노드★ (구 방식, joy.launch.py 전용). U 보드
-                 (joy2.ino)까지 받는다. ★그 런치는 arduino 에 use_joystick:=false
-                 를 넘긴다★ — 안 그러면 같은 포트를 둘이 다툰다
+    joystick.py  ★조이스틱 + LCD 단독 점검 도구★ [2026-09-16] — 조종 노드가 아니다.
+                 스틱·버튼을 화면에 그리고 환산값(펄스·조향·제동)을 LCD 로 직접
+                 보내 배선을 눈으로 본다. ★차를 움직이는 명령을 하나도 발행하지
+                 않는다★ (/cmd_vel_raw·/control_state·/brake_level 전부).
+                 ★단독 실행 전용★ — arduino 와 같이 띄우면 포트를 다툰다
     sound.py     음성 안내 (구독 전용). 음원의 주인은 white1/sound/
     video.py     ★아무 Image 토픽이나 mp4 녹화★ (원본 /image_raw 도, 인지 디버그
                  화면 /tl/debug_image 도 — 후자를 one_launch 가 자동으로 띄운다)
@@ -2726,7 +2728,7 @@ ping -c2 192.168.6.11
 | `terrain` 규약 | `driving.py:963` **+** `one_launch.py` 헤더 **+** `lidar/README.md` **+** 이 문서 |
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |
 | **헤딩 출처** | **mppi = OS1 자체 IMU(`params.yaml` 의 `imu_topic`·`use_os1_imu`·`imu_yaw_sign`) / driving = 외장 iAHRS(`/imu`)** — ★섞지 않는다★. `one_launch.py` 는 mppi 에 IMU 를 **넘기지 않는다**(넘기면 `use_os1_imu` 가 무시하고 경고만 남는다). mppi 의 IMU 설정 단일 소유자는 `params.yaml` [2026-09-12] |
-| **조이스틱 프로토콜** [2026-09-16] | `~/Arduino/joyled.ino` **+** `nxde/joyread.py`(파싱·영점·환산) **+** `nxde/arduino.py`(포트·게이트·LCD 송신) — **필드를 늘리면 세 곳을 함께 고친다.** 지금은 `J,x1,y1,k1,x2,y2,k2,swa,swb`(9토큰) 이고 구 `joy.ino`(12토큰)도 받는다. ★`nxde/joystick.py`(구 별도 노드)는 자기 파서를 따로 갖고 있다 — 그쪽은 `joy.launch.py` 전용이고 `use_joystick:=false` 로 포트 충돌을 막는다★ |
+| **조이스틱 프로토콜** [2026-09-16] | `~/Arduino/joyled.ino` **+** `nxde/joyread.py`(파싱·영점·환산) **+** `nxde/arduino.py`(포트·게이트·LCD 송신) — **필드를 늘리면 세 곳을 함께 고친다.** 지금은 `J,x1,y1,k1,x2,y2,k2,swa,swb`(9토큰) 이고 구 `joy.ino`(12토큰)도 받는다. `nxde/joystick.py`(점검 도구)도 **같은 `joyread` 를 쓴다** — 그래서 "점검에서는 맞는데 실차에서 다르다" 가 생기지 않는다. LCD 줄 `D,<on>,<pulse>,<steer>,<kmh>` 는 `arduino` 와 `joystick` 두 곳이 쓰지만 **둘은 동시에 띄우지 않는다**(포트가 하나다) |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
 

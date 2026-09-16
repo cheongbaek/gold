@@ -5,26 +5,33 @@ joy.launch.py ― white1 ★수동 계측★ 런치 (조이스틱 + 전 센서 +
 ════════════════════════════════════════════════════════════════════════════════
     ros2 launch white1 joy.launch.py
 
-  one_launch.py 에서 ★driving 을 빼고 그 자리에 nxde 의 joystick 을 넣은 것★ 이다.
-  사람이 조이스틱으로 몰고, 그동안 record 가 모든 토픽을 CSV 한 장에 적는다.
+  one_launch.py 에서 ★driving 을 뺀 것★ 이다. 사람이 조이스틱으로 몰고, 그동안
+  record 가 모든 토픽을 CSV 한 장에 적는다.
   나중에 `python3 ~/gold/map.py` 로 그 CSV 를 열면 주행 궤적이 그대로 보인다.
 
+  ★[2026-09-16] 조이스틱을 모는 것은 arduino 노드다★ 종전에는 nxde/joystick 이
+  /cmd_vel_raw 를 발행했는데, 그 일이 arduino 안으로 들어갔다(use_joystick).
+  그래서 이 런치는 ★조이스틱 노드를 띄우지 않는다★ — 띄우면 같은 포트를 두고
+  다툰다. `ros2 run nxde joystick` 은 이제 ★단독 점검 도구★ 이고 아무 명령도
+  발행하지 않는다(그 파일 헤더).
+
 띄우는 것:
-    nxde/arduino          A/B 2보드 시리얼 브리지
+    nxde/arduino          A/B/★J★ 3보드 시리얼 브리지 — ★조이스틱도 이 노드가 몬다★
     white1/iahrs          6축 IMU 드라이버 → /imu
     white1/speed          /imu 적분 속도계 → /speed [km/h]
     nmea_navsat_driver    GPS → /fix
-    nxde/joystick         ★조이스틱 → /cmd_vel_raw · /control_state · /brake_level★
     white1/record         전 토픽 → CSV  (force_record — 아래 참고)
 
 ════════════════════════════════════════════════════════════════════════════════
  ★driving 을 함께 띄우지 않는 이유 — 같은 토픽을 두 노드가 20Hz 로 쏜다★
 ════════════════════════════════════════════════════════════════════════════════
-  driving 과 joystick 은 둘 다 /cmd_vel_raw 와 /control_state 를 20Hz 로 발행한다.
-  driving 은 ★IDLE 에서도 계속 0 을 낸다★ — 정지를 '유지'하는 것이 그 상태의 일이기
-  때문이다(A보드에는 무입력 타임아웃이 없어서 안 내면 마지막 명령이 그대로 산다).
-  그래서 둘을 같이 띄우면 조이스틱이 낸 펄스가 매 틱 0 으로 덮여 차가 안 나간다.
-  ★두 발행자 중 하나만 살아 있어야 한다★ — 그것이 이 런치가 따로 있는 이유다.
+  driving 은 ★IDLE 에서도 /cmd_vel_raw 에 계속 0 을 낸다★ — 정지를 '유지'하는 것이
+  그 상태의 일이기 때문이다(A보드에는 무입력 타임아웃이 없어서 안 내면 마지막 명령이
+  그대로 산다).
+  ★[2026-09-16] 조이스틱은 그 토픽을 쓰지 않으므로 덮일 일이 없다★ — arduino 가
+  내부에서 (2-5) 분기로 직접 판정한다(그 파일 헤더). 그래도 driving 을 함께 띄우지
+  않는 이유는 남는다: 그쪽이 자기 상태기계로 리니어·조향을 쓰기 때문에, 사람이
+  스틱으로 모는 계측에 다른 판단이 섞일 이유가 없다.
 
   mapping 도 넣지 않았다. 경로 수집은 driving 의 상태기계가 /mapping_cmd 로 켜고 끄는데
   그 노드가 없으므로 영영 시작되지 않는다. 이 런치의 궤적은 record 의 fix_lat/fix_lon
@@ -44,22 +51,22 @@ joy.launch.py ― white1 ★수동 계측★ 런치 (조이스틱 + 전 센서 +
       낫다는 판단이다.
 
 ════════════════════════════════════════════════════════════════════════════════
- 조작 — 조이스틱 (nxde/joystick.py 헤더 참고)
+ 조작 — 조이스틱 (nxde/arduino.py 헤더의 조이스틱 절 참고)
 ════════════════════════════════════════════════════════════════════════════════
-  · ★D5 스위치를 자율주행으로 올려야 명령이 나간다★(require_auto_mode). 수동조종
-    위치에서는 A보드가 페달만 보므로 조이스틱 입력이 무시된다.
-  · 영점(2초 중앙값)이 끝난 뒤 SWA 짧게 누름 = 시작/일시정지. U보드는 L·R 스틱
-    버튼 동시 누름.
-  · L스틱 위 = 주행펄스(0~pulse_max) / L스틱 아래 = 브레이크 0·1·2단
+  · ★D5 스위치를 자율주행으로 올려야 작동한다★ 수동조종 위치에서는 A보드가 페달만
+    보므로 조이스틱이 꺼진다(자율로 되돌려도 SWA 를 다시 눌러야 한다).
+  · 영점이 끝난 뒤 ★SWA 짧게 누름 = 시작/일시정지★ (기본은 꺼짐).
+    보드 리셋 버튼을 누르면 영점을 다시 잡는다.
+  · L스틱 위 = 주행펄스(0~joy_pulse_max) / L스틱 아래 = 브레이크 0·1·2단
     → ★리니어 1단 감속도(a1) 실측이 스틱 하나로 된다★ (todo.txt 3항)
   · R스틱 좌우 = 조향 −40~+40 (− 좌 / + 우)
-  · E-STOP(D12) 중에는 게이트에 막혀 아무 명령도 나가지 않는다. 정상 동작이다.
+  · E-STOP(D12) 중에는 조이스틱이 꺼진다. 정상 동작이다.
 """
 
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -74,7 +81,6 @@ RESPAWN_DELAY = 2.0
 #  조이스틱 기동 지연 [s] — arduino 가 A/B 보드를 먼저 붙잡게 한다(아래 근거).
 #  보드 탐색은 포트당 몇 초가 걸리므로 넉넉히 준다. 조이스틱을 꽂아 두었다면
 #  이 시간만큼 늦게 잡히는 것뿐이고, 안 꽂았다면 아무 차이가 없다.
-JOYSTICK_START_DELAY_S = 8.0
 
 
 def generate_launch_description():
@@ -134,20 +140,12 @@ def generate_launch_description():
             description='수동조종(D5 내림)에서 페달 최대치가 대응할 펄스. 조이스틱과는 '
                         '별개다 — 그쪽은 아래 joy_pulse_max'),
 
-        # ── 조이스틱 (nxde/joystick.py 의 파라미터) ──
+        # ── 조이스틱 (arduino 노드의 파라미터) ──
         DeclareLaunchArgument(
             'joy_pulse_max', default_value='5',
             description='★L스틱을 끝까지 밀었을 때의 펄스★ 기본 5 ≈ 15.9 km/h. '
                         '계측용으로 4펄스 정속을 만들려면 스틱을 4/5 만 밀거나 이 값을 '
                         '4 로 두고 끝까지 민다(후자가 재현성이 좋다)'),
-        DeclareLaunchArgument(
-            'joy_deadzone_raw', default_value='120',
-            description='영점 기준 raw ADC 편차가 이 값 미만이면 0 으로 본다'),
-        DeclareLaunchArgument(
-            'joy_require_auto_mode', default_value='true',
-            description='★true 권장★ D5 가 자율주행일 때만 조이스틱 명령을 낸다. '
-                        'false 로 두면 수동조종 위치에서도 발행하는데, 그때 A보드는 '
-                        '페달만 보므로 화면과 실제가 어긋나기만 한다'),
 
         # ── 저장 위치 (비우면 white1/paths.py 규칙) ──
         DeclareLaunchArgument(
@@ -176,11 +174,9 @@ def generate_launch_description():
             'throttle_raw_max': 950,
             'throttle_gamma':   1.4,
             'exclude_ports':    exclude_for_arduino,
-            #  ★[2026-09-16] 이 런치에서는 arduino 가 조이스틱을 잡지 않는다★
-            #  여기는 구 nxde/joystick 노드(J·U 보드 + 자체 GUI)가 포트를 잡는
-            #  런치라, 둘 다 켜면 같은 포트를 두고 다툰다. 새 방식(arduino 가
-            #  직접 모는 것)은 one_launch.py·master.launch.py 쪽이다.
-            'use_joystick':     False,
+            #  ★[2026-09-16] 조이스틱을 모는 것이 이 노드다★ (그 전에는 별 노드였다)
+            'use_joystick':     True,
+            'joy_pulse_max':    LaunchConfiguration('joy_pulse_max'),
         }],
         condition=IfCondition(use_arduino),
     )
@@ -225,39 +221,6 @@ def generate_launch_description():
     )
 
     # ═══════════════════════════════════════════════════════════════════
-    #  [조종] 조이스틱 — ★이 런치에서 /cmd_vel_raw 를 내는 유일한 노드★
-    #    ★respawn 을 걸지 않는다★ 되살아나면 영점(2초)과 일시정지 해제를 사람이
-    #    다시 해야 하는데, 그 사이 마지막 명령은 A보드에 그대로 살아 있다. 조종
-    #    노드가 조용히 재시작되는 것보다 죽은 것이 눈에 보이는 편이 안전하다.
-    #    (노드가 스스로 종료할 때 정지값을 발행한다 — joystick.py 헤더 참고)
-    # ═══════════════════════════════════════════════════════════════════
-    joystick = Node(
-        package='nxde',
-        executable='joystick',
-        name='joystick',
-        output='screen',
-        additional_env=NODE_ENV,
-        parameters=[{
-            'pulse_max':         LaunchConfiguration('joy_pulse_max'),
-            'deadzone_raw':      LaunchConfiguration('joy_deadzone_raw'),
-            'require_auto_mode': LaunchConfiguration('joy_require_auto_mode'),
-            # 아는 장치는 아예 열어보지 않는다(열면 그쪽이 리셋되거나 끊긴다)
-            'exclude_ports':     exclude_for_arduino,
-        }],
-    )
-
-    # ★[2026-08-14] 조이스틱은 arduino 뒤에 띄운다★
-    #   ★증상★ 이 런치에서만 arduino 가 A/B 보드 연결에 실패했다(master.launch.py 는
-    #   멀쩡). ★원인★ 조이스틱 노드도 같은 후보 포트들을 훑는데, 아두이노는 포트를
-    #   여는 순간 DTR 로 ★자동 리셋★ 된다. 둘이 동시에 시작하면 조이스틱이 A/B 를
-    #   열어 리셋시키고, arduino 는 그때마다 붙잡기를 실패한다.
-    #   ★대책★ arduino 가 먼저 배타 open 으로 자기 보드를 쥐게 한다. 그 뒤에는
-    #   조이스틱의 open 이 애초에 실패하므로 ★리셋 자체가 일어나지 않는다★.
-    #   (조이스틱 쪽에도 방어를 넣었다 — A/B 텔레메트리를 보면 즉시 포기하고,
-    #    실패한 포트는 30초간 다시 열지 않는다. joystick.py 의 PORT_COOLDOWN_S)
-    joystick_delayed = TimerAction(period=JOYSTICK_START_DELAY_S, actions=[joystick])
-
-    # ═══════════════════════════════════════════════════════════════════
     #  [기록] record — 구독만 한다(발행 토픽 없음). force_record 로 상시 기록.
     # ═══════════════════════════════════════════════════════════════════
     record = Node(
@@ -279,7 +242,6 @@ def generate_launch_description():
         iahrs,
         speed,
         gps,
-        # 조종 · 기록
-        joystick_delayed,
+        # 기록 — ★조종은 arduino 가 조이스틱을 직접 읽어서 한다(별 노드가 없다)★
         record,
     ])
