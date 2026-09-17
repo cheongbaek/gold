@@ -137,6 +137,9 @@
 #    · ★자율주행 모드(D5)에서만 작동한다★ 수동조종에서는 사람이 페달·핸들을 쥐고
 #      있고 (2) 분기가 그 경로를 직접 넘긴다 — 거기에 조이스틱이 끼면 사람과 싸운다.
 #      수동으로 내려가면 그 자리에서 꺼지고, 자율로 돌아와도 ★SWA 를 다시 눌러야★ 한다.
+#    · ★[2026-09-17] 자율주행(driving 의 DRIVE_*)이 몰고 있는 동안에도 꺼진다★
+#      경로를 따라 모는 절차 위에 사람이 스틱으로 끼어들면 두 판단이 20Hz 로 다툰다.
+#      ★매핑(MAP_*)은 막지 않는다★ — 그쪽은 스틱으로 하는 절차다(2026-09-16).
 #    · 영점이 끝나기 전에는 SWA 를 눌러도 켜지지 않는다(스틱이 512 에 있지 않다).
 #    · 입력이 끊기거나(0.6s) 보드가 빠지거나 E-STOP 이면 즉시 꺼진다.
 #    · 끄는 순간 /cmd_vel_raw 캐시를 0 으로 지운다(_set_joy_on 주석).
@@ -406,6 +409,12 @@ JOY_PREFIX = joyread.JOY_PREFIX          # 'J,' — identify_port 가 역할을 
 #    on    0/1  지금 조이스틱 입력이 실제로 차에 나가고 있는가
 #    kmh   ★음수 = 값 없음★ → 보드가 00 으로 찍는다(GPS 가 없는 스택에서 그렇다)
 JOY_DISPLAY_STALE_S = 1.0    # /gps_fused 가 이보다 낡으면 '속도를 모른다'로 본다
+#  ★[2026-09-17] 자율주행 중에는 조이스틱을 받지 않는다★ (사용자 지시)
+#  driving 의 /drive_state 를 보고 DRIVE_* 인 동안 조이스틱을 끈다. 그 토픽은
+#  20Hz 로 나오므로 1초면 넉넉하다 — ★끊기면 막지 않는다(fail-open)★. 판단 노드가
+#  죽었는데 사람이 스틱으로 차를 뺄 수도 없으면 그게 더 위험하다.
+DRIVE_STATE_STALE_S = 1.0
+#  ★매핑(MAP_*)은 막지 않는다★ [2026-09-16] 매핑은 조이스틱으로도 하는 절차다.
 JOY_KMH_MAX = 99             # LCD 가 두 자리다 — 그 위는 접는다
 
 # ── 쓰로틀 페달 raw → 펄스 환산 ──
@@ -1194,6 +1203,12 @@ class Arduino(Node):
         self.gps_kmh = None
         self.gps_kmh_t = 0.0
 
+        # ── driving 의 상태 (조이스틱 차단 판정 전용) ──────────────────────
+        #   ★제어에 쓰지 않는다★ 이 값이 없어도 차의 거동은 그대로다 — 조이스틱을
+        #   막을지 말지만 정한다(자율주행 중 = 막는다).
+        self.drive_state = ''
+        self.drive_state_t = 0.0
+
         # ── 전송 변경 감지 ──
         self._last_a = None
         self._last_b = None
@@ -1255,6 +1270,9 @@ class Arduino(Node):
         if self.use_joystick:
             self.create_subscription(Float64MultiArray, '/gps_fused',
                                      self.cb_gps_fused, 10)
+            # ★[2026-09-17] 자율주행 중인지★ — 그 동안 조이스틱을 받지 않는다.
+            self.create_subscription(String, '/drive_state',
+                                     self.cb_drive_state, 10)
         if self.aeb_brake_level > 0:
             self.get_logger().warn(
                 f"🛑 AEB 비상정지 켜짐 — {self.aeb_topic} 가 True 면 구동을 끊고 "
@@ -1541,6 +1559,25 @@ class Arduino(Node):
         self.gps_kmh = max(0.0, kmh)
         self.gps_kmh_t = time.monotonic()
 
+    def cb_drive_state(self, msg: String):
+        """driving 의 상태기계 상태. ★조이스틱 차단 판정에만 쓴다★"""
+        self.drive_state = str(msg.data).strip().upper()
+        self.drive_state_t = time.monotonic()
+
+    def autonomous_driving(self):
+        """driving 이 지금 ★자율주행(DRIVE_*)★ 중인가. [2026-09-17]
+
+        ★매핑(MAP_*)은 여기 해당하지 않는다★ 그쪽은 조이스틱으로도 하는 절차다
+        (사용자 지시 2026-09-16). IDLE 도 아니다 — 세워 둔 차는 스틱으로 몰 수 있다.
+
+        ★신선도를 본다 — 끊기면 False(막지 않는다)★ driving 이 죽었는데 사람이
+        스틱으로 차를 뺄 수도 없으면 그게 더 위험하다. 이 노드가 막는 것은
+        '판단 노드가 살아서 지금 몰고 있는 동안' 하나다.
+        """
+        if not self.drive_state.startswith('DRIVE'):
+            return False
+        return (time.monotonic() - self.drive_state_t) <= DRIVE_STATE_STALE_S
+
     # ═══════════════════════════════════════════════════════════════
     #  ★[2026-09-16] 조이스틱 조종★
     # ═══════════════════════════════════════════════════════════════
@@ -1588,6 +1625,13 @@ class Arduino(Node):
         #  명령을 쏘면 사람과 싸운다.
         if gate is None and not self.auto_mode:
             gate = '수동조종 모드 (스위치를 자율주행으로)'
+        #  ★[2026-09-17] 자율주행이 몰고 있으면 스틱을 받지 않는다★ (사용자 지시)
+        #  주행(DRIVE_*)은 driving 이 경로를 따라 모는 절차다 — 그 위에 사람이
+        #  스틱으로 끼어들면 두 판단이 20Hz 로 다툰다. 몰고 싶으면 prompt 에서
+        #  주행을 멈추거나(아무 키) 스위치를 내렸다 올린다.
+        #  ★매핑(MAP_*)은 막지 않는다★ — 그쪽은 스틱으로 하는 절차다.
+        if gate is None and self.autonomous_driving():
+            gate = f'자율주행 중 ({self.drive_state}) — 조이스틱을 받지 않는다'
         if gate is None and self.estop_active:
             gate = 'E-STOP'
         self.joy_gate = gate
