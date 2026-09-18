@@ -58,6 +58,32 @@ ENC_SUM_TO_PULSE = 0.5
 # 이 위로는 더 올라가지 않는다 — exhaust.py 의 펄스 상한과 같다(20).
 MAX_PULSE = _exhaust.MAX_PULSE
 
+# ══════════════════════════════════════════════════════════════════════════
+#  ★★ 음량 — 실차 배기음 크기는 여기 두 줄이 정한다 ★★  [2026-09-18]
+# ══════════════════════════════════════════════════════════════════════════
+#  exhaust.py 의 MASTER_GAIN·SOFTCLIP_DRIVE 를 ★생성자로★ 덮는다(모듈 전역을
+#  건드리지 않는다 — 그쪽 기본값은 그 파일을 튜닝 도구로 단독 실행할 때의 값이다).
+#  차에 달린 스피커가 작아 ★기본을 최대 쪽으로 잡아 두었다★(사용자 지시).
+#
+#  VOLUME  : 최종 출력 게인. tanh 뒤에 곱하므로 ★1.0 이 디지털 상한★ 이고
+#            그 위는 없다. 더 키우고 싶으면 아래 LOUDNESS 를 올린다.
+#  LOUDNESS: 소프트클립 드라이브. tanh 에 들어가기 전의 배율이라 ★피크는 그대로
+#            두고 평균(체감 크기)만 올린다★. tanh 이 천장을 눌러 주므로 아무리
+#            올려도 디지털 클리핑이 나지 않는다.
+#
+#  실측 (펄스 7, VOLUME=1.0 기준 RMS / 피크) :
+#      LOUDNESS 1.4 → −14.1 dB / 0.53      (종전 VOLUME 0.55 조합은 −19.2 dB)
+#      LOUDNESS 2.5 → ★ −9.6 dB / 0.78★   ← 지금 값. 종전 대비 ★+9.6 dB (약 3배)★
+#      LOUDNESS 4.0 →  −6.5 dB / 0.93
+#  2kHz 위 고조파 비율은 1.4~4.0 에서 11.21 → 11.12% 로 ★거의 변하지 않는다★ —
+#  즉 올려도 음색이 나빠지지는 않는다.
+#
+#  ⚠️ 그런데도 2.5 에서 멈춘 이유 : 안내 음성(nxde/sound.py, 증폭 후 평균
+#     −11.8 dB)보다 배기음이 커지면 ★말이 묻힌다★. 4.0 이면 안내보다 5 dB 크다.
+#     그래도 더 크게 하고 싶으면 이 값만 올린다(4.0 근처가 실질 상한이다).
+VOLUME = 1.00
+LOUDNESS = 2.50
+
 
 def _log(msg):
     print(f"[vess] {msg}", file=sys.stderr, flush=True)
@@ -88,9 +114,14 @@ class VessNode(Node):
         self.engine = None
         try:
             layer_dir = os.path.join(sound_dir(), 'layers')
-            engine = _MutableExhaust(mode='sample', layer_dir=layer_dir)
+            engine = _MutableExhaust(mode='sample', layer_dir=layer_dir,
+                                     gain=VOLUME, drive=LOUDNESS)
             engine.start()
             self.engine = engine
+            #  ★"배기음이 실제로 켜졌는가" 를 런치 로그에서 눈으로 본다★
+            #  (소리가 안 들릴 때 코드·장치·스피커 중 어디를 볼지 이 한 줄이 가른다)
+            _log(f"가상 배기음 ON — VOLUME {VOLUME:.2f} / LOUDNESS {LOUDNESS:.2f} "
+                 f"· 음원 {layer_dir}")
         except Exception as e:
             _log(f"가상 배기음을 켜지 못했습니다({e}) — 소리 없이 돕니다 "
                  f"(sounddevice/soundfile 설치, 오디오 장치를 확인하십시오)")

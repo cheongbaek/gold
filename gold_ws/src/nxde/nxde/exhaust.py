@@ -86,7 +86,20 @@ F_TOP = 400.0         # 펄스 20 일 때 기본주파수 (Hz)  -> 약 3.1 옥�
 # 자연스럽게 덮인다. (음정이 같이 올라가면 "엑셀 밟는 내연기관" 처럼 들린다)
 F_STANDSTILL = 46.0
 SMOOTH_TAU = 0.28     # 펄스 계단을 녹이는 시정수(초). 이게 없으면 21단 계단음
-MASTER_GAIN = 0.55
+
+# ── 음량 ────────────────────────────────────────────────────────────────────
+# ★실차 값의 소유자는 이 파일이 아니라 `nxde/vess.py` 상단이다★ [2026-09-18]
+#   그쪽이 VOLUME·LOUDNESS 를 생성자로 넘긴다. 아래 둘은 ㉠ 이 파일을 튜닝 도구로
+#   단독 실행할 때의 기본값이자 ㉡ 인자를 안 주고 엔진을 만들 때의 기본값이다.
+#   단독 실행에서 실차와 같은 소리로 들어 보려면 --volume / --loudness 를 준다.
+MASTER_GAIN = 0.55    # 최종 출력 게인 (0~1). tanh 뒤에 곱하므로 1.0 이 디지털 상한
+# 소프트클립 드라이브 — tanh 에 들어가기 전의 배율이다. ★피크를 올리지 않고
+# '체감 크기(라우드니스)'만 올리는 손잡이★ 이고, tanh 이 천장을 눌러 주므로
+# 아무리 올려도 |출력| < MASTER_GAIN 이라 디지털 클리핑이 구조적으로 불가능하다.
+# 실측(펄스 7, 게인 1.0) : 1.4 → −14.1 dB / 2.5 → −9.6 dB / 4.0 → −6.5 dB.
+# 2kHz 위 고조파 비율은 1.4 에서 4.0 까지 11.21 → 11.12% 로 ★거의 변하지 않는다★
+# (음원 자체가 이미 배음이 풍부해서, 이 구간의 tanh 은 음색을 바꾸지 않는다).
+SOFTCLIP_DRIVE = 1.4
 
 # 2단계 경계 (펄스 단위)
 P_IDLE_HOLD = 1.0     # 여기까지는 공회전음을 100% 유지
@@ -299,7 +312,8 @@ class SampleSource:
 
 # ---------------------------------------------------------------- 엔진 본체
 class VirtualExhaust:
-    def __init__(self, mode="sample", layer_dir=None, refs=None):
+    def __init__(self, mode="sample", layer_dir=None, refs=None,
+                 gain=None, drive=None):
         layer_dir = layer_dir or LAYER_DIR
         if mode == "sample" and not layers_ready(layer_dir):
             print(f"[알림] {layer_dir} 에 wav 가 없어 내장 합성음으로 돌립니다. "
@@ -313,6 +327,10 @@ class VirtualExhaust:
         self._target = 0.0          # 외부에서 설정하는 펄스 (0~20)
         self._p = 0.0               # 스무딩된 펄스
         self._alpha = 1.0 - np.exp(-(BLOCK / SR) / SMOOTH_TAU)
+        # ★음량은 인스턴스가 들고 있는다★ 모듈 전역을 밖에서 덮는 방식이면
+        #   같은 프로세스 안의 다른 엔진(튜닝·렌더)까지 같이 바뀐다.
+        self.gain = MASTER_GAIN if gain is None else float(np.clip(gain, 0.0, 1.0))
+        self.drive = SOFTCLIP_DRIVE if drive is None else max(0.01, float(drive))
         self._lfo = 0.0
         self._zi_master = np.zeros(1)
         self._stream = None
@@ -350,7 +368,7 @@ class VirtualExhaust:
         tone, self._zi_master = lfilter(b, a, tone, zi=self._zi_master)
 
         out = tone[:, None] * 0.5
-        return np.tanh(out * 1.4) * MASTER_GAIN               # 부드러운 클립
+        return np.tanh(out * self.drive) * self.gain          # 부드러운 클립
 
     # ---- 재생 -----------------------------------------------------------
     def start(self):
@@ -519,6 +537,10 @@ def main():
                     help="기본 sample = layers/*.wav 사용. "
                          "wav 가 없으면 자동으로 synth 로 떨어진다")
     ap.add_argument("--layers", default=LAYER_DIR, help="sample 모드 wav 폴더")
+    ap.add_argument("--volume", type=float, default=MASTER_GAIN,
+                    help="최종 게인 0~1 (실차 값은 vess.py 의 VOLUME)")
+    ap.add_argument("--loudness", type=float, default=SOFTCLIP_DRIVE,
+                    help="소프트클립 드라이브 = 체감 크기 (실차 값은 vess.py 의 LOUDNESS)")
     for name in DEFAULT_REFS:                 # --ref-low / --ref-high
         ap.add_argument(f"--ref-{name}", type=int, default=DEFAULT_REFS[name],
                         help=f"{name}.wav 가 만들어진 기준 펄스 "
@@ -530,7 +552,8 @@ def main():
     args = ap.parse_args()
 
     refs = {name: getattr(args, f"ref_{name}") for name in DEFAULT_REFS}
-    eng = VirtualExhaust(args.mode, args.layers, refs)
+    eng = VirtualExhaust(args.mode, args.layers, refs,
+                         gain=args.volume, drive=args.loudness)
     if args.export_demo:
         return run_export_demo(args.export_demo, eng)
     if args.render:

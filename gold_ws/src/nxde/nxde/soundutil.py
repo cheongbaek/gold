@@ -27,12 +27,61 @@ import time
 
 PACKAGE_NAME = 'nxde'
 
+# ══════════════════════════════════════════════════════════════════════════
+#  ★★ 음량 — 안내 음성·경고음의 크기는 여기 두 줄이 정한다 ★★  [2026-09-18]
+# ══════════════════════════════════════════════════════════════════════════
+#  ★이 파일이 단일 소유자다★ — sound.py(주행 안내) · kill.py(종료음) ·
+#  prompt.py · braketest.py · tts.py 가 전부 아래 PLAYERS 를 쓴다.
+#  종전에는 tts.py 만 증폭을 갖고 있어서, ★같은 스피커로 나가는 주행 안내가
+#  TTS 보다 3 배 작았다★.
+#
+#  ★증폭 + 리미터가 한 쌍이다★ 단순 증폭만 하면 큰 음절에서 파형이 잘려
+#  찌그러진다 — 말이 커지는 게 아니라 알아듣기 어려워진다. lookahead 리미터가
+#  천장을 눌러 주므로 배수를 올려도 깨지지 않는다.
+#
+#  ⚠️ ★3.0 이 실질 상한이다 — 더 올려도 커지지 않는다★ (실측, 리미터 적용 후 평균):
+#      one_launch_1.mp3  원본 −18.9 → x2 −13.3 / ★x3 −11.8★ / x4 −11.1 / x5 −10.7
+#      prompt_4.mp3      원본 −17.9 → x2 −12.0 / ★x3 −10.4★ / x4 −10.0 / x5  −9.7
+#      estop.wav         원본  −2.2 → x2  −1.8 / ★x3  −1.8★ / x4  −1.8 / x5  −1.8
+#    x3 에서 이미 리미터가 포화해, x4·x5 는 ★+0.5 dB 를 얻고 다이내믹만 잃는다★.
+#    여기서 더 키우려면 재생 단계가 아니라 ★음원 파일 자체★ 를 다시 만들어야 한다.
+#    (loudnorm 단일 패스도 재 보았으나 짧은 안내음에서는 오히려 −32 dB 로 줄었다.)
+PLAY_GAIN = 3.0
+PLAY_LIMIT = 0.97                 # 리미터 천장(0~1). 1.0 에 가까울수록 크고 위험하다
+
+
+def gain_args(name):
+    """재생기별 증폭 인자. ★PLAY_GAIN 한 곳만 고치면 전부 따라온다★
+
+    네 재생기가 각자 다른 단위를 쓴다 — 여기서 한 번 환산해 두지 않으면 재생기가
+    바뀔 때마다 음량이 조용히 달라진다(있는 것을 위에서부터 고르는 구조라, 어느
+    것이 걸릴지는 기계마다 다르다).
+    """
+    g = max(1.0, float(PLAY_GAIN))
+    if g <= 1.0:
+        return []
+    if name == 'ffplay':
+        #  ★증폭 + 리미터★ 클리핑 없이 키우는 유일한 조합이다(상수 주석 참고).
+        return ['-af', 'volume=%.2f,alimiter=limit=%.2f' % (g, PLAY_LIMIT)]
+    if name == 'mpg123':
+        #  -f 는 ★출력 스케일★ 이고 32768 이 1배다(그래서 배수 × 32768).
+        return ['-f', str(int(32768 * g))]
+    if name == 'mpv':
+        #  --volume 은 % 이고 기본 상한이 130 이라 --volume-max 를 함께 올려야 한다.
+        return ['--volume-max=%d' % int(g * 100), '--volume=%d' % int(g * 100)]
+    if name == 'cvlc':
+        return ['--gain', '%.2f' % g]
+    return []
+
+
 # 있는 것을 위에서부터 고른다. 전부 '창 없이 한 번 재생하고 끝'.
-PLAYERS = (
-    ('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet']),
-    ('mpg123', ['-q']),
-    ('mpv',    ['--no-video', '--really-quiet']),
-    ('cvlc',   ['--intf', 'dummy', '--play-and-exit']),
+PLAYERS = tuple(
+    (name, args + gain_args(name)) for name, args in (
+        ('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet']),
+        ('mpg123', ['-q']),
+        ('mpv',    ['--no-video', '--really-quiet']),
+        ('cvlc',   ['--intf', 'dummy', '--play-and-exit']),
+    )
 )
 
 # 이 순서로 찾는다 — mp3 가 압도적으로 많으므로(안내 음성 전부) 먼저 본다.
@@ -108,6 +157,11 @@ class Player:
         self._warned = set()
         if self.enabled and self._cmd is None:
             self.log("재생기를 찾지 못했다(ffplay/mpg123/mpv/cvlc) — 음성 안내 없이 돈다")
+        elif self.enabled:
+            #  ★음량이 기대와 다를 때 제일 먼저 볼 줄이다★ 재생기마다 증폭 단위가
+            #  달라서(gain_args), 어느 것이 걸렸는지가 곧 음량의 절반이다.
+            self.log("재생기 %s · 재생증폭 x%.1f (음원 %s)"
+                     % (os.path.basename(self._cmd[0]), PLAY_GAIN, self.dir))
 
     # ── 내부 ──────────────────────────────────────────────────────────────────
     def _path(self, name):
