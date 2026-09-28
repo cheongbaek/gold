@@ -6,7 +6,8 @@
 namespace mppi_local_planner
 {
 
-MPPIController::MPPIController(const MPPIParams & mppi_params, const VehicleParams & vehicle_params)
+MPPIController::MPPIController(
+  const MPPIParams & mppi_params, const VehicleParams & vehicle_params)
 : params_(mppi_params),
   vehicle_params_(vehicle_params),
   footprint_(footprintOffsets(vehicle_params)),
@@ -34,13 +35,12 @@ void MPPIController::ensureBuffers()
 
 void MPPIController::reset()
 {
-  // ensureBuffers() sizes nominal_ on the next computeControl(); zeroing what
-  // is there now is enough — Control{} is v=0, delta=0.
   for (auto & u : nominal_) {
     u = Control{};
   }
   last_executed_ = Control{};
   last_trajectory_.clear();
+  ref_path_ = {};
 }
 
 void MPPIController::shiftNominal(int steps)
@@ -66,19 +66,14 @@ double MPPIController::rolloutCost(
   const OdomPose & current_odom_pose,
   const CostmapSnapshot & costmap) const
 {
-  State s{};  // ego frame: rollout starts at the origin (rear axle)
+  State s{};
   double cost = 0.0;
   Control prev = last_executed_;
 
   const double cos_o = std::cos(current_odom_pose.yaw);
   const double sin_o = std::sin(current_odom_pose.yaw);
   const int T = params_.horizon_steps;
-  const double L_stan = std::max(0.25, params_.stanley_lookahead);
-  const double dodge_frac = std::clamp(params_.s_curve_dodge_frac, 0.05, 0.6);
-  const double return_pow = std::max(0.3, params_.s_curve_return_power);
-  const double progress_floor = std::clamp(params_.path_progress_floor, 0.0, 1.0);
-  const double y0 = current_odom_pose.y;
-  const double abs_y0 = std::abs(y0);
+  const bool have_ref = ref_path_.valid && ref_path_.pts.size() >= 2;
 
   auto footprintObs = [&](const State & st) {
     double obs = 0.0;
@@ -91,89 +86,49 @@ double MPPIController::rolloutCost(
     return obs;
   };
 
-  // Soften path/heading only while still near the reference line. Once already
-  // offset after cone #1, force strong return even if cone #2 still blocks the
-  // centerline — otherwise the car stays on the wrong side of the zigzag.
-  double avoid_scale = 1.0;
-  if (params_.avoid_obs_gain > 1e-3 && abs_y0 < params_.offset_return_y) {
-    double ahead = 0.0;
-    for (double ax = 0.6; ax <= 3.0; ax += 0.6) {
-      ahead = std::max(ahead, costmap.getCost(ax, 0.0));
-      ahead = std::max(ahead, costmap.getCost(ax, 0.35));
-      ahead = std::max(ahead, costmap.getCost(ax, -0.35));
+  auto refAt = [&](double s_odom) {
+    if (have_ref) {
+      return ref_path_.sample(s_odom);
     }
-    const double floor_s = std::clamp(params_.avoid_path_scale, 0.0, 1.0);
-    const double t = std::clamp(ahead / params_.avoid_obs_gain, 0.0, 1.0);
-    avoid_scale = 1.0 - t * (1.0 - floor_s);
-  } else if (abs_y0 >= params_.offset_return_y) {
-    avoid_scale = std::max(avoid_scale, params_.offset_return_scale);
-  }
-
-  // How free is the *reference corridor* ahead (for return-clear bonus)?
-  double ref_corridor = 0.0;
-  for (double ax = 0.8; ax <= 3.5; ax += 0.5) {
-    ref_corridor = std::max(ref_corridor, costmap.getCost(ax, 0.0));
-    ref_corridor = std::max(ref_corridor, costmap.getCost(ax, 0.25));
-    ref_corridor = std::max(ref_corridor, costmap.getCost(ax, -0.25));
-  }
-  const double clear_frac = std::clamp(
-    1.0 - ref_corridor / std::max(1.0, params_.return_clear_cost), 0.0, 1.0);
+    FrenetPoint p;
+    p.s = s_odom;
+    return p;
+  };
 
   for (int t = 0; t < T; ++t) {
     const Control & u = controls[static_cast<size_t>(t)];
     s = step(s, u, params_.dt, vehicle_params_);
 
-    cost += params_.weight_obstacle * footprintObs(s);
-
-    // Transform rear-axle point into the persistent odom frame for path cost.
-    const double y_odom = current_odom_pose.y + s.x * sin_o + s.y * cos_o;
+    const double s_odom =
+      current_odom_pose.x + s.x * cos_o - s.y * sin_o;
+    const double d_odom =
+      current_odom_pose.y + s.x * sin_o + s.y * cos_o;
     const double yaw_odom = wrapAngle(current_odom_pose.yaw + s.yaw);
 
-    //  ★비켜 갈 자리를 기준으로 잰다★ (lateral_target 주석 — 없으면 0 = 중심선)
-    const double cross_track = y_odom - params_.lateral_target;
-    // Snappy Stanley return: when offset left (y>0), point right to close the S.
-    const double target_yaw = -std::atan2(cross_track, L_stan);
-    const double heading_err = wrapAngle(yaw_odom - target_yaw);
+    const FrenetPoint rp = refAt(s_odom);
+    const double cte = d_odom - rp.d;
+    const double heading_err = wrapAngle(yaw_odom - rp.yaw);
 
-    // Parabolic S path scale: free early wrap, then aggressive return.
-    const double frac = static_cast<double>(t + 1) / static_cast<double>(std::max(1, T));
-    double path_scale = progress_floor;
-    if (frac > dodge_frac) {
-      const double u = (frac - dodge_frac) / std::max(1e-6, 1.0 - dodge_frac);
-      path_scale = progress_floor + (1.0 - progress_floor) * std::pow(u, return_pow);
-    }
-    // Already offset this cycle: do not wait for dodge_frac — return now.
-    if (abs_y0 >= params_.offset_return_y) {
-      path_scale = std::max(path_scale, params_.offset_return_scale * (0.4 + 0.6 * frac));
-    }
-    path_scale *= avoid_scale;
+    const double obs = footprintObs(s);
+    const bool lethal = obs >= EgoCostmap::kLethalCost * 0.99;
+    const double w_obs =
+      (lethal || std::abs(cte) > params_.on_path_cte_m)
+        ? params_.weight_obstacle
+        : params_.weight_obstacle * params_.obstacle_on_path_scale;
+    cost += w_obs * obs;
 
-    // Extra return pressure once past first-obstacle envelope (ref looks free).
-    if (params_.weight_return_clear > 1e-6 && clear_frac > 0.2) {
-      path_scale += params_.weight_return_clear * clear_frac *
-        (std::abs(cross_track) / std::max(0.2, params_.max_lateral_offset));
-    }
+    cost += params_.weight_path * cte * cte;
+    cost += params_.weight_heading * heading_err * heading_err;
 
-    cost += params_.weight_path * path_scale * cross_track * cross_track;
-    cost += params_.weight_heading * path_scale * heading_err * heading_err;
-
-    // Soft lateral wall: discourage permanent side-lane after first dodge.
-    //  ★여기만 절대 y 다★ 목표가 어디로 옮겨가든 '중심선에서 이 이상은 안 된다'
-    //  는 뜻은 변하지 않는다(lateral_target 주석).
-    const double y_abs = std::abs(y_odom);
-    if (y_abs > params_.max_lateral_offset) {
-      const double over = y_abs - params_.max_lateral_offset;
+    const double d_abs = std::abs(d_odom);
+    if (d_abs > params_.max_lateral_offset) {
+      const double over = d_abs - params_.max_lateral_offset;
       cost += params_.weight_lateral_wall * over * over;
     }
-    //  ★하드 벽 [2026-09-11]★ 사용자가 정한 '넘을 필요 없는' 선(2.5m). 넘으면
-    //  길을 벗어날 위험이 있으므로 장애물 비용(수백)을 압도해야 한다.
-    if (y_abs > params_.lateral_hard) {
-      const double over = y_abs - params_.lateral_hard;
+    if (d_abs > params_.lateral_hard) {
+      const double over = d_abs - params_.lateral_hard;
       cost += params_.weight_lateral_hard * over * over;
     }
-    //  ★헤딩 벽★ 기준은 경로 절대헤딩이 아니라 ★스탠리 목표 헤딩과의 차★ 다.
-    //  yaw_odom 에 걸면 회피 중 필요한 17~25° 도 벽으로 읽고, 기하 조향이
-    //  조금만 열어도 stop latch 가 차를 세운다(실측 yaw 38~44° / cost 750+).
     {
       const double h_abs = std::abs(heading_err);
       if (h_abs > params_.max_heading_dev) {
@@ -184,37 +139,39 @@ double MPPIController::rolloutCost(
 
     const double dv = params_.desired_speed - u.v;
     cost += params_.weight_speed * dv * dv;
-
     cost += params_.weight_smooth_v * (u.v - prev.v) * (u.v - prev.v);
     cost += params_.weight_smooth_delta * (u.delta - prev.delta) * (u.delta - prev.delta);
-
     prev = u;
   }
 
-  // Terminal: end of horizon must sit back on the IMU line (complete the S).
   {
-    //  ★종단도 같은 기준이다★ 중심선으로 되돌리라고 하면 비켜 가는 궤적 자체가
-    //  종단 비용에 벌점을 먹어, 플래너가 '비키지 않는 쪽' 을 고르게 된다.
-    const double y_f = current_odom_pose.y + s.x * sin_o + s.y * cos_o
-                       - params_.lateral_target;
+    const double s_f = current_odom_pose.x + s.x * cos_o - s.y * sin_o;
+    const double d_f = current_odom_pose.y + s.x * sin_o + s.y * cos_o;
     const double yaw_f = wrapAngle(current_odom_pose.yaw + s.yaw);
-    const double target_yaw_f = -std::atan2(y_f, L_stan);
-    const double h_f = wrapAngle(yaw_f - target_yaw_f);
-    cost += params_.weight_path_terminal * y_f * y_f;
+    const FrenetPoint rp = refAt(s_f);
+    const double cte_f = d_f - rp.d;
+    const double h_f = wrapAngle(yaw_f - rp.yaw);
+    cost += params_.weight_path_terminal * cte_f * cte_f;
     cost += params_.weight_heading_terminal * h_f * h_f;
   }
 
-  // ---- Extended obstacle lookahead (beyond control horizon) ----
+  // Probe the planned path ahead of the horizon (not the current heading).
+  // A slalom return heading used to sweep the body through a just-passed cone.
   if (params_.lookahead_distance > 1e-3 && params_.lookahead_step > 1e-3) {
     const double w_look = params_.weight_obstacle * params_.weight_lookahead;
-    const double c = std::cos(s.yaw);
-    const double sn = std::sin(s.yaw);
-    for (double d = params_.lookahead_step; d <= params_.lookahead_distance + 1e-9;
-         d += params_.lookahead_step)
+    const double s_end = current_odom_pose.x + s.x * cos_o - s.y * sin_o;
+    for (double ds = params_.lookahead_step;
+         ds <= params_.lookahead_distance + 1e-9;
+         ds += params_.lookahead_step)
     {
-      State probe = s;
-      probe.x = s.x + d * c;
-      probe.y = s.y + d * sn;
+      const FrenetPoint rp = refAt(s_end + ds);
+      double ex = 0.0;
+      double ey = 0.0;
+      odomToEgo(current_odom_pose, rp.s, rp.d, ex, ey);
+      State probe;
+      probe.x = ex;
+      probe.y = ey;
+      probe.yaw = wrapAngle(rp.yaw - current_odom_pose.yaw);
       cost += w_look * footprintObs(probe);
     }
   }
@@ -222,85 +179,67 @@ double MPPIController::rolloutCost(
   return cost;
 }
 
-// Equal-length segment primitive (legacy helper).
-static void fillPrimitive(
+static void fillPathTracking(
   std::vector<Control> & seq,
   double v_des,
-  const std::vector<double> & deltas,
+  double steer_scale,
+  double delta_bias,
+  const FrenetPath & path,
+  const OdomPose & odom,
+  double L_stan,
   const Control & last_executed,
   double dt,
   const VehicleParams & vp)
 {
   Control prev = last_executed;
+  double s = odom.x;
   const int T = static_cast<int>(seq.size());
-  const int nseg = static_cast<int>(deltas.size());
+  const bool have = path.valid && path.pts.size() >= 2;
+  const double d_ref0 = have ? path.sample(odom.x).d : 0.0;
+  const double cte0 = odom.y - d_ref0;
+  const double d_cte = -std::atan(cte0 / std::max(4.0, L_stan));
   for (int t = 0; t < T; ++t) {
-    const int seg = std::min(nseg - 1, (t * nseg) / std::max(1, T));
+    double kappa = 0.0;
+    if (have) {
+      kappa = path.sample(s).kappa;
+    }
     Control u;
     u.v = v_des;
-    u.delta = deltas[static_cast<size_t>(seg)];
+    u.delta = steer_scale * std::atan(vp.wheelbase * kappa) + d_cte + delta_bias;
     u = clampControl(u, prev, dt, vp);
     seq[static_cast<size_t>(t)] = u;
     prev = u;
+    s += std::max(0.05, u.v) * dt;
   }
 }
 
-// Uneven segment lengths (fractions sum ~1) for short-dodge / long-return S.
-static void fillPrimitiveFrac(
+static void fillConstant(
   std::vector<Control> & seq,
   double v_des,
-  const std::vector<double> & deltas,
-  const std::vector<double> & fracs,
+  double delta,
   const Control & last_executed,
   double dt,
   const VehicleParams & vp)
 {
   Control prev = last_executed;
-  const int T = static_cast<int>(seq.size());
-  const int nseg = static_cast<int>(deltas.size());
-  if (nseg <= 0 || T <= 0) {
-    return;
-  }
-  // Cumulative fraction boundaries.
-  std::vector<double> edges(static_cast<size_t>(nseg) + 1, 0.0);
-  double sum = 0.0;
-  for (int i = 0; i < nseg; ++i) {
-    const double f = (i < static_cast<int>(fracs.size())) ? std::max(0.0, fracs[static_cast<size_t>(i)]) : 1.0;
-    sum += f;
-    edges[static_cast<size_t>(i + 1)] = sum;
-  }
-  if (sum < 1e-9) {
-    fillPrimitive(seq, v_des, deltas, last_executed, dt, vp);
-    return;
-  }
-  for (int i = 0; i <= nseg; ++i) {
-    edges[static_cast<size_t>(i)] /= sum;
-  }
-
-  for (int t = 0; t < T; ++t) {
-    const double u = (static_cast<double>(t) + 0.5) / static_cast<double>(T);
-    int seg = nseg - 1;
-    for (int i = 0; i < nseg; ++i) {
-      if (u <= edges[static_cast<size_t>(i + 1)]) {
-        seg = i;
-        break;
-      }
-    }
-    Control c;
-    c.v = v_des;
-    c.delta = deltas[static_cast<size_t>(seg)];
-    c = clampControl(c, prev, dt, vp);
-    seq[static_cast<size_t>(t)] = c;
-    prev = c;
+  for (size_t t = 0; t < seq.size(); ++t) {
+    Control u;
+    u.v = v_des;
+    u.delta = delta;
+    u = clampControl(u, prev, dt, vp);
+    seq[t] = u;
+    prev = u;
   }
 }
 
 MPPIResult MPPIController::computeControl(
   const OdomPose & current_odom_pose,
   const CostmapSnapshot & costmap,
+  const FrenetPath & ref,
   int shift_steps)
 {
   ensureBuffers();
+  ref_path_ = ref;
 
   const int K = params_.num_samples;
   const int T = params_.horizon_steps;
@@ -308,139 +247,51 @@ MPPIResult MPPIController::computeControl(
   const double innov = std::sqrt(std::max(1e-9, 1.0 - corr * corr));
   const double v_des = params_.desired_speed;
   const double dmax = vehicle_params_.max_steering_angle;
-  const double dhalf = 0.5 * dmax;
-  const double d75 = 0.75 * dmax;
-  const double y0 = current_odom_pose.y;
+  const double s0 = current_odom_pose.x;
+  const FrenetPoint r0 =
+    (ref.valid && !ref.pts.empty()) ? ref.sample(s0) : FrenetPoint{};
+  const double kappa0 = r0.kappa;
+  const double ff0 = std::atan(vehicle_params_.wheelbase * kappa0);
+  const double need_d = r0.d - current_odom_pose.y;
+  if (need_d * last_executed_.delta < 0.0 && std::abs(need_d) > 0.12) {
+    last_executed_.delta = 0.0;
+    for (auto & u : nominal_) {
+      if (need_d * u.delta < 0.0) {
+        u.delta = 0.0;
+      }
+    }
+  }
+  const double toward = (need_d >= 0.0) ? 1.0 : -1.0;
 
   std::normal_distribution<double> noise_v(0.0, params_.noise_std_v);
   std::normal_distribution<double> noise_delta(0.0, params_.noise_std_delta);
 
-  // Side of nearest forward obstacle (for first-cone wrap direction).
-  double left_obs = 0.0;
-  double right_obs = 0.0;
-  for (double ax = 0.6; ax <= 3.5; ax += 0.5) {
-    left_obs = std::max(left_obs, costmap.getCost(ax, 0.55));
-    left_obs = std::max(left_obs, costmap.getCost(ax, 0.90));
-    right_obs = std::max(right_obs, costmap.getCost(ax, -0.55));
-    right_obs = std::max(right_obs, costmap.getCost(ax, -0.90));
-  }
-  // Prefer dodge toward free side: +1 = obstacle more on left (dodge right first),
-  // -1 = obstacle more on right (dodge left first).
-  const int prefer_sign = (left_obs > right_obs + 15.0) ? -1 :
-                          (right_obs > left_obs + 15.0) ? +1 : 0;
-
-  // catkin_ws 원본과 같은 프리미티브 세트 (짧은 회피 + IMU S 복귀).
-  // 금색차는 dmax·rate 를 params 에서 낮춰 같은 모양이 부드럽게 나가게 한다.
-  constexpr int kNumPrimitives = 20;
+  // Seeds follow the Frenet curve. Extra lock/1.15× curvature was steering
+  // more than the drawn path.
+  const double L_stan = std::max(3.2, params_.stanley_lookahead);
+  constexpr int kNumPrimitives = 10;
   if (K >= kNumPrimitives) {
     int k = 0;
-    fillPrimitive(samples_[static_cast<size_t>(k++)], v_des, {0.0},
+    fillPathTracking(samples_[static_cast<size_t>(k++)], v_des, 1.00, 0.0,
+      ref, current_odom_pose, L_stan, last_executed_, params_.dt, vehicle_params_);
+    fillPathTracking(samples_[static_cast<size_t>(k++)], v_des, 0.92, 0.0,
+      ref, current_odom_pose, L_stan, last_executed_, params_.dt, vehicle_params_);
+    fillPathTracking(samples_[static_cast<size_t>(k++)], v_des, 1.05, 0.0,
+      ref, current_odom_pose, L_stan, last_executed_, params_.dt, vehicle_params_);
+    fillPathTracking(samples_[static_cast<size_t>(k++)], v_des, 1.00, 0.14 * dmax * toward,
+      ref, current_odom_pose, L_stan, last_executed_, params_.dt, vehicle_params_);
+    fillPathTracking(samples_[static_cast<size_t>(k++)], v_des, 1.08, 0.08 * dmax * toward,
+      ref, current_odom_pose, L_stan, last_executed_, params_.dt, vehicle_params_);
+    fillPathTracking(samples_[static_cast<size_t>(k++)], 0.85 * v_des, 1.00, 0.0,
+      ref, current_odom_pose, L_stan, last_executed_, params_.dt, vehicle_params_);
+    fillConstant(samples_[static_cast<size_t>(k++)], v_des, ff0,
       last_executed_, params_.dt, vehicle_params_);
-
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {dmax, dmax, -dmax, -d75, 0.0},
-      {0.12, 0.12, 0.38, 0.22, 0.16},
+    fillConstant(samples_[static_cast<size_t>(k++)], v_des, last_executed_.delta,
       last_executed_, params_.dt, vehicle_params_);
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {-dmax, -dmax, dmax, d75, 0.0},
-      {0.12, 0.12, 0.38, 0.22, 0.16},
+    fillConstant(samples_[static_cast<size_t>(k++)], v_des, 0.0,
       last_executed_, params_.dt, vehicle_params_);
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {dmax, -dmax, -dmax, -dhalf, 0.0},
-      {0.18, 0.28, 0.28, 0.16, 0.10},
-      last_executed_, params_.dt, vehicle_params_);
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {-dmax, dmax, dmax, dhalf, 0.0},
-      {0.18, 0.28, 0.28, 0.16, 0.10},
-      last_executed_, params_.dt, vehicle_params_);
-
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {d75, dhalf, -d75, -dhalf, 0.0},
-      {0.15, 0.15, 0.35, 0.20, 0.15},
-      last_executed_, params_.dt, vehicle_params_);
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {-d75, -dhalf, d75, dhalf, 0.0},
-      {0.15, 0.15, 0.35, 0.20, 0.15},
-      last_executed_, params_.dt, vehicle_params_);
-
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {dmax, -dmax, -dmax, dmax, dhalf, 0.0},
-      {0.14, 0.20, 0.18, 0.20, 0.16, 0.12},
-      last_executed_, params_.dt, vehicle_params_);
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {-dmax, dmax, dmax, -dmax, -dhalf, 0.0},
-      {0.14, 0.20, 0.18, 0.20, 0.16, 0.12},
-      last_executed_, params_.dt, vehicle_params_);
-
-    fillPrimitive(samples_[static_cast<size_t>(k++)], v_des, {dhalf},
-      last_executed_, params_.dt, vehicle_params_);
-    fillPrimitive(samples_[static_cast<size_t>(k++)], v_des, {-dhalf},
-      last_executed_, params_.dt, vehicle_params_);
-
-    if (prefer_sign >= 0) {
-      fillPrimitiveFrac(
-        samples_[static_cast<size_t>(k++)], v_des,
-        {dmax, dmax, -dmax, -dmax, 0.0},
-        {0.14, 0.12, 0.36, 0.22, 0.16},
-        last_executed_, params_.dt, vehicle_params_);
-      fillPrimitiveFrac(
-        samples_[static_cast<size_t>(k++)], v_des,
-        {d75, -dmax, -d75, 0.0},
-        {0.20, 0.40, 0.25, 0.15},
-        last_executed_, params_.dt, vehicle_params_);
-    } else {
-      fillPrimitiveFrac(
-        samples_[static_cast<size_t>(k++)], v_des,
-        {-dmax, -dmax, dmax, dmax, 0.0},
-        {0.14, 0.12, 0.36, 0.22, 0.16},
-        last_executed_, params_.dt, vehicle_params_);
-      fillPrimitiveFrac(
-        samples_[static_cast<size_t>(k++)], v_des,
-        {-d75, dmax, d75, 0.0},
-        {0.20, 0.40, 0.25, 0.15},
-        last_executed_, params_.dt, vehicle_params_);
-    }
-
-    const double ret = (y0 >= 0.0) ? -dmax : dmax;
-    const double ret2 = (y0 >= 0.0) ? -d75 : d75;
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {ret, ret, ret2, 0.0},
-      {0.30, 0.30, 0.25, 0.15},
-      last_executed_, params_.dt, vehicle_params_);
-    fillPrimitiveFrac(
-      samples_[static_cast<size_t>(k++)], v_des,
-      {ret, ret2, 0.0, 0.0},
-      {0.35, 0.30, 0.20, 0.15},
-      last_executed_, params_.dt, vehicle_params_);
-    fillPrimitive(
-      samples_[static_cast<size_t>(k++)], v_des, {ret},
-      last_executed_, params_.dt, vehicle_params_);
-    fillPrimitive(
-      samples_[static_cast<size_t>(k++)], v_des, {ret2},
-      last_executed_, params_.dt, vehicle_params_);
-
-    fillPrimitive(
-      samples_[static_cast<size_t>(k++)], v_des, {dmax, dmax, -dmax, -dhalf, 0.0},
-      last_executed_, params_.dt, vehicle_params_);
-    fillPrimitive(
-      samples_[static_cast<size_t>(k++)], v_des, {-dmax, -dmax, dmax, dhalf, 0.0},
-      last_executed_, params_.dt, vehicle_params_);
-
-    fillPrimitive(samples_[static_cast<size_t>(k++)], v_des, {0.0, 0.0},
-      last_executed_, params_.dt, vehicle_params_);
-
-    // Fill any leftover slots if k < kNumPrimitives (shouldn't happen).
     while (k < kNumPrimitives) {
-      fillPrimitive(samples_[static_cast<size_t>(k++)], v_des, {0.0},
+      fillConstant(samples_[static_cast<size_t>(k++)], v_des, 0.0,
         last_executed_, params_.dt, vehicle_params_);
     }
   }
@@ -450,23 +301,23 @@ MPPIResult MPPIController::computeControl(
     double nv = 0.0;
     double nd = 0.0;
     Control prev = last_executed_;
-    // When already offset, bias noise exploration toward counter-steer.
-    const double return_bias =
-      (std::abs(y0) > params_.offset_return_y) ?
-      ((y0 > 0.0) ? -0.35 * dmax : 0.35 * dmax) : 0.0;
+    double s = s0;
     for (int t = 0; t < T; ++t) {
       nv = corr * nv + innov * noise_v(rng_);
       nd = corr * nd + innov * noise_delta(rng_);
-
       Control u;
       u.v = nominal_[static_cast<size_t>(t)].v + nv;
-      u.delta = nominal_[static_cast<size_t>(t)].delta + nd + return_bias;
+      u.delta = nominal_[static_cast<size_t>(t)].delta + nd;
       if (std::abs(nominal_[static_cast<size_t>(t)].v) < 0.05) {
         u.v = v_des + nv;
+        const double kap =
+          (ref.valid && !ref.pts.empty()) ? ref.sample(s).kappa : 0.0;
+        u.delta = std::atan(vehicle_params_.wheelbase * kap) + nd;
       }
       u = clampControl(u, prev, params_.dt, vehicle_params_);
       samples_[static_cast<size_t>(k)][static_cast<size_t>(t)] = u;
       prev = u;
+      s += std::max(0.05, u.v) * params_.dt;
     }
   }
 
@@ -495,7 +346,8 @@ MPPIResult MPPIController::computeControl(
 
   double weight_sum = 0.0;
   for (int k = 0; k < K; ++k) {
-    const double w = std::exp(-(costs_[static_cast<size_t>(k)] - min_cost) / params_.lambda);
+    const double w =
+      std::exp(-(costs_[static_cast<size_t>(k)] - min_cost) / params_.lambda);
     weights_[static_cast<size_t>(k)] = w;
     weight_sum += w;
   }
@@ -525,19 +377,17 @@ MPPIResult MPPIController::computeControl(
   {
     last_trajectory_.clear();
     last_trajectory_.reserve(static_cast<size_t>(T) + 1);
-    State s{};
-    last_trajectory_.push_back(s);
+    State st{};
+    last_trajectory_.push_back(st);
     for (int t = 0; t < T; ++t) {
-      s = step(s, nominal_[static_cast<size_t>(t)], params_.dt, vehicle_params_);
-      last_trajectory_.push_back(s);
+      st = step(st, nominal_[static_cast<size_t>(t)], params_.dt, vehicle_params_);
+      last_trajectory_.push_back(st);
     }
   }
 
   result.control = nominal_.front();
   result.stopped_for_collision = false;
-
   shiftNominal(std::max(1, shift_steps));
-
   last_executed_ = result.control;
   return result;
 }

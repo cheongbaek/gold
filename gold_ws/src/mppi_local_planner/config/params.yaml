@@ -62,18 +62,19 @@ mppi_local_planner_node:
       #  0.76 m/s = 1.65배 → 9.4m 를 가며 15.6m 를 갔다고 믿었고, CTE 가
       #  −0.23 → ★−4.54m★ 로 벌어졌다. 비용함수의 y² 와 |y|>1.2m 벽이
       #  ★그 y 가 틀리면 서 있지 않은 것과 같다.★
-      #  이제 driving 이 매핑 중심선 기준 CTE 를 20Hz 로 주고 odom.y 만 덮는다.
-      #  odom.yaw 는 OS1 내장 자이로 적분 (인계 시점 헤딩 = 0). heading_err 로
-      #  덮지 않는다 — 그건 외장 iAHRS 값이다.
+      #  driving 이 매핑 중심선 기준 CTE 와 헤딩 오차(차 헤딩 − 경로 방위)를
+      #  20Hz 로 준다. y 와 yaw 를 둘 다 그 값으로 덮는다. 인계 시점 OS1 헤딩을
+      #  0 으로 두면, 경로가 휜 뒤에서 횡위치와 헤딩의 기준선이 갈라진다.
+      #  ref 가 ref_stale_s 보다 낡으면 yaw 는 OS1 적분으로 이어 간다.
       #  배열 규약의 소유자는 white1/white1/driving.py 의 '/lidar_ref' 절이다.
       ref_topic: "/lidar_ref"           # driving → 나 : [cte, heading_err, valid, zone_left]
       ref_stale_s: 0.5                  # 이보다 낡으면 추측항법으로 떨어진다
       use_gps_ref: true                 # y(CTE) 를 GPS 로 덮는다. 추측항법 1.65배 방지
-      use_gps_yaw: false                # ★yaw 는 OS1 자이로. true 면 외장 iAHRS heading_err★
+      use_gps_yaw: true                 # yaw = 차 헤딩 − 매핑 경로 방위 (+ 왼쪽)
 
     # 장착 (lidar cone_lidar.yaml / drive_lidar.yaml 2026-08-25 실측)
     sensor_height_m: 1.17
-    roi_agl_min: 0.20            # 지면 링을 안 먹는 하한
+    roi_agl_min: 0.30            # 지면 제거. 0.20/0.23 은 바닥 링이 맵에 남았다
     roi_agl_max: 1.50            # 사람·차체 상단. drive_lidar 1.20 보다 약간 높임
     flip_lidar_xy: true          # lidar 와 동일. 앞뒤가 뒤집히면 false
     brake_enable: true           # 회피 실패(stop gate) 때 리니어 2단
@@ -136,7 +137,8 @@ mppi_local_planner_node:
     #   지나는 시점에 이미 #2 가 보여 ★목표가 끊기지 않고 이어진다.★
     #   (nearestObstacle 이 ★가장 가까운★ 것을 고르므로 #1 을 지나기 전에 #2 로
     #    넘어가지 않는다 — 사거리를 늘려도 통과 순서는 지켜진다.)
-    avoid.range_m: 8.0
+    # 코스트맵 전방(size_x/2)보다 크면 잘린다. size_x 36 → 전방 18 m 와 짝.
+    avoid.range_m: 16.0
     avoid.cone_half_m: 0.20   # 라바콘 반폭
     # ★[2026-09-11] 여유를 ★비용함수가 요구하는 값★ 에서 유도한다★
     #   종전 clear = 반폭 0.54 + 콘 0.20 + 여유 0.25 = 0.99 m 였는데
@@ -155,7 +157,9 @@ mppi_local_planner_node:
     #   차가 못 따라가면 소용이 없다. 시뮬로 확인한 결과 ★진짜 제약은 추종 지연★
     #   이고, 그것을 푸는 것은 margin 이 아니라 ★k_cte★ 였다(아래 참고).
     #   margin 은 0.30 이면 충분하다 — clear = 0.54 + 0.40 + 0.30 = 1.24 m.
-    avoid.margin_m: 0.30
+    # 0.30 은 통과점 |d|=1.24 에 차 반폭 0.54 를 더하면 1.78 m — 차선 반폭
+    # 1.75 를 바로 넘본다. 0.20 이면 clear 1.14, 차선 캡(1.05) 안에서 자른다.
+    avoid.margin_m: 0.32          # 오프셋을 넉넉히. 붙어서 지나가지 않게
     avoid.inflation_m: 0.40   # ★costmap.inflation_radius 와 같은 값을 둘 것★
     #  ★회피 목표 상한 — 횡벽(max_lateral_offset 1.90)보다 ★안쪽★ 이어야 한다★
     #  같은 값이면 목표가 정확히 벽 위에 앉아 서로 밀어낸다(목표로 가려는 힘과
@@ -170,7 +174,8 @@ mppi_local_planner_node:
     #  ★벽도 함께★ 올려야 한다 — 같은 값이 되면 목표와 벽이 같은 자리에서 싸운다.
     #  차 반폭 0.54 를 더하면 차체 바깥은 중심선에서 2.04 m — 차선폭 3.5 m
     #  (반폭 1.75)를 0.29 m 넘본다. 사용자가 그 값으로 고른 것이다.
-    avoid.max_offset_m: 1.50
+    # 차선 반폭 1.75 − 반폭 0.54 − 여유 0.10 = 1.11. 1.50 은 차체 바깥이 2.04 m.
+    avoid.max_offset_m: 1.12      # 차선 안 (반폭 1.75 − 차 0.54 − 0.10)
     # ★[2026-09-11] 콘을 ★군집으로 분리★ 해 각자의 거리를 본다★
     #   종전 nearestObstacle 은 '비용 붙은 가장 가까운 셀' = ★팽창 가장자리★ 라
     #   콘의 실제 위치가 아니었다(실측 obs (0.3,+1.0) 이 바깥 콘의 팽창이었다).
@@ -189,19 +194,14 @@ mppi_local_planner_node:
     #   끊긴 이유는 콘이 가까워지며 치사원반이 ego 클리어에 잘려 군집이
     #   cone_min_cells 밑으로 내려간 것 — 콘이 사라진 것이 아니다.
     avoid.cone_lost_ticks: 6
-    # ★기하 조향 — MPPI 대신 목표로 직접 붙인다 [2026-09-11]★
-    #   근거는 mppi_local_planner_node.cpp 의 controlLoop 주석(실패 3건 실측).
-    #   false 로 두면 종전 MPPI 조향으로 되돌아간다.
+    # true 면 Frenet d(s) 를 퓨어 퍼슛으로 쫓고 MPPI 조향은 버린다.
+    # 정지도 MPPI 비용이 아니라, 그 조향을 2.2 m 유지했을 때의 중심선 충돌이다.
     avoid.geometric_steer: true
-    #  ★기하 조향 = 스탠리, 선행거리 L = mppi.stanley_lookahead (4.0 m)★
-    #  종전 atan(k_cte·e / v) 는 v=1.77 / k_cte=1.2 → L_eq 1.47 m.
-    #  e=1.24 m (회피 목표) 에서 40° → 22.9° 포화 → 헤딩 40~70° 로 경로 이탈.
-    #  L=4 m 이면 같은 오차에 17° (params 의 stanley_lookahead 주석과 같음).
-    #  k_cte 는 e/L 의 스케일(1.0 = L 그대로). k_psi 는 방위오차[deg]에 곱한다.
-    #  ★[2026-09-13] 0.5 → 1.0 복귀★ 0.5 는 첫 콘에서 헤딩 감쇠가 약해
-    #  29°까지 열린 뒤 와리가리(실측 144027). 둘째 직진은 hold(미리보기 전용)로 막는다.
-    avoid.k_psi: 1.0           # 방향항 (감쇠)
-    avoid.k_cte: 1.0           # 위치항 스케일
+    # k_psi 는 퍼슛이 헤딩을 포함하므로 쓰지 않는다.
+    # k_cte 는 뒤차축이 경로 옆에 남은 만큼의 약한 보정. 1.4 는 퍼슛에 더해져
+    # 다시 23° 포화로 갔다.
+    avoid.k_psi: 1.0
+    avoid.k_cte: 0.50
     avoid.v_min: 1.0           # 구식. 지금은 쓰지 않는다
     #  미리보기 중에만 CTE 부호를 지킨다. 첫 콘에서 켜면 헤딩이 안 접힌다.
     avoid.steer_hold_e_m: 0.30
@@ -229,6 +229,33 @@ mppi_local_planner_node:
     #   복귀 시작은 0.44 m 늦어질 뿐이다.
     #     pass_x  1.30 → 0.73m ❌ / 1.10 → 0.80 / ★0.90 → 0.85★ / 0.70 → 0.89
     avoid.pass_x_m: 0.90
+    # ══════════════════════════════════════════════════════════════════════
+    #  ★Frenet 경로 계획 — 슬라럼 게이트를 d(s) 로 잇는다★
+    # ══════════════════════════════════════════════════════════════════════
+    #  콘을 기준선 (s,d) 에 올리고, 통과 쪽은 지금 pick() 과 같은 규칙
+    #  (중심선에서 덜 벗어나는 쪽 / 정면이면 차 있는 쪽). Hermite 로 게이트를
+    #  잇고 마지막 콘 뒤에서 d→0. MPPI 는 이 곡선을 추종한다.
+    #  plan_distance 는 MPPI 지평선(~5.3 m)보다 길게 — 다음 게이트가 보여야 한다.
+    frenet.enable: true
+    frenet.plan_distance_m: 16.0
+    frenet.ds_m: 0.25
+    frenet.return_after_last_m: 3.5   # 콘 지난 뒤 중심선 복귀 거리. 16 m 는 너무 느림
+    frenet.weave_m: 16.0
+    frenet.lane_half_m: 1.75
+    frenet.lane_margin_m: 0.10
+    # 첫 게이트가 이보다 가까우면 멀리서 그린 S 를 유지한다.
+    # 코앞에서 Hermite 를 다시 그리면 풀락으로 꺾이며 경로를 버린다.
+    frenet.hold_s_m: 6.5
+    # 첫 콘만. 이 거리 전에 통과 오프셋에 도착해, 3.6 m 퍼슛 점이 이미 오프셋 위에 있다.
+    # 다음 콘에는 쓰지 않는다 — 홀드와 더하면 5 m 간격이 꺾임이 된다.
+    frenet.arrive_before_m: 4.5
+    # 콘을 지난 뒤 이 거리만 오프셋을 유지한다. 다음 콘은 2.4 m 앞에서 붙는다.
+    frenet.hold_near_m: 0.8
+    frenet.wrap_after_m: 2.5      # 검출이 끊겨도 콘 뒤로 이 거리까지는 복귀 경로를 유지
+    frenet.keep_behind_m: 0.60    # 후축 0.6 m 뒤에 있을 때만 게이트 삭제. 0.9 m 앞 삭제는 복귀=정면
+    debug.dump_enable: true
+    debug.dump_dir: ""            # 비우면 패키지 src/mppi_local_planner/debug
+    debug.dump_every_n: 10
     base_frame_id: "os_sensor"
 
     # ── 제원 (실측) ──────────────────────────────────────────────────────
@@ -243,7 +270,7 @@ mppi_local_planner_node:
     #  ⚠️ 아래 셋은 ★cruise_pulse > 0 이면 노드가 덮어쓴다★ (0 으로 둘 때만 유효)
     max_speed: 2.05              # [m/s] 플래너 하드캡. 2펄스(1.768) 위 여유
     min_speed: 0.80              # 회피 중 1펄스(~3 km/h, 원본 3params 와 같음)를 허용
-    max_steering_angle: 0.40     # [rad] ≈23°. 원본 3params 와 동일. 0.32 는 불감대에 막혔다
+    max_steering_angle: 0.40     # [rad] ≈23°. 멀리서 여는 완만한 S 용. 27.5° 는 코앞에서 꺾였다
     rear_overhang: 0.30
     front_overhang: 0.0          # 앞범퍼 ≈ 앞차축. vehicle_front_m 1.2 ≈ 축거 1.25
     max_accel: 2.0
@@ -253,8 +280,8 @@ mppi_local_planner_node:
     cmd.stop_enter_frames: 8     # stop-gate 0.4s 연속이어야 정지
     cmd.stop_exit_frames: 12     # 0.6s 연속 열려야 재출발
     cmd.brake_after_s: 1.2       # 그 전에는 펄스 0 만 (리니어 2단 깜빡임 방지)
-    cmd.steer_lpf_alpha: 0.35    # MPPI 각이 필터에서 죽지 않게
-    cmd.steer_slew_deg_s: 28.0   # 도로휠 deg/s
+    cmd.steer_lpf_alpha: 0.70    # 경로가 일찍 열려도 핸들이 따라오게
+    cmd.steer_slew_deg_s: 36.0   # 도로휠 deg/s. 7 m 앞 S 를 따라가려면 28 은 늦다
     cmd.steer_deadband_deg: 0.0  # SW 불감대 끔. B보드 1.41° 가 이미 있다
     cmd.dodge_steer_deg: 6.0     # |조향|이 이보다 크면 회피 펄스로 내린다
     # ★[2026-09-11] 회피 펄스 1 → 2 (사용자 지시)★
@@ -282,8 +309,9 @@ mppi_local_planner_node:
     kasa.require_estop_clear: true
 
     costmap:
-      size_x: 18.0
-      size_y: 14.0
+      # 로봇 중심. 18 m 는 전방 9 m 뿐이라 둘째 콘(간격 5~8 m)이 맵 밖이었다.
+      size_x: 36.0               # ±18 m. 전방 16 m range 와 짝
+      size_y: 16.0
       resolution: 0.1
       # 0,0 이면 노드가 AGL 슬랩에서 유도한다
       #   AGL 0.20 → z = 0.20-1.17 = -0.97
@@ -295,7 +323,7 @@ mppi_local_planner_node:
       sensor_offset_x: 0.0       # 후륜차축 바로 위
       sensor_offset_y: 0.0
       sensor_yaw_offset: 0.0     # 0 이면 flip_lidar_xy 가 π 를 넣는다
-      occupancy_decay: 0.50
+      occupancy_decay: 0.25      # 지면 잔상이 콘으로 안 남게. 콘은 매 스캔 갱신
       # cone_lidar roi_x_min=2.0 과 맞춤. 1.4 m 만 지우면 보닛·탑승자가
       # 전방 벽이 되어 회피 실패(리니어 2단)가 뜬다. 콘은 2.0 m 부터 보인다.
       ego_clear_radius: 0.90
@@ -303,7 +331,9 @@ mppi_local_planner_node:
       ego_clear_front_max: 2.00
       ego_clear_x_min: -0.45
       ego_clear_x_max: 1.95
-      ego_clear_y_half: 0.85
+      # 0.85 는 차 반폭 0.54 밖 30 cm 의 콘까지 지웠다. 그 콘이 2 m 안으로
+      # 들어오면 게이트가 사라지고 경로가 중심선으로 돌아가 콘을 향했다.
+      ego_clear_y_half: 0.66
       # ══════════════════════════════════════════════════════════════════
       #  ★[2026-09-11] 지나친 콘이 ★복귀를 막는다★ — 그 뒤쪽만 넓게 지운다★
       # ══════════════════════════════════════════════════════════════════
@@ -329,12 +359,14 @@ mppi_local_planner_node:
       # catkin_ws 3params.yaml 과 같은 비용 구조. 금색차는 축거비로 stanley 만 스케일.
       lambda: 3.2
       noise_std_v: 0.12
-      noise_std_delta: 0.28
+      noise_std_delta: 0.16      # 0.28 은 ±16° 탐색이라 차선 밖으로 샌다
       noise_correlation: 0.65
       desired_speed: 1.768       # ★cruise_pulse 가 덮어쓴다★ (0 으로 둘 때만 유효)
       weight_obstacle: 1.4
-      weight_path: 1.0
-      weight_heading: 0.9
+      obstacle_on_path_scale: 0.18  # 계획 위 팽창은 extra dodge 로 안 읽는다
+      on_path_cte_m: 0.35
+      weight_path: 40.0
+      weight_heading: 8.0
       weight_speed: 2.0
       weight_smooth_v: 0.6
       weight_smooth_delta: 0.85
@@ -349,18 +381,21 @@ mppi_local_planner_node:
       #  L=4.0 이면 같은 1.0m 에 목표가 ★14.0°★ — 그것이 완만한 S 다.
       #  ★구 값 2.0 은 1/5카 1.2 를 축거비로 스케일한 것★ 인데, 그 차는 코스가
       #  훨씬 촘촘했다. 이 차는 최소회전반경 2.02m 라 급한 S 자체가 불가능하다.
-      stanley_lookahead: 4.0
-      s_curve_dodge_frac: 0.22
-      s_curve_return_power: 0.70
-      path_progress_floor: 0.12
-      avoid_path_scale: 0.30
+      # 퓨어 퍼슛 선행거리. 2.0 은 횡오차 1 m 에서 조향이 23° 에 포화했다.
+      # 4.5 이상은 코앞에서야 꺾여 콘을 스쳤다.
+      stanley_lookahead: 3.6
+      # 구 S복귀 항 — 컨트롤러가 무시. yaml 에 남겨 옛 오버레이가 선언 오류를 안 내게.
+      s_curve_dodge_frac: 0.0
+      s_curve_return_power: 1.0
+      path_progress_floor: 1.0
+      avoid_path_scale: 1.0
       avoid_obs_gain: 80.0
-      offset_return_y: 0.18
-      offset_return_scale: 0.90
-      weight_return_clear: 3.5
+      offset_return_y: 99.0
+      offset_return_scale: 0.0
+      weight_return_clear: 0.0
       return_clear_cost: 40.0
-      weight_path_terminal: 22.0
-      weight_heading_terminal: 12.0
+      weight_path_terminal: 40.0
+      weight_heading_terminal: 20.0
       # ══════════════════════════════════════════════════════════════════
       #  ★[2026-09-11] 1.20 → 1.00 — 차 크기와 ★물리적 실행 가능성★ 에서 유도★
       # ══════════════════════════════════════════════════════════════════
@@ -377,11 +412,9 @@ mppi_local_planner_node:
       # ★[2026-09-11] 1.00 → 1.60 — 회피 목표(±1.0)보다 ★바깥★ 에 둔다★
       #   같은 값이면 목표가 정확히 벽 위에 앉아 서로 밀어낸다. 0.6m 슬랙을 준다.
       #  ★1.60 → 1.90★ 회피 목표 상한(1.25)보다 충분히 바깥이어야 서로 안 민다.
-      max_lateral_offset: 1.90
-      # ★하드 벽 — 사용자가 정한 '넘을 필요 없는' 선★
-      #   실측(232807)에서 ld_y 가 −2.96~+3.59m(진폭 6.55m)까지 갔다. 그 이상은
-      #   길을 벗어날 위험이라, 장애물 비용(수백)을 압도하는 가중치를 준다.
-      lateral_hard: 2.5
+      max_lateral_offset: 1.15   # 차선 안. 1.90 은 벽이 차선 밖에 있어 무의미했다
+      # 하드 벽은 차선 가장자리. 2.5 m 는 이미 차선을 나간 뒤라 막지 못했다.
+      lateral_hard: 1.30
       weight_lateral_hard: 4000.0
       # ★헤딩 벽 — S 를 완만하게 만드는 직접적 수단★
       #   횡위치는 헤딩의 적분이라 헤딩을 묶으면 벗어나는 속도가 묶인다.
@@ -391,7 +424,9 @@ mppi_local_planner_node:
       #   ★이것이 완만함의 주 레버다 — 그만큼 세게 준다★ 30° 부터 시작해
       #   45° 에서 281(장애물과 대등), 실측 최대였던 73° 에서 2275.
       #   회피에 필요한 20° 안팎은 벽 밖이라 ★정상 회피는 방해받지 않는다.★
-      weight_heading_wall: 4000.0
+      # 헤딩 벽은 ★Frenet 경로 헤딩★ 대비. 중심선 복귀 때 쓰던 4000 은
+      # 정상 슬라럼 17~25° 도 정지로 읽었다. 경로를 잘 따라가면 heading_err≈0.
+      weight_heading_wall: 800.0
       # ★12 → 400 [2026-09-11]★ 종전에는 |y|=2m 에서 12·0.16=1.9 뿐이라
       #   장애물 비용(수백)에 완전히 묻혔다 — ★벽이 서 있지 않았다.★
       #   ★가중치는 '어디서 장애물 비용을 이기는가' 로 역산했다★
@@ -400,5 +435,5 @@ mppi_local_planner_node:
       weight_lateral_wall: 2000.0
       lookahead_distance: 7.0
       lookahead_step: 0.40
-      weight_lookahead: 0.55
+      weight_lookahead: 0.15     # 계획 경로 look-ahead 가 밖으로 밀지 않게
       stop_cost_threshold: 750.0

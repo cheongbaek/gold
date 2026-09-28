@@ -1,8 +1,12 @@
 # mppi_local_planner
 
-금색차 kasa 용 MPPI 로컬 장애물 회피. `catkin_ws/src/mppi_local_planner`(1/5카용)를
-이식했다. 전역경로·nav2 없이 라이다(OS1-32)와 그 IMU 만으로 직진하다가, 장애물을
-원본과 같은 S커브로 감아 피하고 출발 헤딩(IMU 기준선)으로 돌아온다.
+금색차 kasa 용 로컬 장애물 회피. **경로는 Frenet `d(s)`, 조향은 그 곡선의
+퓨어 퍼슛** 이다 (`avoid.geometric_steer`). 슬라럼에서 cartesian MPPI 가
+좌/우를 평균 내던 약점을 계획 레이어에서 끊는다.
+
+L 구간 기준선은 매핑 중심선(`/lidar_ref` CTE) + 인계 헤딩이다. 콘을 `(s, d)`
+게이트로 올리고 Hermite 로 잇는다. 정지는 MPPI 평균비용이 아니라, 지금 낼
+조향을 2.2 m 유지했을 때 차 중심선이 치사 원반에 들어가는지이다.
 
 > **먼저 읽을 것** — `include/mppi_local_planner/kasa_units.hpp`.
 > 1/5카 `/cmd_vel_raw` 는 m/s + 도로휠각(+ = 좌) 이었다. 금색차는 **펄스 정수 /
@@ -72,8 +76,10 @@ ros2 launch mppi_local_planner one_launch.py
 | 제동 | 속도 0 | **속도 0 + `/brake_level` 2단** (회피 실패 시) |
 | 게이트 | 없음 | **`/vehicle_mode` + `/estop`** |
 
-플래너 본체(`mppi_controller.cpp` 의 샘플·S커브·lookahead·softmax)는 원본을
-그대로 둔다.
+플래너 본체는 두 층이다.
+
+- `frenet_planner.cpp` — 콘 게이트 → `d(s)` (조향을 내지 않는다)
+- `mppi_controller.cpp` — 샘플·softmax. `geometric_steer` 가 켜져 있으면 조향은 쓰지 않고, 정지 판단도 하지 않는다
 
 ---
 

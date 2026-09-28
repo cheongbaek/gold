@@ -215,7 +215,7 @@ def declare_args(cam_dev):
                         '★화면 없는 터미널(SSH)이면 tl_show_window:=false★ — 안 그러면 '
                         'cv2 가 창을 못 열어 에러를 남긴다'),
         DeclareLaunchArgument(
-            'tl_record_video', default_value='false',
+            'tl_record_video', default_value='true',
             description='★인지 디버그 화면을 주행 내내 mp4 로 적는다 [2026-09-10]★ '
                         '창(tl_show_window)과 ★같은 캔버스★ 다 — YOLO 박스·ROI 음영·'
                         'BEV 사다리꼴·정지선·게이지·한글 HUD 가 전부 들어 있다. '

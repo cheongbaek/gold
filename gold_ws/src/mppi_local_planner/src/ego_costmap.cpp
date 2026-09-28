@@ -17,6 +17,16 @@ EgoCostmap::EgoCostmap(const CostmapParams & params)
   cost_.assign(static_cast<size_t>(cells_x_) * static_cast<size_t>(cells_y_), 0.0f);
 }
 
+void EgoCostmap::setFilterParams(
+  double ground_z_min, double ground_z_max, double inflation_radius)
+{
+  params_.ground_z_min = ground_z_min;
+  params_.ground_z_max = ground_z_max;
+  if (inflation_radius > 0.05) {
+    params_.inflation_radius = inflation_radius;
+  }
+}
+
 int EgoCostmap::worldToIndex(double val, double size, double resolution) const
 {
   return static_cast<int>(std::floor((val + size / 2.0) / resolution));

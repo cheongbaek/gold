@@ -36,7 +36,12 @@ add_executable(mppi_local_planner_node
   src/mppi_local_planner_node.cpp
   src/ego_costmap.cpp
   src/mppi_controller.cpp
+  src/cone_detector.cpp
+  src/frenet_planner.cpp
 )
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/debug")
+target_compile_definitions(mppi_local_planner_node PRIVATE
+  MPPI_DEBUG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/debug")
 
 ament_target_dependencies(mppi_local_planner_node
   rclcpp

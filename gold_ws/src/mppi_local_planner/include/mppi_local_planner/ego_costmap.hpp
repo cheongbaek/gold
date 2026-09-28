@@ -116,6 +116,8 @@ class EgoCostmap
 public:
   explicit EgoCostmap(const CostmapParams & params);
 
+  void setFilterParams(double ground_z_min, double ground_z_max, double inflation_radius);
+
   // Rebuild the grid from a raw PointCloud2 (fields x, y, z, float32).
   void updateFromPointCloud(const sensor_msgs::msg::PointCloud2 & cloud);
 

@@ -19,10 +19,12 @@ hud.py ― kasa 차량 상태 HUD  [white1]
     우측   속도 km/h ★/gps_fused[8] 원시 fix 변위속도★ (폴백 IMU→ENC)
            · PWM · ★L_Pulse / R_Pulse★ (A보드 좌·우 펄스 원값, 목표펄스와 같은 눈금)
            NAV 미니맵
-             nav_mode=gps  (기본) 매핑 CSV(북쪽 위) + 실시간 GPS. 경로 없으면 NONE
-             nav_mode=mppi 차량 기준 2D 탑뷰 — 코스트맵 장애물 + 롤아웃 + IMU 기준선
-               (mppi_local_planner one_launch 가 이 모드로 띄운다)
-    하단   조향바 · 헤딩 · CTE · 웨이포인트 · 이벤트 · 토픽 신선도
+             nav_mode=gps  (기본) 매핑 CSV(북쪽 위) + 실시간 GPS
+                           terrain 열 0/L/S/T 로 구간을 칠하고, 다음 구간까지 거리를 적는다
+                           라이다가 살아 있으면 코스트맵·롤아웃을 같은 칸에 겹친다
+             nav_mode=mppi 차량 기준 2D 탑뷰만 (mppi one_launch)
+    좌측   EVENT 로그 — /drive_event 를 쌓아 둔다 (한 줄이 4초 뒤에 사라지지 않는다)
+    하단   조향바 · 헤딩 · CTE · 웨이포인트 · 제동 이유 · 토픽 신선도
 
 값이 1.5초 넘게 안 오면 '—' / 회색. 죽은 노드의 마지막 숫자를 현재인 양
 띄워 두지 않는다.
@@ -34,6 +36,7 @@ hud.py ― kasa 차량 상태 HUD  [white1]
 from __future__ import annotations
 
 import csv
+import glob
 import math
 import os
 import re
@@ -48,6 +51,8 @@ from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import OccupancyGrid, Path
 from sensor_msgs.msg import Image, Imu, NavSatFix
 from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
+from rcl_interfaces.msg import Parameter as ParamMsg, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
 
 #  ★라이다 판정 상수의 소유자는 driving.py 다★ [2026-09-16]
 #  LDR LED 가 '주행을 시작할 수 있는 라이다 상태' 와 ★같은 판정★ 을 해야
@@ -105,6 +110,10 @@ DRIVE_STATES = ('DRIVE_HEADING', 'DRIVE_RUN', 'DRIVE_DONE')
 TRAIL_MIN_M = 0.20
 TRAIL_MAX_N = 4000
 NAV_DRAW_MAX = 280
+EVENT_LOG_MAX = 40
+# driving.py 의 LIDAR_ZONE_CHARS / STOP_ZONE_CHARS / TL_ZONE_CHARS 와 같은 문자.
+# 그 외(빈 칸 · '0' · 모르는 글자)는 GPS 추종이다.
+ZONE_GPS, ZONE_LIDAR, ZONE_STOP, ZONE_TL = '0', 'L', 'S', 'T'
 
 # ── 색 ──────────────────────────────────────────────────────────────────────
 BG = '#07090d'
@@ -122,6 +131,14 @@ YELLOW = '#ffe066'
 BODY_OK = '#2bdc74'
 BODY_MAN = '#c9a227'
 BODY_HOT = '#ff3355'
+# 경로 구간. T 는 빨강(AEB·E-STOP)과 겹치지 않게 보라.
+ZONE_COLOR = {
+    ZONE_GPS: CYAN,
+    ZONE_LIDAR: ORANGE,
+    ZONE_STOP: YELLOW,
+    ZONE_TL: '#d46bff',
+}
+ZONE_NAME = {ZONE_GPS: 'GPS', ZONE_LIDAR: 'L', ZONE_STOP: 'S', ZONE_TL: 'T'}
 
 
 def _clamp(x, lo, hi):
@@ -156,6 +173,117 @@ def _yaw_from_quat(x, y, z, w):
     siny = 2.0 * (w * z + x * y)
     cosy = 1.0 - 2.0 * (y * y + z * z)
     return math.degrees(math.atan2(siny, cosy))
+
+
+def _zone_char(raw):
+    """CSV terrain 한 칸 → '0'|'L'|'S'|'T'. driving 이 구간으로 인정하는 문자만."""
+    z = str(raw or '').strip().upper()
+    if z in (ZONE_LIDAR, ZONE_STOP, ZONE_TL):
+        return z
+    return ZONE_GPS
+
+
+def _fmt_m(d):
+    return f'{d:.1f} m' if d < 10.0 else f'{d:.0f} m'
+
+
+def _zone_status(xy, zone, wp_idx):
+    """지금 구간과 다음 구간까지 호길이.
+
+    반환 (문구, 색). 경로가 없으면 (None, None).
+    S 는 한 행짜리 지점이라 '남음' 대신 'S 지점' 으로 적는다.
+    """
+    n = len(xy)
+    if n < 2 or len(zone) != n:
+        return None, None
+    i = max(0, min(int(wp_idx), n - 1))
+    here = zone[i]
+    dist = 0.0
+    nxt = None
+    for k in range(i, n - 1):
+        seg = math.hypot(xy[k + 1][0] - xy[k][0], xy[k + 1][1] - xy[k][1])
+        if zone[k + 1] != here:
+            nxt = zone[k + 1]
+            dist += seg
+            break
+        dist += seg
+    if here == ZONE_STOP:
+        return 'S 지점', ZONE_COLOR[ZONE_STOP]
+    if nxt is None:
+        if here == ZONE_GPS:
+            return '끝까지 GPS', DIM
+        if dist < 0.05:
+            return f'{ZONE_NAME[here]} 구간', ZONE_COLOR[here]
+        return f'{ZONE_NAME[here]} · 끝까지 {_fmt_m(dist)}', ZONE_COLOR[here]
+    if here == ZONE_GPS:
+        return f'다음 {ZONE_NAME[nxt]}  {_fmt_m(dist)}', ZONE_COLOR[nxt]
+    return f'{ZONE_NAME[here]} · 남음 {_fmt_m(dist)}', ZONE_COLOR[here]
+
+
+def _kept_indices(n, zone, wp_idx, limit=NAV_DRAW_MAX):
+    """그릴 점의 인덱스. 구간 경계와 S 한 행은 간격을 건너뛰어도 남긴다."""
+    if n <= 0:
+        return []
+    if n <= limit:
+        return list(range(n))
+    step = max(1, n // limit)
+    keep = set(range(0, n, step))
+    keep.add(n - 1)
+    keep.add(max(0, min(int(wp_idx), n - 1)))
+    for i in range(n):
+        if zone[i] == ZONE_STOP or (i > 0 and zone[i] != zone[i - 1]):
+            keep.add(i)
+            if i > 0:
+                keep.add(i - 1)
+    return sorted(keep)
+
+
+def _brake_reason_text(estop, aeb, tl_brake, lstatus, goal_phase, cb_state,
+                       goal_need, drive_state, brake_lv):
+    """리니어가 밟힌 이유. None 은 그 토픽이 신선하지 않다는 뜻.
+
+    우선순위는 driving 이 소유권을 넘기는 순서와 같다 — E-STOP, AEB, 신호등,
+    일시정지 S, 종점, 코너. 종점 크립은 브레이크를 푼 뒤의 단계라 해제보다 먼저
+    적는다. diag[8](brake_latched)는 도착과 종점 2단이 같은 1 이라 쓰지 않는다.
+    """
+    def need_s():
+        if goal_need is None or not math.isfinite(goal_need):
+            return ''
+        return f' · 필요 {_fmt_m(goal_need)}'
+
+    if estop:
+        return '제동  E-STOP', RED
+    if aeb:
+        return '제동  AEB', RED
+    if tl_brake is not None and tl_brake > 0:
+        return f'제동  신호등 {int(tl_brake)}단', RED
+    if lstatus is not None and str(lstatus).upper() == ZONE_STOP:
+        return '제동  일시정지 S', YELLOW
+    if goal_phase == 3:
+        return f'제동  종점 2단{need_s()}', RED
+    if goal_phase == 1:
+        return f'제동  종점 1단{need_s()}', ORANGE
+    if cb_state == 1:
+        return '제동  코너 1단', ORANGE
+    if drive_state == 'DRIVE_DONE':
+        return '제동  도착 2단', ORANGE
+    if goal_phase == 2:
+        return '제동  종점 크립', CYAN
+    if brake_lv is None and goal_phase is None and cb_state is None:
+        return '제동  —', DIM
+    if brake_lv is not None and brake_lv > 0:
+        return f'제동  리니어 {int(brake_lv)}단', ORANGE
+    return '제동  해제', DIM
+
+
+def _event_color(text):
+    if text.startswith(('❌', '🚨', '🛑')):
+        return RED
+    if text.startswith(('⚠️', '🔻')):
+        return ORANGE
+    if text.startswith(('✅', '🟢', '▶')):
+        return GREEN
+    return FG
 
 
 def _gauge_color(frac):
@@ -225,6 +353,7 @@ class HudNode(Node):
                                '/mppi_local_planner/costmap')
         self.declare_parameter('mppi_path_topic',
                                '/mppi_local_planner/local_path')
+        self.declare_parameter('mppi_debug_dir', '')
         self.declare_parameter('mppi_ref_path_topic',
                                '/mppi_local_planner/reference_path')
         self.declare_parameter('wheelbase_m', 1.25)
@@ -246,6 +375,12 @@ class HudNode(Node):
         self.lidar_rmax = float(self.get_parameter('lidar_range_max').value)
         self.vehicle_front_m = float(self.get_parameter('vehicle_front_m').value)
         self.corridor_half_m = float(self.get_parameter('corridor_half_m').value)
+        dbg = str(self.get_parameter('mppi_debug_dir').value or '').strip()
+        if not dbg:
+            here = os.path.dirname(os.path.abspath(__file__))
+            dbg = os.path.normpath(os.path.join(
+                here, '..', '..', 'mppi_local_planner', 'debug'))
+        self.mppi_debug_dir = dbg
         self.nav_mode = str(self.get_parameter('nav_mode').value or 'gps').strip().lower()
         if self.nav_mode not in ('gps', 'mppi'):
             self.nav_mode = 'gps'
@@ -307,7 +442,10 @@ class HudNode(Node):
         self._nav_lock = threading.Lock()
         self.route_name = ''
         self.route_wps = []          # [(lat, lon), ...] 매핑 CSV
+        self.route_zone = []         # route_wps 와 같은 길이. '0'|'L'|'S'|'T'
         self.map_trail = []          # 매핑 중 /mapping_point·/fix 로 쌓는 점
+        self._event_lock = threading.Lock()
+        self.event_log = []          # [(unix_time, text), ...] 최근 EVENT_LOG_MAX
 
         self._mppi_lock = threading.Lock()
         self._mppi_grid = None       # {w,h,res,ox,oy,data}
@@ -319,7 +457,10 @@ class HudNode(Node):
 
         self._img_lock = threading.Lock()
         self._img_bgr = None
+        self._tl_bgr = None
+        self._tl_t = 0.0
         self._img_t = 0.0
+        self._tl_t = 0.0
         self._bridge = CvBridge() if _HAVE_CV else None
 
         qos = 10
@@ -406,19 +547,34 @@ class HudNode(Node):
                                  lambda m: self.aeb_dist.set(float(m.data)), qos)
         self.create_subscription(Bool, aeb_sig,
                                  lambda m: self.aeb_sig.set(bool(m.data)), qos)
-        if self.show_camera and self._bridge is not None:
+        if self._bridge is not None:
             self.create_subscription(
                 Image, '/image_raw', self._cb_image, qos_profile_sensor_data)
-        if self.nav_mode == 'mppi':
-            cmap = str(self.get_parameter('mppi_costmap_topic').value)
-            pth = str(self.get_parameter('mppi_path_topic').value)
-            ref = str(self.get_parameter('mppi_ref_path_topic').value)
-            self.create_subscription(OccupancyGrid, cmap, self._cb_mppi_grid, 1)
-            self.create_subscription(Path, pth, self._cb_mppi_path, 1)
-            self.create_subscription(Path, ref, self._cb_mppi_ref, 1)
+            self.create_subscription(
+                Image, '/tl/debug_image', self._cb_tl_debug, qos_profile_sensor_data)
+        cmap = str(self.get_parameter('mppi_costmap_topic').value)
+        pth = str(self.get_parameter('mppi_path_topic').value)
+        ref = str(self.get_parameter('mppi_ref_path_topic').value)
+        self.create_subscription(OccupancyGrid, cmap, self._cb_mppi_grid, 1)
+        self.create_subscription(Path, pth, self._cb_mppi_path, 1)
+        self.create_subscription(Path, ref, self._cb_mppi_ref, 1)
 
+        self._mppi_param_cli = self.create_client(
+            SetParameters, '/mppi_local_planner_node/set_parameters')
         self.get_logger().info(
             f'kasa HUD — 구독 전용. NAV={self.nav_mode}  경로 폴더 {self.data_dir}')
+
+    def set_mppi_param(self, name, value):
+        if not self._mppi_param_cli.service_is_ready():
+            return
+        p = ParamMsg()
+        p.name = str(name)
+        p.value = ParameterValue()
+        p.value.type = ParameterType.PARAMETER_DOUBLE
+        p.value.double_value = float(value)
+        req = SetParameters.Request()
+        req.parameters = [p]
+        self._mppi_param_cli.call_async(req)
 
     def _cb_drive_cmd(self, m):
         text = str(m.data).strip()
@@ -428,13 +584,19 @@ class HudNode(Node):
                 with self._nav_lock:
                     self.route_name = ''
                     self.route_wps = []
+                    self.route_zone = []
             return
         if text.lower().endswith('.csv'):
             self._load_route(text)
 
     def _cb_event(self, m):
-        text = str(m.data)
+        text = str(m.data).strip()
         self.drive_event.set(text)
+        if text:
+            with self._event_lock:
+                self.event_log.append((time.time(), text))
+                if len(self.event_log) > EVENT_LOG_MAX:
+                    del self.event_log[:-EVENT_LOG_MAX]
         found = ROUTE_CSV_RE.search(text)
         if found and ('경로 선택' in text or '주행 시작' in text):
             self._load_route(found.group(1))
@@ -499,6 +661,7 @@ class HudNode(Node):
             self.get_logger().warning(f'HUD 경로 파일 없음: {base}')
             return
         wps = []
+        zone = []
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 for row in csv.DictReader(f):
@@ -506,8 +669,12 @@ class HudNode(Node):
                         la, lo = float(row['latitude']), float(row['longitude'])
                     except (KeyError, ValueError, TypeError):
                         continue
-                    if math.isfinite(la) and math.isfinite(lo):
-                        wps.append((la, lo))
+                    if not (math.isfinite(la) and math.isfinite(lo)):
+                        continue
+                    # 좌표가 성립한 행에서만 terrain 을 읽는다. 인덱스가 어긋나면
+                    # 구간 색이 조용히 밀린다 — driving.select_route 와 같은 순서.
+                    wps.append((la, lo))
+                    zone.append(_zone_char(row.get('terrain', '')))
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f'HUD 경로 읽기 실패: {exc}')
             return
@@ -517,7 +684,11 @@ class HudNode(Node):
         with self._nav_lock:
             self.route_name = base
             self.route_wps = wps
-        self.get_logger().info(f'HUD 경로 로드 {base}  WP {len(wps)}')
+            self.route_zone = zone
+        self.get_logger().info(
+            f'HUD 경로 로드 {base}  WP {len(wps)}  '
+            f"L {zone.count(ZONE_LIDAR)}  S {zone.count(ZONE_STOP)}  "
+            f"T {zone.count(ZONE_TL)}")
 
     def _cb_cmd(self, m):
         now = time.monotonic()
@@ -552,6 +723,17 @@ class HudNode(Node):
         with self._img_lock:
             self._img_bgr = bgr
             self._img_t = time.monotonic()
+
+    def _cb_tl_debug(self, m):
+        if self._bridge is None:
+            return
+        try:
+            bgr = self._bridge.imgmsg_to_cv2(m, desired_encoding='bgr8')
+        except Exception:  # noqa: BLE001
+            return
+        with self._img_lock:
+            self._tl_bgr = bgr
+            self._tl_t = time.monotonic()
 
     def _cb_mppi_grid(self, msg):
         info = msg.info
@@ -610,11 +792,80 @@ class HudApp:
 
         fam = self._pick_font()
         self.fam = fam
+        self.page = 'hud'  # hud | menu | map | params
         self.cv = tk.Canvas(self.root, bg=BG, highlightthickness=0)
         self.cv.pack(fill='both', expand=True)
         self.cv.bind('<Configure>', lambda _e: None)
+        self._build_param_frame()
+        self._debug_idx = 0
+        self._debug_files = []
+        self._debug_photo = None
+        self._debug_shown = ''
+        self._debug_scan_t = 0.0
         self._alive = True
         self.tick()
+
+    def _build_param_frame(self):
+        self.param_frame = tk.Frame(self.root, bg=BG)
+        bar = tk.Frame(self.param_frame, bg='#0b0e14', height=48)
+        bar.pack(fill='x')
+        tk.Label(bar, text='KASA  파라미터', bg='#0b0e14', fg=GOLD,
+                 font=(self.fam, 14, 'bold')).pack(side='left', padx=16, pady=10)
+        tk.Button(bar, text='계기판', command=lambda: self._goto('hud'),
+                  bg=PANEL2, fg=GREEN, relief='flat', padx=12).pack(
+                      side='right', padx=8, pady=8)
+        tk.Button(bar, text='메뉴', command=lambda: self._goto('menu'),
+                  bg=PANEL2, fg=GOLD, relief='flat', padx=12).pack(
+                      side='right', padx=4, pady=8)
+        body = tk.Frame(self.param_frame, bg=BG)
+        body.pack(fill='both', expand=True, padx=24, pady=12)
+        tk.Label(
+            body,
+            text='드래그하면 mppi_local_planner 에 바로 적용됩니다. 지면 제거 높이 = roi_agl_min.',
+            bg=BG, fg=DIM, font=(self.fam, 10),
+        ).pack(anchor='w', pady=(0, 10))
+        specs = [
+            ('지면 제거 높이 AGL [m]', 'roi_agl_min', 0.10, 0.55, 0.30),
+            ('콘 앞 오프셋 시작 [m]', 'frenet.arrive_before_m', 1.0, 8.0, 2.5),
+            ('콘 뒤 감싸기 [m]', 'frenet.wrap_after_m', 1.0, 5.0, 2.5),
+            ('통과 여유 margin [m]', 'avoid.margin_m', 0.10, 0.50, 0.32),
+            ('오프셋 상한 [m]', 'avoid.max_offset_m', 0.60, 1.50, 1.12),
+            ('검출 사거리 [m]', 'avoid.range_m', 6.0, 18.0, 16.0),
+            ('코스트맵 팽창 [m]', 'costmap.inflation_radius', 0.15, 0.80, 0.40),
+            ('경로 추종 가중', 'mppi.weight_path', 5.0, 80.0, 40.0),
+        ]
+        self._param_vars = {}
+        for label, key, lo, hi, default in specs:
+            row = tk.Frame(body, bg=BG)
+            row.pack(fill='x', pady=6)
+            tk.Label(row, text=label, bg=BG, fg=FG, width=28, anchor='w',
+                     font=(self.fam, 10)).pack(side='left')
+            var = tk.DoubleVar(value=default)
+            self._param_vars[key] = var
+            val_lbl = tk.Label(row, text=f'{default:.2f}', bg=BG, fg=GOLD,
+                               width=6, anchor='e', font=(self.fam, 10, 'bold'))
+            val_lbl.pack(side='right')
+
+            def _on(v, k=key, lbl=val_lbl, vv=var):
+                try:
+                    x = float(v)
+                except (TypeError, ValueError):
+                    return
+                lbl.config(text=f'{x:.2f}')
+                self.n.set_mppi_param(k, x)
+
+            sc = tk.Scale(
+                row, from_=lo, to=hi, resolution=0.01 if hi - lo < 5 else 0.5,
+                orient='horizontal', variable=var, showvalue=0,
+                command=_on, bg=BG, fg=FG, troughcolor=PANEL2,
+                highlightthickness=0, length=420)
+            sc.pack(side='left', fill='x', expand=True, padx=8)
+        tk.Label(
+            body,
+            text='디버그 이미지는 L 구간에서 /tmp/mppi_debug/mppi_*.ppm 에 저장됩니다.\n'
+                 '노랑=계획 경로  초록=실제 궤적  시안=MPPI 롤아웃  빨강=장애물',
+            bg=BG, fg=DIM, font=(self.fam, 9), justify='left',
+        ).pack(anchor='w', pady=16)
 
     def _pick_font(self):
         names = {n.lower(): n for n in tkfont.families()}
@@ -637,8 +888,31 @@ class HudApp:
             pass
 
     def on_esc(self, _e=None):
+        if self.page != 'hud':
+            self._goto('hud')
+            return
         if self._fscreen:
             self.toggle_full()
+
+    def _goto(self, page):
+        if str(page).startswith('dbg_'):
+            return
+        prev = self.page
+        self.page = page
+        if page == 'params':
+            self.cv.pack_forget()
+            self.param_frame.pack(fill='both', expand=True)
+        elif prev == 'params':
+            self.param_frame.pack_forget()
+            self.cv.pack(fill='both', expand=True)
+
+    def _ui_button(self, c, x, y, bw, bh, label, page, fill=PANEL2, fg=GOLD):
+        tag = 'navbtn_' + page
+        c.create_rectangle(x, y, x + bw, y + bh, fill=fill, outline=GOLD,
+                           width=1, tags=(tag,))
+        c.create_text(x + bw / 2, y + bh / 2, text=label, fill=fg,
+                      font=self.font(11, 'bold'), tags=(tag,))
+        c.tag_bind(tag, '<Button-1>', lambda _e, p=page: self._goto(p))
 
     def toggle_full(self, _e=None):
         self._fscreen = not self._fscreen
@@ -699,14 +973,30 @@ class HudApp:
         c.create_oval(-w * 0.1, h * 0.55, w * 1.1, h * 1.55,
                       fill='#05070a', outline='')
 
-        cam_w = 0
-        if n.show_camera:
-            cam_w = self._draw_camera(c, 16, 58, int(w * 0.22), int(h * 0.28))
+        if self.page == 'menu':
+            self._draw_menu(c, w, h, stale)
+            return
+        if self.page == 'map':
+            self._draw_full_map(c, w, h, stale)
+            return
+        if self.page == 'camera':
+            self._draw_camera_page(c, w, h, stale)
+            return
+        if self.page == 'debug':
+            self._draw_debug_page(c, w, h, stale)
+            return
 
-        cluster_l = cam_w + (36 if cam_w else 20)
+        cam_w = 0
+
+        log_w = int(_clamp(w * 0.22, 220, 320))
+        log_x, log_y = 12, 56
+        cluster_b = h - 132
+        log_h = max(80, cluster_b - log_y)
+        self._draw_event_log(c, log_x, log_y, log_w, log_h)
+
+        cluster_l = log_x + log_w + 12
         cluster_r = w - 20
         cluster_t = 56
-        cluster_b = h - 132
         cx = cluster_l + (cluster_r - cluster_l) * 0.40
         cy = cluster_t + (cluster_b - cluster_t) * 0.50
         scale = min(cluster_r - cluster_l, cluster_b - cluster_t)
@@ -723,6 +1013,132 @@ class HudApp:
         self._draw_nav(c, int(sx - nav / 2), nav_top, nav, nav, stale)
         self._draw_bottom(c, w, h, stale)
         self._draw_leds(c, w, h, stale)
+
+    def _draw_menu(self, c, w, h, stale):
+        c.create_text(w / 2, h * 0.22, text='KASA', fill=GOLD,
+                      font=self.font(28, 'bold'))
+        c.create_text(w / 2, h * 0.22 + 36, text='메인 메뉴', fill=DIM,
+                      font=self.font(12))
+        bw, bh = int(w * 0.36), int(h * 0.10)
+        x = (w - bw) / 2
+        self._ui_button(c, x, h * 0.36, bw, bh, '계기판', 'hud',
+                        fill='#12331f', fg=GREEN)
+        self._ui_button(c, x, h * 0.36 + bh + 14, bw, bh, '전체 맵', 'map',
+                        fill='#1a2430', fg=CYAN)
+        self._ui_button(c, x, h * 0.36 + 2 * (bh + 14), bw, bh, '파라미터', 'params',
+                        fill='#2a2210', fg=GOLD)
+        self._ui_button(c, x, h * 0.36 + 3 * (bh + 14), bw, bh, '카메라', 'camera',
+                        fill='#1a1520', fg=ORANGE)
+        self._ui_button(c, x, h * 0.36 + 4 * (bh + 14), bw, bh, '디버그 이미지', 'debug',
+                        fill='#152018', fg=GREEN)
+        c.create_text(w / 2, h * 0.78, text='Esc  계기판으로', fill=DIM,
+                      font=self.font(10))
+        self._draw_topbar(c, w, stale)
+
+    def _draw_camera_page(self, c, w, h, stale):
+        self._draw_topbar(c, w, stale)
+        self._ui_button(c, 16, 56, 88, 28, '계기판', 'hud')
+        self._ui_button(c, 112, 56, 88, 28, '메뉴', 'menu')
+        c.create_text(w / 2, 70, text='카메라 / 신호등 디버그', fill=GOLD,
+                      font=self.font(13, 'bold'))
+        pad = 16
+        self._draw_camera(c, pad, 96, w - pad * 2, h - 96 - pad, prefer_tl=True)
+
+    def _scan_debug_files(self):
+        d = getattr(self.n, 'mppi_debug_dir', '') or ''
+        files = []
+        if d and os.path.isdir(d):
+            files = sorted(
+                glob.glob(os.path.join(d, 'mppi_*.ppm')) +
+                glob.glob(os.path.join(d, 'mppi_*.png')),
+                reverse=True)
+        self._debug_files = files
+        if self._debug_idx >= len(files):
+            self._debug_idx = max(0, len(files) - 1)
+        return d
+
+    def _debug_nav(self, delta):
+        self._scan_debug_files()
+        n = len(self._debug_files)
+        if n <= 0:
+            return
+        self._debug_idx = (self._debug_idx + delta) % n
+        self._debug_shown = ''
+
+    def _draw_debug_page(self, c, w, h, stale):
+        self._draw_topbar(c, w, stale)
+        self._ui_button(c, 16, 56, 88, 28, '계기판', 'hud')
+        self._ui_button(c, 112, 56, 88, 28, '메뉴', 'menu')
+        now = time.monotonic()
+        if now - self._debug_scan_t > 1.0:
+            self._scan_debug_files()
+            self._debug_scan_t = now
+        d = getattr(self.n, 'mppi_debug_dir', '')
+        files = self._debug_files
+        c.create_text(w / 2, 70, text='디버그 이미지', fill=GOLD,
+                      font=self.font(13, 'bold'))
+        c.create_text(w / 2, 90, text=d or '(경로 없음)', fill=DIM,
+                      font=self.font(8))
+        bx = w / 2 - 140
+        self._ui_button(c, bx, 100, 80, 26, '이전', 'dbg_prev')
+        self._ui_button(c, bx + 90, 100, 80, 26, '다음', 'dbg_next')
+        self._ui_button(c, bx + 180, 100, 100, 26, '새로고침', 'dbg_ref')
+        # tag_bind pages: reuse _goto? better custom tags
+        c.tag_bind('navbtn_dbg_prev', '<Button-1>',
+                   lambda _e: self._debug_nav(-1))
+        c.tag_bind('navbtn_dbg_next', '<Button-1>',
+                   lambda _e: self._debug_nav(1))
+        c.tag_bind('navbtn_dbg_ref', '<Button-1>',
+                   lambda _e: (self._scan_debug_files(), setattr(self, '_debug_shown', '')))
+        if not files:
+            c.create_text(w / 2, h / 2, text='저장된 이미지 없음', fill=DIM,
+                          font=self.font(16, 'bold'))
+            c.create_text(w / 2, h / 2 + 28,
+                          text='L 구간을 달리면 여기에 쌓입니다', fill='#3a4250',
+                          font=self.font(10))
+            return
+        path = files[self._debug_idx]
+        cap = os.path.basename(path)
+        c.create_text(w / 2, 136, text=f'{self._debug_idx + 1}/{len(files)}  {cap}',
+                      fill=FG, font=self.font(10))
+        if self._debug_shown != path:
+            try:
+                self._debug_photo = tk.PhotoImage(file=path)
+                self._debug_shown = path
+            except tk.TclError:
+                self._debug_photo = None
+                self._debug_shown = path
+        if self._debug_photo is None:
+            c.create_text(w / 2, h / 2, text='이미지 로드 실패 (ppm)', fill=RED,
+                          font=self.font(12))
+            return
+        iw = self._debug_photo.width()
+        ih = self._debug_photo.height()
+        box_w, box_h = w - 32, h - 160
+        # PhotoImage subsample if too big
+        img = self._debug_photo
+        if iw > box_w or ih > box_h:
+            fx = max(1, int(math.ceil(iw / max(box_w, 1))))
+            fy = max(1, int(math.ceil(ih / max(box_h, 1))))
+            f = max(fx, fy)
+            try:
+                img = self._debug_photo.subsample(f, f)
+                self._debug_photo_view = img
+            except tk.TclError:
+                img = self._debug_photo
+        c.create_image(w / 2, (160 + h) / 2, image=img)
+
+    def _draw_full_map(self, c, w, h, stale):
+        self._draw_topbar(c, w, stale)
+        self._ui_button(c, 16, 56, 88, 28, '계기판', 'hud')
+        self._ui_button(c, 112, 56, 88, 28, '메뉴', 'menu')
+        c.create_text(w / 2, 70, text='전체 맵', fill=GOLD,
+                      font=self.font(13, 'bold'))
+        pad = 16
+        log_w = int(_clamp(w * 0.22, 220, 320))
+        self._draw_nav(c, pad, 96, w - pad * 2 - log_w - 8, h - 96 - pad,
+                       stale, full=True)
+        self._draw_event_log(c, w - pad - log_w, 96, log_w, h - 96 - pad)
 
     # ── 상단 필 ────────────────────────────────────────────────────────────
     def _draw_topbar(self, c, w, stale):
@@ -751,7 +1167,8 @@ class HudApp:
             col = CYAN
         elif st in ('DRIVE_DONE',):
             col = ORANGE
-        c.create_text(w - 18, 24, text=st_s, fill=col, anchor='e',
+        self._ui_button(c, w - 108, 10, 88, 28, '메뉴', 'menu')
+        c.create_text(w - 122, 24, text=st_s, fill=col, anchor='e',
                       font=self.font(13, 'bold'))
 
         wait = n.prompt_wait.get(2.5)
@@ -1235,17 +1652,23 @@ class HudApp:
         return lat, lon, heading
 
     def _nav_points(self):
-        """표시할 경로 점. 선택된 CSV가 있으면 그걸, 없으면 매핑 트레일."""
+        """표시할 경로 점. 선택된 CSV가 있으면 그걸, 없으면 매핑 트레일.
+
+        반환 (pts, zone, name, kind). zone 은 경로일 때만 pts 와 같은 길이.
+        """
         n = self.n
         with n._nav_lock:
             wps = list(n.route_wps)
+            zone = list(n.route_zone)
             trail = list(n.map_trail)
             name = n.route_name
         if len(wps) >= 2:
-            return wps, name, 'route'
+            if len(zone) != len(wps):
+                zone = [ZONE_GPS] * len(wps)
+            return wps, zone, name, 'route'
         if len(trail) >= 2:
-            return trail, 'mapping', 'trail'
-        return [], '', 'none'
+            return trail, [], 'mapping', 'trail'
+        return [], [], '', 'none'
 
     def _mppi_snapshot(self):
         n = self.n
@@ -1469,10 +1892,53 @@ class HudApp:
         c.create_text(x + w / 2 + 18, y + h - 12, text='빈공간',
                       fill=DIM, font=self.font(7), anchor='w')
 
+    def _draw_nav_lidar_overlay(self, c, scr, live_xy, heading_deg, grid,
+                               mppi_path, pt, mppi_ref, rt, now, stale):
+        """ego 코스트맵·롤아웃 → GPS 미니맵 (동=x, 북=y). heading 0=동 CCW."""
+        h = math.radians(heading_deg)
+        ch, sh = math.cos(h), math.sin(h)
+        e0, n0 = live_xy
+
+        def ego_en(ex, ey):
+            return e0 + ex * ch - ey * sh, n0 + ex * sh + ey * ch
+
+        if grid is not None:
+            gw, gh, res = grid['w'], grid['h'], grid['res']
+            ox, oy, data = grid['ox'], grid['oy'], grid['data']
+            step = max(1, int(0.30 / max(res, 0.05)))
+            r = max(1.6, 0.22 * (scr(e0 + 1.0, n0)[0] - scr(e0, n0)[0]))
+            for iy in range(0, gh, step):
+                ey = oy + (iy + 0.5) * res
+                row = iy * gw
+                for ix in range(0, gw, step):
+                    v = data[row + ix]
+                    if v < 40:
+                        continue
+                    ex = ox + (ix + 0.5) * res
+                    px, py = scr(*ego_en(ex, ey))
+                    col = RED if v >= 100 else ORANGE
+                    c.create_rectangle(px - r, py - r, px + r, py + r,
+                                       fill=col, outline='')
+
+        def polyline(seq, color, width):
+            if len(seq) < 2:
+                return
+            if len(seq) > 80:
+                seq = seq[::max(1, len(seq) // 80)] + [seq[-1]]
+            flat = []
+            for ex, ey in seq:
+                flat.extend(scr(*ego_en(ex, ey)))
+            c.create_line(*flat, fill=color, width=width, smooth=True)
+
+        if mppi_ref and (now - rt) < stale:
+            polyline(mppi_ref, YELLOW, 2)
+        if mppi_path and (now - pt) < stale:
+            polyline(mppi_path, CYAN, 3)
+
     # ── NAV 미니맵 (북쪽 위). 경로 없으면 NONE ────────────────────────────
-    def _draw_nav(self, c, x, y, w, h, stale):
+    def _draw_nav(self, c, x, y, w, h, stale, full=False):
         n = self.n
-        if n.nav_mode == 'mppi':
+        if n.nav_mode == 'mppi' and not full:
             self._draw_nav_mppi(c, x, y, w, h, stale)
             return
         self._round_rect(c, x, y, x + w, y + h, 12,
@@ -1480,7 +1946,7 @@ class HudApp:
         c.create_text(x + 12, y + 12, text='NAV', fill=GOLD, anchor='nw',
                       font=self.font(9, 'bold'))
 
-        pts, name, kind = self._nav_points()
+        pts, zone, name, kind = self._nav_points()
         live_lat, live_lon, heading = self._live_pose(stale)
 
         if kind == 'none':
@@ -1491,28 +1957,22 @@ class HudApp:
             return
 
         cap = name if name and name != 'mapping' else '매핑 중'
-        if len(cap) > 22:
-            cap = cap[:19] + '…'
+        if len(cap) > 18:
+            cap = cap[:15] + '…'
         c.create_text(x + w - 10, y + 12, text=cap, fill=DIM, anchor='ne',
                       font=self.font(8))
 
         # 원점: 경로 첫 점. 실시간 GPS 도 같은 평면에 올린다.
         lat0, lon0 = pts[0]
         xy = [_latlon_to_xy(la, lo, lat0, lon0) for la, lo in pts]
-        if len(xy) > NAV_DRAW_MAX:
-            step = max(1, len(xy) // NAV_DRAW_MAX)
-            xy_draw = xy[::step]
-            if xy_draw[-1] != xy[-1]:
-                xy_draw.append(xy[-1])
-        else:
-            xy_draw = xy
+        zoned = kind == 'route' and len(zone) == len(xy)
 
         live_xy = None
         if live_lat is not None:
             live_xy = _latlon_to_xy(live_lat, live_lon, lat0, lon0)
 
-        xs = [p[0] for p in xy_draw]
-        ys = [p[1] for p in xy_draw]
+        xs = [p[0] for p in xy]
+        ys = [p[1] for p in xy]
         if live_xy is not None:
             xs.append(live_xy[0])
             ys.append(live_xy[1])
@@ -1523,6 +1983,14 @@ class HudApp:
         span += pad * 2
         midx = (minx + maxx) / 2.0
         midy = (miny + maxy) / 2.0
+        grid, gt, mppi_path, pt, mppi_ref, rt = self._mppi_snapshot()
+        now = time.monotonic()
+        lidar_live = (grid is not None and live_xy is not None and
+                      (now - gt) < max(stale, 1.0))
+        if lidar_live and not full:
+            # 미니맵: 차 주변. 전체 맵 탭은 경로 전체를 그린다.
+            span = 40.0
+            midx, midy = live_xy
         inner = min(w, h) - 36
         sc = inner / span
         cx = x + w / 2
@@ -1531,30 +1999,60 @@ class HudApp:
         def scr(east, north):
             return cx + (east - midx) * sc, cy - (north - midy) * sc
 
-        # 지나온 구간 / 남은 구간
-        wp_idx = 0
-        ego = n.ego.get(stale)
-        if ego and len(ego) >= 6:
-            wp_idx = max(0, min(int(ego[4]), len(xy_draw) - 1))
-        if kind == 'trail':
-            wp_idx = max(0, len(xy_draw) - 1)
-
-        def polyline(seq, color, width):
+        def polyline(seq, color, width, smooth=True):
             if len(seq) < 2:
                 return
             flat = []
             for east, north in seq:
                 flat.extend(scr(east, north))
-            c.create_line(*flat, fill=color, width=width, smooth=True)
+            c.create_line(*flat, fill=color, width=width, smooth=smooth)
 
-        if wp_idx >= 1:
-            polyline(xy_draw[:wp_idx + 1], GREEN_DIM, 2)
-        polyline(xy_draw[wp_idx:], CYAN, 2)
+        # wp_idx 는 원본 CSV 행 번호다. 간격을 건너뛴 그림에 클램프하면
+        # 구간 경계가 밀린다.
+        wp_idx = 0
+        ego = n.ego.get(stale)
+        if ego and len(ego) >= 6:
+            wp_idx = max(0, min(int(ego[4]), len(xy) - 1))
+        if kind == 'trail':
+            wp_idx = max(0, len(xy) - 1)
 
-        sx, sy = scr(*xy_draw[0])
-        gx, gy = scr(*xy_draw[-1])
-        c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, fill=GREEN, outline='')
+        if zoned:
+            self._draw_zone_path(c, xy, zone, wp_idx, polyline, scr)
+        else:
+            if len(xy) > NAV_DRAW_MAX:
+                step = max(1, len(xy) // NAV_DRAW_MAX)
+                xy_draw = xy[::step]
+                if xy_draw[-1] != xy[-1]:
+                    xy_draw.append(xy[-1])
+                draw_idx = max(0, min(wp_idx // step, len(xy_draw) - 1))
+            else:
+                xy_draw = xy
+                draw_idx = wp_idx
+            if draw_idx >= 1:
+                polyline(xy_draw[:draw_idx + 1], GREEN_DIM, 2)
+            polyline(xy_draw[draw_idx:], CYAN, 2)
+
+        sx0, sy0 = scr(*xy[0])
+        gx, gy = scr(*xy[-1])
+        c.create_oval(sx0 - 4, sy0 - 4, sx0 + 4, sy0 + 4, fill=GREEN, outline='')
         c.create_oval(gx - 5, gy - 5, gx + 5, gy + 5, fill=ORANGE, outline='')
+
+        note_y = y + 28
+        if zoned:
+            line, col = _zone_status(xy, zone, wp_idx)
+            if line:
+                c.create_text(x + 12, note_y, text=line, fill=col, anchor='nw',
+                              font=self.font(8, 'bold'))
+                note_y += 14
+            if full:
+                self._draw_zone_legend(c, x + 12, y + h - 42)
+
+        if lidar_live and heading is not None:
+            self._draw_nav_lidar_overlay(
+                c, scr, live_xy, heading, grid, mppi_path, pt, mppi_ref, rt, now,
+                max(stale, 1.0))
+            c.create_text(x + 12, note_y, text='LIDAR', fill=ORANGE, anchor='nw',
+                          font=self.font(7, 'bold'))
 
         # 실시간 위치
         if live_xy is not None:
@@ -1590,6 +2088,111 @@ class HudApp:
         # 북쪽
         c.create_text(x + w - 12, y + 28, text='N', fill=CYAN, anchor='ne',
                       font=self.font(8, 'bold'))
+
+    def _draw_zone_path(self, c, xy, zone, wp_idx, polyline, scr):
+        """terrain 별로 경로를 칠한다. 지나온 구간은 같은 색을 어둡게."""
+        idxs = _kept_indices(len(xy), zone, wp_idx)
+        if len(idxs) < 2:
+            return
+        cur = []
+        cur_col = None
+        cur_w = 2
+
+        def flush():
+            nonlocal cur
+            if cur_col is not None and len(cur) >= 2:
+                polyline(cur, cur_col, cur_w, smooth=False)
+            cur = []
+
+        for a, b in zip(idxs, idxs[1:]):
+            z = zone[b]
+            passed = b <= wp_idx
+            col = _mix(ZONE_COLOR[z], '#0c1016', 0.62) if passed else ZONE_COLOR[z]
+            width = 2 if passed else 3
+            if col != cur_col or width != cur_w:
+                flush()
+                cur_col, cur_w = col, width
+                cur = [xy[a], xy[b]]
+            else:
+                cur.append(xy[b])
+        flush()
+
+        # S 는 한 행이라 선으로는 안 보인다. 마름모로 찍는다.
+        for i in idxs:
+            if zone[i] != ZONE_STOP:
+                continue
+            px, py = scr(*xy[i])
+            col = _mix(YELLOW, '#0c1016', 0.45) if i <= wp_idx else YELLOW
+            r = 5
+            c.create_polygon(
+                px, py - r, px + r, py, px, py + r, px - r, py,
+                fill=col, outline='#1a1408')
+
+    def _draw_zone_legend(self, c, x, y):
+        xx = x
+        for z, name in ((ZONE_GPS, 'GPS'), (ZONE_LIDAR, 'L'),
+                        (ZONE_STOP, 'S'), (ZONE_TL, 'T')):
+            c.create_rectangle(xx, y, xx + 10, y + 10,
+                               fill=ZONE_COLOR[z], outline='')
+            c.create_text(xx + 14, y + 5, text=name, fill=DIM, anchor='w',
+                          font=self.font(8))
+            xx += 14 + max(18, 8 * len(name)) + 10
+
+    def _draw_event_log(self, c, x, y, w, h):
+        """최근 /drive_event. 아래쪽이 최신이다."""
+        self._round_rect(c, x, y, x + w, y + h, 12,
+                         fill='#0c1016', outline='#1c2430')
+        c.create_text(x + 12, y + 14, text='EVENT', fill=GOLD, anchor='w',
+                      font=self.font(9, 'bold'))
+        with self.n._event_lock:
+            rows = list(self.n.event_log)
+        c.create_text(x + w - 10, y + 14, text=str(len(rows)), fill=DIM,
+                      anchor='e', font=self.font(8))
+        if not rows:
+            c.create_text(x + w / 2, y + h / 2, text='이벤트 없음',
+                          fill=DIM, font=self.font(10))
+            return
+        px = max(8, int(8 * max(c.winfo_height(), 1) / 720.0))
+        line_h = px + 7
+        max_lines = max(1, int((h - 36) / line_h))
+        show = rows[-max_lines:]
+        time_w = int(px * 6.2)
+        max_ch = max(4, int((w - 20 - time_w) / max(px * 1.05, 1)))
+        yy = y + 30
+        for t, text in show:
+            stamp = time.strftime('%H:%M:%S', time.localtime(t))
+            shown = text if len(text) <= max_ch else text[:max_ch - 1] + '…'
+            c.create_text(x + 8, yy, text=stamp, fill=DIM, anchor='nw',
+                          font=self.font(8))
+            c.create_text(x + 10 + time_w, yy, text=shown,
+                          fill=_event_color(text), anchor='nw',
+                          font=self.font(8))
+            yy += line_h
+
+    def _brake_reason(self, stale):
+        n = self.n
+        diag = n.diag.get(stale)
+
+        def num(i):
+            if not diag or len(diag) <= i:
+                return None
+            v = float(diag[i])
+            return v if math.isfinite(v) else None
+
+        goal_phase = num(18)
+        cb_state = num(19)
+        goal_need = num(22)
+        return _brake_reason_text(
+            n.estop.get(stale),
+            n.aeb.get(stale),
+            n.tl_brake.get(stale),
+            n.lstatus.get(stale),
+            None if goal_phase is None else int(goal_phase),
+            None if cb_state is None else int(cb_state),
+            goal_need,
+            n.drive_state.get(stale),
+            n.brake_lv.get(stale),
+        )
 
     # ── 하단 ──────────────────────────────────────────────────────────────
     def _draw_bottom(self, c, w, h, stale):
@@ -1659,10 +2262,9 @@ class HudApp:
         c.create_text(w * 0.66, y0 + 56, text=gps_line, fill=DIM,
                       font=self.font(8), anchor='w')
 
-        ev = n.drive_event.get(4.0)
-        if ev:
-            c.create_text(20, y0 + 62, text=str(ev)[:80], fill=ORANGE,
-                          font=self.font(9), anchor='w')
+        reason, reason_col = self._brake_reason(stale)
+        c.create_text(20, y0 + 64, text=reason, fill=reason_col,
+                      font=self.font(11, 'bold'), anchor='w')
 
         # 스로틀 raw 숫자 — 페달 매핑 디버그
         raw = n.throttle.get(stale)
@@ -1768,21 +2370,28 @@ class HudApp:
             x += 50
 
     # ── 카메라 ────────────────────────────────────────────────────────────
-    def _draw_camera(self, c, x, y, tw, th):
+    def _draw_camera(self, c, x, y, tw, th, prefer_tl=False):
         n = self.n
         self._round_rect(c, x, y, x + tw, y + th, 10,
                          fill='#05070a', outline='#1c2430')
-        if not n.show_camera or not _HAVE_CV:
+        if not _HAVE_CV:
             c.create_text(x + tw / 2, y + th / 2, text='CAM off',
                           fill=DIM, font=self.font(10))
             return tw + 8
         frame = None
+        src = '/image_raw'
         with n._img_lock:
-            if n._img_bgr is not None:
+            if prefer_tl and n._tl_bgr is not None:
+                frame = n._tl_bgr
+                age = time.monotonic() - n._tl_t if n._tl_t else 1e9
+                src = '/tl/debug_image'
+            elif n._img_bgr is not None:
                 frame = n._img_bgr
-            age = time.monotonic() - n._img_t if n._img_t else 1e9
-        if frame is None or age > n.stale_s:
-            c.create_text(x + tw / 2, y + th / 2, text='/image_raw —',
+                age = time.monotonic() - n._img_t if n._img_t else 1e9
+            else:
+                age = 1e9
+        if frame is None or age > max(n.stale_s, 1.5):
+            c.create_text(x + tw / 2, y + th / 2, text=src + ' —',
                           fill=DIM, font=self.font(10))
             return tw + 8
         ih, iw = frame.shape[:2]
