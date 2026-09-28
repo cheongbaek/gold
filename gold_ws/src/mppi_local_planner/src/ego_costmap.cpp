@@ -43,6 +43,7 @@ CostmapSnapshot EgoCostmap::snapshot() const
   CostmapSnapshot snap;
   std::lock_guard<std::mutex> lock(mutex_);
   snap.cost = cost_;
+  snap.occ = occ_bin_;
   snap.cells_x = cells_x_;
   snap.cells_y = cells_y_;
   snap.size_x = params_.size_x;
@@ -207,6 +208,7 @@ void EgoCostmap::inflate()
   }
 
   std::vector<float> cost(static_cast<size_t>(cells_x_) * static_cast<size_t>(cells_y_), 0.0f);
+  std::vector<uint8_t> occ_bin(occ_copy.size(), 0);
   const double res = params_.resolution;
   const double lethal_r = params_.robot_half_width;
   const double total_r = params_.robot_half_width + params_.inflation_radius;
@@ -214,9 +216,11 @@ void EgoCostmap::inflate()
 
   for (int oy = 0; oy < cells_y_; ++oy) {
     for (int ox = 0; ox < cells_x_; ++ox) {
-      if (occ_copy[static_cast<size_t>(oy) * static_cast<size_t>(cells_x_) + static_cast<size_t>(ox)] < 0.5f) {
+      const size_t oi = static_cast<size_t>(oy) * static_cast<size_t>(cells_x_) + static_cast<size_t>(ox);
+      if (occ_copy[oi] < 0.5f) {
         continue;
       }
+      occ_bin[oi] = 1;
       for (int dy = -reach; dy <= reach; ++dy) {
         const int ny = oy + dy;
         if (ny < 0 || ny >= cells_y_) continue;
@@ -248,6 +252,7 @@ void EgoCostmap::inflate()
 
   std::lock_guard<std::mutex> lock(mutex_);
   cost_ = std::move(cost);
+  occ_bin_ = std::move(occ_bin);   // ★cost_ 와 같은 스캔★ — 군집이 치사층과 어긋나지 않게
 }
 
 nav_msgs::msg::OccupancyGrid EgoCostmap::toOccupancyGrid() const

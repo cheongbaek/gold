@@ -28,6 +28,7 @@
 #include "mppi_local_planner/frenet_types.hpp"
 #include "mppi_local_planner/kasa_units.hpp"
 #include "mppi_local_planner/mppi_controller.hpp"
+#include "mppi_local_planner/path_tracker.hpp"
 #include "mppi_local_planner/vehicle_model.hpp"
 
 #include <deque>
@@ -303,54 +304,57 @@ private:
     declare_parameter<std::string>("handover.ref_topic", "/lidar_ref");
     declare_parameter<std::string>("diag_topic", "/lidar_diag");
     declare_parameter<std::string>("cones_topic", "/lidar_cones");
-    //  ★회피 방향 결정 [2026-09-11]★ (updateLateralTarget)
-    declare_parameter<double>("avoid.range_m", 16.0);
-    //  ★8 m 인 이유★ 콘 간격이 5~8 m 라(사용자), 5 m 면 #1 을 지난 뒤 #2 가
-    //  사거리 밖이라 목표가 잠깐 0 으로 돌아갔다 다시 튄다.
-    declare_parameter<double>("avoid.cone_half_m", 0.20); // 라바콘 반폭
-    declare_parameter<double>("avoid.margin_m", 0.30);    // 그 위 안전여유
-    declare_parameter<double>("avoid.max_offset_m", 1.35); // ★회피 목표 상한★
-    //  ★이보다 가까운 콘은 "지나쳤다" 로 본다 [2026-09-11]★ 앞차축 1.25 m.
+    // ══════════════════════════════════════════════════════════════════
+    //  ★[2026-09-28] 블록 계획기 — 근거는 frenet_planner.cpp 머리 상자★
+    // ══════════════════════════════════════════════════════════════════
+    declare_parameter<double>("avoid.range_m", 17.5);      // 차체 x 이 안의 점유 군집만
+    declare_parameter<double>("avoid.max_offset_m", 3.0);  // ★GPS 궤적 ± 3 m★ (사용자)
+    declare_parameter<double>("avoid.pass_gap_m", 0.45);   // 차체 옆면 ↔ 장애물 표면
+    //  아래 둘은 /lidar_cones·진단 최근접 콘을 고르는 필터다(계획과 무관).
     declare_parameter<double>("avoid.pass_x_m", 0.90);
-    //  ★둘째 콘 미리보기 [2026-09-13]★ 최근접 콘이 이 거리 안으로 오면
-    //  다음 콘의 통과 y 를 목표로 슬루한다. 조향 상한을 키우지 않고 S 를 일찍 연다.
-    declare_parameter<double>("avoid.preview_x_m", 3.0);
-    //  ★목표 크기 고정 [2026-09-13]★ 이보다 가까우면 통과 y 를 중심선 쪽으로
-    //  줄이지 않는다. 매 틱 재계산이 목표를 0 으로 붕괴시키던 경로.
-    declare_parameter<double>("avoid.freeze_x_m", 4.0);
-    //  ★기하 조향 폴백★ true 면 Frenet d(s) 를 스탠리로 쫓고 MPPI delta 는 버린다.
-    //  기본 false — 계획은 Frenet, 조향·속도는 MPPI.
+    declare_parameter<double>("avoid.cone_y_max_m", 4.0);
+    //  ★기하 조향★ true 면 Frenet d(s) 를 순수추종으로 쫓고 MPPI delta 는 버린다.
     declare_parameter<bool>("avoid.geometric_steer", true);
-    declare_parameter<double>("avoid.k_psi", 1.0);    // 방향항 (감쇠) — 도에 곱함
-    declare_parameter<double>("avoid.k_cte", 1.0);    // 위치항 스케일 (atan(k·e/L))
-    declare_parameter<double>("avoid.v_min", 1.0);    // 구식 분모. 지금은 L 을 쓴다
-    //  미리보기 중에만. 첫 콘에서 켜면 헤딩이 안 접혀 와리가리(실측 144027).
-    declare_parameter<double>("avoid.steer_hold_e_m", 0.30);
-    declare_parameter<double>("avoid.target_slew_mps", 1.5);  // 횡목표 변화 상한
-    //  ★붙들고 있던 콘보다 이만큼 멀어지면 "다음 콘" 으로 본다★
-    declare_parameter<double>("avoid.new_cone_dx_m", 1.5);
-    //  ★콘 군집 판정★ 치사 셀이 이만큼 안 모이면 잡음으로 본다.
-    //  콘 하나의 치사 원반(반경 0.63 m)은 0.1 m 격자에서 ≈124 셀이다.
-    declare_parameter<int>("avoid.cone_min_cells", 20);
-    declare_parameter<double>("avoid.cone_y_max_m", 3.0);  // 이보다 옆은 무시
-    //  ★검출 깜빡임과 실제 통과를 가른다★ 20Hz 이므로 6틱 = 0.3 s.
-    declare_parameter<int>("avoid.cone_lost_ticks", 6);
-    //  ★코스트맵 팽창반경을 여기서도 안다★ 회피 목표가 팽창 경계 안에 앉으면
-    //  플래너가 목표에서도 비용을 보고 밖으로 달아난다(updateLateralTarget).
-    declare_parameter<double>("avoid.inflation_m", 0.40);
-    // ── Frenet 경로 계획 [슬라럼] ──
-    //  콘을 (s,d) 게이트로 올리고 Hermite d(s) 를 만든다. 조향은 내지 않는다.
+    declare_parameter<double>("avoid.lookahead_m", 3.2);   // 순수추종 앞 점 [m]
+    declare_parameter<double>("avoid.k_cte", 0.5);         // 뒤차축 횡오차 약보정
+    declare_parameter<double>("avoid.steer_predict_s", 0.15);  // 조향 지연 보상 [s]
+    declare_parameter<double>("avoid.k_i_deg", 2.0);       // 편향 적분 [deg/(m·s)]
+    declare_parameter<double>("avoid.i_max_deg", 3.0);     // 적분 상한 [deg 도로휠]
+    declare_parameter<double>("avoid.i_gate_m", 0.5);      // |오차| 가 이 안일 때만 쌓는다
+    declare_parameter<double>("stop.predict_m", 3.0);      // 정지 판정 = 경로 추종 예측 거리
+    //  ★인계 전 미리보기★ L 구간이 이 거리 안이면 조종권 없이 계획만 돌린다.
+    declare_parameter<bool>("preview.enable", true);
+    declare_parameter<double>("preview.zone_dist_m", 25.0);
+    // ── Frenet 경로 계획 ──
     declare_parameter<bool>("frenet.enable", true);
     declare_parameter<double>("frenet.plan_distance_m", 16.0);
     declare_parameter<double>("frenet.ds_m", 0.25);
-    declare_parameter<double>("frenet.return_after_last_m", 3.5);
-    declare_parameter<double>("frenet.hold_s_m", 6.5);
-    declare_parameter<double>("frenet.arrive_before_m", 4.5);
-    declare_parameter<double>("frenet.hold_near_m", 0.8);
-    declare_parameter<double>("frenet.wrap_after_m", 2.5);
-    declare_parameter<double>("frenet.keep_behind_m", 0.60);
-    declare_parameter<double>("frenet.lane_half_m", 1.75);
-    declare_parameter<double>("frenet.lane_margin_m", 0.10);
+    declare_parameter<double>("frenet.cluster_link_m", 0.30);
+    declare_parameter<int>("frenet.cluster_min_cells", 1);
+    declare_parameter<double>("frenet.cluster_max_width_m", 5.0);
+    declare_parameter<double>("frenet.block_link_s_m", 2.5);
+    declare_parameter<double>("frenet.block_link_d_m", 1.9);
+    declare_parameter<int>("frenet.confirm_hits", 2);
+    declare_parameter<double>("frenet.lost_s", 2.5);
+    declare_parameter<double>("frenet.blind_x_m", 2.2);
+    declare_parameter<double>("frenet.assoc_gap_m", 1.0);
+    declare_parameter<double>("frenet.hold_pre_m", 0.30);
+    declare_parameter<double>("frenet.hold_post_m", 0.30);
+    declare_parameter<double>("frenet.bias_deadband_m", 0.15);
+    declare_parameter<double>("frenet.bias_deadband_per_m", 0.03);
+    declare_parameter<double>("frenet.rel_margin_m", 0.40);
+    declare_parameter<double>("frenet.commit_dist_m", 5.0);
+    declare_parameter<int>("frenet.flip_ticks", 5);
+    declare_parameter<double>("frenet.kappa_comfort", 0.125);
+    declare_parameter<double>("frenet.kappa_max", 0.34);
+    declare_parameter<double>("frenet.shift_len_min_m", 4.0);
+    declare_parameter<double>("frenet.shift_len_max_m", 12.0);
+    declare_parameter<double>("frenet.return_len_min_m", 6.0);
+    declare_parameter<double>("frenet.return_len_max_m", 12.0);
+    declare_parameter<double>("frenet.flat_min_m", 2.0);
+    declare_parameter<double>("frenet.entry_len_min_m", 1.5);
+    declare_parameter<double>("frenet.on_path_d_m", 0.30);
+    declare_parameter<double>("frenet.on_path_yaw_rad", 0.15);
     declare_parameter<double>("handover.ref_stale_s", 0.5);
     declare_parameter<bool>("handover.use_gps_ref", true);
     //  y(CTE) 만 GPS 로 덮는다. yaw 를 덮으면 외장 iAHRS 헤딩이 다시 들어온다.
@@ -569,6 +573,87 @@ private:
     declare_parameter<bool>("reference_reset.preserve_lateral", true);
   }
 
+  //  ★계획기 파라미터 표 [2026-09-28]★ 읽기(readParameters)와 실행 중 변경
+  //  (onSetParams)이 같은 표를 쓴다 — 한쪽에만 있는 키가 생기지 않게.
+  struct FrenetDoubleParam
+  {
+    const char * name;
+    double FrenetPlannerParams::* field;
+    double lo;
+  };
+  struct FrenetIntParam
+  {
+    const char * name;
+    int FrenetPlannerParams::* field;
+    int lo;
+  };
+  static const std::vector<FrenetDoubleParam> & frenetDoubleParams()
+  {
+    static const std::vector<FrenetDoubleParam> t = {
+      {"avoid.range_m", &FrenetPlannerParams::range_m, 4.0},
+      {"avoid.max_offset_m", &FrenetPlannerParams::max_offset_m, 0.5},
+      {"avoid.pass_gap_m", &FrenetPlannerParams::pass_gap_m, 0.1},
+      {"frenet.plan_distance_m", &FrenetPlannerParams::plan_distance_m, 6.0},
+      {"frenet.ds_m", &FrenetPlannerParams::ds_m, 0.10},
+      {"frenet.cluster_max_width_m", &FrenetPlannerParams::cluster_max_width_m, 1.0},
+      {"frenet.block_link_s_m", &FrenetPlannerParams::block_link_s_m, 0.0},
+      {"frenet.block_link_d_m", &FrenetPlannerParams::block_link_d_m, 0.0},
+      {"frenet.lost_s", &FrenetPlannerParams::lost_s, 0.2},
+      {"frenet.blind_x_m", &FrenetPlannerParams::blind_x_m, 0.5},
+      {"frenet.assoc_gap_m", &FrenetPlannerParams::assoc_gap_m, 0.2},
+      {"frenet.hold_pre_m", &FrenetPlannerParams::hold_pre_m, 0.0},
+      {"frenet.hold_post_m", &FrenetPlannerParams::hold_post_m, 0.0},
+      {"frenet.bias_deadband_m", &FrenetPlannerParams::bias_deadband_m, 0.0},
+      {"frenet.bias_deadband_per_m", &FrenetPlannerParams::bias_deadband_per_m, 0.0},
+      {"frenet.rel_margin_m", &FrenetPlannerParams::rel_margin_m, 0.0},
+      {"frenet.commit_dist_m", &FrenetPlannerParams::commit_dist_m, 0.0},
+      {"frenet.kappa_comfort", &FrenetPlannerParams::kappa_comfort, 0.02},
+      {"frenet.kappa_max", &FrenetPlannerParams::kappa_max, 0.05},
+      {"frenet.shift_len_min_m", &FrenetPlannerParams::shift_len_min_m, 1.0},
+      {"frenet.shift_len_max_m", &FrenetPlannerParams::shift_len_max_m, 1.0},
+      {"frenet.return_len_min_m", &FrenetPlannerParams::return_len_min_m, 1.0},
+      {"frenet.return_len_max_m", &FrenetPlannerParams::return_len_max_m, 1.0},
+      {"frenet.flat_min_m", &FrenetPlannerParams::flat_min_m, 0.0},
+      {"frenet.entry_len_min_m", &FrenetPlannerParams::entry_len_min_m, 0.5},
+      {"frenet.on_path_d_m", &FrenetPlannerParams::on_path_d_m, 0.0},
+      {"frenet.on_path_yaw_rad", &FrenetPlannerParams::on_path_yaw_rad, 0.0},
+    };
+    return t;
+  }
+  static const std::vector<FrenetIntParam> & frenetIntParams()
+  {
+    static const std::vector<FrenetIntParam> t = {
+      {"frenet.cluster_min_cells", &FrenetPlannerParams::cluster_min_cells, 1},
+      {"frenet.confirm_hits", &FrenetPlannerParams::confirm_hits, 1},
+      {"frenet.flip_ticks", &FrenetPlannerParams::flip_ticks, 1},
+    };
+    return t;
+  }
+  //  군집 연결 거리 [m] → 격자 칸 수 (0.1 m 격자에서 0.30 m = 3칸)
+  int linkCells(double m) const
+  {
+    const double res = std::max(0.02, get_parameter("costmap.resolution").as_double());
+    return std::max(1, static_cast<int>(std::lround(m / res)));
+  }
+
+  /// 표에 있는 계획기 파라미터면 적용하고 true.
+  bool applyFrenetParam(const rclcpp::Parameter & p)
+  {
+    for (const auto & f : frenetDoubleParams()) {
+      if (p.get_name() == f.name) {
+        frenet_params_.*(f.field) = std::max(f.lo, p.as_double());
+        return true;
+      }
+    }
+    for (const auto & f : frenetIntParams()) {
+      if (p.get_name() == f.name) {
+        frenet_params_.*(f.field) = std::max(f.lo, static_cast<int>(p.as_int()));
+        return true;
+      }
+    }
+    return false;
+  }
+
   void readParameters()
   {
     lidar_topic_ = get_parameter("lidar_topic").as_string();
@@ -603,62 +688,29 @@ private:
     ref_topic_    = get_parameter("handover.ref_topic").as_string();
     diag_topic_   = get_parameter("diag_topic").as_string();
     cones_topic_  = get_parameter("cones_topic").as_string();
-    lat_target_range_ = get_parameter("avoid.range_m").as_double();
-    lat_cone_half_    = get_parameter("avoid.cone_half_m").as_double();
-    lat_margin_       = get_parameter("avoid.margin_m").as_double();
-    lat_max_offset_   = get_parameter("avoid.max_offset_m").as_double();
-    lat_inflation_    = get_parameter("avoid.inflation_m").as_double();
     lat_pass_x_       = get_parameter("avoid.pass_x_m").as_double();
-    lat_preview_x_    = get_parameter("avoid.preview_x_m").as_double();
-    lat_freeze_x_     = get_parameter("avoid.freeze_x_m").as_double();
-    if (lat_preview_x_ < lat_pass_x_) {
-      lat_preview_x_ = lat_pass_x_;
-    }
-    if (lat_freeze_x_ < lat_pass_x_) {
-      lat_freeze_x_ = lat_pass_x_;
-    }
-    geometric_steer_  = get_parameter("avoid.geometric_steer").as_bool();
-    geo_k_psi_        = get_parameter("avoid.k_psi").as_double();
-    geo_k_cte_        = get_parameter("avoid.k_cte").as_double();
-    geo_v_min_        = get_parameter("avoid.v_min").as_double();
-    geo_hold_e_m_     = std::max(0.0, get_parameter("avoid.steer_hold_e_m").as_double());
-    lat_target_slew_mps_ = std::max(0.0, get_parameter("avoid.target_slew_mps").as_double());
-    lat_new_cone_dx_  = get_parameter("avoid.new_cone_dx_m").as_double();
-    cone_min_cells_   = static_cast<int>(get_parameter("avoid.cone_min_cells").as_int());
     cone_y_max_       = get_parameter("avoid.cone_y_max_m").as_double();
-    lat_lost_max_     = static_cast<int>(get_parameter("avoid.cone_lost_ticks").as_int());
+    geometric_steer_  = get_parameter("avoid.geometric_steer").as_bool();
     frenet_params_.enable = get_parameter("frenet.enable").as_bool();
-    frenet_params_.plan_distance_m =
-      std::max(4.0, get_parameter("frenet.plan_distance_m").as_double());
-    frenet_params_.ds_m =
-      std::max(0.10, get_parameter("frenet.ds_m").as_double());
-    frenet_params_.return_after_last_m =
-      std::max(0.5, get_parameter("frenet.return_after_last_m").as_double());
-    frenet_params_.hold_s_m =
-      std::max(3.0, get_parameter("frenet.hold_s_m").as_double());
-    frenet_params_.arrive_before_m =
-      std::max(1.5, get_parameter("frenet.arrive_before_m").as_double());
-    frenet_params_.hold_near_m =
-      std::max(0.6, get_parameter("frenet.hold_near_m").as_double());
-    frenet_params_.wrap_after_m =
-      std::max(1.0, get_parameter("frenet.wrap_after_m").as_double());
-    frenet_params_.keep_behind_m =
-      std::max(0.2, get_parameter("frenet.keep_behind_m").as_double());
-    frenet_params_.lane_half_m =
-      std::max(0.8, get_parameter("frenet.lane_half_m").as_double());
-    frenet_params_.lane_margin_m =
-      std::max(0.0, get_parameter("frenet.lane_margin_m").as_double());
-    frenet_params_.freeze_x_m = lat_freeze_x_;
-    frenet_params_.range_m = lat_target_range_;
-    frenet_params_.cone_half_m = lat_cone_half_;
-    frenet_params_.margin_m = lat_margin_;
-    frenet_params_.inflation_m = lat_inflation_;
-    frenet_params_.max_offset_m = lat_max_offset_;
-    frenet_params_.pass_x_m = lat_pass_x_;
-    frenet_params_.cone_y_max_m = cone_y_max_;
-    frenet_params_.cone_min_cells = cone_min_cells_;
-    frenet_params_.cone_lost_ticks = lat_lost_max_;
-    frenet_params_.new_cone_ds_m = lat_new_cone_dx_;
+    for (const auto & f : frenetDoubleParams()) {
+      frenet_params_.*(f.field) = std::max(f.lo, get_parameter(f.name).as_double());
+    }
+    for (const auto & f : frenetIntParams()) {
+      frenet_params_.*(f.field) =
+        std::max(f.lo, static_cast<int>(get_parameter(f.name).as_int()));
+    }
+    frenet_params_.cluster_link_cells = linkCells(get_parameter("frenet.cluster_link_m").as_double());
+    tracker_params_.lookahead = std::max(1.5, get_parameter("avoid.lookahead_m").as_double());
+    tracker_params_.lookahead_min = std::min(tracker_params_.lookahead, 3.2);
+    tracker_params_.k_cte = std::max(0.0, get_parameter("avoid.k_cte").as_double());
+    tracker_params_.predict_s =
+      std::clamp(get_parameter("avoid.steer_predict_s").as_double(), 0.0, 1.0);
+    track_ki_deg_  = std::max(0.0, get_parameter("avoid.k_i_deg").as_double());
+    track_i_max_deg_ = std::max(0.0, get_parameter("avoid.i_max_deg").as_double());
+    track_i_gate_m_  = std::max(0.0, get_parameter("avoid.i_gate_m").as_double());
+    stop_predict_m_  = std::max(1.0, get_parameter("stop.predict_m").as_double());
+    preview_enable_  = get_parameter("preview.enable").as_bool();
+    preview_zone_dist_m_ = std::max(0.0, get_parameter("preview.zone_dist_m").as_double());
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     use_gps_yaw_  = get_parameter("handover.use_gps_yaw").as_bool();
@@ -856,6 +908,10 @@ private:
       get_parameter("reference_reset.preserve_heading").as_bool();
     reference_reset_preserve_lateral_ =
       get_parameter("reference_reset.preserve_lateral").as_bool();
+    //  추종기·정지 예측이 쓰는 차량값 — 제원과 지령층에서 가져온다(따로 적지 않는다).
+    tracker_params_.wheelbase = vehicle_params_.wheelbase;
+    tracker_params_.max_steer = vehicle_params_.max_steering_angle;
+    tracker_params_.slew_rad_s = steer_slew_deg_s_ * M_PI / 180.0;
   }
 
   // Steady clock seconds — used only for permit freshness, so it must not
@@ -915,27 +971,45 @@ private:
     //  0 이 아닌 채로 남으면 이 구간이 '이미 제동 중' 으로 시작해 구동을 내지 않는다.
     //  두 L 구간 사이에는 최소 물림보다 훨씬 긴 시간이 지나므로 여기서는 반드시 풀린다.
     actuator_->releaseBrake();
+    //  ★[2026-09-28] 미리보기를 이어받는다★ 인계 직전까지 조종권 없이 계획을 돌렸고
+    //  기준선이 GPS(y = CTE, yaw = 경로 헤딩오차)면 좌표가 끊기지 않는다 — 블록 기억과
+    //  이미 정한 쪽을 그대로 들고 들어간다. 그래야 인계 첫 틱부터 경로가 콘을 비킨다.
+    //  기준선이 추측항법이면 종전처럼 지금 자세를 0 으로 두고 새로 시작한다.
+    //  ★마지막 '성공한' 미리보기 시각으로 본다★ 인계 틱에는 driving 의 zone_left 가
+    //  다음 구간(없으면 NaN)으로 넘어가 그 틱의 미리보기가 빠진다 — 플래그로 보면
+    //  바로 그 틱 때문에 이어받기가 무산된다(ROS 폐루프 시험에서 실제로 그랬다).
+    bool keep = false;
     {
       std::lock_guard<std::mutex> lock(odom_mutex_);
+      const bool ref_fresh = ref_valid_ && (nowSeconds() - ref_t_) <= ref_stale_s_;
+      keep = preview_t_ > 0.0 && (nowSeconds() - preview_t_) < 0.5 &&
+             gps_ref_live_ && gps_yaw_live_ && ref_fresh;
       if (has_abs_yaw_) {
         heading_ref_yaw_ = last_abs_yaw_;   // 지금 방위가 새 기준선이다
       }
-      odom_pose_ = OdomPose{};              // x = y = yaw = 0
+      if (!keep) {
+        odom_pose_ = OdomPose{};            // x = y = yaw = 0
+        //  ★GPS 기준선이 살아 있으면 y·yaw 는 곧바로 그 값으로 둔다★ 0 으로 두면
+        //  IMU 콜백이 덮기 전 첫 계획 틱이 차를 기준선 위·정면으로 보고 콘을
+        //  CTE·헤딩오차만큼 어긋난 자리에 찍는다 — 그것이 블록을 부풀렸다.
+        if (ref_fresh && use_gps_ref_) {
+          odom_pose_.y = ref_cte_;
+        }
+        if (ref_fresh && use_gps_yaw_) {
+          odom_pose_.yaw = ref_herr_;
+        }
+      }
     }
     corridor_clear_latched_ = false;
-    lat_latched_ = false;
-    lat_last_side_ = 0;
-    lat_locked_ox_ = 0.0;
-    lat_locked_target_ = 0.0;
-    lat_target_frozen_ = false;
-    lat_previewing_ = false;
-    lat_lost_n_ = 0;
-    lat_target_filt_ = 0.0;
-    last_frenet_path_ = {};
-    trail_odom_.clear();
-    if (frenet_planner_) {
-      frenet_planner_->reset();
+    if (!keep) {
+      last_frenet_path_ = {};
+      trail_odom_.clear();
+      if (frenet_planner_) {
+        frenet_planner_->reset();
+      }
     }
+    preview_t_ = 0.0;
+    track_integ_.reset();
     corridor_cost_ema_ = 0.0;
     corridor_cost_ema_init_ = false;
     clear_ahead_seconds_ = 0.0;
@@ -950,12 +1024,19 @@ private:
     last_pub_steer_deg_ = 0.0;
     last_commanded_v_.store(0.0, std::memory_order_relaxed);
     controller_->reset();
-    RCLCPP_INFO(
-      get_logger(),
-      "🛞 조종권 인수 — 기준선 재설정 (yaw0=%.1f deg%s). "
-      "이 방위의 직선으로 복귀하며 라바콘을 피한다",
-      heading_ref_yaw_ * 180.0 / M_PI,
-      has_abs_yaw_ ? "" : " ★절대방위 미수신 — 현재 자세를 0 으로 둔다★");
+    if (keep) {
+      RCLCPP_INFO(
+        get_logger(),
+        "🛞 조종권 인수 — 미리보기 이어받음 (GPS 기준선, 앞 블록 %d개). "
+        "이미 정한 쪽으로 곧바로 비킨다", last_frenet_path_.n_gates);
+    } else {
+      RCLCPP_INFO(
+        get_logger(),
+        "🛞 조종권 인수 — 기준선 재설정 (yaw0=%.1f deg%s). "
+        "이 방위의 직선으로 복귀하며 라바콘을 피한다",
+        heading_ref_yaw_ * 180.0 / M_PI,
+        has_abs_yaw_ ? "" : " ★절대방위 미수신 — 현재 자세를 0 으로 둔다★");
+    }
   }
 
   void publishStop(bool apply_brake, double road_deg = 0.0)
@@ -1465,6 +1546,7 @@ private:
           "🛰️ 조종권 반환 — GPS 추종이 /cmd_vel_raw 를 다시 낸다. 이 노드는 침묵한다");
         was_permitted_ = false;
       }
+      runPreview();              // ★[2026-09-28] 조종권 없이 계획만 — 아무것도 발행하지 않는다★
       publishActive(false);      // ★값은 false 지만 신선도로 생존을 알린다★
       return;
     }
@@ -1472,6 +1554,7 @@ private:
       rearmReference();          // ★L 구간마다 기준선을 다시 잡는다★ (그쪽 주석)
       was_permitted_ = true;
     }
+    last_permit_t_ = nowSeconds();
     publishActive(true);
 
     if (!costmap_->hasData()) {
@@ -1504,7 +1587,12 @@ private:
       std::lock_guard<std::mutex> lock(odom_mutex_);
       current_pose = odom_pose_;
     }
-    last_frenet_path_ = frenet_planner_->plan(current_pose, snap);
+    //  ★지금 조향이 만드는 곡률을 넘긴다★ 경로가 차의 실제 곡률에서 이어지면
+    //  첫 틱에 조향이 튀지 않는다(5차 다항식의 시작 곡률 조건).
+    const double kappa0 = std::tan(last_pub_steer_deg_ * M_PI / 180.0) /
+      std::max(0.5, vehicle_params_.wheelbase);
+    last_frenet_path_ = frenet_planner_->plan(current_pose, snap, nowSeconds(), kappa0);
+    logPlannerEvents(false);
     n_cones_ahead_ = last_frenet_path_.n_gates;
     trail_odom_.push_back({current_pose.x, current_pose.y});
     if (trail_odom_.size() > 600) {
@@ -1536,11 +1624,25 @@ private:
     //  비싸다는 이유만으로 회피 중에 선다.
     double raw_steer_deg = result.control.delta * 180.0 / M_PI;
     if (geometric_steer_) {
-      raw_steer_deg = geometricSteerDeg(current_pose);
+      //  ★[2026-09-28] 추종·정지는 path_tracker.hpp — 모의실험과 같은 코드다★
+      const double v_trk = trackSpeed();
+      raw_steer_deg = purePursuitSteer(
+        current_pose, last_frenet_path_, tracker_params_, v_trk,
+        last_pub_steer_deg_ * M_PI / 180.0) * 180.0 / M_PI;
+      const double e_path = current_pose.y - last_frenet_path_.sample(current_pose.x).d;
+      raw_steer_deg += track_integ_.update(
+        e_path, 1.0 / std::max(1.0, control_frequency_), track_ki_deg_,
+        track_i_max_deg_, track_i_gate_m_, v_trk > 0.3 && !stop_latched_);
+      const double max_deg = vehicle_params_.max_steering_angle * 180.0 / M_PI;
+      raw_steer_deg = std::clamp(raw_steer_deg, -max_deg, max_deg);
     }
     const double steer_deg = filterSteer(raw_steer_deg);
+    double hit_at_m = 0.0;
+    //  ★정지 = 경로를 실제로 따라갔을 때 부딪히는가★ (종전: 지금 조향 2.2 m 고정 원호)
     const bool imminent = geometric_steer_ &&
-      commandArcHits(current_pose, steer_deg * M_PI / 180.0, snap);
+      predictTrackHits(current_pose, last_frenet_path_, snap, tracker_params_,
+                       std::max(0.8, mppi_params_.desired_speed),
+                       steer_deg * M_PI / 180.0, stop_predict_m_, &hit_at_m);
     const bool raw_stop = geometric_steer_ ? imminent : result.stopped_for_collision;
     const bool latched_stop = updateStopLatch(raw_stop);
 
@@ -1549,12 +1651,14 @@ private:
         (t_now - stop_latch_t_).seconds();
       const double brake_wait = geometric_steer_ ? 0.35 : brake_after_s_;
       const bool use_brake = brake_enable_ && held >= brake_wait;
+      const PlanDiag & pd = frenet_planner_->lastDiag();
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 1000,
-        "stop latch: %s  avg_cost=%.1f th=%.1f  held=%.1fs  brake=%d  steer=%.1f",
-        geometric_steer_ ? "arc" : "mppi",
-        avg_cost, mppi_params_.stop_cost_threshold, held, use_brake ? 1 : 0,
-        steer_deg);
+        "stop latch: %s  경로 추종 예측 %.1f m 앞 충돌  held=%.1fs  brake=%d  steer=%.1f  "
+        "| 경로 여유 %.2f m, 최대곡률 %.2f (블록 %d)",
+        geometric_steer_ ? "track" : "mppi",
+        raw_stop ? hit_at_m : 0.0, held, use_brake ? 1 : 0, steer_deg,
+        pd.min_clear_m, pd.max_kappa, pd.n_blocks);
       publishStop(use_brake, steer_deg);
       publishRolloutPath();
       publishReferencePath(current_pose);
@@ -1566,17 +1670,19 @@ private:
     const int out = lowSpeedTrim(ref);
     publishDrive(out, steer_deg);
 
-    RCLCPP_INFO_THROTTLE(
-      get_logger(), *get_clock(), 1000,
-      "drive ref=%d → out=%d pulse (%.2f m/s, enc %.1f)  "
-      "mppi_steer=%.1f → out=%.1f deg  avg_cost=%.0f  "
-      "| 기준선 %s y=%.2f m yaw=%.1f deg",
-      ref, actuator_->lastPulse(), lidar::kasa::pulseToMs(actuator_->lastPulse()),
-      enc_pulse_.load(std::memory_order_relaxed),
-      result.control.delta * 180.0 / M_PI, steer_deg, avg_cost,
-      (gps_ref_live_ && gps_yaw_live_) ? "GPS-y/경로헤딩" :
-      gps_ref_live_ ? "GPS-y/OS1-yaw" : "추측항법",
-      current_pose.y, current_pose.yaw * 180.0 / M_PI);
+    {
+      const PlanDiag & pd = frenet_planner_->lastDiag();
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "drive ref=%d → out=%d pulse (%.2f m/s, enc %.1f)  steer=%.1f deg (적분 %+.1f)  "
+        "| 기준선 %s y=%.2f m yaw=%.1f deg | 블록 %d 목표 %+.2f 여유 %.2f κ %.2f%s",
+        ref, actuator_->lastPulse(), lidar::kasa::pulseToMs(actuator_->lastPulse()),
+        enc_pulse_.load(std::memory_order_relaxed), steer_deg, track_integ_.value_deg,
+        (gps_ref_live_ && gps_yaw_live_) ? "GPS-y/경로헤딩" :
+        gps_ref_live_ ? "GPS-y/OS1-yaw" : "추측항법",
+        current_pose.y, current_pose.yaw * 180.0 / M_PI,
+        pd.n_blocks, pd.target_d, pd.min_clear_m, pd.max_kappa, pd.tight ? " ★빡빡★" : "");
+    }
 
     publishDiag(current_pose, steer_deg, avg_cost, snap);
     publishRolloutPath();
@@ -1637,83 +1743,76 @@ private:
     path_pub_->publish(path);
   }
 
-  /// Frenet 경로 위의 앞 점을 퓨어 퍼슛. +deg = 좌 (MPPI delta 와 같은 부호).
-  /// 스탠리(L=2 m, k=1.4)는 횡오차 1 m 에서 이미 23° 에 포화해 헤딩이 벌어졌다.
-  double geometricSteerDeg(const OdomPose & pose) const
+  /// 추종·정지 예측에 쓸 속도 [m/s] — 실측(엔코더)이 신선하면 그것, 아니면 순항.
+  double trackSpeed() const
   {
-    const double max_rad = vehicle_params_.max_steering_angle;
-    if (!last_frenet_path_.valid || last_frenet_path_.pts.size() < 2) {
-      return 0.0;
+    const double t = enc_t_.load(std::memory_order_relaxed);
+    if (t > 0.0 && (nowSeconds() - t) <= 1.0) {
+      return std::max(0.3, enc_pulse_.load(std::memory_order_relaxed) * lidar::kasa::MS_PER_PULSE);
     }
-    const double Ld = std::max(3.2, mppi_params_.stanley_lookahead);
-    const FrenetPoint tgt = last_frenet_path_.sample(pose.x + Ld);
-    double ex = 0.0;
-    double ey = 0.0;
-    odomToEgo(pose, tgt.s, tgt.d, ex, ey);
-    double delta = 0.0;
-    if (ex > 0.4) {
-      const double dist = std::max(2.4, std::hypot(ex, ey));
-      const double alpha = std::atan2(ey, ex);
-      delta = std::atan2(
-        2.0 * vehicle_params_.wheelbase * std::sin(alpha), dist);
-    }
-    // 뒤차축이 경로 옆에 남아 있는 만큼만 약하게. 주 조향은 앞 점이다.
-    const FrenetPoint rp = last_frenet_path_.sample(pose.x);
-    const double e = pose.y - rp.d;  // + = 차가 경로의 왼쪽 → 우조향
-    delta -= std::atan2(std::max(0.0, geo_k_cte_) * e, Ld);
-    delta = std::clamp(delta, -max_rad, max_rad);
-    return delta * 180.0 / M_PI;
+    return std::max(0.3, mppi_params_.desired_speed);
   }
 
-  /// 지금 낼 조향을 2.2 m 유지하면 차 중심선이 치사 원반에 들어가는가.
-  /// 풋프린트 모서리로 보면 반폭이 두 번 들어가, 정상 통과(중심 1.1 m)도 충돌이다.
-  bool commandArcHits(
-    const OdomPose & pose, double steer_rad, const CostmapSnapshot & snap) const
+  /// 계획기가 남긴 드문 사건(블록 발견·쪽 결정·통과)을 한 번씩 로그로 낸다.
+  void logPlannerEvents(bool preview)
   {
-    (void)pose;
+    for (const auto & e : frenet_planner_->takeEvents()) {
+      RCLCPP_INFO(get_logger(), "%s%s", preview ? "[미리보기] " : "", e.c_str());
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  ★[2026-09-28] 인계 전 미리보기 — 조종권 없이 계획만 돌린다★
+  // ══════════════════════════════════════════════════════════════════════
+  //  실측 : 라이다는 인계 순간 이미 16 m 앞의 둘째 줄까지 보고 있었는데(15.7 m),
+  //  이 노드는 허락 전에는 아무것도 하지 않아 첫 줄을 7.5 m 앞에서 처음 '봤다'.
+  //  → driving 이 살아 있고(/lstatus 신선), 기준선이 GPS 이고(y·yaw 둘 다),
+  //    다음 L 구간이 preview.zone_dist_m 안이면 계획기를 돌려 블록을 기억하고
+  //    쪽을 미리 정해 둔다. ★발행은 하나도 하지 않는다★ — 조종권 계약 그대로다.
+  //  인계 순간 rearmReference 가 이 기억을 이어받는다.
+  void runPreview()
+  {
+    if (!preview_enable_ || !frenet_planner_ || !costmap_->hasData() ||
+        !gyro_bias_calibrated_.load(std::memory_order_acquire))
+    {
+      return;
+    }
+    const double stamp = lstatus_stamp_.load(std::memory_order_relaxed);
+    if (stamp <= 0.0 || (lstatus_stale_s_ > 0.0 && (nowSeconds() - stamp) > lstatus_stale_s_)) {
+      return;                             // driving 이 없다
+    }
+    OdomPose pose;
+    double zone_left = std::numeric_limits<double>::quiet_NaN();
+    bool ref_ok = false;
+    {
+      std::lock_guard<std::mutex> lock(odom_mutex_);
+      pose = odom_pose_;
+      zone_left = ref_zone_left_;
+      ref_ok = gps_ref_live_ && gps_yaw_live_;
+    }
+    //  ★L 구간 도중에 조종권이 잠깐 회수돼도(E-STOP 일시정지) 계속 본다★ 기억을
+    //  버리면 재개 순간 코앞 사각지대(자기 차체 지움)의 콘을 잊는다.
+    const bool near_zone = std::isfinite(zone_left) && zone_left <= preview_zone_dist_m_;
+    const bool recent = last_permit_t_ > 0.0 && (nowSeconds() - last_permit_t_) < 20.0;
+    if (!ref_ok || !(near_zone || recent)) {
+      return;
+    }
+    const CostmapSnapshot snap = costmap_->snapshot();
     if (!snap.valid) {
-      return false;
+      return;
     }
-    const double v = std::max(0.8, mppi_params_.desired_speed);
-    constexpr double kHorizon = 2.2;
-    const double dt = 0.05;
-    const int n = std::max(4, static_cast<int>(std::ceil(kHorizon / v / dt)));
-    Control u;
-    u.v = v;
-    u.delta = std::clamp(
-      steer_rad, -vehicle_params_.max_steering_angle, vehicle_params_.max_steering_angle);
-    State st{};
-    const double xs[5] = {-0.15, 0.35, 0.75, 1.05, 1.25};
-    for (int i = 0; i < n; ++i) {
-      st = step(st, u, dt, vehicle_params_);
-      for (double bx : xs) {
-        double ex = 0.0;
-        double ey = 0.0;
-        bodyToEgo(st, bx, 0.0, ex, ey);
-        if (ex < 0.5) {
-          continue;
-        }
-        if (snap.getCost(ex, ey) >= EgoCostmap::kLethalCost * 0.99) {
-          return true;
-        }
-      }
+    last_frenet_path_ = frenet_planner_->plan(pose, snap, nowSeconds(), 0.0);
+    logPlannerEvents(true);
+    preview_t_ = nowSeconds();
+    if (near_zone) {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "👀 미리보기 — L 구간 %.1f m 앞, 블록 %d, 목표 %+.2f m",
+        zone_left, frenet_planner_->lastDiag().n_blocks, frenet_planner_->lastDiag().target_d);
     }
-    return false;
-  }
-
-  /// 전방 코리도 안에서 ★가장 가까운 장애물★ 을 찾는다 → (x, y). 없으면 NaN.
-  /// 회피가 잘 됐는지는 결국 '무엇을 얼마나 비켜 갔나' 이므로 이 둘이 핵심이다.
-  void nearestObstacle(const CostmapSnapshot & snap, double & ox, double & oy) const
-  {
-    ox = oy = std::numeric_limits<double>::quiet_NaN();
-    if (!snap.valid) return;
-    double best = std::numeric_limits<double>::infinity();
-    for (double x = 0.3; x <= 8.0; x += snap.resolution) {
-      for (double y = -3.0; y <= 3.0; y += snap.resolution) {
-        if (snap.getCost(x, y) < 50.0) continue;      // 빈 칸은 건너뛴다
-        const double d = std::hypot(x, y);
-        if (d < best) { best = d; ox = x; oy = y; }
-      }
+    if (dump_enable_ && ++dump_tick_ >= dump_every_n_) {
+      dump_tick_ = 0;
+      dumpDebugImage(pose, snap);
     }
   }
 
@@ -1729,33 +1828,28 @@ private:
   ///   [7] obs_x    최근접 장애물 전방거리 [m] (라이다 원점 기준). 없으면 NaN
   ///   [8] obs_y    그 콘의 횡위치 [m] + 왼쪽. ★부호가 곧 '어느 쪽 라바콘인가'★
   ///   [9] target_y ★지금 Frenet d(s_now)★ [m] + 왼쪽
-  ///  [10] n_cones  앞에 보이는 콘 개수 — 0 이면 복귀 구간이다
+  ///  [10] n_cones  ★앞에 남은 장애물 블록 수★ [2026-09-28] — 0 이면 복귀 구간이다
+  ///  [11..13]      치사 셀 수 / 점유 군집 수 / 버린 군집 수 (cone_detector.hpp ConeStats)
   void publishDiag(const OdomPose & pose, double road_deg, double avg_cost,
                    const CostmapSnapshot & snap)
   {
-    //  ★진단도 군집 중심을 쓴다 [2026-09-11]★ 종전 nearestObstacle 은 팽창
-    //  가장자리를 돌려줘서, 기록된 obs_x/obs_y 가 콘의 실제 위치가 아니었다
-    //  (실측 20260911_001853 의 (0.3,+1.0) 이 그것이다 — 훨씬 바깥 콘의 팽창).
+    //  ★[2026-09-28] 계획기가 이번 틱에 본 점유 군집을 그대로 쓴다★ 진단이 따로
+    //  검출하면 계획과 다른 것을 기록하게 된다(종전 detectCones 는 치사층 덩어리).
+    (void)snap;
     double ox = std::numeric_limits<double>::quiet_NaN();
     double oy = std::numeric_limits<double>::quiet_NaN();
     {
-      //  ★'앞쪽' 만 본다 [2026-09-11]★ detectCones 는 x 오름차순이라 걸러내지
-      //  않으면 ★뒤쪽 물체가 제일 먼저 나온다★ — 실측에서 210틱 중 163틱이
-      //  음수 x(최소 −8.70 m)였다. 기록이 통째로 못 쓰게 된다.
-      //  updateLateralTarget 은 이미 같은 필터를 쓰고 있었다 — 진단만 빠져 있었다.
-      ConeDetectParams dp;
-      dp.min_cells = std::max(1, cone_min_cells_);
-      ConeStats st;
-      const std::vector<ConeObs> cs = detectCones(snap, dp, &st);
-      cone_stats_ = st;
-      //  ★회피 대상만 골라 목록으로 낸다★ (진단 ox/oy 와 같은 필터)
+      cone_stats_ = frenet_planner_->lastStats();
+      //  ★회피 대상만 골라 목록으로 낸다★ [x, y, cells] 3개씩 — .cones.csv 규약 그대로
       std_msgs::msg::Float64MultiArray cm;
+      const auto & cs = frenet_planner_->lastClustersEgo();
       cm.data.reserve(cs.size() * 3);
       for (const auto & c : cs) {
-        if (!coneInAvoidLane(pose, c, lat_pass_x_, lat_target_range_, cone_y_max_)) continue;
-        if (std::isnan(ox)) { ox = c.x; oy = c.y; }   // x 오름차순 — 가장 가까운 앞쪽
-        cm.data.push_back(c.x);
-        cm.data.push_back(c.y);
+        const ConeObs obs{c.cx, c.cy, c.cells};
+        if (!coneInAvoidLane(pose, obs, lat_pass_x_, frenet_params_.range_m, cone_y_max_)) continue;
+        if (std::isnan(ox)) { ox = c.cx; oy = c.cy; }   // x0 오름차순 — 가장 가까운 앞쪽
+        cm.data.push_back(c.cx);
+        cm.data.push_back(c.cy);
         cm.data.push_back(static_cast<double>(c.cells));
       }
       cones_pub_->publish(cm);      // ★콘이 0개여도 빈 배열을 낸다★ — 그래야
@@ -1875,6 +1969,27 @@ private:
       odomToEgo(odom, fp.s, fp.d, ex, ey);
       stroke(ex, ey, 255, 220, 40);
     }
+    //  ★[2026-09-28] 블록(자홍 상자)과 그 옆의 통과 목표(초록 선)★
+    auto line = [&](double s0, double d0, double s1, double d1, uint8_t r, uint8_t g, uint8_t b) {
+      const int n = std::max(2, static_cast<int>(std::hypot(s1 - s0, d1 - d0) / (0.5 * res)));
+      for (int i = 0; i <= n; ++i) {
+        double ex = 0.0, ey = 0.0;
+        odomToEgo(odom, s0 + (s1 - s0) * i / n, d0 + (d1 - d0) * i / n, ex, ey);
+        int px = 0, py = 0;
+        toPx(ex, ey, px, py);
+        plotPx(rgb, w, h, px, py, r, g, b);
+      }
+    };
+    for (const auto & bk : frenet_planner_->blocks()) {
+      const uint8_t c = bk.confirmed ? 235 : 110;
+      line(bk.s0, bk.d0, bk.s1, bk.d0, c, 60, c);
+      line(bk.s1, bk.d0, bk.s1, bk.d1, c, 60, c);
+      line(bk.s1, bk.d1, bk.s0, bk.d1, c, 60, c);
+      line(bk.s0, bk.d1, bk.s0, bk.d0, c, 60, c);
+      if (bk.confirmed && bk.side != 0) {
+        line(bk.s0 - 0.3, bk.target, bk.s1 + 0.3, bk.target, 60, 255, 60);
+      }
+    }
     for (const auto & tr : trail_odom_) {
       double ex = 0.0, ey = 0.0;
       odomToEgo(odom, tr.first, tr.second, ex, ey);
@@ -1910,23 +2025,29 @@ private:
           roi_agl_min_ = p.as_double();
         } else if (n == "roi_agl_max") {
           roi_agl_max_ = p.as_double();
-        } else if (n == "frenet.arrive_before_m") {
-          frenet_params_.arrive_before_m = std::max(1.5, p.as_double());
-        } else if (n == "frenet.hold_near_m") {
-          frenet_params_.hold_near_m = std::max(0.6, p.as_double());
-        } else if (n == "frenet.wrap_after_m") {
-          frenet_params_.wrap_after_m = std::max(1.0, p.as_double());
-        } else if (n == "frenet.keep_behind_m") {
-          frenet_params_.keep_behind_m = std::max(0.2, p.as_double());
-        } else if (n == "avoid.margin_m") {
-          lat_margin_ = p.as_double();
-          frenet_params_.margin_m = lat_margin_;
-        } else if (n == "avoid.max_offset_m") {
-          lat_max_offset_ = p.as_double();
-          frenet_params_.max_offset_m = lat_max_offset_;
-        } else if (n == "avoid.range_m") {
-          lat_target_range_ = p.as_double();
-          frenet_params_.range_m = lat_target_range_;
+        } else if (n == "frenet.enable") {
+          frenet_params_.enable = p.as_bool();
+        } else if (n == "frenet.cluster_link_m") {
+          frenet_params_.cluster_link_cells = linkCells(p.as_double());
+        } else if (n == "avoid.lookahead_m") {
+          tracker_params_.lookahead = std::max(1.5, p.as_double());
+          tracker_params_.lookahead_min = std::min(tracker_params_.lookahead, 3.2);
+        } else if (n == "avoid.k_cte") {
+          tracker_params_.k_cte = std::max(0.0, p.as_double());
+        } else if (n == "avoid.steer_predict_s") {
+          tracker_params_.predict_s = std::clamp(p.as_double(), 0.0, 1.0);
+        } else if (n == "avoid.k_i_deg") {
+          track_ki_deg_ = std::max(0.0, p.as_double());
+        } else if (n == "avoid.i_max_deg") {
+          track_i_max_deg_ = std::max(0.0, p.as_double());
+        } else if (n == "stop.predict_m") {
+          stop_predict_m_ = std::max(1.0, p.as_double());
+        } else if (n == "preview.enable") {
+          preview_enable_ = p.as_bool();
+        } else if (n == "preview.zone_dist_m") {
+          preview_zone_dist_m_ = std::max(0.0, p.as_double());
+        } else if (applyFrenetParam(p)) {
+          //  표에 있는 계획기 값 (frenetDoubleParams / frenetIntParams)
         } else if (n == "costmap.inflation_radius") {
           costmap_params_.inflation_radius = p.as_double();
         } else if (n == "mppi.weight_path") {
@@ -2028,29 +2149,20 @@ private:
   std::string cones_topic_ = "/lidar_cones";
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr cones_pub_;
   ConeStats cone_stats_;         // 마지막 검출 통계 (diag 12~14열)
-  //  ★회피 방향 결정 [2026-09-11]★
-  double lat_target_range_ = 8.0, lat_cone_half_ = 0.20, lat_margin_ = 0.30;
-  double lat_max_offset_ = 1.35;  // 회피 목표 상한 (횡벽과 ★다른 값★)
-  double lat_inflation_ = 0.40;   // 코스트맵 팽창반경 (같은 값을 두 곳에 둔다)
-  double lat_pass_x_ = 0.90;      // 이보다 가까우면 "지나쳤다"
-  double lat_preview_x_ = 3.0;    // 이 안에서 다음 콘 목표를 미리 건다
-  double lat_freeze_x_ = 4.0;     // 이보다 가까우면 통과 y 를 줄이지 않는다
-  bool   geometric_steer_ = true; // Frenet 경로 퓨어 퍼슛. 정지는 그 조향의 전방 2.2 m
-  double geo_k_psi_ = 1.0, geo_k_cte_ = 1.0, geo_v_min_ = 1.0;
-  double geo_hold_e_m_ = 0.30;    // |e| 이상이면 헤딩항이 CTE 를 역전 못 함
-  double lat_target_slew_mps_ = 1.5;
-  double lat_target_filt_ = 0.0;
-  int    lat_last_side_ = 0;      // 직전 콘을 어느 쪽으로 지났나 (−1 우 / +1 좌)
-  bool   lat_latched_ = false;   // 이 장애물에 대해 쪽을 정했나
-  double lat_locked_ox_ = 0.0;   // 붙들고 있는 콘까지의 거리 (늘면 새 콘)
-  double lat_locked_target_ = 0.0;  // freeze 한 통과 y
-  bool   lat_target_frozen_ = false;
-  bool   lat_previewing_ = false;
-  int    lat_lost_n_ = 0;        // 연속 미검출 틱 (깜빡임과 통과를 가른다)
-  int    lat_lost_max_ = 6;      // 이만큼 연속이어야 "지나갔다"
-  double lat_new_cone_dx_ = 1.5; // 이만큼 멀어지면 다른 콘으로 본다
-  int    cone_min_cells_ = 20;   // 군집 최소 셀 수 (잡음 제거)
-  double cone_y_max_ = 3.0;      // 이보다 옆의 콘은 무시
+  //  ★[2026-09-28] 블록 계획기 · 경로 추종★ (값의 뜻은 declareParameters)
+  double lat_pass_x_ = 0.90;      // /lidar_cones·진단: 이보다 가까운 콘은 뺀다
+  double cone_y_max_ = 4.0;       // /lidar_cones·진단: 기준선 |d| 이보다 옆은 뺀다
+  bool   geometric_steer_ = true; // Frenet 경로 순수추종. 정지는 그 경로를 따라간 예측
+  TrackerParams tracker_params_;
+  TrackIntegrator track_integ_;   // 조향 편향 적분 (재무장마다 0)
+  double track_ki_deg_ = 2.0;
+  double track_i_max_deg_ = 3.0;
+  double track_i_gate_m_ = 0.5;
+  double stop_predict_m_ = 3.0;
+  bool   preview_enable_ = true;
+  double preview_zone_dist_m_ = 25.0;
+  double preview_t_ = 0.0;        // 마지막으로 ★성공한★ 미리보기 시각 [steady s] (0 = 없음)
+  double last_permit_t_ = 0.0;    // 마지막으로 조종권이 있던 시각 [steady s]
   int    n_cones_ahead_ = 0;     // 진단용 — 앞에 콘이 몇 개 보이나
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr diag_pub_;
   double steer_filt_deg_ = 0.0;

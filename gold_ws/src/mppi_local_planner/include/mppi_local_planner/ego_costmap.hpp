@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <cstdint>
 #include <mutex>
 #include <vector>
 
@@ -86,12 +87,25 @@ struct CostmapParams
 struct CostmapSnapshot
 {
   std::vector<float> cost;
+  //  ★[2026-09-28] 점유 셀 (1 = 이번 스캔의 라이다 점)★ cost 와 같은 스캔이다.
+  //  장애물 군집은 이것으로 만든다 — 치사층은 차 반폭(0.62 m)만큼 부풀려져
+  //  1.2 m 안의 콘이 한 덩어리가 되고 가장자리도 0.62 m 바깥에 선다.
+  std::vector<uint8_t> occ;
   int cells_x = 0;
   int cells_y = 0;
   double size_x = 0.0;
   double size_y = 0.0;
   double resolution = 0.1;
   bool valid = false;
+
+  bool occupied(int ix, int iy) const
+  {
+    if (ix < 0 || ix >= cells_x || iy < 0 || iy >= cells_y || occ.empty()) {
+      return false;
+    }
+    return occ[static_cast<size_t>(iy) * static_cast<size_t>(cells_x) +
+               static_cast<size_t>(ix)] != 0;
+  }
 
   double getCost(double x, double y) const
   {
@@ -148,6 +162,7 @@ private:
   int cells_y_;
   std::vector<float> occupancy_;  // soft occupancy [0,1] with temporal decay
   std::vector<float> cost_;       // inflated cost derived from occupancy_
+  std::vector<uint8_t> occ_bin_;  // the occupancy that built cost_ (snapshot 용)
   mutable std::mutex mutex_;
   bool has_data_ = false;
 };

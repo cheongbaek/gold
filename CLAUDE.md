@@ -387,8 +387,11 @@ gold_ws/src/
                  읽는다. 방 비밀번호는 PC 이름. GUI 없음(구독 전용)
 
   mppi_local_planner/   ★라바콘 회피 — /lstatus 가 'L' 인 구간만 몬다★ (C++)
-    src/mppi_local_planner_node.cpp   게이트·조종권·지령층 (1203줄)
-    src/mppi_controller.cpp           플래너 본체 (1/5카 원본 그대로)
+    src/mppi_local_planner_node.cpp   게이트·조종권·지령층·★인계 전 미리보기★
+    src/frenet_planner.cpp            ★블록 계획기★ — 쪽 결정 + 5차 다항식 d(s) (4.9절)
+    src/cone_detector.cpp             점유 셀 군집 (치사층이 아니다)
+    include/.../path_tracker.hpp      순수추종 + 편향 적분 + 경로 추종 정지 예측
+    src/mppi_controller.cpp           MPPI (geometric_steer 면 진단 비용만)
     src/ego_costmap.cpp
     config/params.yaml   ★최상단 cruise_pulse 하나로 순항속도를 정한다★
 
@@ -1009,6 +1012,10 @@ S 지점 : driving 이 세운다 ·  /lstatus = 'S' → mppi 침묵
   급정지한다. 재수렴 중에는 이탈 문턱 6.0 m, 속도 상한 2펄스, 적분 금지.
 - ★[2026-09-07 구현] 속도를 미리 맞춰 준다★ — L 구간 진입 **5 m 앞**부터
   종점과 같은 서행 로직(`lidar_approach`)으로 **2펄스까지 내려놓고** 이양한다.
+  ★[2026-09-28] 이미 느리면 리니어를 물지 않는다★ 종전 문턱(6.4 km/h 체결 · 10.9 km/h
+  해제)이 엇갈려 1단이 **50 ms 마다 왕복**했다(실측 16회). 이제 체결은
+  `해제선 + a1 × 최소물림 = 13.2 km/h` 초과이면서 코스트로 못 줄일 때만, **L 구간
+  하나에 한 번**, 물면 0.5 s 유지 (`lidar_brake_need`). GPS 속도를 모르면 안 문다.
   원래 근거였던 "중간 단계를 두면 '누가 지금 속도를 정하는가'가 흐려진다" 는,
   **양쪽이 똑같이 2펄스이면 성립하지 않는다** — 정할 것이 없어지기 때문이다.
   복귀는 종전대로 `REJOIN_PULSE_MAX(2)` → CTE 0.5 m 에서 기본속도로 자연 복귀하고,
@@ -1108,6 +1115,41 @@ GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'�
 
 > ⚠️ **아두이노 코드는 이 저장소에 없다** — `~/Arduino/joyled.ino` (사용자 지시).
 > 외부 라이브러리 **`LiquidCrystal I2C`** 하나가 필요하고, Mega 의 I2C 는 **D20/D21** 이다.
+
+---
+
+### 4.9 ★라바콘 회피 — 블록 계획기 (mppi_local_planner)★ [2026-09-28]
+
+**오늘 네 주행이 전부 섰다** — L 구간 진입 4~5초 만에 stop latch → 리니어 2단,
+사람이 수동으로 돌릴 때까지 그대로였다(`white1/CHANGELOG.md` 2026-09-28 에 로그 근거).
+원인은 ① 계획을 인계 순간에야 시작(라이다는 이미 15.7 m 앞 둘째 줄을 봤다)
+② 콘 4.5 m 앞에서 통과 오프셋에 닿으려 해 R 1.2 m 곡선(못 따라가 코앞에서 꺾고 크게 돈다)
+③ 횡폭 1.11 m 캡(차선 반폭 모델) ④ 치사층 모서리를 콘으로 보고 여유를 이중으로 더해
+쪽이 뒤집힘, 그리고 정지 판정이 '지금 조향 고정 원호' 라 서면 영영 안 풀렸다.
+
+| 층 | 무엇 | 어디 |
+|---|---|---|
+| 검출 | ★점유 셀★ 0.3 m 군집 (치사층 아님) | `cone_detector.cpp` |
+| 블록 | 진행 2.5 m · 가로 1.9 m 안은 한 덩어리. 기억은 GPS 기준선 (s,d) | `frenet_planner.cpp observe` |
+| 쪽 | ★궤적 기준 치우친 쪽의 반대★(사용자) → 가운데면 이웃 블록 상대 위치 → 앞 블록 반대 → 차가 있는 쪽. 앞범퍼 5 m 에서 확정 | `desiredSide` · `decideSides` |
+| 경로 | 뒤차축이 블록 **앞면 − 0.3 ~ 뒷면 + 0.3** 에서 통과 d. 5차 다항식, 남은 거리 전부, 복귀 R 8 m | `makeGroups` · `buildPath` |
+| 폭 | ★\|d\| ≤ 3.0 m★ (GPS 궤적 ± 3 m, 사용자) | `avoid.max_offset_m` |
+| 미리보기 | 다음 L 구간 25 m 안(또는 조종권 회수 20 s 안)이면 **발행 없이** 계획만. 인계 때 이어받음 | 노드 `runPreview` · `rearmReference` |
+| 추종·정지 | 순수추종 3.2 m + 편향 적분 · 정지 = ★그 경로를 따라갔을 때★ 3.0 m 안 충돌 | `path_tracker.hpp` |
+
+**'앞면 − 0.3' 이면 충분한 이유** — 차체는 경로 접선을 따라 서 있고, 통과 d 로 올라가며
+평평해지는(오목한) 곡선의 접선은 곡선보다 바깥이다. 뒤차축이 앞면에서 통과 d 에 닿으면
+앞범퍼는 이미 그 바깥이다. 빠져나올 때도 뒷면까지만 지키면 뒤 오버행은 반대로 돈다.
+이것이 둘째 줄까지의 교대 거리를 1.25 m 늘려 준다(8 m 간격 교대 R 3.2 → 4.4 m).
+
+**속도는 하나도 바꾸지 않았다** — `cruise_pulse 2` · `dodge_pulse 2` · 저속 킥 그대로.
+
+> ⚠️ **실차 미검증** — 모의(실제 코스트맵·계획기·추종기, 조향 불감시간·슬루·불감대)
+> 20장면 충돌 0, ROS 폐루프(실제 노드 + 가짜 차량) 통과까지다. 두 시험 도구는
+> `mppi_local_planner/test/` 에 있다(`avoid_sim.cpp` · `ros_smoke.py` — ★ROS 시험은
+> ROS_DOMAIN_ID=77 로, 정리는 PID 로★. 실차 스택은 도메인 7). 실차에서 먼저 볼 것:
+> mppi 로그의 `🚧 블록 #n → 쪽 (근거)` · `🛞 조종권 인수 — 미리보기 이어받음` ·
+> `ld_y` 가 `ld_target_y` 를 따라가는가 · 콘 옆 실제 여유.
 
 ---
 
@@ -1638,6 +1680,8 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | `/lstatus` 기록 열 · HUD 표시 | `record.py` · `hud.py` |
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
 | **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
+| **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
+| **라바콘 회피 블록 계획기 · ±3 m · 인계 전 미리보기 (4.9) [2026-09-28]** | `mppi_local_planner/src/frenet_planner.cpp` · `cone_detector.cpp` · `path_tracker.hpp` · 노드 `runPreview` · `params.yaml` 회피 절 |
 | IMU 중력축 투영 (4.7절) [2026-09-09] | `driving.py cb_imu` · `solve_imu_axis` |
 | **고속 조향 발산 — 언더스티어 항 속도 클램프 (4.1b) [2026-09-13]** | `driving.py steer_command` · `UNDERSTEER_V_CLAMP_PULSE` |
 | **LFD ω_n · 곡률캡 K 속도 스케줄 (4.1) [2026-09-13]** | `driving.py speed_blend` · `lfd_omega_at` · `curve_cap_k_at` · `LFD_MAX_M` 9.1 → **11.3** |
@@ -2743,6 +2787,9 @@ ping -c2 192.168.6.11
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |
 | **헤딩 출처** | **mppi = OS1 자체 IMU(`params.yaml` 의 `imu_topic`·`use_os1_imu`·`imu_yaw_sign`) / driving = 외장 iAHRS(`/imu`)** — ★섞지 않는다★. `one_launch.py` 는 mppi 에 IMU 를 **넘기지 않는다**(넘기면 `use_os1_imu` 가 무시하고 경고만 남는다). mppi 의 IMU 설정 단일 소유자는 `params.yaml` [2026-09-12] |
 | **조이스틱 프로토콜** [2026-09-16] | `~/Arduino/joyled.ino` **+** `nxde/joyread.py`(파싱·영점·환산) **+** `nxde/arduino.py`(포트·게이트·LCD 송신) — **필드를 늘리면 세 곳을 함께 고친다.** 지금은 `J,x1,y1,k1,x2,y2,k2,swa,swb`(9토큰) 이고 구 `joy.ino`(12토큰)도 받는다. `nxde/joystick.py`(점검 도구)도 **같은 `joyread` 를 쓴다** — 그래서 "점검에서는 맞는데 실차에서 다르다" 가 생기지 않는다. LCD 줄 `D,<on>,<pulse>,<steer>,<kmh>` 는 `arduino` 와 `joystick` 두 곳이 쓰지만 **둘은 동시에 띄우지 않는다**(포트가 하나다) |
+| **회피 폭** [2026-09-28] | mppi `avoid.max_offset_m`(3.0) **+** `mppi.max_lateral_offset`(3.2)·`lateral_hard`(3.5) — **벽은 계획 폭보다 바깥이어야 한다.** 같으면 계획과 벽이 같은 자리에서 싸운다 |
+| **회피 추종·정지** [2026-09-28] | `mppi_local_planner/include/.../path_tracker.hpp` 하나를 노드와 모의실험(`test/avoid_sim.cpp`)이 같이 쓴다 — 노드에 식을 따로 적지 말 것. 계획기·추종기를 고치면 그 모의실험과 `test/ros_smoke.py` 를 다시 돌린다(빌드 명령은 각 파일 머리말) |
+| **미리보기 ↔ `/lidar_ref[3]`** [2026-09-28] | mppi 미리보기는 driving 의 `zone_left`(다음 L 구간까지 호길이)로 켜진다. **그 열의 뜻을 바꾸면 미리보기가 조용히 꺼진다** |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
 
