@@ -26,6 +26,7 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
         내려갈 때까지다. ★그래서 인지 결과 창은 기본으로 안 띄운다★
         (tl_show_window 기본 false) — 볼 때만 tl_show_window:=true 로 켠다.
     white1/hud          차량 상면도 HUD (구독 전용)               (use_hud)
+    nxde/tts            domichat 채팅방 읽어 주기 ★ROS 노드 아님★  (use_tts)
     ouster_ros/os_driver  OS1-32 라이다 → /ouster/points           (use_lidar)
     mppi_local_planner  ★라바콘 회피 — CSV terrain 열이 'L' 인 구간만★ (use_lidar)
 
@@ -232,6 +233,7 @@ def generate_launch_description():
     use_mapping = LaunchConfiguration('use_mapping')
     use_sound   = LaunchConfiguration('use_sound')
     use_hud     = LaunchConfiguration('use_hud')
+    use_tts     = LaunchConfiguration('use_tts')
 
     args = [
         DeclareLaunchArgument(
@@ -253,6 +255,13 @@ def generate_launch_description():
             'use_hud', default_value='true',
             description='white1 hud 계기판(상면도 + 게이지). 구독만 하므로 제어에 '
                         '영향이 없다. DISPLAY 없는 SSH 면 false'),
+        DeclareLaunchArgument(
+            'use_tts', default_value='true',
+            description='nxde 의 tts 도구(domichat 채팅방 읽어 주기). ★ROS 노드가 아니고 '
+                        '토픽을 주고받지 않는다★ — 제어에는 전혀 영향이 없다. 인터넷과 '
+                        'edge-tts(pip install --user edge-tts)가 필요하고, 없으면 이 '
+                        '프로세스만 시작 직후 종료된다(나머지 런치는 그대로 돈다). '
+                        '망이 없는 현장이면 false'),
         DeclareLaunchArgument(
             'gps_port', default_value=gps_dev,
             description='GPS 시리얼 경로 override (기본: udev 링크 → VID/PID 스캔)'),
@@ -653,6 +662,21 @@ def generate_launch_description():
         condition=IfCondition(use_sound),
     )
 
+    # ═══════════════════════════════════════════════════════════════════
+    #  [안내] domichat TTS — nxde 패키지, ★ROS 노드가 아니다★ (tts.py 헤더)
+    #    토픽을 주고받지 않으므로 제어에는 전혀 영향이 없다. respawn 을 걸지
+    #    않는다 — edge-tts 가 없으면 시작 직후 종료되는데, respawn 이 있으면
+    #    그 실패를 영원히 반복해서 로그만 채운다(sound 와 같은 이유로 끔).
+    # ═══════════════════════════════════════════════════════════════════
+    tts = Node(
+        package='nxde',
+        executable='tts',
+        name='tts_node',
+        output='screen',
+        additional_env=NODE_ENV,
+        condition=IfCondition(use_tts),
+    )
+
     # 구독 전용 계기판. respawn 없음 — 창을 닫으면 끝이고 주행은 그대로다.
     hud = Node(
         package=package_name,
@@ -697,6 +721,7 @@ def generate_launch_description():
     return LaunchDescription(args + [
         # 음성 먼저 — '런치했다'는 안내가 하드웨어 탐색보다 늦으면 의미가 없다
         sound,
+        tts,
         # 하드웨어
         arduino,
         iahrs,
