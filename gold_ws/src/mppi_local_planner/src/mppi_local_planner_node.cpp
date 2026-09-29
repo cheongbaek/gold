@@ -309,7 +309,7 @@ private:
     // ══════════════════════════════════════════════════════════════════
     declare_parameter<double>("avoid.range_m", 17.5);      // 차체 x 이 안의 점유 군집만
     declare_parameter<double>("avoid.max_offset_m", 3.0);  // ★GPS 궤적 ± 3 m★ (사용자)
-    declare_parameter<double>("avoid.pass_gap_m", 0.45);   // 차체 옆면 ↔ 장애물 표면
+    declare_parameter<double>("avoid.pass_gap_m", 0.75);   // 차체 옆면 ↔ 장애물 표면
     //  아래 둘은 /lidar_cones·진단 최근접 콘을 고르는 필터다(계획과 무관).
     declare_parameter<double>("avoid.pass_x_m", 0.90);
     declare_parameter<double>("avoid.cone_y_max_m", 4.0);
@@ -356,6 +356,9 @@ private:
     declare_parameter<double>("frenet.on_path_d_m", 0.30);
     declare_parameter<double>("frenet.on_path_yaw_rad", 0.15);
     declare_parameter<double>("handover.ref_stale_s", 0.5);
+    //  ★GPS 안테나가 라이다 원점보다 이만큼 앞이다 [2026-09-29]★ driving 의 CTE 는 안테나
+    //  자리라, 헤딩 ψ 에서 라이다 원점의 횡위치는 CTE − 이 값·sin ψ 다(근거는 imuCallback).
+    declare_parameter<double>("handover.gps_antenna_x_m", 0.6);
     declare_parameter<bool>("handover.use_gps_ref", true);
     //  y(CTE) 만 GPS 로 덮는다. yaw 를 덮으면 외장 iAHRS 헤딩이 다시 들어온다.
     declare_parameter<bool>("handover.use_gps_yaw", true);
@@ -712,6 +715,7 @@ private:
     preview_enable_  = get_parameter("preview.enable").as_bool();
     preview_zone_dist_m_ = std::max(0.0, get_parameter("preview.zone_dist_m").as_double());
     ref_stale_s_  = get_parameter("handover.ref_stale_s").as_double();
+    gps_antenna_x_m_ = get_parameter("handover.gps_antenna_x_m").as_double();
     use_gps_ref_  = get_parameter("handover.use_gps_ref").as_bool();
     use_gps_yaw_  = get_parameter("handover.use_gps_yaw").as_bool();
     lstatus_topic_ = get_parameter("handover.lstatus_topic").as_string();
@@ -992,11 +996,11 @@ private:
         //  ★GPS 기준선이 살아 있으면 y·yaw 는 곧바로 그 값으로 둔다★ 0 으로 두면
         //  IMU 콜백이 덮기 전 첫 계획 틱이 차를 기준선 위·정면으로 보고 콘을
         //  CTE·헤딩오차만큼 어긋난 자리에 찍는다 — 그것이 블록을 부풀렸다.
-        if (ref_fresh && use_gps_ref_) {
-          odom_pose_.y = ref_cte_;
-        }
         if (ref_fresh && use_gps_yaw_) {
           odom_pose_.yaw = ref_herr_;
+        }
+        if (ref_fresh && use_gps_ref_) {
+          odom_pose_.y = ref_cte_ - gps_antenna_x_m_ * std::sin(odom_pose_.yaw);   // imuCallback 과 같은 식
         }
       }
     }
@@ -1337,7 +1341,17 @@ private:
     odom_pose_.x += v * std::cos(odom_pose_.yaw) * dt;
 
     if (use_gps_ref_ && ref_fresh) {
-      odom_pose_.y = ref_cte_;      // + = 중심선 왼쪽. 헤딩과 같은 경로 기준
+      //  ══════════════════════════════════════════════════════════════════
+      //  ★[2026-09-29] CTE 는 ★안테나★ 자리다 — 라이다 원점으로 되돌린다★
+      //  ══════════════════════════════════════════════════════════════════
+      //  driving 은 GPS 를 뒤차축으로 투영하지 않는다(그 파일 '이 차는 GPS 가 앞차축
+      //  위에 있다' 주석). 그 값을 라이다 원점의 y 로 쓰면 헤딩 ψ 만큼 틀어질 때마다
+      //  콘이 L·sin ψ 옆으로 옮겨 보인다. 9/28 23:03·23:05 실주행 .cones.csv 회귀:
+      //  콘 13개 1080관측 d_obs = d + L·sin ψ → ★L = 0.54~0.72 m★ (잔차 0.172 → 0.138)
+      //  첫 줄 안쪽 콘이 헤딩 −8° → +19° 사이에 +0.08 → +0.35 m 로 '움직였고',
+      //  그것이 인계 뒤 목표를 +1.20 → +1.54 로 늦게 키워 차가 0.4 m 뒤처진 원인이다.
+      //  0.6 m 는 틀려도 손해가 없는 값이다(모의: 실제 0 이면 같고, 0.6·1.25 면 낫다).
+      odom_pose_.y = ref_cte_ - gps_antenna_x_m_ * std::sin(odom_pose_.yaw);
       gps_ref_live_ = true;
     } else {
       gps_ref_live_ = false;
@@ -1630,9 +1644,11 @@ private:
         current_pose, last_frenet_path_, tracker_params_, v_trk,
         last_pub_steer_deg_ * M_PI / 180.0) * 180.0 / M_PI;
       const double e_path = current_pose.y - last_frenet_path_.sample(current_pose.x).d;
+      //  ★곧은 경로를 곧게 따라갈 때만 쌓는다★ (steadyTracking 주석 — 회피 중 누적 +2.1°)
       raw_steer_deg += track_integ_.update(
         e_path, 1.0 / std::max(1.0, control_frequency_), track_ki_deg_,
-        track_i_max_deg_, track_i_gate_m_, v_trk > 0.3 && !stop_latched_);
+        track_i_max_deg_, track_i_gate_m_,
+        v_trk > 0.3 && !stop_latched_ && steadyTracking(last_frenet_path_, current_pose.x));
       const double max_deg = vehicle_params_.max_steering_angle * 180.0 / M_PI;
       raw_steer_deg = std::clamp(raw_steer_deg, -max_deg, max_deg);
     }
@@ -1802,7 +1818,11 @@ private:
       return;
     }
     last_frenet_path_ = frenet_planner_->plan(pose, snap, nowSeconds(), 0.0);
-    logPlannerEvents(true);
+    if (near_zone) {
+      logPlannerEvents(true);
+    } else {
+      frenet_planner_->takeEvents();   // 기억만 잇는 중 — 구간 밖 물체의 쪽 결정은 로그로 안 낸다
+    }
     preview_t_ = nowSeconds();
     if (near_zone) {
       RCLCPP_INFO_THROTTLE(
@@ -2135,6 +2155,7 @@ private:
   //  ★GPS 기준선 [2026-09-11]★ (odom_mutex_ 가 지킨다)
   std::string ref_topic_ = "/lidar_ref";
   double ref_stale_s_ = 0.5;
+  double gps_antenna_x_m_ = 0.6;   // 안테나가 라이다 원점보다 앞 [m] (CTE → 라이다 원점 y)
   bool   use_gps_ref_ = true;
   bool   use_gps_yaw_ = true;   // 신선한 heading_err 로 yaw 를 덮음 (경로 방위 기준)
   bool   use_os1_imu_ = true;

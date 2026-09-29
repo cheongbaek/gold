@@ -16,7 +16,7 @@
 > 5. 정지는 **그 경로를 따라갔을 때** 차 중심선이 치사 원반에 드는가(3.0 m 예측).
 >    추종·정지 코드는 `include/mppi_local_planner/path_tracker.hpp` 하나다.
 >
-> 모의(`test/avoid_sim.cpp`, 20장면)와 ROS 폐루프(`test/ros_smoke.py`) 결과는
+> 모의(`test/avoid_sim.cpp`, 23장면 — 9/28 실주행 배치 재구성 포함)와 ROS 폐루프(`test/ros_smoke.py`) 결과는
 > `white1/CHANGELOG.md` 2026-09-28 항.
 
 > **먼저 읽을 것** — `include/mppi_local_planner/kasa_units.hpp`.
@@ -163,7 +163,8 @@ ros2 launch mppi_local_planner one_launch.py flip_lidar_xy:=false
 - `cruise_pulse` — 기본 2펄스 ≈ 6.4 km/h. 정지 재출발에서 4펄스는 피한다.
 - `avoid.max_offset_m` — 회피 폭 (GPS 궤적 ± 3.0 m). ★`mppi.max_lateral_offset`·
   `mppi.lateral_hard` 는 이보다 바깥에 둔다★ (같으면 계획과 벽이 같은 자리에서 싸운다).
-- `avoid.pass_gap_m` — 차체 옆면 ↔ 콘 표면 여유 (0.45). 키우면 교대가 빡빡해진다.
+- `avoid.pass_gap_m` — 차체 옆면 ↔ 콘 표면 여유 (**0.75**, [2026-09-29] 0.45 에서 +30 cm). 키우면 교대가 빡빡해진다.
+- `handover.gps_antenna_x_m` — GPS 안테나가 라이다 원점보다 앞선 거리 (0.6, 회귀값). CTE 를 라이다 원점으로 되돌린다.
 - `frenet.hold_pre_m` / `hold_post_m` — 블록 앞뒤로 통과 d 를 지키는 거리 (0.3).
 - `frenet.kappa_max` — 이보다 굽는 진입이면 확정 전 블록의 쪽을 반대로 검토 (0.34 ≈ 조향 상한).
 - `avoid.lookahead_m` — 순수추종 앞 점 (3.2). 줄이면 여유가 늘고 헤딩이 커진다.

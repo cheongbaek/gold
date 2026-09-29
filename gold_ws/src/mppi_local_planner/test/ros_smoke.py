@@ -30,6 +30,7 @@ CONES = [(8.5, -0.71), (8.5, -0.35), (8.5, 0.01), (16.7, 0.45), (16.7, 1.01), (1
 S_L_START, S_L_END = 0.0, 22.0
 PAUSE_AT = float(sys.argv[2]) if len(sys.argv) > 2 else None
 PAUSE_S = 2.0
+ANT_X = 0.6        # GPS 안테나 ↔ 라이다 원점 [m] (9/28 실주행 회귀 0.54~0.72)
 L = 1.25
 
 
@@ -135,7 +136,9 @@ class Fake(Node):
         self.pub_ls.publish(String(data=self.lstatus))
         zone_left = (S_L_START - self.X) if self.X < S_L_START else float('nan')
         valid = 1.0 if t > 3.0 else 0.0
-        self.pub_ref.publish(Float64MultiArray(data=[self.Y, math.degrees(self.psi), valid, zone_left]))
+        #  실차처럼 ★안테나 자리★ 의 CTE 를 낸다 (안테나가 라이다보다 ANT_X 앞 — 노드가 되돌린다)
+        cte_ant = self.Y + ANT_X * math.sin(self.psi)
+        self.pub_ref.publish(Float64MultiArray(data=[cte_ant, math.degrees(self.psi), valid, zone_left]))
         self.pub_enc.publish(Int32(data=int(round(2 * self.v / 0.884))))
         self.publish_cloud()
         # metrics (body rectangle vs cone circles r=0.12)

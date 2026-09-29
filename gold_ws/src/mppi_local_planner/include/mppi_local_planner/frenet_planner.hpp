@@ -34,7 +34,7 @@ struct FrenetPlannerParams
 
   // ── 통과 ──
   double max_offset_m = 3.0;      // |d| 상한 = GPS 궤적 ± 3 m (사용자 지시)
-  double pass_gap_m = 0.45;       // 차체 옆면 ↔ 장애물 표면
+  double pass_gap_m = 0.75;       // 차체 옆면 ↔ 장애물 표면 [2026-09-29 0.45 → 0.75]
   double hold_pre_m = 0.30;       // 장애물 앞면 이만큼 앞에서 통과 d 에 도착 (뒤차축 기준)
   double hold_post_m = 0.30;      // 장애물 뒷면을 이만큼 지날 때까지 유지
   double bias_deadband_m = 0.15;  // 블록 중심 |d| 가 이 안이면 '가운데'

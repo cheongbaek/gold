@@ -51,6 +51,27 @@ struct TrackIntegrator
   }
 };
 
+// ★[2026-09-29] 적분은 '곧은 경로를 곧게 따라갈 때' 만 쌓는다★
+// 9/28 23:05 실주행에서 적분이 회피 기동 중에 +2.1° 까지 쌓였다 — 첫 줄을 비키느라
+// 뒤처진 오차를 편향으로 읽은 것이고, 그 값이 둘째 줄로 넘어가는 반대 조향을 늦췄다.
+// 편향(직진 트림)은 곧은 구간에서만 드러나므로, 지금 자리와 조금 앞이 모두 곧고
+// 기준선과 나란할 때만 쌓는다(통과 오프셋을 지키는 평탄 구간은 여기에 든다).
+inline bool steadyTracking(const FrenetPath & path, double s, double ahead_m = 2.0)
+{
+  if (!path.valid || path.pts.size() < 2) {
+    return false;
+  }
+  constexpr double kKappaMax = 0.04;   // [1/m] R 25 m 보다 곧다
+  constexpr double kSlopeMax = 0.10;   // 기준선과 5.7° 안
+  for (const double ds : {0.0, ahead_m}) {
+    const FrenetPoint p = path.sample(s + ds);
+    if (std::abs(p.kappa) > kKappaMax || std::abs(p.d_s) > kSlopeMax) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // 기준선 (s,d) 를 평면으로 보고 자세를 v·dt 만큼 굴린다.
 inline OdomPose advancePose(const OdomPose & p, double v, double steer, double dt, double L)
 {

@@ -891,7 +891,12 @@ FrenetPath FrenetPlanner::plan(
   if (g0 && g0->members.size() == 1) {
     Block & b = mem_[static_cast<size_t>(g0->members.front())];
     const double k0 = entryKappa(start, *g0);
-    if (k0 > params_.kappa_max && !b.committed && !b.feas_locked) {
+    //  ★반대쪽이 ±3 m 안일 때만 본다★ 9/28 23:03 : 폭 밖의 쪽으로 바꿨다가 decideSides
+    //  가 같은 틱에 되돌렸다(⚠️ → ↔️). 갈 수 없는 쪽은 후보가 아니다.
+    const double clear = clearance();
+    const bool other_ok = (b.side > 0) ? (b.box.d0 - clear >= -params_.max_offset_m)
+                                       : (b.box.d1 + clear <= params_.max_offset_m);
+    if (k0 > params_.kappa_max && !b.committed && !b.feas_locked && other_ok) {
       b.side = -b.side;
       std::vector<Bound> alt_bounds;
       std::vector<Group> alt = makeGroups(&alt_bounds);

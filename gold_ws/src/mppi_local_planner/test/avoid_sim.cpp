@@ -47,6 +47,7 @@ struct Scenario
   bool preview = true;
   double steer_bias_deg = 0.0;
   double yaw_err_deg = 0.0;
+  double gps_la = 0.6;        // 안테나가 라이다보다 이만큼 앞 (실주행 회귀 0.54~0.72 m)
   unsigned seed = 1;
 };
 
@@ -137,6 +138,8 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
   tp.predict_s = env("PRED", tp.predict_s);
   tp.k_cte = env("KCTE", tp.k_cte);
   const double ki = env("KI", 2.0), i_max = env("IMAX", 3.0);
+  const double gps_la = env("GPS_LA", sc.gps_la), node_la = env("NODE_LA", 0.6);
+  const bool int_gate = env("INT_GATE", 1.0) > 0.5;
   TrackIntegrator integ;
   const double L = 1.25, dt = 0.05;
   double X = sc.s_start, Y = sc.d_h + std::tan(sc.psi_h_deg * M_PI / 180) * (sc.s_start - sc.s_handover);
@@ -160,6 +163,9 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
     OdomPose pose;
     pose.x = X; pose.y = Y + 0.02 * nd(rng);
     pose.yaw = psi + (sc.yaw_err_deg + 0.3 * nd(rng)) * M_PI / 180;
+    //  ★GPS 안테나가 라이다(뒤차축)보다 GPS_LA 앞에 있다★ driving 의 CTE 는 안테나 자리다.
+    //  NODE_LA 는 노드가 그것을 뒤차축으로 되돌리는 보정 (둘이 같으면 오차 0).
+    pose.y += (gps_la - node_la) * std::sin(psi);
     double cmd_deg = 0.0;
     if (!permitted) {
       // driving holds the approach line; mppi previews (new) or is silent (old)
@@ -181,7 +187,8 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
     double raw = purePursuitSteer(pose, path, tp, v, last_pub * M_PI / 180) * 180 / M_PI;
     {
       const double e = pose.y - path.sample(pose.x).d;
-      raw += integ.update(e, dt, ki, i_max, 0.5, v > 0.3 && !latched);
+      raw += integ.update(e, dt, ki, i_max, 0.5,
+                          v > 0.3 && !latched && (!int_gate || steadyTracking(path, pose.x)));
       raw = std::clamp(raw, -22.9, 22.9);
     }
     // filterSteer (node): LPF 0.7 + slew 36 deg/s
@@ -264,6 +271,18 @@ int main(int argc, char ** argv)
     s.name = "today_nopreview"; s.preview = false; s.steer_bias_deg = 0; S.push_back(s);
     s.name = "today_fast"; s.preview = true; s.v = 1.77; S.push_back(s);
     s.name = "today_yawerr"; s.v = 1.3; s.yaw_err_deg = 2.0; S.push_back(s);
+  }
+  {  // ★9/28 23:03 · 23:05 실주행 배치 재구성★ (.cones.csv 를 경로 좌표로 옮긴 콘 중심)
+    //  실측 차체↔콘 중심 최소 간격: 230305 첫 줄 안쪽 0.21 · 둘째 줄 0.55 /
+    //                              230451 첫 줄 안쪽 0.48 · 둘째 줄 0.38 m
+    Scenario s; s.v = 1.3;
+    s.name = "real_230305"; s.d_h = -0.61; s.psi_h_deg = -7.5;
+    s.cones = cat(row(8.72, {-0.61, -0.13, 0.34}), row(17.27, {0.19, 0.91, 1.61}));
+    S.push_back(s);
+    s.name = "real_230451"; s.d_h = -0.30; s.psi_h_deg = -7.0;
+    s.cones = cat(row(8.68, {-0.79, -0.32, 0.22}), row(17.27, {0.11, 1.06, 1.70}));
+    S.push_back(s);
+    s.name = "real_230451_bias"; s.steer_bias_deg = -2.4; S.push_back(s);
   }
   {  // user's diagram: right-biased first (--OOO), then left-biased (OOO--)
     Scenario s; s.name = "diagram_RL"; s.d_h = 0.0; s.psi_h_deg = 0.0; s.v = 1.5;
