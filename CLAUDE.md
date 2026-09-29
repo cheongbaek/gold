@@ -14,7 +14,8 @@
 > | 리니어 제동력 실측 | `gold_ws/src/white1/BRAKING.md` |
 > | GPS 헤딩 초기화 실측 | `gold_ws/src/white1/GPS_HEADING.md` |
 > | 정지선/신호등 시험 | `gold_ws/src/white1/STOPLINE_TEST.md` |
-> | 변경 이력·실차 로그 근거 | `gold_ws/src/white1/CHANGELOG.md` (2082줄) |
+> | 변경 이력·실차 로그 근거 | `gold_ws/src/white1/CHANGELOG.md` |
+> | ★**앞으로 할 일 (TO DO LIST)**★ — 흔들림 감소·10펄스 증속의 원인·설계·모의 [2026-09-29] | `gold_ws/src/white1/CHANGELOG.md` **최상단** · 모의 도구 `gold_ws/src/white1/sim/` |
 > | 아두이노 계층 구조·안전장치 | `gold_ws/src/nxde/README.md` |
 > | 라이다 패키지 | `gold_ws/src/lidar/README.md` |
 > | 단위 환산 (C++ 쪽 단일 소유자) | `gold_ws/src/lidar/include/lidar/kasa_units.hpp` |
@@ -351,6 +352,8 @@ gold_ws/src/
       traffic_light.py 신호등 인지 → 빨간불이면 리니어 2단
       camera_model.py / camera_launch.py / ports.py / paths.py
     launch/one_launch.py    통합 런치
+    sim/follow_sim.py · follow_design.py   ★driving 폐루프 모의★ [2026-09-29] — DrivingNode 를
+                     그대로 돌린다(ROS_DOMAIN_ID 77). 빌드 대상 아님. CHANGELOG TODO-1 의 수치를 재현
     gps_data/  ros2bag/  video/  sound/  calibration/
     BOARD_B.md  BRAKING.md  GPS_HEADING.md  STOPLINE_TEST.md  CHANGELOG.md
 
@@ -677,6 +680,9 @@ pot    = 1.26·|δ| + 5.17·v_eff²·tan|δ|/L,  ±40 클램프  ← 부호는 �
 >
 > ⚠️ **L 구간이 없는 경로에서는 재수렴 자체가 일어나지 않는다** — `terrain` 에
 > `L` 이 없으면 이 항목은 이번 주행에서 관측되지 않는다.
+>
+> ⚠️ **[2026-09-29] 10펄스 증속 설계(CHANGELOG TO DO LIST — TODO-1 의 E)는 `LFD_MAX_M` 을
+> 14 m 로 올린다** — 그러면 이 잔류가 ≈1.9 m 로 커진다. L 구간이 있는 경로는 **위 ② 를 먼저** 한다.
 
 ### 4.1d ★조향 트림 자동 추정 — '직진을 만드는 pot' 이 0 이 아니다★ [2026-09-13 저녁]
 
