@@ -77,6 +77,40 @@ ros2 launch white1 one_launch.py \
 | **TODO-3** | 10펄스 종점 접근 — `GOAL_DECEL_M` 5 m 고정으로는 2펄스까지 못 줄인다(≈34 m 필요, ④ 7절) | ★사용자 결정★ (CLAUDE.md 6.3 결정 (a) 를 다시 볼 일) |
 | **TODO-5** | L 구간이 있는 경로 — E(`lfd_max_m` 14) 전에 재수렴 LFD 를 2펄스 기준으로(CLAUDE.md 4.1b-2 ②) | 설계 있음 · 코드 전 |
 | **TODO-6** | 정리 — 옛 빌드 산출물 `install/`·`build/` 의 `white`·`white806`, `nxde/check.py` 가 찍는 `ros2 launch white …` 안내 | 사소 |
+| **TODO-7** | 가상 배기음 — ① 서 있는데 엔코더 허수로 음이 치솟는다 ② A보드가 끊겨도 마지막 속도 음이 계속 운다 ③ 끄는 스위치가 없고 공회전음(−8.9 dBFS)이 주행음(−9.6)보다 크다 (아래 2026-09-30 배기음 항목) | ★사용자 결정★ |
+
+---
+
+## 2026-09-30 — ★가상 배기음이 시작 0.3 s 만에 조용히 꺼지고 있었다★ (드물게 arduino 도 죽을 수 있었다)
+
+- 관측 : 런치 로그에는 `[vess] 가상 배기음 ON` 만 남는데 실제로는 소리가 이어지지 않는 구조였다(코드 점검 + 재현).
+- 원인 : vess 스레드와 arduino 메인 스레드가 둘 다 `rclpy.spin(node)` = ★같은 전역 실행기★ 를 돌렸다.
+  그 실행기의 대기 생성기(`_cb_iter`)는 잠금 없이 하나라 `ValueError: generator already executing` —
+  메인이 대기 중일 때 vess 가 들어가면 vess 가 죽고(`except Exception: pass` 로 조용히), 메인이 콜백 안에서
+  GIL 을 놓은 순간이면 반대로 arduino 가 exit 1 로 죽는다(respawn 없음 → 재런치 전까지 구동 불가).
+  가짜 오디오·도메인 77 재현 : 평상 8/8 vess 사망, 시리얼형 IO 부하에서 arduino 사망 6/12.
+  ★vess.py 머리말은 'arduino 의 실행기에 얹혀살지 않는다' 고 적고 있었다 — 코드만 그러지 않았다.★
+- 고침 (`nxde/vess.py` · `nxde/arduino.py`)
+  - vess 전용 `SingleThreadedExecutor` 로 spin, 멈추면 이유를 로그로 남긴다(종전 `pass`).
+  - `Node('vess', use_global_arguments=False)` — 런치의 `__node:=arduino` 가 이 노드에도 걸려
+    `/arduino` 가 둘이 되고(`Publisher already registered…`), 한쪽이 내려가면 로그가 `/rosout` 으로 안 나갔다.
+  - arduino `main()` 의 `import nxde.vess` 를 spin 의 try 안으로 — import 0.2 s 동안 Ctrl+C 가 오면
+    KeyboardInterrupt 가 정리(`stop_and_close`)를 건너뛰어 포트가 커널에 닫혔다(보드 리셋 경로).
+- 검증 : 같은 재현 — 평상 8/8 · 부하 8/8 · IO 부하 12/12 정상. 실제 `arduino.main()` 에 가짜 보드 노드를 넣어
+  노드 `arduino`·`vess` 로 갈리고 오디오 콜백이 끊기지 않으며(3 s 478회) 종료코드 0. import 중 Ctrl+C 는
+  고친 뒤 `destroy_node` 를 거쳐 0, 원본은 트레이스백·130 으로 정리를 건너뛰었다.
+- **남은 것 (TODO-7, 소리만 — 사용자 결정)**
+  1. ★서 있는데 음이 치솟는다★ — `/encoder` 원값 × 0.5 를 그대로 쓴다. 실주행 로그 133개 재생에서 GPS 1 km/h
+     미만인데 2펄스 넘게 오른 로그가 30개, 최악은 리니어 2단이 물린 채 19.9펄스(거의 최고음,
+     `route_20260916_211406-20260916_211806` t≈7.9 s). vess.py 머리말이 경고한 '소리부터 커지는' 오정보다.
+     → GPS 속도(`/gps_fused[8]`)를 먼저, 엔코더는 중앙값 3점 + 가속도 한계로.
+  2. ★A보드가 끊겨도 마지막 속도 음이 계속 운다★ — arduino 가 펄스 캐시를 지우지 않고 20 Hz 로 계속 내서
+     신선도로도 못 잡는다 → `/board_status` 의 `A:0` 이면 공회전음 또는 무음.
+  3. ★끄는 스위치가 없다★ — arduino 를 띄우는 모든 런치(one_launch · master · joy · braketest · lidar/mppi)에서
+     켜지고, 서 있을 때의 공회전음(−8.9 dBFS)이 주행음(−9.6)보다 크다 → `use_vess` 파라미터.
+  - 사소 : `package.xml` 에 numpy·scipy·soundfile·sounddevice 가 없다(이 기계는 `~/.local` pip) ·
+    `layers/*.wav` 가 `.gitignore`(`*.wav`)로 추적되지 않아 새로 clone 하면 합성음으로 바뀐다 ·
+    종료 때 스트림을 닫기 전에 `os._exit` 가 먼저 온다(장치는 프로세스와 함께 닫힌다).
 
 ---
 

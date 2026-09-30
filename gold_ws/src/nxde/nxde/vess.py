@@ -44,6 +44,7 @@ import sys
 import threading
 
 import rclpy
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 
 from std_msgs.msg import Bool, Int32
@@ -110,7 +111,12 @@ class _MutableExhaust(_exhaust.VirtualExhaust):
 class VessNode(Node):
 
     def __init__(self):
-        super().__init__('vess')
+        #  ★use_global_arguments=False★ [2026-09-30] — 런치는 arduino 프로세스에
+        #  `--ros-args -r __node:=arduino` 를 붙이고, arduino 의 rclpy.init 이 그것을
+        #  ★프로세스 전체★ 에 건다. 그대로면 이 노드 이름도 'arduino' 가 되어 /arduino 가
+        #  둘 보이고("Publisher already registered…" 경고), 한쪽이 내려가면 다른 쪽 로그가
+        #  /rosout 으로 안 나간다. 이 노드는 전역 인자(이름·리맵·파라미터)를 쓰지 않는다.
+        super().__init__('vess', use_global_arguments=False)
         self.engine = None
         try:
             layer_dir = os.path.join(sound_dir(), 'layers')
@@ -156,11 +162,27 @@ def _run():
     except Exception as e:
         _log(f"초기화 실패 — 가상 배기음 없이 돕니다: {e}")
         return
+    #  ★전용 실행기★ [2026-09-30] — rclpy.spin(node) 은 ★전역★ 실행기를 쓰는데, arduino 의
+    #  메인 스레드도 같은 전역 실행기를 spin 한다. 그 실행기의 대기 생성기(_cb_iter)는
+    #  잠금 없이 하나라 두 스레드가 동시에 next() 하면 'ValueError: generator already
+    #  executing' 이 난다 — ★거의 늘 이 스레드가 시작 0.3 s 만에 죽어 소리가 안 났고★
+    #  (모의 8/8), 드물게는 반대로 arduino 의 spin 이 그것을 받아 exit 1 로 죽었다.
+    #  머리말의 "arduino 노드의 실행기에 얹혀살지 않는다" 를 이제야 코드가 지킨다.
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
-    except Exception:
-        pass
+        executor.spin()
+    except ExternalShutdownException:
+        pass                                # arduino 가 rclpy.shutdown() 한 정상 경로
+    except Exception as e:                  # noqa: BLE001
+        #  ★조용히 삼키지 않는다★ — 종전 `pass` 때문에 런치 로그에는 'ON' 만 남고
+        #  스레드가 죽은 사실이 어디에도 없었다.
+        _log(f"실행기가 멈췄습니다 — 가상 배기음이 꺼집니다: {e!r}")
     finally:
+        try:
+            executor.shutdown(timeout_sec=0.0)
+        except Exception:
+            pass
         try:
             node.destroy_node()
         except Exception:

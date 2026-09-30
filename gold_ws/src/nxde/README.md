@@ -122,7 +122,9 @@ nxde/loopify.py     ★가상 배기음 원본 다듬기★ AI 로 뽑은 wav �
                     layers/idle·high·low.wav 를 새로 딸 때만 쓴다.
 nxde/vess.py        ★가상 배기음 실차 연동★ [2026-09-14 신설] arduino.py 가
                     `import nxde.vess` 한 줄로 켠다 — 이 모듈이 자기 rclpy 노드를
-                    만들어 백그라운드 스레드에서 돌며 `/encoder`(A보드 좌+우
+                    만들어 백그라운드 스레드에서 ★자기 실행기로★ 돌며
+                    ([2026-09-30] 종전 rclpy.spin 은 arduino 와 전역 실행기를 나눠 써
+                    시작 0.3 s 만에 조용히 죽었다) `/encoder`(A보드 좌+우
                     펄스의 합, ×0.5)만큼 exhaust.py 엔진의 펄스를 올린다. 가속
                     페달이 아니라 ★실제 바퀴 속도★ 기준이다. `/estop` 이 True 인
                     동안은 렌더 결과를 무음으로 덮어써 정말 소리를 내지 않는다.

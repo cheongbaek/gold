@@ -389,7 +389,9 @@ gold_ws/src/
                  sound·kill·prompt·braketest·tts 가 전부 이 표를 쓴다
     vess.py      ★가상 배기음(VESS)★ — 노드로 띄우지 않는다. `arduino.py` 가
                  `import nxde.vess` 한 줄로 켜고, 그 모듈이 자기 노드를 만들어
-                 백그라운드 스레드에서 돈다. `/encoder`(실제 바퀴 펄스)를 보고
+                 백그라운드 스레드에서 ★자기 실행기로★ 돈다([2026-09-30] 전역 실행기를
+                 arduino 와 같이 spin 해 시작 0.3 s 만에 조용히 죽던 것을 고쳤다 — 7절).
+                 `/encoder`(실제 바퀴 펄스)를 보고
                  소리를 내며 `/estop` 이면 ★완전 무음★. ★배기음 음량의 소유자는
                  이 파일 상단의 `VOLUME`·`LOUDNESS` 다★
     exhaust.py   배기음 합성 엔진 + 튜닝 도구(`python3 exhaust.py`). 실차 음량은
@@ -2911,6 +2913,7 @@ ping -c2 192.168.6.11
 | 저장 경로 | `paths.py` 하나가 소유자 — 다른 곳에 리터럴을 적지 말 것. **받는 쪽이 `nxde` 노드면 런치가 미리 풀어서 넘긴다**(`sound_dir`·`tl_video_dir`) |
 | **음량 — 안내 음성** [2026-09-18] | **`nxde/soundutil.py` 의 `PLAY_GAIN`(3.0)·`PLAY_LIMIT` 하나가 소유자다** — `sound`·`kill`·`prompt`·`braketest`·`tts` 가 전부 그 `PLAYERS` 표를 쓴다. **재생기마다 증폭 단위가 다르므로**(`gain_args`: ffplay `-af volume,alimiter` / mpg123 `-f 32768×g` / mpv `--volume %` / cvlc `--gain`) 값만 고치고 표는 건드리지 말 것. ⚠️ **3.0 이 실질 상한이다** — 리미터가 이미 포화해 x4·x5 는 +0.5 dB 뿐이고 다이내믹만 잃는다(실측은 그 파일 주석) |
 | **음량 — 가상 배기음** [2026-09-18] | **`nxde/vess.py` 상단의 `VOLUME`(1.0)·`LOUDNESS`(2.5) 가 소유자**이고, `exhaust.py` 의 `MASTER_GAIN`·`SOFTCLIP_DRIVE` 를 **생성자로** 덮는다(모듈 전역을 밖에서 바꾸지 않는다 — 같은 프로세스의 다른 엔진까지 따라 바뀐다). `VOLUME` 은 tanh 뒤라 **1.0 이 상한**이고, 더 키우는 손잡이는 `LOUDNESS` 다(피크를 안 올리고 평균만 올린다, 실질 상한 ≈4.0). ⚠️ **안내 음성보다 크게 두지 말 것** — 말이 묻힌다 |
+| **가상 배기음 스레드** [2026-09-30] | `nxde/vess.py` 는 arduino 와 **같은 프로세스**다 — ① **자기 `SingleThreadedExecutor` 로 spin** 한다(`rclpy.spin(node)` = 전역 실행기를 쓰면 arduino 메인 스레드와 대기 생성기를 동시에 돌려 `ValueError: generator already executing` — vess 가 거의 늘 죽고, 드물게 arduino 가 exit 1) ② **`Node('vess', use_global_arguments=False)`** — 런치의 `__node:=arduino` 가 프로세스 전체에 걸린다 ③ arduino `main()` 의 `import nxde.vess` 는 **spin 의 try 안**에 둔다(import 0.2 s 동안의 Ctrl+C 가 포트 정리를 건너뛰지 않게). 시험은 sounddevice 를 가짜로 바꿔 도메인 77 에서 돌린다(차 스피커로 소리를 내지 않게) |
 | 인지 디버그 녹화 | **`tl_record_video` 하나가 `traffic_light` 의 `tl_publish_debug`(발행) 와 `nxde/video` 노드(수신) 를 함께 켠다** — 따로 열면 0바이트 파일이 나온다(5.2절) |
 | `terrain` 규약 | `driving.py:963` **+** `one_launch.py` 헤더 **+** `lidar/README.md` **+** 이 문서 |
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |

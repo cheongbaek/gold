@@ -2427,13 +2427,16 @@ def main(args=None):
     #  그 모듈이 자기 노드를 스스로 만들어 백그라운드 스레드에서 돈다.
     #  ★실패해도 이 노드(차량 구동의 필수 노드)는 계속 뜬다★ — sounddevice/
     #  soundfile 이 없거나 오디오 장치가 없는 기계에서도 주행에는 영향이 없다.
-    try:
-        import nxde.vess  # noqa: F401
-    except Exception as e:
-        node.get_logger().warning(f"VESS 가상 배기음을 켜지 못했습니다: {e}")
-
+    #  ★[2026-09-30] import 를 아래 try 안으로 옮겼다★ — numpy·scipy 를 읽느라 0.2 s 가
+    #  걸리는데, 그 사이 Ctrl+C 가 오면 KeyboardInterrupt 가 `except Exception` 을 지나쳐
+    #  finally(stop_and_close) 밖으로 나갔다 = 포트가 커널에 닫혀 보드가 리셋되는 경로
+    #  (_install_exit_handlers 머리말). 이제 KeyboardInterrupt 도 아래 정리를 거친다.
     code = 0
     try:
+        try:
+            import nxde.vess  # noqa: F401
+        except Exception as e:
+            node.get_logger().warning(f"VESS 가상 배기음을 켜지 못했습니다: {e}")
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
