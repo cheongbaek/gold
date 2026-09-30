@@ -12,12 +12,13 @@ traffic_timer.py ― 본선 코스 신호 타이머 [white1]   [2026-09-30 신�
  │  T1 · T2 : 0 ~ 32초 진행          T3 : 35 ~ 47초 좌회전                      │
  │  T4 : 60 ~ 97초 좌회전            T5 : 0 ~ 57초 직진                         │
  └──────────────────────────────────────────────────────────────────────────┘
-   T1     카메라로 적색→녹색 전환을 본다 → ★그 순간이 0초★. driving 은 T1 에 들어서면
-          전환을 볼 때까지 서 있는다(녹색이어도 선다). 들어서기 전(접근 중)에 이미
-          전환을 봤으면 서지 않고 지나간다(사용자 결정).
+   T1     카메라로 적색→녹색 전환을 본다 → ★그 순간이 0초★. 전환을 보기 전이면 driving 이
+          ★정지선 1 m 앞에 맞춰 선다★(녹색이어도). 접근 중에 전환을 보면 감속을 풀고 지나간다.
    T2     T1 과 같은 시각표라 ★무시하고 지나간다★ (CSV 에 마킹만 있다)
    T3·T4  ★카메라 없이 이 타이머만★ 본다 — 카메라 인지가 잘 안 되는 곳이다
-   T5     종전처럼 카메라가 본다 — 이 타이머는 관여하지 않는다
+   T5     카메라가 본다(driving 이 LightFilter 로) — 이 타이머는 관여하지 않는다
+   ★T 구간의 끝 = 정지선★ [2026-10-01] 두 코스 모두 좌표로 맞췄다. 정지·감속의 방법은 driving
+   상수절 '신호 접근' 이 소유한다.
 
  ★본선 코스(maincourse.csv)에서만 돈다★ prompt 가 경로를 고를 때 set_route() 로
    알려 준다. 그 밖의 경로를 고르면 ★아무것도 내지 않고 콜백도 무시한다★ — 그래서
@@ -120,6 +121,55 @@ RED_STATES = ('RED', 'RED_FAR')
 GREEN_STATE = 'GREEN'
 
 WATCH_OFF, WATCH_ON, WATCH_RED = 0, 1, 2
+
+#  ★카메라 구간(T5 · 그 밖 경로의 T) — driving 이 /tl/state 를 직접 읽는다★ [2026-10-01]
+#  카메라가 이 시간 넘게 아무 판정도 안 내면 '죽었다' 로 본다 = 신호를 못 봤다 = 통과(fail-open).
+#  ★UNKNOWN 프레임은 '살아 있다' 다★ — 정지선 앞에서 등기구가 화면 위로 벗어나 UNKNOWN 이
+#  이어져도 빨간불 대기는 풀리지 않는다(녹색을 봐야 풀린다 — LightFilter).
+CAMERA_STALE_S = 2.0
+
+
+class LightFilter:
+    """카메라 프레임 판정(/tl/state) → ★적색 확정 · 녹색 확정★.  [2026-10-01]
+
+    driving 의 카메라 구간이 쓴다. 판정 문턱은 위 전환 판정과 같은 값이다(RED_MIN_S ·
+    GREEN_MIN_S · GAP_S) — 둘이 갈라지면 같은 신호등을 두 곳이 다르게 읽는다.
+      · 적색 = RED·RED_FAR. ★RED_FAR 도 센다★ — T 구간 안(정지선 앞 15~30 m)에서는 신호등
+        박스가 아직 작다. 구간 밖의 먼 빨간불은 driving 이 구간 안에서만 물어보므로 안 걸린다.
+      · ★적색 프레임은 녹색 스트릭을 죽인다★ — 적색등과 좌회전 녹색이 함께 보이는 등기구는
+        적색으로 읽힌다(직진 차에게는 그게 맞다).
+    """
+
+    def __init__(self):
+        self.last_t = 0.0
+        self.reset()
+
+    def reset(self):
+        self._red_since = self._red_last = None
+        self._green_since = self._green_last = None
+
+    def feed(self, state, now):
+        self.last_t = now
+        if state in RED_STATES:
+            if self._red_last is None or (now - self._red_last) > GAP_S:
+                self._red_since = now
+            self._red_last = now
+            self._green_since = self._green_last = None
+        elif state == GREEN_STATE:
+            if self._green_last is None or (now - self._green_last) > GAP_S:
+                self._green_since = now
+            self._green_last = now
+
+    def alive(self, now):
+        return self.last_t > 0.0 and (now - self.last_t) <= CAMERA_STALE_S
+
+    def red_confirmed(self, now):
+        return (self._red_since is not None and (now - self._red_last) <= GAP_S
+                and (self._red_last - self._red_since) >= RED_MIN_S)
+
+    def green_confirmed(self, now):
+        return (self._green_since is not None and (now - self._green_last) <= GAP_S
+                and (self._green_last - self._green_since) >= GREEN_MIN_S)
 
 
 def is_maincourse(route_name):

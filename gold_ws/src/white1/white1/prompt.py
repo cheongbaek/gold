@@ -109,6 +109,14 @@ except Exception:                       # noqa: BLE001 — 음성이 없다고 C
 
 BANNER = "═" * 74
 
+#  ★맨 위에 고정하는 코스 [2026-09-30 → 2026-10-01]★ 이름이 route_ 로 시작하지 않아 날짜
+#  목록에 안 걸리고, 가장 자주 고르는 파일들이다. ★신호 타이머는 본선 코스에서만 켜진다★
+#  (traffic_timer.MAINCOURSE_FILE) — 서브 코스의 T 는 종전처럼 카메라가 본다.
+PINNED_ROUTES = (
+    (tt.MAINCOURSE_FILE, '본선 코스 (신호 타이머 T1~T5)'),
+    ('subcourse.csv', '서브 코스 (신호 T 는 카메라)'),
+)
+
 #  ★경로 선택 화면에 한 번에 보이는 개수★ [2026-09-30] — 12 였는데 경로가 늘어 목록 끝
 #  (최신순이라 이름이 route_2020… 인 참고 경로들)이 잘려 안 보였다. 번호 입력 판정도
 #  이 값 하나를 쓴다 — 둘이 갈라지면 보이는 번호를 골라도 거절된다.
@@ -289,15 +297,16 @@ class PromptNode(Node):
 
     # ── 화면 ───────────────────────────────────────────────────────────────────
     def routes(self):
-        """경로 목록 — 최신순. ★본선 코스(maincourse.csv)는 맨 위에 고정한다★ [2026-09-30]
-        (이름이 route_ 로 시작하지 않아 종전 거름망에 빠지고, 날짜순으로도 설 자리가 없다)."""
+        """경로 목록 — 최신순. ★PINNED_ROUTES(본선·서브 코스)는 맨 위에 고정한다★
+        [2026-09-30 → 2026-10-01] (이름이 route_ 로 시작하지 않아 종전 거름망에 빠지고,
+        날짜순으로도 설 자리가 없다)."""
         try:
             files = os.listdir(self.data_dir)
         except OSError:
             return []
         names = sorted((f for f in files if f.startswith('route_') and f.endswith('.csv')),
                        reverse=True)
-        return ([tt.MAINCOURSE_FILE] if tt.MAINCOURSE_FILE in files else []) + names
+        return [n for n, _ in PINNED_ROUTES if n in files] + names
 
     def timer_line(self):
         """신호 타이머 한 줄 — 본선 코스가 아니면 ''(화면에 안 나온다)."""
@@ -318,8 +327,9 @@ class PromptNode(Node):
                 + f"{BANNER}")
 
     def menu_screen(self, routes):
-        #  ★최신은 날짜로 딴 것 중에서★ — 맨 위에 고정한 본선 코스는 '최신' 이 아니다
-        dated = [r for r in routes if not tt.is_maincourse(r)]
+        #  ★최신은 날짜로 딴 것 중에서★ — 맨 위에 고정한 코스는 '최신' 이 아니다
+        pinned = {n for n, _ in PINNED_ROUTES}
+        dated = [r for r in routes if r not in pinned]
         latest = dated[0] if dated else '(없음)'
         lines = [self.header(),
                  f" 저장된 경로: {len(routes)}개   (최신: {latest})",
@@ -343,7 +353,8 @@ class PromptNode(Node):
             lines.append("   (없음)")
         for i, name in enumerate(routes[:ROUTE_LIST_MAX], 1):
             mark = "★" if name == self.selected else " "
-            note = "   ← 본선 코스 (신호 타이머 T1~T5)" if tt.is_maincourse(name) else ""
+            label = dict(PINNED_ROUTES).get(name)
+            note = f"   ← {label}" if label else ""
             lines.append(f"  {mark}{i:2d}) {name}{note}")
         if len(routes) > ROUTE_LIST_MAX:
             #  잘린 것이 있으면 그렇다고 말한다 — 조용히 안 보이면 없는 줄 안다.

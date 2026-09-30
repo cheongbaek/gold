@@ -1,36 +1,40 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-signal_sim.py ― 본선 코스 신호 타이머의 ★폐루프 모의★  [2026-09-30]
+signal_sim.py ― 신호 구간(T)의 ★폐루프 모의★  [2026-09-30 → 2026-10-01 신호 접근]
 ════════════════════════════════════════════════════════════════════════════════
 driving(DrivingNode) 와 traffic_timer(TrafficTimerNode) 를 ★한 프로세스·가짜 시계★ 로
-돌리고, 가짜 카메라가 ★진짜 신호 위상★ 으로 T1 신호등을 RED/GREEN 으로 보여 준다.
+돌리고, 가짜 카메라가 ★진짜 신호 위상★ 으로 신호등을 RED/GREEN 으로 보여 준다.
 차량 모델·센서·액추에이터는 follow_sim.Sim 을 그대로 쓴다(그 파일 헤더).
 
-  · 경로 : gps_data/maincourse.csv 의 사본 — T1~T5·S 는 그대로, ★L 만 지운다★
-           (L 은 mppi 가 있어야 해서 — follow_sim 과 같은 이유). 사본은 follow_sim 과
-           ★다른 임시 폴더★ 에 둔다(그쪽은 terrain 을 전부 지운 같은 이름의 사본을 쓴다)
-  · 신호 : 진짜 0초 = 출발 + offset. T1 이 [시작 − 35 m, 끝 + 2 m] 안일 때만 보인다
-           (9/13 기록: T1 신호등이 처음 잡힌 것이 시작 35 m 앞). 15 Hz, 15% 는 UNKNOWN.
-  · T5 는 카메라 몫이라 여기서는 허락(/tl_permit)이 T5 에서만 서는지만 본다.
+  · 경로 : gps_data 의 사본 — T·S 는 그대로, ★L 만 지운다★ (L 은 mppi 가 있어야 해서).
+           사본은 follow_sim 과 ★다른 임시 폴더★ 에 둔다(그쪽은 terrain 을 전부 지운 같은
+           이름의 사본을 쓴다)
+  · 신호 : 진짜 0초 = 출발 + offset.
+      maincourse — T1·T2 0~32 · T5 0~57 녹색(카메라에 보인다) · T3·T4 는 타이머 몫이라 카메라는
+                   UNKNOWN 만 낸다
+      subcourse  — 시각표가 없다. 구간 k 마다 ★가짜★ 녹색 [0, 40) 초를 (30·k) 초씩 밀어 쓴다
+    카메라는 [구간 시작 − 35 m, 구간 끝 + 2 m] 에서만 그 구간의 신호등을 본다(9/13 기록),
+    15 Hz, 15% 는 UNKNOWN.
 
-확인하는 것 (offset 마다 한 줄 + 실패하면 이유):
-  ① T1 — 전환 전에 들어서면 진입 즉시 서고, 적색→녹색 첫 프레임이 0초, 그 뒤 출발.
-         접근 중(40 m 안)에 전환을 봤고 들어설 때 T1 녹색이면 서지 않는다
-  ② 0초 오차 — 타이머 0초 − 진짜 녹색 시작 (카메라 한 프레임 1/15 s 안이어야 한다)
-  ③ T2 — 아무것도 안 한다
-  ④ T3·T4 — 들어서는 순간의 ★진짜 위상★ 이 창 안이면 통과, 밖이면 서고, 출발은 창 안
-  ⑤ 정지 위치 — 진입 즉시 2단으로 선 자리가 구간 끝(≈정지선)보다 앞인가
-  ⑥ 끝까지 갔는가 (도착)
+확인하는 것 (offset 마다 한 줄 + 실패하면 이유) — CLAUDE.md 4.10 '신호 접근':
+  ① 진짜 적색(T1 은 '초기화 전' 도)에 정지선을 넘지 않았다 — 늦게 받은 정지 신호로 '통과'
+     한 경우(⚠️ 정지 신호가 늦었다)만 경고로 남긴다
+  ② 섰다면 정지선 앞 0~1.6 m 에 섰다 (끝단 1 m 에서 2단 · 정지거리 ≈0.5~0.9 m)
+  ③ 정지 신호 동안 명령펄스 0 (코스트·1단 구간)
+  ④ 감속 중 녹색이면 다시 가속했다 (감속 해제 이벤트 뒤 펄스가 돌아온다)
+  ⑤ 진행 신호로 들어와 끝까지 진행이면 감속하지 않았다 (구간 안 최저속도 ≥ 진입속도 − 여유)
+  ⑥ T2 는 아무것도 안 한다 · 0초 오차 · 카메라 제동 허락은 항상 꺼짐 · 끝까지 갔는가
 
 실행 (ROS 환경만 source 하면 된다 — 빌드 불필요):
     source /opt/ros/humble/setup.bash
-    python3 sim/signal_sim.py                     # offset 0~95 초, 5 초 간격
-    python3 sim/signal_sim.py --offsets 3,48 --pulse 7 -v
+    python3 sim/signal_sim.py                          # maincourse, offset 0~95 초 5 초 간격
+    python3 sim/signal_sim.py --route subcourse.csv
+    python3 sim/signal_sim.py --offsets 3,48 --pulse 4 -v
+    python3 sim/signal_sim.py --offsets 0 --estop T3:1:3 -v   # T3 대기 중 E-STOP
 """
 import argparse
 import csv
-import math
 import os
 import sys
 import tempfile
@@ -50,16 +54,18 @@ drv = fs.drv
 CLOCK = fs.CLOCK
 tt.time = CLOCK                                      # 타이머도 같은 가짜 시계
 
-ROUTE = tt.MAINCOURSE_FILE
 ROUTE_DIR = os.path.join(tempfile.gettempdir(), 'white1_signal_sim_routes')
-VISIBLE_PRE_M = 35.0       # T1 신호등이 보이기 시작하는 거리 (9/13 기록)
+VISIBLE_PRE_M = 35.0       # 신호등이 보이기 시작하는 거리 (9/13 기록)
 CAM_HZ = 15.0
 CAM_DROP = 0.15            # UNKNOWN 비율 (등기구가 ROI 를 벗어나는 프레임)
 ZERO_ERR_MAX_S = 0.25      # 타이머 0초가 진짜 녹색 시작보다 늦어도 되는 한도
+STOP_OK_M = (0.0, 1.6)     # 정지선 앞 이 거리 안에 서야 한다 [m] (안테나 기준)
+SUB_GREEN = (0.0, 40.0)    # subcourse 가짜 녹색 창 [s]
+SUB_SHIFT_S = 30.0         # subcourse 구간마다 창을 이만큼 민다
 
 
 def prepare_route(name):
-    """L 만 '0' 으로 지운 사본 — T1~T5·S 는 그대로 둔다."""
+    """L 만 '0' 으로 지운 사본 — T·S 는 그대로 둔다."""
     os.makedirs(ROUTE_DIR, exist_ok=True)
     src = os.path.join(fs.GPS_DIR, name)
     dst = os.path.join(ROUTE_DIR, name)
@@ -84,7 +90,7 @@ fs.prepare_route = prepare_route
 
 
 class _Fwd:
-    """발행을 가로채 콜백으로 바로 넘긴다 (ROS 통신 없이 두 노드를 잇는다)."""
+    """발행을 가로채 콜백으로 바로 넘긴다 (ROS 통신 없이 노드끼리 잇는다)."""
 
     def __init__(self, *sinks):
         self.sinks = sinks
@@ -97,13 +103,10 @@ class _Fwd:
 
 
 class SignalSim(fs.Sim):
-    def __init__(self, offset, drive_pulse=7, seed=1, t_max=600.0, estop=None):
-        super().__init__(ROUTE, drive_pulse=drive_pulse, plant={'seed': seed}, t_max=t_max)
+    def __init__(self, route, offset, drive_pulse=7, seed=1, t_max=900.0, estop=None):
+        super().__init__(route, drive_pulse=drive_pulse, plant={'seed': seed}, t_max=t_max)
         n = self.node
-        #  E-STOP 주입 (라벨, 지연, 길이) — 그 라벨의 '신호 대기' 이벤트 뒤 지연 초에 누르고
-        #  길이 초 뒤 뗀다. 대기를 지운 뒤에도 신호를 다시 판단하는지 보는 용도다.
-        self.estop = estop
-        self._estop_on = self._estop_off = None
+        self.main = tt.is_maincourse(route)
         self.T0 = CLOCK.t + offset           # ★진짜★ 0초 (신호등 쪽 시계)
         self.cam_rng = np.random.default_rng(seed + 100)
         timer = tt.TrafficTimerNode()
@@ -112,59 +115,46 @@ class SignalSim(fs.Sim):
         n.pub_dstate = _Fwd(timer.cb_drive_state)
         n.pub_tl_zone = _Fwd(timer.cb_zone)
         n.pub_tl_permit = _Fwd()
-        timer.set_route(ROUTE)
-        self.segs = {lab: (i0, i1) for lab, i0, i1 in n._tl_segs}
+        timer.set_route(route)
+        self.segs = list(n._tl_segs)         # [(라벨, i0, i1)]
         self.s = n.wp_s
         self.rows = []
+        #  E-STOP 주입 (라벨, 지연, 길이) — 그 라벨의 '신호 대기' 이벤트 뒤 지연 초에 누르고
+        #  길이 초 뒤 뗀다. 대기를 지운 뒤에도 신호를 다시 판단하는지 보는 용도다.
+        self.estop = estop
+        self._estop_on = self._estop_off = None
 
+    # ── 진짜 신호 ─────────────────────────────────────────────────────────
     def true_phase(self, t=None):
         return ((CLOCK.t if t is None else t) - self.T0) % tt.CYCLE_S
 
-    def camera(self):
-        """T1 이 보이는 동안만 진짜 위상으로 RED/GREEN, 그 밖은 UNKNOWN."""
-        n = self.node
-        i0, i1 = self.segs['T1']
-        here = self.s[min(n.wp_idx, len(self.s) - 1)]
-        st = 'UNKNOWN'
-        if self.s[i0] - VISIBLE_PRE_M <= here <= self.s[i1] + 2.0 \
-                and self.cam_rng.random() >= CAM_DROP:
-            st = 'GREEN' if tt.in_window('T1', self.true_phase()) else 'RED'
-        self.timer.cb_tl_state(String(data=st))
+    def true_green(self, k, t=None):
+        """구간 k 의 신호가 진짜로 녹색인가. 시각표가 없는 라벨은 None."""
+        lab = self.segs[k][0]
+        ph = self.true_phase(t)
+        if self.main:
+            if lab in ('T1', 'T2'):
+                return tt.in_window('T1', ph)
+            if lab in ('T3', 'T4', 'T5'):
+                return tt.in_window(lab, ph)
+            return None
+        ph = (ph + SUB_SHIFT_S * k) % tt.CYCLE_S
+        return SUB_GREEN[0] <= ph < SUB_GREEN[1]
 
-    def run(self):
-        n = self.node
-        dt = 0.01
-        k = steps = 0
-        cam_next = CLOCK.t
-        while CLOCK.t - self.t0 < self.t_max:
-            if CLOCK.t >= cam_next:
-                self.camera()
-                cam_next += 1.0 / CAM_HZ
-            self.estop_step()
-            if steps % 5 == 0:                   # 20 Hz — driving·timer 주기
-                self.timer.tick()
-                self.feed_sensors(k)
-                #  ★허락·구간은 loop() 맨 앞(publish_state_topics)에서 ★옮기기 전★ 포인터로
-                #  나간다★ — 같은 포인터로 대조해야 경계 한 틱이 어긋나 보이지 않는다.
-                wp_pub = n.wp_idx
-                n.loop()
-                self.read_outputs()
-                permit = n.pub_tl_permit.last
-                zone = n.pub_tl_zone.last
-                self.rows.append((CLOCK.t, n.wp_idx, self.v, self.brake_level,
-                                  zone.data if zone else '',
-                                  bool(permit.data) if permit else False, wp_pub))
-                k += 1
-                if n.state != drv.S_DRIVE_RUN:
-                    break
-            self.step_plant(dt)
-            CLOCK.t += dt
-            steps += 1
-        self.done_state = n.state
-        rclpy.node.Node.destroy_node(self.timer)
-        rclpy.node.Node.destroy_node(n)
-        rclpy.shutdown()
-        return self
+    def camera(self):
+        """보이는 구간의 신호등을 진짜 위상으로 RED/GREEN, 그 밖은 UNKNOWN."""
+        here = self.s[min(self.node.wp_idx, len(self.s) - 1)]
+        st = 'UNKNOWN'
+        for k, (lab, i0, i1) in enumerate(self.segs):
+            if not (self.s[i0] - VISIBLE_PRE_M <= here <= self.s[i1] + 2.0):
+                continue
+            if self.main and lab in ('T3', 'T4'):
+                break                          # 카메라가 못 읽는 곳 (그래서 타이머다)
+            if self.cam_rng.random() >= CAM_DROP:
+                st = 'GREEN' if self.true_green(k) else 'RED'
+            break
+        self.timer.cb_tl_state(String(data=st))
+        self.node.cb_tl_state(String(data=st))
 
     def estop_step(self):
         if not self.estop:
@@ -181,98 +171,125 @@ class SignalSim(fs.Sim):
         elif CLOCK.t >= self._estop_off and self.node.estop:
             self.node.cb_estop(Bool(data=False))
 
+    def run(self):
+        n = self.node
+        dt = 0.01
+        k = steps = 0
+        cam_next = CLOCK.t
+        while CLOCK.t - self.t0 < self.t_max:
+            if CLOCK.t >= cam_next:
+                self.camera()
+                cam_next += 1.0 / CAM_HZ
+            self.estop_step()
+            if steps % 5 == 0:                   # 20 Hz — driving·timer 주기
+                self.timer.tick()
+                self.feed_sensors(k)
+                n.loop()
+                self.read_outputs()
+                permit = n.pub_tl_permit.last
+                self.rows.append((CLOCK.t, n.arc_here(), self.v, self.brake_level,
+                                  self.cmd_pulse, n._sa_phase, n._sp_state,
+                                  bool(permit.data) if permit else False))
+                k += 1
+                if n.state != drv.S_DRIVE_RUN:
+                    break
+            self.step_plant(dt)
+            CLOCK.t += dt
+            steps += 1
+        self.done_state = n.state
+        rclpy.node.Node.destroy_node(self.timer)
+        rclpy.node.Node.destroy_node(n)
+        rclpy.shutdown()
+        return self
+
     # ── 판정 ─────────────────────────────────────────────────────────────
-    def first_tick_in(self, lab):
-        i0, i1 = self.segs[lab]
-        for r in self.rows:
-            if i0 <= r[1] <= i1:
-                return r
-        return None
-
-    def first_tick_past(self, lab):
-        _, i1 = self.segs[lab]
-        for r in self.rows:
-            if r[1] > i1:
-                return r
-        return None
-
     def ev(self, needle):
         """needle 이 든 이벤트 [(★절대★ 시각, 문구)]. self.events 는 출발 기준 상대 시각이다."""
         return [(self.t0 + t, e) for t, e in self.events if needle in e]
 
     def judge(self):
-        """(요약 한 줄, 실패 목록, 경고 목록)
-
-        ★판단 사건마다★ 진짜 위상을 대조한다 — '통과'·'출발(🟢)' 은 창 안이어야 하고,
-        '신호 대기' 는 창 밖이어야 한다(경계는 0초 오차만큼 봐준다). E-STOP 으로 대기가
-        지워져 같은 신호를 두 번 판단해도 그대로 맞는 잣대다.
-        """
+        """(요약 한 줄, 실패 목록, 경고 목록)"""
         fails, warns, parts = [], [], []
-        # ② 0초 오차
+        n = self.node
         t0 = self.timer.t0
-        if t0 is None:
-            fails.append('T1: 타이머가 초기화되지 않았다')
-        else:
-            k = round((t0 - self.T0) / tt.CYCLE_S)
-            err = t0 - (self.T0 + k * tt.CYCLE_S)
-            parts.append(f"0초오차 {err * 1000:+4.0f}ms")
-            #  ★늦게만 잡힌다★ 첫 녹색 '프레임' 시각이라 카메라 주기만큼, 그 프레임이
-            #  빠지면(UNKNOWN) 몇 프레임 더 늦는다. 0.25 s 면 3~4 프레임 누락까지 받는다.
-            if not (0.0 <= err <= ZERO_ERR_MAX_S):
-                fails.append(f'T1: 0초 오차 {err:.3f}s')
-        # ①④ T1·T3·T4 — 사건마다 진짜 위상 대조
-        for lab in tt.TIMER_SIGNALS:
-            ent = self.first_tick_in(lab)
-            if ent is None:
+        if self.main:
+            if t0 is None:
+                fails.append('T1: 타이머가 초기화되지 않았다')
+            else:
+                k = round((t0 - self.T0) / tt.CYCLE_S)
+                err = t0 - (self.T0 + k * tt.CYCLE_S)
+                parts.append(f"0초오차 {err * 1000:+4.0f}ms")
+                #  ★늦게만 잡힌다★ 첫 녹색 '프레임' 시각이라 카메라 주기만큼, 그 프레임이
+                #  빠지면(UNKNOWN) 몇 프레임 더 늦는다.
+                if not (0.0 <= err <= ZERO_ERR_MAX_S):
+                    fails.append(f'T1: 0초 오차 {err:.3f}s')
+        for k, (lab, i0, i1) in enumerate(self.segs):
+            kind = n.signal_kind(lab)
+            s0, s_line = self.s[i0], self.s[i1]
+            inz = [r for r in self.rows if s0 <= r[1] <= s_line]
+            if not inz:
                 fails.append(f'{lab}: 구간에 못 들어갔다')
                 continue
-            txt = f"{lab} 진입 {self.true_phase(ent[0]):5.1f}s"
-            go_ev = self.ev(f'🚦 {lab} 통과') + self.ev(f'🟢 {lab} 녹색')
-            stop_ev = self.ev(f'🚦 {lab} 신호 대기')
-            if not go_ev:
-                fails.append(f'{lab}: 통과도 출발도 없다')
-            for t, e in sorted(go_ev):
-                ph = self.true_phase(t)
-                txt += f" {'통과' if '통과' in e else '출발'} {ph:4.1f}s"
-                if not tt.in_window(lab, ph):
-                    fails.append(f'{lab}: 진짜 적색({ph:.1f}s)에 {"통과" if "통과" in e else "출발"}')
-            #  ★T1 은 녹색이어도 선다★ (전환을 보기 전이면 — 사용자 지시) 그래서 T1 의
-            #  '신호 대기' 는 위상과 무관하게 맞다. 틀린 경우는 '적색에 통과·출발' 뿐이다.
-            for t, e in (stop_ev if lab != tt.INIT_SIGNAL else []):
-                ph = self.true_phase(t)
-                a, b = tt.SIGNAL_WINDOWS[lab]
-                edge = min(abs(ph - a), abs(ph - b), abs(ph - a - tt.CYCLE_S))
-                if tt.in_window(lab, ph) and edge > ZERO_ERR_MAX_S:
-                    fails.append(f'{lab}: 진짜 녹색({ph:.1f}s)인데 섰다')
-            if stop_ev:
-                txt += f" (정지 {len(stop_ev)}회"
-                # ⑤ 정지 위치 — 처음 선 자리의 호길이 vs 구간 끝(≈정지선)
-                i0, i1 = self.segs[lab]
-                for r in self.rows:
-                    if r[0] > stop_ev[0][0] and r[2] < 0.05:
-                        left = self.s[i1] - self.s[min(r[1], len(self.s) - 1)]
-                        txt += f", 끝 {left:4.1f}m 앞"
-                        if left < 0:
-                            fails.append(f'{lab}: 구간 끝을 {-left:.1f}m 넘어 섰다')
-                        break
-                txt += ")"
-            past = self.first_tick_past(lab)
-            if past is not None and not tt.in_window(lab, self.true_phase(past[0])):
-                ph_x = self.true_phase(past[0])
-                txt += f" [끝 통과 {ph_x:4.1f}s ★창 밖★]"
-                warns.append(f'{lab}: 구간 끝(≈정지선)을 창이 닫힌 뒤({ph_x:.1f}s)에 지났다')
+            if kind is None:                   # T2 — 아무것도 안 해야 한다
+                if self.ev(f'🚦 {lab} ') or any(r[5] or r[6] for r in inz):
+                    fails.append(f'{lab}: 무시해야 하는데 판단했다')
+                continue
+            txt = f"{lab} 진입{self.true_phase(inz[0][0]):5.1f}s"
+            late = self.ev(f'⚠️ {lab} 정지 신호가 늦었다')
+            # ① 정지선을 넘은 순간의 진짜 신호
+            #    ★정지 지점(끝 1 m)을 녹색에 지났으면 되돌릴 수 없다★ — 그 뒤 정지선을 넘는
+            #    0.1~0.3 s 사이에 창이 닫히는 것은 '여유 없음' 결정의 결과라 경고로만 남긴다.
+            cross = next((r for r in self.rows if r[1] >= s_line), None)
+            at_pt = next((r for r in self.rows
+                          if r[1] >= s_line - drv.SIG_STOP_BEFORE_M), None)
+            if cross is not None:
+                g = self.true_green(k, cross[0])
+                ph_x = self.true_phase(cross[0])
+                if lab == tt.INIT_SIGNAL and self.main:
+                    first_init = self.ev('🚦 신호 타이머 초기화')
+                    if not first_init or first_init[0][0] > cross[0]:
+                        fails.append(f'{lab}: 타이머 초기화 전에 정지선을 넘었다')
+                if g is False:
+                    pt_green = at_pt is not None and self.true_green(k, at_pt[0])
+                    why = (' — 늦은 정지 신호로 통과' if late else
+                           f' — 정지 지점은 녹색({self.true_phase(at_pt[0]):.1f}s)에 지났다'
+                           if pt_green else '')
+                    (warns if (late or pt_green) else fails).append(
+                        f'{lab}: 진짜 적색({ph_x:.1f}s)에 정지선을 넘었다' + why)
+            # ② 선 자리 — 서브페이즈(2단) 안에서 처음 멈춘 곳
+            stops = [r for r in inz if r[2] < 0.05 and r[6] != 0]
+            if stops:
+                gap = s_line - stops[0][1]
+                txt += f" 정지(선 {gap:.2f}m 앞)"
+                if not (STOP_OK_M[0] <= gap <= STOP_OK_M[1]):
+                    (fails if gap < 0 else warns).append(
+                        f'{lab}: 정지선 {gap:+.2f}m 앞에 섰다 (기준 0~{STOP_OK_M[1]}m)')
+            # ③ 정지 신호 동안 펄스 0
+            bad = [r for r in inz if r[5] in (drv.SA_COAST, drv.SA_BRAKE1) and r[4] != 0]
+            if bad:
+                fails.append(f'{lab}: 코스트·1단 중에 펄스 {bad[0][4]} 가 나갔다')
+            if any(r[5] == drv.SA_BRAKE1 for r in inz):
+                txt += " 1단"
+            # ④ 감속 중 녹색 → 다시 가속
+            rel = [e for e in self.ev(f'🟢 {lab} 진행 신호') if '감속을 풀고' in e[1]]
+            if rel:
+                t_rel = rel[0][0]
+                later = [r for r in self.rows if t_rel < r[0] <= t_rel + 2.0]
+                if not any(r[4] > 0 for r in later):
+                    fails.append(f'{lab}: 감속을 풀었는데 2 s 안에 펄스가 안 돌아왔다')
+                txt += " 감속해제"
+            # ⑤ 진행 신호로 들어와 계속 진행이면 감속 없음
+            if not self.ev(f'🚦 {lab} 정지 신호') and not stops:
+                vmin = min(r[2] for r in inz)
+                if inz[0][2] > 1.0 and vmin < inz[0][2] - 0.6:
+                    warns.append(f'{lab}: 진행 신호인데 {inz[0][2]:.1f} → {vmin:.1f} m/s 로 줄었다'
+                                 ' (곡률 감속일 수 있다)')
+                txt += " 통과"
+            if cross is not None:
+                txt += f"→선{self.true_phase(cross[0]):5.1f}s"
             parts.append(txt)
-        # ③ T2 — 아무것도 안 한다
-        if self.ev('🚦 T2'):
-            fails.append('T2: 무시해야 하는데 판단했다')
-        # T5 — 카메라 허락은 T5 에서만
-        i0, i1 = self.segs['T5']
-        bad = [r for r in self.rows if r[5] and not (i0 <= r[6] <= i1)]
-        if bad:
-            fails.append(f'T5: 구간 밖에서 카메라 허락 {len(bad)}틱')
-        if not any(r[5] for r in self.rows):
-            fails.append('T5: 카메라 허락이 한 번도 안 섰다')
-        # ⑥ 도착
+        if any(r[7] for r in self.rows):
+            fails.append('카메라 제동 허락(/tl_permit)이 켜졌다 — 항상 False 여야 한다')
         arrived = bool(self.ev('🎯 도착'))
         if not arrived:
             last = self.events[-1][1] if self.events else '(이벤트 없음)'
@@ -283,6 +300,7 @@ class SignalSim(fs.Sim):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--route', default=tt.MAINCOURSE_FILE)
     ap.add_argument('--offsets', default=','.join(str(o) for o in range(0, 100, 5)),
                     help='진짜 0초 = 출발 + offset [s] (쉼표로 여럿)')
     ap.add_argument('--pulse', type=int, default=7)
@@ -297,7 +315,7 @@ def main():
         if a.estop:
             lab, d, du = a.estop.split(':')
             es = (lab, float(d), float(du))
-        sim = SignalSim(off, drive_pulse=a.pulse, seed=a.seed, estop=es).run()
+        sim = SignalSim(a.route, off, drive_pulse=a.pulse, seed=a.seed, estop=es).run()
         line, fails, warns = sim.judge()
         mark = 'OK ' if not fails else 'NG '
         print(f"{mark} offset {off:5.1f}s  {line}", flush=True)
@@ -305,15 +323,15 @@ def main():
             print(f"      ✗ {f}")
         for w in warns:
             print(f"      ⚠ {w}")
+        n_fail += bool(fails)
         n_warn += bool(warns)
         if a.verbose or fails:
             for t, e in sim.events:
                 if '일시정지 중 — 해제하면' in e:
                     continue              # 모의에서는 스로틀이 없어 20 Hz 로 쏟아진다
-                if any(c in e for c in ('🚦', '🟢', '⏸️', '▶', '✅', '🛑', '⛔', '🎯 도착',
-                                        '🚨', 'E-STOP')):
+                if any(c in e for c in ('🚦', '🟢', '🔻', '⏸️', '▶', '✅', '🛑', '⛔', '⚠️',
+                                        '🎯 도착', '🚨', 'E-STOP')):
                     print(f"      {t:7.2f}s  {e}")
-        n_fail += bool(fails)
     print(f"\n{'전부 통과' if not n_fail else f'{n_fail}건 실패'}"
           + (f" · 경고 {n_warn}건" if n_warn else ""))
     return 1 if n_fail else 0

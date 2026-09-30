@@ -1501,6 +1501,11 @@ STOP_ZONE_CHARS = ('S', 's')
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-10] terrain 'T' — 신호등 인지 구간 (사용자 지시) ★★
 # ══════════════════════════════════════════════════════════════════════════════
+#  ⚠️ ★[2026-10-01] 아래 '/tl_permit 으로 traffic_light 가 세운다' 와 '구간을 정지선 뒤로
+#  더 적는다' 는 옛 방식이다★ 지금은 ★T 구간의 끝 = 정지선★ 이고, 정지는 이 노드가 그
+#  1 m 앞에 맞춰 한다(아래 '신호 접근' 절). 카메라는 색만 본다. 여러 행에 적고, 구간
+#  안에서만 본다는 것은 그대로다. 기록으로 남겨 둔다.
+#
 #  ★요구★ 신호등 인지 노드는 상시 돌되(카메라도 계속 켜져 있다), 실제 개입은
 #  ★사람이 CSV 에 적은 T 구간에서만★ 유효하다. 그 구간에서 빨간불이면 리니어 2단,
 #  그 밖(초록·미검출·불확실)이면 ★일시정지 없이 통과★ 한다.
@@ -1541,29 +1546,63 @@ TL_ZONE_CHARS = ('T', 't')
 #  있어도 'T' 로 접어 ★종전 그대로(카메라)★ 돈다. 파일 이름과 시각표의 소유자는
 #  traffic_timer.py 다.
 #
-#      T1  ★타이머 0초의 기준★ — 구간에 들어서는 순간 리니어 2단으로 서고, 카메라가
-#          적색→녹색 전환을 볼 때까지 기다린다(녹색이어도 선다). 들어서기 전에 이미
-#          전환을 봤으면(타이머가 초기화됐고 T1 녹색이면) 서지 않고 지나간다.
+#      T1  ★타이머 0초의 기준★ — 카메라가 적색→녹색 전환을 보기 전이면 ★정지 신호★ 로
+#          본다(녹색이어도 — 사용자 지시). 전환을 봤고 T1 녹색(0~32초)이면 진행 신호.
 #      T2  마킹만 있다 — ★아무것도 안 한다★ (T1 과 같은 시각표라서)
-#      T3·T4  ★카메라 없이 타이머만★ — 들어서는 순간 타이머상 녹색이면 통과,
-#          아니면 그 자리에서 2단으로 서고 녹색이 되면 출발한다
-#      T5  종전 T 와 같다 — 카메라가 빨간불이면 세운다
-#
-#  ★판단은 구간에 들어서는 순간 한 번★ (사용자 결정 '진입 즉시 정지'). 통과로
-#  판단했으면 그 구간이 끝날 때까지 다시 보지 않는다 — 구간 중간에 신호가 바뀌었다고
-#  교차로 앞에서 급제동하지 않는다.
-#
-#  ★정지·대기·재출발은 S 일시정지의 서브페이즈를 그대로 쓴다★ 다른 것은 '대기를
-#  끝내는 조건' 하나다 — S 는 3.5초, T 는 타이머가 녹색이라고 할 때. 그래서 새
-#  state 를 만들지 않는다(enter() 가 리니어를 풀어 버린다 — 위 'terrain S' 절).
-#
-#  ★E-STOP 이 대기를 지워도 신호를 놓치지 않는다★ 판정이 '구간 시작을 지났는가' 가
-#  아니라 ★'지금 구간 안이고 아직 처리 안 했는가'★ 라서, 재개한 첫 틱에 다시 판단한다.
+#      T3·T4  ★카메라 없이 타이머만★ — 타이머상 녹색이면 진행, 아니면 정지 신호
+#      T5  카메라 — 빨간불을 확정했으면 정지 신호 (아래 '신호 접근' 의 카메라 구간)
+#  ★정지·감속의 방법은 아래 '신호 접근' 절이 소유한다★ [2026-10-01] (구간 끝 = 정지선)
 #
 #  ★T1 을 안 지나고 T3·T4 에 오는 일은 없다★ (사용자 지시 — 본선 코스의 순서다).
 #  그래서 '타이머가 없을 때' 의 대체 경로를 두지 않았다 — 타이머가 초기화 전이거나
 #  끊겼으면 go 가 0 이라 그냥 서서 기다린다(신호위반보다 정지가 낫다). CSV 의 순서가
 #  어긋나 있으면 select_route 가 그 자리에서 말한다(_warn_tl_zones).
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-10-01] 신호 접근 — 정지선 1 m 앞에 맞춰 선다 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★T 구간의 끝 = 정지선★ (maincourse · subcourse 모두 사용자가 준 좌표로 맞췄다).
+#  구간 안에서 매 틱:
+#    · 진행 신호 · 신호등을 못 봤다   → ★감속 없이 통과★
+#    · 정지 신호 · 타이머상 정지     → ★명령펄스 0★. 코스트로 되면 코스트만, 안 되면 ★1단★ 을
+#                                      제때 물고, ★끝단 1 m 에 닿는 즉시 2단★ → 그 뒤는 S
+#                                      서브페이즈(정지 확인 → 녹색 대기 → 0단 → 3펄스 재출발)
+#    · 감속하다가 녹색으로 바뀌면     → ★감속을 풀고 다시 가속★ (1단이면 최소 물림 뒤에 푼다)
+#  누가 판단하나 — 본선 코스 T1·T3·T4 는 타이머, T5 와 그 밖 경로의 T 는 ★카메라 색★
+#  (/tl/state → traffic_timer.LightFilter). ★카메라에는 제동을 맡기지 않는다★ —
+#  /tl_permit 을 내주지 않는다. traffic_light 가 자기 정지선 판단으로 따로 2단을 물면
+#  '정지선 1 m 앞에 맞춰 서기' 와 싸운다(두 주인). 카메라는 이제 ★색만 본다★.
+#  ★카메라 빨간불은 녹색을 봐야 풀린다★ 정지선 앞에서는 등기구가 화면 위로 벗어나
+#  UNKNOWN 이 이어지는 것이 정상이라, '빨간불이 안 보인다' 로 풀면 빨간불에 굴러간다.
+#  카메라가 아예 죽으면(판정이 2 s 끊김) 못 본 것으로 보고 푼다(fail-open).
+#
+#  ★1단을 무는 기준 — 감속도 실측으로 정했다★ (사용자 위임)
+#    코스트 0.41 · 1단 1.30(구동 차단 실효 — 종점 접근과 같은 값) · 2단 2.2 m/s²(하한)
+#    정지 지점(끝단 1 m)에서 ★SIG_V_OK 1.5 m/s(5.4 km/h)★ 이하면 2단(지연 0.3 s)이
+#    0.95 m 안에 세운다 = 정지선을 넘지 않는다. 그래서 목표는 '정지 지점에서 5.4 km/h 이하':
+#      · 코스트만으로 거기까지 못 떨어지면(v² − 2·0.41·d > v_ok²) 1단이 필요하다
+#      · 1단은 ★1단으로 v_ok 에 딱 맞출 수 있는 마지막 지점★ 에서 문다 (늦게 물수록 평균속도가 산다)
+#            need1 = v·0.55 + (v² − v_ok²) / (2·1.30)     ★여유 없음★ (_sig_need1 주석)
+#    구간 시작(d = 구간 − 1 m)에서 1단이 들어가는 속도 = √(v_ok² + 2·0.41·d) :
+#      15 m → 13.3 km/h · 20 m → 15.2 km/h · 25 m → 16.9 km/h · 30 m → 18.4 km/h
+#    → 7펄스(22.3 km/h)면 모든 구간에서 1단, 4펄스(12.7 km/h) 이하는 코스트만이다.
+#  ★코스트는 '코스트로 정지 지점에서 v_ok 가 되는 거리' 부터★ (v² − v_ok²)/(2·0.41) — 그 전에
+#  펄스를 끊으면 느리게 들어온 차가 정지선 한참 앞에서 선다. 7펄스면 44 m 라 구간(15~30 m)보다
+#  길어 ★들어서자마자 펄스 0★ 이다(지시 그대로). 그 전까지는 평소대로 달린다(SA_ARMED).
+#  ★1단으로도 모자라면 2단을 앞당긴다★ 정지선까지 남은 거리 ≤ 2단 정지거리(2.2 m/s², 하한)
+#  가 되는 순간 — 정지선을 넘지 않는 마지막 순간이다(실제 2단은 3.8~4.2 라 더 앞에 선다).
+#  ★되돌릴 수 없는 지점★ 정지 신호가 너무 늦게 왔다 — 대표 2단(3.8)으로도 정지선 앞에
+#  못 서면 ★통과★ 한다(교차로 안에 서는 것이 더 나쁘다). 그 구간은 다시 보지 않는다.
+#  ★속도를 모르면 빠르다고 본다★ (drive_pulse 속도) — 일찍 무는 쪽으로 틀린다.
+#  ★구간 안에 있을 때만 본다★ 구간 밖의 빨간불(다른 교차로)은 아무것도 안 한다.
+SIG_STOP_BEFORE_M = 1.0    # [m] 끝단(정지선) 이만큼 앞 — 여기 닿는 즉시 2단 (사용자 지시)
+SIG_V_OK_MS       = 1.5    # [m/s] 정지 지점에서 이 속도 이하면 2단이 정지선 안에 세운다
+SIG_NORETURN_A2   = 3.8    # [m/s²] 되돌릴 수 없는 지점 판정 — 실측 대표 2단 (BRAKING.md 2.21/3.82)
+SIG_BRAKE1_MIN_S  = 0.5    # [s] 1단은 이만큼 물고서야 푼다 (행정 — CORNER_BRAKE_MIN_HOLD_S 와 같은 이유)
+SIG_STOPPED_KMH   = 0.5    # [km/h] 정지 지점 전에 섰다고 볼 GPS 속도 (엔코더 0 과 함께)
+#  신호 접근 단계 (DRIVE_RUN 안에서만 산다) — /drive_diag sig_phase 의 값이다.
+#    ARMED 정지 신호를 받았지만 아직 평소대로 달린다(코스트 시작점 전) · COAST 펄스 0 · BRAKE1 펄스 0 + 1단
+SA_NONE, SA_COAST, SA_BRAKE1, SA_ARMED = 0, 1, 2, 3
 
 
 def tl_label(z):
@@ -2197,6 +2236,13 @@ class DrivingNode(Node):
         self._tt = None               # 마지막 /traffic_timer 배열
         self._tt_t = 0.0              # 그 수신 시각 — ★신선할 때만 믿는다★
         self._tt_t0_said = None       # 이벤트로 이미 말한 0초 기준 시각
+        # ── 신호 접근 [2026-10-01] ── 상수절 '신호 접근' 참고
+        self._light = tt.LightFilter()   # 카메라 프레임 판정 → 적색·녹색 확정
+        self._cam_latch = None        # 카메라 빨간불을 확정한 구간의 i0 (녹색을 봐야 풀린다)
+        self._sa_phase = SA_NONE      # 신호 접근 단계 (코스트 / 1단)
+        self._sa_i0 = -1              # 접근 중인 구간
+        self._sa_t1 = 0.0             # 1단을 문 시각 (최소 물림)
+        self._sa_left = float('nan')  # 정지 지점까지 남은 거리 [m] — /drive_diag 진단 전용
 
         # ── 진단 계측 (/drive_diag) ★제어 판단에 절대 쓰지 않는다★ ──
         #   여기 있는 값이 제어로 새어 들어가면 '계측을 위해 거동이 바뀌는' 상태가
@@ -2266,6 +2312,9 @@ class DrivingNode(Node):
         #  ★본선 코스 신호 타이머 [2026-09-30]★ maincourse.csv 에서만 읽는다(tl_go).
         self.create_subscription(Float64MultiArray, tt.TOPIC,
                                  self.cb_traffic_timer, 10)
+        #  ★카메라 색 [2026-10-01]★ 카메라 구간(T5·그 밖 경로의 T)의 유일한 입력.
+        #  traffic_light 는 RELIABLE·depth 10 으로 낸다 — 기본 QoS 로 붙는다.
+        self.create_subscription(String, tt.TL_STATE_TOPIC, self.cb_tl_state, 10)
         self.create_subscription(Float32,   '/speed',        self.cb_speed,   10)
         self.create_subscription(Bool,      '/vehicle_mode', self.cb_mode,    10)
         self.create_subscription(Bool,      '/estop',        self.cb_estop,   10)
@@ -2604,19 +2653,53 @@ class DrivingNode(Node):
         """
         return bool(tl_label(self.zone_at(self.wp_idx if idx is None else idx)))
 
-    def tl_camera_zone(self):
-        """지금 ★카메라가 개입해도 되는★ T 구간인가.  [2026-09-30]
+    def signal_kind(self, label):
+        """이 신호를 누가 판단하나 → 'timer' | 'camera' | None(아무것도 안 한다). [2026-10-01]
 
-        본선 코스가 아니면 종전 그대로 T 전부다. 본선 코스에서는 T5(와 번호 없는 T)
-        뿐이다 — T1 은 카메라를 '보기만' 하고(타이머 초기화), T2 는 무시, T3·T4 는
-        타이머가 판단한다(상수절 '본선 코스 — T1~T5').
+        본선 코스 : T1·T3·T4 타이머 · T5 와 번호 없는 T 카메라 · T2·모르는 번호 None.
+        그 밖 경로 : T 전부 카메라(종전 그대로 — 번호는 select_route 가 이미 접었다).
+        ★TRAFFIC_LIGHT_ENABLE 이 False 면 카메라 구간도 None★ — 카메라 없이 종전처럼 돈다.
         """
-        label = tl_label(self.zone_at(self.wp_idx))
         if not label:
-            return False
-        if not self._maincourse:
-            return True
-        return label == 'T' or label in tt.CAMERA_SIGNALS
+            return None
+        if self._maincourse:
+            if label in tt.TIMER_SIGNALS:
+                return 'timer'
+            if not (label == 'T' or label in tt.CAMERA_SIGNALS):
+                return None
+        return 'camera' if TRAFFIC_LIGHT_ENABLE else None
+
+    def cb_tl_state(self, msg: String):
+        """카메라 프레임 판정(RED·RED_FAR·GREEN·UNKNOWN). ★카메라 구간의 유일한 입력★ [2026-10-01]"""
+        self._light.feed(str(msg.data).strip(), time.time())
+
+    def cam_red(self, i0):
+        """카메라 구간 i0 에서 ★빨간불을 확정했고 아직 녹색을 못 봤는가★. [2026-10-01]
+
+        ★녹색을 봐야 풀린다★ 정지선 앞에서 등기구가 화면 위로 벗어나면 UNKNOWN 이 이어지는
+        것이 정상이라, '빨간불이 안 보인다' 로 풀면 빨간불에 굴러간다(상수절 '신호 접근').
+        ★카메라가 죽었으면(판정 2 s 끊김) 못 본 것★ — 풀어 준다(fail-open).
+        래치는 구간 i0 에 묶인다 — 다른 교차로의 빨간불이 다음 구간으로 넘어오지 않는다.
+        """
+        now = time.time()
+        lf = self._light
+        if not lf.alive(now):
+            self._cam_latch = None
+        elif lf.green_confirmed(now):
+            self._cam_latch = None
+        elif lf.red_confirmed(now):
+            self._cam_latch = i0
+        return self._cam_latch == i0
+
+    def signal_stop_wanted(self, label, i0):
+        """구간 (label, i0) 이 지금 ★정지 신호★ 인가. 타이머 : 녹색이 아니면(모르면) 정지.
+        카메라 : 빨간불 확정 뒤 녹색 전. 판단하지 않는 신호는 항상 False."""
+        kind = self.signal_kind(label)
+        if kind == 'timer':
+            return not self.tl_go(label)
+        if kind == 'camera':
+            return self.cam_red(i0)
+        return False
 
     # ══════════════════════════════════════════════════════════════════════════
     #  본선 코스 신호 타이머 [2026-09-30] — 판단 재료는 traffic_timer 가 준다
@@ -2663,22 +2746,159 @@ class DrivingNode(Node):
                 return label
         return ''
 
-    def timer_signal_here(self):
-        """본선 코스에서 ★타이머가 판단하는 T 구간 안★ 이고 아직 판단 전이면
-        (라벨, i0). 아니면 None.
+    def signal_zone_here(self):
+        """지금 판단할 T 구간 (라벨, i0, i1) — ★구간 안이고 아직 처리 전★ 이면. 아니면 None.
 
-        '구간 시작을 지났는가' 가 아니라 '지금 안에 있는가' 로 본다 — E-STOP 이
-        대기를 지우고 재개해도 다음 틱에 다시 판단하게 하려는 것이다(상수절).
+        '구간 시작을 지났는가' 가 아니라 '지금 안에 있는가' 로 본다 — E-STOP 이 대기를
+        지우고 재개해도 다음 틱에 다시 판단하게 하려는 것이다(상수절 '본선 코스').
         """
-        if not self._maincourse:
-            return None
         i = self.wp_idx
         for label, i0, i1 in self._tl_segs:
             if i0 <= i <= i1:
-                if label in tt.TIMER_SIGNALS and i0 not in self._tl_done:
-                    return label, i0
-                return None
+                if i0 in self._tl_done or self.signal_kind(label) is None:
+                    return None
+                return label, i0, i1
         return None
+
+    def arc_here(self):
+        """차(GPS 안테나)의 경로 위 호길이 [m] — wp_idx 이웃 선분에 내린 수선의 발.
+        [2026-10-01] 정지 지점까지의 거리를 WP 간격(≈0.5 m)보다 곱게 재려고 둔다."""
+        n = len(self.waypoints)
+        if n < 2 or len(self.wp_s) != n:
+            return 0.0
+        best = None
+        for i in range(max(0, self.wp_idx - 2), min(n - 1, self.wp_idx + 2)):
+            ax, ay = self.waypoints[i]
+            bx, by = self.waypoints[i + 1]
+            vx, vy = bx - ax, by - ay
+            L2 = vx * vx + vy * vy
+            if L2 <= 0.0:
+                continue
+            u = max(0.0, min(1.0, ((self.x - ax) * vx + (self.y - ay) * vy) / L2))
+            ex, ey = self.x - (ax + u * vx), self.y - (ay + u * vy)
+            dd = ex * ex + ey * ey
+            if best is None or dd < best[0]:
+                best = (dd, self.wp_s[i] + u * math.sqrt(L2))
+        return best[1] if best else self.wp_s[min(self.wp_idx, n - 1)]
+
+    def _sig_need1(self, v):
+        """1단으로 v → SIG_V_OK 에 딱 맞출 수 있는 마지막 거리 [m] (상수절 '신호 접근').
+
+        ★여유를 더하지 않는다★ 종점 접근은 GOAL_BRAKE_MARGIN_M(0.5 m)을 얹지만 여기서는
+        그만큼 일찍 v_ok 에 닿고 1단이 계속 물려 ★정지 지점보다 앞에서 서 버린다★(모의 :
+        정지선 앞 1.7~2.0 m). 1단이 모자라는 쪽은 '2단 앞당김' 이 정지선을 지켜 준다."""
+        return self.decel_dist(v, SIG_V_OK_MS, self.goal_a1, GOAL_BRAKE1_LAG_S)
+
+    @staticmethod
+    def _sig_coast_m(v):
+        """코스트만으로 v → SIG_V_OK 가 되는 거리 [m]. v ≤ v_ok 면 0 (정지 지점까지 그대로 간다)."""
+        return max(0.0, v * v - SIG_V_OK_MS * SIG_V_OK_MS) / (2.0 * A_COAST_MS2)
+
+    def signal_step(self):
+        """T 구간 한 틱 — ★정지 신호면 접근(펄스 0 · 필요하면 1단)★, 정지 지점(끝단 1 m)에
+        닿으면 S 서브페이즈로 넘긴다. → True 면 이번 틱은 서브페이즈가 돌았다(run_follow 끝).
+        [2026-10-01 — 상수절 '신호 접근']
+
+        ★펄스 0 은 run_follow 가 건다★ (_sa_phase 가 COAST·BRAKE1) — 곡률·종점이 낸 값을 덮는다.
+        """
+        z = self.signal_zone_here()
+        now = time.time()
+        if z is None:
+            self._sa_left = float('nan')
+            if self._sa_phase != SA_NONE:
+                self._sa_end(now, "신호 구간을 벗어났다", force=True)
+            return False
+        label, i0, i1 = z
+        d = self.wp_s[i1] - SIG_STOP_BEFORE_M - self.arc_here()
+        self._sa_left = d
+        stop = self.signal_stop_wanted(label, i0)
+        v = self.gps_ms()
+        v_eff = v if v is not None else self.drive_pulse * MS_PER_PULSE   # ★모르면 빠르다★
+        vk = f"{v * 3.6:.1f}km/h" if v is not None else "속도 모름"
+
+        if not stop:
+            if self._sa_phase == SA_ARMED:             # 아직 코스트 전 — 풀 감속이 없다
+                self._sa_phase = SA_NONE
+                self.event(f"🟢 {label} 진행 신호 [{self.signal_why(label)}] — 코스트 전이라 "
+                           f"그대로 간다 (정지선까지 {d + SIG_STOP_BEFORE_M:.1f}m)")
+            elif self._sa_phase != SA_NONE:
+                self._sa_end(now, f"🟢 {label} 진행 신호 [{self.signal_why(label)}] — "
+                                  f"감속을 풀고 다시 가속 (정지선까지 {d + SIG_STOP_BEFORE_M:.1f}m)")
+            if d <= 0.0:
+                self._tl_done.add(i0)          # 진행 신호로 정지 지점을 지났다 — 이 구간은 끝
+            return False
+
+        # ── 정지 신호 ──
+        if self._sa_phase == SA_NONE:
+            #  ★되돌릴 수 없는 지점★ 대표 2단으로도 정지선 앞에 못 서면 통과한다.
+            #  ★속도를 알 때만★ — 모르는 채로 '못 선다' 고 보면 정지선 앞에 선 차가 통과해 버린다.
+            if v is not None and d + SIG_STOP_BEFORE_M < self.stop_dist(
+                    v, SIG_NORETURN_A2, GOAL_BRAKE2_LAG_S):
+                self._tl_done.add(i0)
+                self.event(f"⚠️ {label} 정지 신호가 늦었다 [{self.signal_why(label)}] — 정지선까지 "
+                           f"{d + SIG_STOP_BEFORE_M:.1f}m 인데 {vk} 라 2단으로도 못 선다. ★통과★")
+                return False
+            self._sa_phase, self._sa_i0 = SA_ARMED, i0
+            dc = self._sig_coast_m(v_eff)
+            self.event(f"🚦 {label} 정지 신호 [{self.signal_why(label)}] — 정지선 1 m 앞까지 "
+                       f"{d:.1f}m ({vk}). "
+                       + ("곧바로 펄스 0" if d <= dc else f"{dc:.1f}m 앞부터 펄스 0"))
+
+        coasting = self._sa_phase in (SA_COAST, SA_BRAKE1)
+        stopped = (coasting and self.enc_pulse <= ENC_STOP_EPS
+                   and (v is None or v * 3.6 < SIG_STOPPED_KMH))
+        if d <= 0.0 or stopped:
+            self.begin_signal_stop(label, i0, "정지선 1 m 앞 도달" if d <= 0.0
+                                   else f"정지 지점 {d:.1f}m 앞에서 섰다")
+            self.run_stop_zone(self._last_steer)
+            return True
+        #  ★1단으로도 모자라면 2단을 앞당긴다★ 정지선을 넘지 않는 마지막 순간(2단 하한).
+        if v_eff > SIG_V_OK_MS and d + SIG_STOP_BEFORE_M <= self.stop_dist(
+                v_eff, GOAL_BRAKE2_MS2, GOAL_BRAKE2_LAG_S):
+            self.begin_signal_stop(label, i0, f"2단 앞당김 — {vk} 로 정지선까지 "
+                                              f"{d + SIG_STOP_BEFORE_M:.1f}m")
+            self.run_stop_zone(self._last_steer)
+            return True
+        #  ★코스트는 '코스트로 정지 지점에서 v_ok 가 되는 거리' 부터★ — 그 전에 펄스를 끊으면
+        #  느리게 들어온 차가 정지선 한참 앞에서 서 버린다. 7펄스면 그 거리(44 m)가 구간보다
+        #  길어 들어서자마자 펄스 0 이다(사용자 지시 그대로).
+        if self._sa_phase == SA_ARMED and d <= self._sig_coast_m(v_eff):
+            self._sa_phase = SA_COAST
+        if (self._sa_phase == SA_COAST and v_eff > SIG_V_OK_MS
+                and d <= self._sig_need1(v_eff)
+                and v_eff * v_eff - 2.0 * A_COAST_MS2 * d > SIG_V_OK_MS * SIG_V_OK_MS):
+            self._sa_phase, self._sa_t1 = SA_BRAKE1, now
+            self.event(f"🔻 {label} 1단 — 코스트로는 정지 지점에서 {SIG_V_OK_MS * 3.6:.1f}km/h "
+                       f"이하로 못 내려간다 ({vk}, {d:.1f}m 남음 · 1단 필요 "
+                       f"{self._sig_need1(v_eff):.1f}m)")
+        if self._sa_phase == SA_BRAKE1:
+            self.set_brake(BRAKE_SOFT)          # ★매 틱 주장★ — 남이 풀어도 되돌린다
+        return False
+
+    def _sa_end(self, now, why, force=False):
+        """신호 접근을 끝낸다(진행 신호·구간 이탈). 1단이면 ★최소 물림 뒤에★ 푼다 — 물자마자
+        풀면 리니어가 왕복만 한다. force 면 기다리지 않는다(구간을 벗어났다)."""
+        if (self._sa_phase == SA_BRAKE1 and not force
+                and now - self._sa_t1 < SIG_BRAKE1_MIN_S):
+            return                                    # 다음 틱에 다시 본다 — 펄스 0 유지
+        if self._sa_phase == SA_BRAKE1 and self.brake_now == BRAKE_SOFT \
+                and self._goal_phase == GOAL_PHASE_NONE:
+            self.set_brake(BRAKE_NONE)
+        self._sa_phase = SA_NONE
+        self.event(why)
+
+    def signal_why(self, label):
+        """이벤트 문구용 — 무엇이 그렇게 판단했나."""
+        if self.signal_kind(label) == 'timer':
+            return self.tt_phase_txt()
+        lf, now = self._light, time.time()
+        if not lf.alive(now):
+            return "카메라 판정 없음"
+        if lf.red_confirmed(now):
+            return "카메라 빨간불"
+        if lf.green_confirmed(now):
+            return "카메라 녹색"
+        return "카메라 신호등 안 보임"
 
     def _say_timer_init(self):
         """0초가 새로 잡히면 ★한 번★ 이벤트로 남긴다 — record 의 drive_event 에
@@ -2822,6 +3042,7 @@ class DrivingNode(Node):
         ok = (self.state == S_DRIVE_RUN
               and self._goal_phase == GOAL_PHASE_NONE
               and self._sp_state == SP_NONE
+              and self._sa_phase == SA_NONE            # [2026-10-01] 신호 접근
               and self.tl_brake_req() == 0
               and not self.estop)
 
@@ -2868,7 +3089,8 @@ class DrivingNode(Node):
 
     def _lz_release(self, why):
         self._lz_slow = False
-        self.set_brake(BRAKE_NONE)
+        if self._sa_phase == SA_NONE:            # [2026-10-01] 신호 접근의 1단은 안 푼다
+            self.set_brake(BRAKE_NONE)
         self.event(f"🛞 인계 서행 해제 — {why}. {LIDAR_HOLD_PULSE}펄스로 인계 대기")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2919,17 +3141,22 @@ class DrivingNode(Node):
                    f"(terrain='S'), 리니어 2단. 완전정지 뒤 "
                    f"{STOP_HOLD_AFTER_ZERO_S:.1f}초 대기 후 재출발")
 
-    def begin_signal_stop(self, label, i0):
-        """본선 코스 T1·T3·T4 에 들어섰는데 타이머상 녹색이 아니다 — ★즉시 리니어 2단★.
-        [2026-09-30] 서브페이즈는 S 와 같고, 대기를 끝내는 조건만 다르다(run_stop_zone)."""
+    def begin_signal_stop(self, label, i0, how):
+        """정지 신호로 ★정지 지점(끝단 1 m)에 닿았거나 앞당겨 서야 한다★ — 즉시 리니어 2단.
+        [2026-09-30 신설 → 2026-10-01 신호 접근의 끝] 서브페이즈는 S 와 같고, 대기를 끝내는
+        조건만 다르다(run_stop_zone — 진행 신호가 되면). 접근(_sa_phase)은 여기서 넘겨준다."""
+        self._sa_phase = SA_NONE
         self._sp_kind = label
         self._sp_begin(i0)
-        if label == tt.INIT_SIGNAL:
-            why = "적색→녹색 전환을 볼 때까지 선다 (그 순간이 타이머 0초)"
+        if self.signal_kind(label) == 'timer' and label == tt.INIT_SIGNAL \
+                and not (self._tt_fresh() and self._tt[tt.F_INIT] > 0.5):
+            wait = "적색→녹색 전환을 볼 때까지 선다 (그 순간이 타이머 0초)"
+        elif self.signal_kind(label) == 'timer':
+            wait = f"타이머상 녹색({tt.window_txt(label)})이 되면 출발"
         else:
-            why = f"타이머상 녹색({tt.window_txt(label)})이 되면 출발"
-        self.event(f"🚦 {label} 신호 대기 — WP {i0}, 리니어 2단. {why} "
-                   f"[{self.tt_phase_txt()}]")
+            wait = "카메라가 녹색을 보면 출발"
+        self.event(f"🚦 {label} 신호 대기 — {how}, 리니어 2단. {wait} "
+                   f"[{self.signal_why(label)}]")
 
     def _sp_begin(self, idx):
         """S·신호 대기 공통 — 서브페이즈에 들어가며 리니어 2단을 문다."""
@@ -2939,6 +3166,7 @@ class DrivingNode(Node):
         self._sp_zero_t = 0.0
         self._sp_ready_t = 0.0
         self._lz_slow = False                    # 서행 중이었다면 소유권을 넘긴다
+        self._sa_phase = SA_NONE                 # 신호 접근 중이었다면 여기서 넘겨받는다
         self.set_brake(BRAKE_FULL)
         self._publish_brake(force=True)
         self.publish_lstatus(LSTATUS_STOP)       # 한 틱 먼저 알린다
@@ -2980,9 +3208,10 @@ class DrivingNode(Node):
             if self._sp_kind:
                 #  ★신호 대기 — 타이머가 녹색이라고 할 때만 푼다★ 끊겼거나 초기화
                 #  전이면 tl_go 가 False 라 계속 선다(모르면 적색).
-                if not self.tl_go(self._sp_kind):
+                if self.signal_stop_wanted(self._sp_kind, self._sp_idx):
                     return
-                why = f"🟢 {self._sp_kind} 녹색 [{self.tt_phase_txt()}] — 리니어 0단"
+                why = (f"🟢 {self._sp_kind} 진행 신호 [{self.signal_why(self._sp_kind)}]"
+                       f" — 리니어 0단")
             elif now - self._sp_ready_t >= STOP_HOLD_AFTER_ZERO_S:
                 why = f"🟢 {STOP_HOLD_AFTER_ZERO_S:.1f}초 경과 — 리니어 0단"
             else:
@@ -3124,6 +3353,10 @@ class DrivingNode(Node):
         #  굴러가며 목표까지 d 가 남았다' 는 전제 위에 서 있다.
         self._lz_slow = False
         self._sp_state = SP_NONE
+        #  ★[2026-10-01] 신호 접근도 지운다 — 재개한 첫 틱에 다시 판단한다★
+        #  ★카메라 빨간불 래치(_cam_latch)는 지우지 않는다★ 정지선 앞에 서 있는 동안
+        #  등기구가 안 보이면(UNKNOWN) 래치가 다시 서지 않아 빨간불에 굴러간다.
+        self._sa_phase = SA_NONE
         self.set_brake(BRAKE_NONE)
 
     def cb_drive_cmd(self, msg: String):
@@ -3302,35 +3535,31 @@ class DrivingNode(Node):
         if self._maincourse:
             self._warn_maincourse_order(segs)
 
-        #  ★구간이 정지거리를 담는가★ — 이 결정(구간 밖 즉시 해제)의 유일한 위험이다.
-        #     ★WP 간격을 가정하지 않고 실제 경로에서 잰다★ 지금 매핑은 0.25m 고정이지만
-        #     구 CSV 는 0.23~0.43m 로 제각각이라, 0.25 를 곱하면 길이를 과소평가해
-        #     ★경고가 안 떠야 할 곳에서 뜨거나 떠야 할 곳에서 안 뜬다.★
-        #     (wp_s 는 아직 없다 — 여기는 경로 '선택' 시점이라 좌표 변환 전이다.)
-        #  [2026-09-30] 본선 코스의 T1·T3·T4 는 ★들어서는 순간 2단★ 이라 같은 비교가
-        #     '구간 끝(≈정지선)을 넘어 서지 않는가' 가 된다. T2 는 아무것도 안 하므로 뺀다.
+        #  ★구간이 정지 접근을 담는가★ [2026-10-01 — 상수절 '신호 접근']
+        #     구간 끝 = 정지선. 정지 신호를 구간 시작에서 봤을 때 drive_pulse 속도에서
+        #       · 1단으로 끝단 1 m 에 맞추려면  1 m + need1        (모자라면 2단을 앞당겨 선다)
+        #       · 2단으로라도 정지선 앞에 서려면 2단 정지거리(하한)  (모자라면 정지선을 넘는다)
+        #     ★WP 간격을 가정하지 않고 실제 경로에서 잰다★ (wp_s 는 아직 없다 — 좌표 변환 전)
         v = self.drive_pulse * MS_PER_PULSE
-        need = self.stop_dist(v, GOAL_BRAKE2_MS2, GOAL_BRAKE2_LAG_S)
+        need_soft = SIG_STOP_BEFORE_M + self._sig_need1(v)
+        need_hard = self.stop_dist(v, GOAL_BRAKE2_MS2, GOAL_BRAKE2_LAG_S)
         for label, i0, i1 in segs:
-            if self._maincourse and label in tt.IGNORED_SIGNALS:
+            if self.signal_kind(label) is None:
                 continue
             span_m = self._span_m(i0, i1)
-            if not math.isfinite(span_m) or span_m >= need:
+            if not math.isfinite(span_m) or span_m >= need_soft:
                 continue
-            if self._maincourse and label in tt.TIMER_SIGNALS:
+            if span_m < need_hard:
                 self.event(
-                    f"⚠️ {label} 구간 WP {i0}~{i1} 이 {span_m:.1f}m 뿐이다 — "
-                    f"들어서는 순간 2단으로 서는데 {self.drive_pulse}펄스"
-                    f"({v * 3.6:.1f}km/h) 2단 정지거리가 {need:.1f}m 라 ★구간 끝"
-                    f"(≈정지선)을 넘어 설 수 있다★ — {label} 시작을 "
-                    f"{need - span_m:.1f}m 앞당겨 적을 것")
-                continue
-            self.event(
-                f"⚠️ 신호등 구간 {label} WP {i0}~{i1} 이 {span_m:.1f}m 뿐이다 — "
-                f"{self.drive_pulse}펄스({v * 3.6:.1f}km/h) 2단 정지거리 "
-                f"{need:.1f}m 보다 짧다. ★구간을 벗어나면 제동이 즉시 풀리므로★ "
-                f"빨간불에 물린 채 교차로로 굴러갈 수 있다 — "
-                f"T 를 정지선 뒤로 {need - span_m:.1f}m 더 이어서 적을 것")
+                    f"⚠️ {label} 구간 WP {i0}~{i1} 이 {span_m:.1f}m 뿐이다 — {self.drive_pulse}펄스"
+                    f"({v * 3.6:.1f}km/h) 2단 정지거리 {need_hard:.1f}m 보다 짧아 ★구간 시작에서 "
+                    f"정지 신호를 봐도 정지선을 넘어 선다★ — {label} 시작을 "
+                    f"{need_hard - span_m:.1f}m 앞당겨 적을 것")
+            else:
+                self.event(
+                    f"ℹ️ {label} 구간 WP {i0}~{i1} {span_m:.1f}m — {self.drive_pulse}펄스로 "
+                    f"정지선 1 m 앞에 1단으로 맞추려면 {need_soft:.1f}m 가 필요하다. 정지 신호면 "
+                    f"2단을 앞당겨 정지선 앞에 선다(조금 일찍 선다)")
 
     def _warn_maincourse_order(self, segs):
         """본선 코스의 T 라벨이 ★타이머가 돌 수 있는 순서★ 인가.  [2026-09-30]
@@ -3437,6 +3666,8 @@ class DrivingNode(Node):
         #  ★[2026-09-30] T 구간 표★ 라벨별 토막. 본선 코스의 T1·T3·T4 판단과 /tl_zone 이 쓴다.
         self._tl_segs = self._tl_segments(self.wp_zone)
         self._tl_done = set()
+        self._cam_latch = None
+        self._sa_phase = SA_NONE
         self._wp_idx_prev = 0
         self._sp_state = SP_NONE
         self._sp_kind = ''
@@ -3617,6 +3848,7 @@ class DrivingNode(Node):
         self._sp_state = SP_NONE
         self._lz_slow = False
         self._lz_done_s0 = None
+        self._sa_phase = SA_NONE          # [2026-10-01] 신호 접근도 (리니어는 아래 한 곳이)
         # ★라이다 이양도 함께 내린다 [2026-09-01]★ 도착·이탈·정지명령·수동전환으로
         #   상태가 바뀌면 조종권은 무조건 이 노드로 돌아온다. 내리지 않으면 도착해
         #   선 차를 mppi 가 계속 몰 수 있다 — publish_state_topics 가 다음 틱에
@@ -4144,25 +4376,18 @@ class DrivingNode(Node):
                 self.begin_stop_zone(hit)
                 self.run_stop_zone(self._last_steer)
                 return
-            #  ── 본선 코스 T1·T3·T4 — ★들어서는 순간 한 번 판단★ [2026-09-30] ──
-            #    타이머상 녹색이면 통과(그 구간은 다시 안 본다), 아니면 그 자리에서
-            #    2단으로 서서 녹색을 기다린다(상수절 '본선 코스 — T1~T5').
-            sig = self.timer_signal_here()
-            if sig is not None:
-                label, i0 = sig
-                if self.tl_go(label):
-                    self._tl_done.add(i0)
-                    self.event(f"🚦 {label} 통과 — 녹색 [{self.tt_phase_txt()}]"
-                               + (" · 적색→녹색 전환을 이미 봤다"
-                                  if label == tt.INIT_SIGNAL else ""))
-                else:
-                    self.begin_signal_stop(label, i0)
-                    self.run_stop_zone(self._last_steer)
-                    return
+            #  ── 신호 접근 [2026-10-01] — ★정지선 1 m 앞에 맞춰 선다★ (상수절 '신호 접근') ──
+            #    진행 신호면 아무것도 안 하고, 정지 신호면 펄스 0 + (필요하면) 1단을 쥔 채
+            #    아래로 내려가며, 정지 지점에 닿으면 S 서브페이즈로 넘어가 여기서 끝난다.
+            if self.signal_step():
+                return
         else:
             #  종점이 리니어를 잡고 있으면 S 를 발동하지 않는다 — 어차피 종점이
             #  세운다. 다만 ★적었는데 안 섰다★ 가 로그에 남아야 한다.
             self._warn_lost_stop(prev_idx, "종점 접근제동이 리니어를 잡고 있어")
+            if self._sa_phase != SA_NONE:       # [2026-10-01] 신호 접근은 종점에 넘긴다
+                self._sa_end(time.time(), "🚦 신호 접근 중단 — 종점 접근이 리니어를 잡았다",
+                             force=True)
 
         # ★경로이탈 안전정지★ 매핑 경로에서 CTE_DEVIATION_M 이상 벗어나면 조향을
         #   더 계산하지 않고 곧바로 도착과 같은 정지 절차로 넘긴다.
@@ -4241,6 +4466,12 @@ class DrivingNode(Node):
         #   이쪽이 이긴다. 조향은 그대로 계산해 내보낸다 — 제동 중에도 크립 중에도
         #   차는 여전히 종점을 향해 굴러간다.
         pulse = self.goal_approach(s_left, d2goal, pulse)
+
+        # ── 판단 3-1. 신호 접근 [2026-10-01] — ★정지 신호면 명령펄스 0★ (사용자 지시) ──
+        #   종점 바로 뒤 : 종점 접근 > S > ★신호 접근★ > L 인계 서행 > 코너 1단.
+        #   제동(1단)은 signal_step 이 이미 쥐었다 — 아래 둘은 _sa_phase 를 보고 손을 뗀다.
+        if self._sa_phase in (SA_COAST, SA_BRAKE1):
+            pulse = 0
 
         # ── 판단 3-2. 라이다 인계 전 서행 [2026-09-07] ──
         #   ★종점 바로 뒤·코너 바로 앞★ 이 자리가 소유권 순서다:
@@ -4748,6 +4979,7 @@ class DrivingNode(Node):
               and self._goal_phase == GOAL_PHASE_NONE   # 종점이 소유권을 가졌으면 손 뗀다
               and self._sp_state == SP_NONE             # ★S 일시정지★ [2026-09-07]
               and not self._lz_slow                     # ★라이다 인계 서행★ [2026-09-07]
+              and self._sa_phase == SA_NONE             # ★신호 접근★ [2026-10-01]
               and self.tl_brake_req() == 0              # 신호등이 소유권을 가졌으면 손 뗀다
               and not self.estop
               and v_now is not None)
@@ -4860,7 +5092,9 @@ class DrivingNode(Node):
         앞에 있다) 이 함수는 전제조건 붕괴로 불려 와 ★남이 방금 문 종점 제동을★
         풀어 버린다. 그래서 종점이 손을 대고 있으면(phase != NONE) 건드리지 않는다.
         """
-        if self.brake_now == BRAKE_SOFT and self._goal_phase == GOAL_PHASE_NONE:
+        #  [2026-10-01] 신호 접근도 1단을 쓴다 — 같은 이유로 그쪽이 쥐고 있으면 안 건드린다.
+        if self.brake_now == BRAKE_SOFT and self._goal_phase == GOAL_PHASE_NONE \
+                and self._sa_phase == SA_NONE:
             self.set_brake(BRAKE_NONE)
         self._cb_state = CB_LOCKOUT
         self._cb_release_t = now
@@ -5728,21 +5962,17 @@ class DrivingNode(Node):
         return best_signed
 
     def tl_permit_now(self):
-        """지금 신호등이 이 차에 손을 대도 되는가.  [2026-09-10]
+        """traffic_light 에게 ★제동을 맡기는가★ — [2026-10-01] 부터 ★항상 False★.
 
-        세 항의 AND 다:
-          ① TRAFFIC_LIGHT_ENABLE — 코드 내부 상수 (기능 자체의 on/off)
-          ② state == DRIVE_RUN   — 자율주행으로 실제 굴러가는 중일 때만
-          ③ tl_camera_zone()     — ★사람이 terrain 열에 'T' 를 적은 구간★
-                                   [2026-09-30] 본선 코스에서는 T5(와 번호 없는 T)만
-
-        ★S(일시정지)·L(라이다) 과 달리 여기서 아무것도 '하지' 않는다★ 이 함수는
-        허락만 낸다. 빨간불 판정도, 정지선도, 리니어 체결도 전부 traffic_light 가
-        하고, 그 결과는 /tl_brake_req 로 돌아와 _publish_brake 가 max() 로 합친다.
+        종전(2026-09-10~09-30)에는 TRAFFIC_LIGHT_ENABLE · DRIVE_RUN · T 구간 셋의 AND 였고,
+        그 허락 아래 traffic_light 가 정지선·신호등 크기로 스스로 2단을 물었다.
+        ★지금은 정지를 이 노드가 한다★ — 정지선(T 구간 끝) 1 m 앞에 맞춰 코스트·1단·2단으로
+        세우는데(상수절 '신호 접근'), 카메라 노드가 따로 2단을 물면 두 주인이 한 리니어를
+        다툰다. 카메라는 ★색만★ 보고(/tl/state → cb_tl_state), 토픽은 계속 False 로 낸다 —
+        신선도가 곧 허락이라 끊기면 그쪽이 '허락 없음' 으로 본다(값은 같다).
+        ※ master 의 '신호등 인지' 체크박스(/tl_enable)는 수동조종용이라 그대로다.
         """
-        return bool(TRAFFIC_LIGHT_ENABLE
-                    and self.state == S_DRIVE_RUN
-                    and self.tl_camera_zone())
+        return False
 
     def publish_state_topics(self):
         self.pub_dstate.publish(String(data=self.state))
@@ -5750,12 +5980,8 @@ class DrivingNode(Node):
         #   ★신선도가 곧 허락이다★ 이 노드가 죽으면 값이 끊겨 traffic_light 가 스스로
         #   손을 뗀다(그쪽 TL_ENABLE_STALE_S). 그래서 False 도 계속 내보낸다.
         #
-        #   ★[2026-09-10] 여기에 'T 구간 안인가' 한 항이 더해졌다 (사용자 지시)★
-        #   신호등 노드는 상시 돌지만 ★개입은 사람이 CSV 에 적은 T 구간에서만★ 유효하다.
-        #   traffic_light.py 는 한 줄도 고치지 않았다 — 이 토픽이 이미 '허락' 계약이라
-        #   허락의 범위만 좁히면 그쪽 거동이 통째로 따라온다(상수절 'terrain T' 참고).
-        #   ⚠️ ★구간을 벗어나면 즉시 False 다 (사용자 결정)★ 그래서 T 는 정지선 뒤로
-        #   정지거리만큼 더 이어져 있어야 하고, select_route 가 그것을 재서 경고한다.
+        #   ★[2026-10-01] 이제 항상 False 다★ 신호 정지는 이 노드가 정지선 1 m 앞에 맞춰
+        #   한다(상수절 '신호 접근') — 카메라는 색만 본다(tl_permit_now 주석).
         self.pub_tl_permit.publish(Bool(data=self.tl_permit_now()))
         #  ★[2026-09-30] 지금 상대하는 신호★ traffic_timer 는 이것이 'T1' 인 동안만
         #  전환을 본다. 매 틱 낸다 — 그쪽이 신선도로 'T1 을 상대 중인가' 를 판정한다.
@@ -5868,6 +6094,13 @@ class DrivingNode(Node):
             float(self._bl_dir),                      # steer_bl_dir −1/0/+1 (끄면 0)
             float(self._diag_yd),                     # yaw_damp_deg [도로휠 deg]
             float(self._diag_ay_cap),                 # corner_ay_cap_ms (끔·곧은 길 nan)
+            # ── [2026-10-01] 신호 접근 2종 ── 정지 신호에 '어떻게' 섰는지를 가른다.
+            #   sig_phase 0 없음 / 1 코스트(펄스 0) / 2 1단 / 3 정지 신호지만 코스트 전(평소대로 달림)
+            #   — 2단은 brake_level·lstatus 'S' 로 본다.
+            #   sig_left_m = 정지 지점(T 구간 끝 − 1 m)까지 남은 호길이. T 구간 밖이면 nan.
+            #   2단이 물린 행의 sig_left_m 이 0 근처면 정지선 1 m 앞에서 섰다는 뜻이다.
+            float(self._sa_phase),                    # sig_phase
+            float(self._sa_left),                     # sig_left_m
         ]
         self.pub_diag.publish(diag)
 

@@ -57,13 +57,17 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
     ─────────  ────────────────────────────────────   ───────────────────────
     L / l      라바콘 회피 (★여러 행 연속★)             mppi_local_planner
     S / s      3초 일시정지 후 재출발 (★한 행★)         white1/driving 내부
-    T / t      ★신호등 인지 구간★ (★여러 행 연속★)      white1/traffic_light
+    T / t      ★신호등 구간★ (★여러 행 연속★)          white1/driving
+               ★끝 = 정지선★ [2026-10-01] — 빨간불이면   (카메라 traffic_light 는
+               정지선 1 m 앞에 맞춰 선다                  ★색만★ 본다)
     T1 ~ T5    ★본선 코스(maincourse.csv)에서만★        white1/driving + traffic_timer
                T1 타이머 0초 · T2 무시 · T3·T4 타이머   (prompt 와 한 프로세스)
                · T5 카메라 [2026-09-30] — 다른 경로에서는 번호를 버리고 T 로 본다
     그 밖       GPS 추종                               white1/driving
     (빈 칸·'0'·숫자·열 없음 — ★기존 CSV 가 그대로 돈다★)
 
+    ⚠️ [2026-10-01] 아래 두 문단(/tl_permit 으로 traffic_light 가 세운다 · T 를 정지선 뒤로
+    더 적는다)은 옛 방식이다 — 지금은 구간 끝이 정지선이고 driving 이 세운다(CLAUDE.md 4.10).
     ★T = '신호등을 봐도 되는 곳' 이지 '정지 지점' 이 아니다 [2026-09-10]★
     신호등 노드와 카메라는 ★상시★ 돌지만, 실제 개입(빨간불 → 리니어 2단)은 이
     구간에서만 유효하다. driving 이 /tl_permit 을 T 구간에서만 True 로 내고,

@@ -7,6 +7,11 @@ traffic_light.py ― 신호등 인지·정지 [white1]
 그리고 ★빨간불이 0.5초 이상 안 보이거나 초록불이 확정되면 놓는다★ (white806 판과
 다른 점 — 아래 '정지 래치' 절).
 
+⚠️ ★[2026-10-01] 자율주행에서는 더 이상 제동하지 않는다★ driving 이 /tl_permit 을 항상 False 로
+   낸다 — 신호 정지는 driving 이 이 노드의 /tl/state(색)만 읽어 ★정지선(T 구간 끝) 1 m 앞★ 에
+   맞춰 한다(driving.py 상수절 '신호 접근', CLAUDE.md 4.10). 아래 '자율주행' 줄과 정지선 판단은
+   그 전의 방식이고, master 체크박스(/tl_enable)로 켜는 수동조종 쪽은 그대로다.
+
 두 곳에서 쓴다. 어느 쪽이든 이 노드가 하는 일은 /brake_level 하나뿐이다:
   · 자율주행 : driving 이 경로추종 중(/drive_state=DRIVE_RUN)일 때 자동으로 개입한다.
                해제되면 driving 이 20Hz 로 계속 내던 목표펄스가 그대로 다시 통해

@@ -17,7 +17,7 @@
 > | 변경 이력·실차 로그 근거 | `gold_ws/src/white1/CHANGELOG.md` |
 > | ★**앞으로 할 일 (TO DO LIST)**★ | `gold_ws/src/white1/CHANGELOG.md` **최상단** |
 > | 흔들림 감소 · 10펄스 증속 (A~E) — 원인·설계·모의·구현 [2026-09-30] | 요약 4.1e · 근거 CHANGELOG 2026-09-30 항목 · 모의 도구 `gold_ws/src/white1/sim/` |
-| ★본선 코스 신호 타이머 (T1~T5)★ [2026-09-30] | 요약 4.10 · 신호 시각표·`/traffic_timer` 배열 `gold_ws/src/white1/white1/traffic_timer.py` 헤더 · 판단 `driving.py` 상수절 '본선 코스 — T1~T5' · 모의 `sim/signal_sim.py` |
+| ★신호 구간 (T) — 본선 코스 타이머 T1~T5 [2026-09-30] · 신호 접근(정지선 1 m 앞) [2026-10-01]★ | 요약 4.10 · 신호 시각표·`/traffic_timer` 배열·`LightFilter` `gold_ws/src/white1/white1/traffic_timer.py` 헤더 · 정지 방법 `driving.py` 상수절 '신호 접근' · 모의 `sim/signal_sim.py` |
 > | 아두이노 계층 구조·안전장치 | `gold_ws/src/nxde/README.md` |
 > | 라이다 패키지 | `gold_ws/src/lidar/README.md` |
 > | 단위 환산 (C++ 쪽 단일 소유자) | `gold_ws/src/lidar/include/lidar/kasa_units.hpp` |
@@ -446,13 +446,14 @@ gold_ws/src/
 | `/brake_level` | Int32 | 0/1/2 — **`max(내 요청, 신호등 요청)`** 으로 합쳐서 낸다 |
 | `/mapping_cmd` | Bool | 매핑 시작/종료 |
 | `/drive_state` `/drive_event` | String | 상태·사건 (prompt·hud·sound 가 본다) |
-| `/tl_permit` | Bool | 신호등 개입 허락 — T 구간에서만 ([2026-09-30] 본선 코스는 T5 만) |
+| `/tl_permit` | Bool | 신호등 노드의 제동 허락 — **[2026-10-01] 부터 항상 False** (신호 정지는 driving 이 한다, 4.10) |
 | **`/tl_zone`** [2026-09-30] | String | **지금 상대하는 신호 라벨** — T 구간 안이거나 시작 40 m 앞이면 `T`·`T1`~`T5`, 아니면 `''`. traffic_timer 가 `T1` 인 동안만 전환을 본다 |
 | **`/lstatus`** | String | **`'0'` GPS추종 / `'L'` 라이다 / `'S'` 일시정지 — ★이것이 조종권이다★** |
 | `/ego_state` `/drive_diag` | Float64MultiArray | 계측·진단 |
 
 **`driving` 노드 구독** — `/gps_fused` `/imu` `/encoder` `/speed` `/vehicle_mode`
 `/estop` `/drive_cmd` `/tl_brake_req` `/lidar_active` `/traffic_timer`(본선 코스에서만 읽는다)
+`/tl/state`([2026-10-01] 카메라 구간의 색 — 4.10)
 
 **`traffic_timer` 노드** (`prompt` 와 한 프로세스, [2026-09-30]) — 구독 `/tl/state` `/tl_zone`
 `/drive_state` · 발행 **`/traffic_timer`** (Float64MultiArray 8칸, 20 Hz — ★본선 코스가 아니면 아예 안 낸다★,
@@ -526,7 +527,7 @@ S_IDLE ──MAP_START──▶ S_MAP_HEADING ──헤딩 확정──▶ S_MAP
 | 🛑 | 정지명령 | prompt 의 STOP → DRIVE_DONE |
 | 🔻 | 종점 1단 접근제동 | DRIVE_RUN 안에서 (감속) |
 | 🅑 | 코너 1단 선행제동 | DRIVE_RUN 안에서 (감속) |
-| 🚦 | 신호 대기 (본선 코스 T1·T3·T4) [2026-09-30] | 진입 순간 타이머상 적색 → DRIVE_RUN 안에서 2단 (S 서브페이즈, 4.10) |
+| 🚦 | 신호 대기 (T 구간) [2026-09-30 → 10-01] | 정지 신호 → 펄스 0·(필요하면 1단)·**정지선 1 m 앞에서 2단** → S 서브페이즈로 녹색 대기 (4.10) |
 
 ### 3.4 데이터 — 파일 위치와 CSV 양식
 
@@ -587,7 +588,7 @@ throttle_pulse,wheel_pulse,wheel_speed,steer_measured,throttle_raw,auto_mode,est
 |---|---|---|
 | **`L` / `l`** | **라이다 구간** — 라바콘 회피 (여러 행) | `mppi_local_planner` |
 | **`S` / `s`** | **일시정지** — 2단 정지 → 3.5 s → 재출발 (★한 행★, 6.1) | `white1/driving` |
-| **`T` / `t`** | **신호등 구간** — 카메라가 빨간불이면 2단 (여러 행) | `white1/driving` + `traffic_light` |
+| **`T` / `t`** | **신호등 구간** (여러 행) — ★구간 끝 = 정지선★ [2026-10-01]. 카메라가 빨간불이면 정지선 1 m 앞에 선다 | `white1/driving` (카메라는 색만) |
 | **`T1`~`T5`** [2026-09-30] | ★본선 코스(`maincourse.csv`)만★ — T1 타이머 0초 · T2 무시 · T3·T4 타이머 · T5 카메라 (4.10). ★다른 경로에서는 번호를 버리고 `T` 로 본다★ | `white1/driving` + `traffic_timer` |
 | 그 밖 (빈 칸 · `0` · 숫자 · 열 없음) | GPS 추종 | `white1/driving` |
 
@@ -613,6 +614,13 @@ throttle_pulse,wheel_pulse,wheel_speed,steer_measured,throttle_raw,auto_mode,est
 > terrain 의 T 다섯 토막을 위에서부터 `T1`~`T5` 로 바꿨다(328칸만 — CRLF·다른 열은 바이트 그대로).
 > **이 이름이 곧 '타이머를 켜라' 는 뜻이다** — prompt 가 목록 맨 위에 고정하고, 고르면 신호 타이머가 켜진다.
 > 이름의 단일 소유자는 `traffic_timer.MAINCOURSE_FILE`.
+>
+> **서브 코스 = `gps_data/subcourse.csv`** [2026-10-01] — 옛 `route_20200202_222223.csv` 를 `git mv`.
+> 신호는 번호 없는 `T` 두 곳(카메라)과 `S` 두 곳. prompt 가 본선 코스 다음에 고정한다(타이머는 안 켜진다).
+>
+> **★두 코스 모두 T 구간 끝을 사용자가 준 정지선 좌표(= 그 행)에 맞췄다★** [2026-10-01] — 종전에는
+> 정지선을 0.9~3.8 m 넘겨 적혀 있었다. 시작점은 그대로다. 새 T 를 적을 때도 **끝 = 정지선** 으로 적는다.
+> (같은 코스의 `route_20200202_222222.csv` 는 옛 표시 그대로 — 손대지 않았다.)
 
 #### 주행 기록 CSV — `ros2bag/<경로이름>-<YYYYMMDD>_<HHMMSS>.csv`
 
@@ -1295,50 +1303,78 @@ GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'�
 > `ld_y` 가 `ld_target_y` 를 따라가는가 · 콘 옆 실제 여유.
 
 
-### 4.10 ★본선 코스 신호 타이머 — T1 전환으로 0초, T3·T4 는 타이머만★ [2026-09-30]
+### 4.10 ★신호 구간(T) — 정지선 1 m 앞에 맞춰 선다 · 본선 코스는 타이머★ [2026-09-30 · 2026-10-01]
 
-**왜** — T2·T3·T4 에서 카메라 인지가 잘 안 된다(9/13 기록: T4 는 구간 끝을 지나서야 RED_FAR 12~14 px).
-그런데 **모든 신호등이 0~100초 한 주기로 연동**되므로(사용자), T1 에서 적색→녹색 전환 한 번만 보면
-나머지는 시계로 안다. **`maincourse.csv` 를 골랐을 때만** 이렇게 돈다 — 다른 경로는 종전 T(카메라) 그대로.
+**T 구간의 끝 = 정지선이다** [2026-10-01] — 두 코스(`maincourse.csv`·`subcourse.csv`) 모두 사용자가 준
+정지선 좌표(= 그 WP)에서 끝나게 줄였다(시작점은 그대로). 구간 안에서 ★매 틱★ 판단한다:
 
-| 신호 | 녹색 [s] | 판단 | 들어서는 순간 |
-|---|---|---|---|
-| **T1** | 0~32 | 카메라가 **적색→녹색 전환을 봤는가** (= 타이머 0초) | 이번 주행에서 초기화됐고 T1 녹색이면 통과, 아니면 **2단 정지 → 전환을 보면 출발** (녹색이어도 선다) |
-| T2 | 0~32 | — (T1 과 같은 시각표) | **아무것도 안 한다** (마킹만) |
-| **T3** | 35~47 | 타이머 | 녹색이면 통과, 아니면 2단 정지 → 녹색이 되면 출발 |
-| **T4** | 60~97 | 타이머 | 같다 |
-| T5 | 0~57 | 카메라 (종전 T) | 빨간불이면 카메라가 2단 |
+| 신호 | 무엇을 하나 |
+|---|---|
+| **진행 신호 · 신호등을 못 봤다** | ★감속 없이 통과★ |
+| **정지 신호 · 타이머상 정지** | ★명령펄스 0★ → 코스트로 되면 코스트만, 안 되면 ★1단★ → **끝단 1 m 에 닿는 즉시 2단** → S 서브페이즈(정지 확인 → 녹색 대기 → 0단 → 3펄스 재출발) |
+| 감속하다가 **녹색**으로 바뀜 | ★감속을 풀고 다시 가속★ (1단이면 최소 물림 0.5 s 뒤) |
+| `S` | 종전 그대로 — 사전감속 없이 도달 즉시 2단 → 3.5 s 대기 |
 
-**사용자 결정** — 정지 위치 = **T 구간 진입 즉시 2단** · 접근 중(서기 전)에 전환을 봤으면 T1 에서 서지 않는다 ·
-비상 대체 경로 없음(**T3·T4 전에는 반드시 T1 을 지나고, T1 은 전환을 봐야만 지나간다**) · 여유 없음(시각표 그대로 `[시작, 끝)`).
+**누가 신호를 판단하나** — 본선 코스 T1·T3·T4 는 **타이머**, T5 와 다른 경로의 `T` 는 **카메라 색**
+(driving 이 `/tl/state` 를 직접 읽는다 — `traffic_timer.LightFilter`), T2 는 무시.
+★카메라에는 이제 제동을 맡기지 않는다★ — `/tl_permit` 은 항상 False. traffic_light 가 자기 정지선 판단으로
+따로 2단을 물면 '정지선 1 m 앞에 맞춰 서기' 와 싸운다(두 주인).
+- 카메라 빨간불(RED·RED_FAR 0.3 s)은 **녹색(0.4 s)을 봐야 풀린다** — 정지선 앞에서는 등기구가 화면 위로 벗어나
+  UNKNOWN 이 이어지는 것이 정상이라 '안 보인다' 로 풀면 빨간불에 굴러간다. 카메라가 **죽으면**(2 s 무판정) 푼다.
+
+**1단을 무는 기준 — 감속도 실측으로 정했다** (사용자 위임) — 코스트 0.41 · 1단 1.30(구동 차단 실효) · 2단 2.2 m/s²(하한).
+- 정지 지점(끝단 1 m)에서 **5.4 km/h(1.5 m/s) 이하**면 2단(지연 0.3 s)이 0.95 m 안에 세운다 = 정지선을 안 넘는다. 그게 목표다.
+- 코스트는 '코스트로 정지 지점에서 5.4 km/h 가 되는 거리' 부터 — 7펄스면 44 m 라 구간보다 길어 **들어서자마자 펄스 0**.
+  느리게 들어오면 그 거리까지는 평소대로 달린다(안 그러면 정지선 한참 앞에서 선다).
+- 1단은 **코스트로 모자랄 때만**, 1단으로 5.4 km/h 에 딱 맞출 수 있는 **마지막 지점**에서 문다(여유 없음 — 모자라면 아래가 받는다).
+
+  | 구간 길이 | 15 m | 20 m | 25 m | 30 m |
+  |---|---|---|---|---|
+  | 구간 시작에서 1단이 들어가는 속도 | 13.3 km/h | 15.2 km/h | 16.9 km/h | 18.4 km/h |
+
+  → 7펄스(22.3 km/h)면 모든 구간에서 1단, 4펄스(12.7 km/h) 이하는 코스트만(모의에선 끝에 잠깐 1단이 섞인다).
+- **1단으로도 모자라면 2단을 앞당긴다** — 정지선까지 ≤ 2단 정지거리(2.2 m/s²)가 되는 순간.
+- **되돌릴 수 없는 지점** — 정지 신호가 너무 늦게 왔고 대표 2단(3.8 m/s²)으로도 정지선 앞에 못 서면 **통과**한다
+  (교차로 안에 서는 것이 더 나쁘다). 진행 신호로 **정지 지점(끝단 1 m)을 지나면** 그 구간은 끝난다.
+- 속도를 모르면 빠르다고 보고 일찍 문다 — 단 '통과' 판단은 속도를 알 때만 한다.
+
+**본선 코스 타이머** (2026-09-30) — T2·T3·T4 는 카메라 인지가 잘 안 되는데 **모든 신호등이 0~100초로 연동**되므로,
+T1 에서 적색→녹색 전환 한 번만 보면 나머지는 시계로 안다. `maincourse.csv` 에서만 돈다.
+
+| 신호 | 녹색 [s] | 판단 |
+|---|---|---|
+| **T1** | 0~32 | 카메라가 **적색→녹색 전환을 봤는가** (= 타이머 0초). 전환 전이면 녹색이어도 정지 신호 |
+| T2 | 0~32 | — **아무것도 안 한다** (마킹만) |
+| **T3** | 35~47 | 타이머 |
+| **T4** | 60~97 | 타이머 |
+| T5 | 0~57 | 카메라 |
 
 ```
 traffic_light ─/tl/state──▶ traffic_timer (prompt 프로세스) ─/traffic_timer─▶ driving
+       └──────/tl/state (색) ─────────────────────────────────────────────▶ driving (카메라 구간)
 driving ──────/tl_zone ('T1' …)──▶ traffic_timer ◀──/drive_state────── driving
 ```
+- 전환은 `/tl_zone` 이 `T1` 인 동안만(T1 시작 40 m 앞부터) 본다 — 적색 0.3 s → 3 s 안에 녹색 0.4 s,
+  **첫 녹색 프레임이 0초**. 주행마다 다시 잰다. 시계는 `time.time()`. 신호 시각표는 여유 없이 그대로(사용자 결정).
+- 비상 대체 경로 없음(사용자 결정) — **T3·T4 전에 반드시 T1 을 지나고, T1 은 전환을 봐야만 지나간다**.
+  prompt 가 죽어 타이머가 끊기면 T1·T3·T4 는 정지 신호로 본다.
+- 판단은 '지금 구간 안이고 아직 처리 안 했는가' — E-STOP 이 대기를 지워도 재개한 첫 틱에 다시 판단한다
+  (카메라 빨간불 래치는 E-STOP 이 지우지 않는다).
 
-- **traffic_timer 는 시계일 뿐이다** — 차를 세우고 보내는 것은 driving 이다. 정지·대기·재출발은
-  **S 서브페이즈를 그대로** 쓰고 대기를 끝내는 조건만 '타이머 녹색' 이다(새 state 를 만들면 `enter()` 가 리니어를 푼다).
-- **전환은 `/tl_zone` 이 `T1` 인 동안만 본다** — T1 시작 40 m 앞부터(9/13 기록에서 T1 신호등이 처음 잡힌 곳이
-  35 m 앞). 적색(RED·RED_FAR) 0.3 s 이상 → 3 s 안에 녹색 0.4 s 이상이면 전환이고 **첫 녹색 프레임 시각이 0초**다.
-  T3·T4 의 좌회전 녹색(35·60초)을 0초로 잘못 잡지 않으려고 다른 곳에서는 안 본다.
-- **주행마다 다시 잰다** (DRIVE_HEADING 에서 기준을 지운다). 시계는 `time.time()` (사용자 지시).
-- **판단은 '지금 구간 안이고 아직 처리 안 했는가'** — E-STOP 이 대기를 지워도 재개한 첫 틱에 다시 판단한다.
-- prompt 가 죽으면 `/traffic_timer` 가 끊겨 go 가 0 이 되고 **T1·T3·T4 에서 선 채로 기다린다** (신호위반보다 정지).
-- `select_route` 가 본선 코스의 순서를 검사한다 — T1 이 없거나 T3·T4 가 T1 보다 앞이면 ❌ 로 말한다(그 자리에서 영영 못 간다).
+**모의** (`sim/signal_sim.py` — driving + traffic_timer + 진짜 위상의 가짜 신호등) — **전부 도착 · 판단 오류 0**
+- 본선 7펄스 20경우 · 서브 코스 20경우 · 본선 4펄스 10경우 · E-STOP 3경우.
+- 선 자리 = 정지선 앞 **0.8~1.6 m**(7펄스) · 0.3~0.8 m(4펄스) · 0.6~0.8 m(서브). 넘어 선 적 없음.
+- ★7펄스 T3 는 더 이상 서지 않는다★ 31~34초에 들어와 코스트(·1단)로 줄이다 35초 녹색에 감속을 풀고 37~39초에
+  정지선을 지난다. T4 는 46~48초에 들어와 정지선 앞에 섰다가 60초에 출발(62.7초 통과).
+- ⚠️ 4펄스면 T3 에 49초쯤 닿아 창을 놓치고 다음 주기(약 81초 뒤)까지 선다 — 시각표와 속도가 정한 것이다.
+- ⚠️ 창 끝 직전에 들어가 곡선 앞 감속이 겹치면 **정지 지점은 녹색에 지나고 정지선은 창이 닫힌 뒤 0.1~0.3 s 에**
+  넘을 수 있다(E-STOP 으로 시각이 밀린 모의 1건 — 47.2 s). 그 자리에서는 설 수 없다 — 여유 없음 결정의 결과다.
+- 기존 GPS 추종 거동 불변 — terrain 을 지운 경로 A·B 모의 궤적 해시가 수정 전과 같다.
 
-**모의** (`sim/signal_sim.py`, 7펄스, 진짜 위상 0~95초 5초 간격 20경우) — **전부 도착 · 판단 오류 0**.
-- 0초 오차 **+70 ms** (카메라 한 프레임, 모의 15 Hz). 첫 녹색 프레임이 빠지면 +140 ms. **늦게만** 잡힌다.
-- ★7펄스면 T1 을 0초에 떠난 뒤 **T3 에는 늘 33~34초(창 직전)에 닿아 2~3초 서고, T4 에는 53초에 닿아 약 7초 선다**★ —
-  시각표와 코스 길이가 정한 것이라 T1 도착 위상과 무관하다.
-- ⚠️ **4펄스면 T3 에 54초쯤 닿아 창(35~47)을 매번 놓치고 약 81초** 기다린다.
-- 정지 지점은 구간 끝(≈정지선)보다 **T1 14.7 m · T3 24 m · T4 21 m 앞**이다(진입 즉시 정지의 대가).
-- ⚠️ **정지 상태에서 정지선까지 7~8초** 걸린다 — T3 에서 40초 이후에 출발하면 47초를 넘겨 정지선을 지난다.
-  E-STOP 으로 대기가 길어진 모의에서 실제로 47.5초에 지났다(여유 없음 결정과 맞물린다 — CHANGELOG TODO-9).
-- 기존 GPS 추종 거동은 불변 — terrain 을 지운 경로 A·B 모의 궤적 해시가 수정 전과 같다.
-
-**실차에서 먼저 볼 것** — prompt 헤더의 `🚦 신호 타이머` 줄 · drive_event `🚦 신호 타이머 초기화 — … = 0초` 와
-실제 녹색 시작의 차이(인지 영상) · `🚦 T3 통과/신호 대기 [타이머 N초]` 의 N · record 의 `tl_zone`·`tt_*` 열.
+**실차에서 먼저 볼 것** — record `sig_phase`·`sig_left_m`(2단이 물린 행의 `sig_left_m` 이 0 근처인가) ·
+실제 1단 감속도(1.30 가정 — 강하면 일찍, 약하면 2단 앞당김으로 선다) · 정지선 앞 실제 거리(안테나는 앞차축 위라
+앞범퍼는 그보다 앞) · 카메라가 정지선 1 m 앞에서 녹색을 보는가(못 보면 T5·서브 코스에서 영영 안 떠난다) ·
+`🚦 신호 타이머 초기화` 와 실제 녹색 시작의 차이.
 
 ---
 
@@ -1350,6 +1386,7 @@ cd gold_ws && colcon build && source install/setup.bash      # ★--symlink-inst
 ros2 run nxde check                    # 0) 하드웨어 연결 점검 (포트 점유 없이)
 ros2 launch white1 one_launch.py       # 1) 센서 + arduino + 자율주행 + 라이다
 ros2 run white1 prompt                 # 2) CLI 메뉴 (별 터미널) — ★본선 코스 신호 타이머도 함께 뜬다★
+                                       #    목록 맨 위 = maincourse.csv · subcourse.csv
 ros2 run white1 hud                    # 2') 상면도 HUD (구독 전용, 선택)
 ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때
 ```
@@ -1873,6 +1910,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
 | **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
+| **신호 접근 — 정지선 1 m 앞 (4.10) [2026-10-01]** | `driving.py signal_step` · `signal_kind` · `signal_stop_wanted` · `cam_red` · `arc_here` · `_sig_need1` · `_sig_coast_m` · `_sa_end` · `begin_signal_stop`(how) · `tl_permit_now`(항상 False) · `run_follow` 펄스 0 · 코너·인계 소유권(`_sa_phase`) · `traffic_timer.LightFilter` · record `sig_phase`·`sig_left_m` · `prompt.PINNED_ROUTES` · `gps_data/{maincourse,subcourse}.csv` |
 | **본선 코스 신호 타이머 T1~T5 (4.10) [2026-09-30]** | `traffic_timer.py`(신설) · `driving.py tl_label` · `tl_camera_zone` · `tl_go` · `tl_zone_now` · `timer_signal_here` · `begin_signal_stop` · `run_stop_zone`(대기 조건) · `_warn_maincourse_order` · `_tl_segments` · `prompt.py`(한 프로세스 · 목록 고정) · `record.py TRAFFIC_TIMER_COLUMNS` · `hud._zone_char` · `gps_data/maincourse.csv` · `sim/signal_sim.py` |
 | **흔들림 감소 + 10펄스 증속 A~E — 전부 기본 꺼짐 (4.1e) [2026-09-30]** | `driving.py _backlash_comp` · `pure_pursuit_steer`(기준점 ox,oy) · `apply_yaw_damp` · `build_curve_profile wp_kappa` · `corner_speed` (a2)(b) · `_ay_speed` · `lfd_max`·`curve_far` · `_announce_speed_setup` · `reset_steer_shaping` · 상수절 'CHANGELOG TODO-1' · `one_launch.py` 인자 8개 · `sim/follow_design.py`(실제 파라미터로 모의) |
 | **record `/drive_diag` 두 열 누락 수정 + 조향 사슬 4열 [2026-09-30]** | `record.py DRIVE_DIAG_COLUMNS`(길이 유도) · `_stash`(원래 길이로 경고) · `driving.publish_state_topics` |
@@ -2991,6 +3029,9 @@ ping -c2 192.168.6.11
 | **본선 코스 이름 · 신호 시각표** [2026-09-30] | `traffic_timer.py` 의 `MAINCOURSE_FILE`·`SIGNAL_WINDOWS` **한 곳** — prompt·driving·record·`sim/signal_sim.py` 가 import 한다. 사이트(find_wc)의 `PINNED_ROUTE` 는 다른 저장소라 이름을 베껴 적었다 — **파일 이름을 바꾸면 거기도** |
 | **`/traffic_timer` 배열** [2026-09-30] | `traffic_timer.py` 헤더(규약)·`F_*` **+** `record.py TRAFFIC_TIMER_COLUMNS`(길이는 import 때 assert) — driving 은 `tt.F_*` 로만 읽는다 |
 | **T 라벨 판정** [2026-09-30] | `driving.tl_label` 하나 — hud 는 그것을 부른다. find_wc `csv.ts zoneOf` 는 같은 규칙을 따로 적었다(다른 저장소) |
+| **T 구간 끝 = 정지선** [2026-10-01] | CSV 규약(3.4) **+** `driving.signal_step` 의 정지 지점(`wp_s[i1] − SIG_STOP_BEFORE_M`) — **구간을 정지선 뒤로 늘려 적으면 차가 정지선을 넘어 선다.** find_wc 의 T 원은 구간 **시작**에 찍힌다 |
+| **신호 접근 감속도** [2026-10-01] | `driving.py` 의 `A_COAST_MS2`(0.41)·`goal_brake1_ms2`(1.30)·`GOAL_BRAKE2_MS2`(2.2)·`SIG_NORETURN_A2`(3.8) — 종점 접근과 **같은 값**을 쓴다. 실측으로 하나를 바꾸면 신호 접근의 1단 시점·2단 앞당김·통과 판단이 함께 움직인다 |
+| **카메라 색 문턱** [2026-10-01] | `traffic_timer.py` 의 `RED_MIN_S`·`GREEN_MIN_S`·`GAP_S`·`CAMERA_STALE_S` — 타이머의 T1 전환 판정과 driving 의 `LightFilter` 가 **같은 값**을 쓴다 |
 | **`/tl_zone` 관찰 창** [2026-09-30] | `driving.tl_zone_now` 가 `tt.WATCH_PRE_M`(40 m)로 만든다 — traffic_timer 는 그 라벨이 `tt.INIT_SIGNAL` 인 동안만 전환을 본다 |
 | **`/drive_diag` 배열** [2026-09-30] | `driving.publish_state_topics()` 배열 **끝에** 붙이고 `record.py DRIVE_DIAG_COLUMNS` **끝에** 이름 — 길이는 튜플에서 유도한다(종전 `_array(23)` 이 25개 중 두 열을 조용히 버렸다). `hud.py` 는 앞쪽 인덱스(0·1·4)를 읽으므로 ★중간에 끼우지 말 것★ |
 | **TODO-1 파라미터** [2026-09-30] | `driving.py` 상수절(기본값) **+** `one_launch.py` 런치 인자(같은 기본값) **+** `sim/follow_design.py` 의 A~E 표(설계값) — 어긋나면 모의가 실차와 다른 것을 잰다. `lfd_max_m` 은 `LFD_MAX_M` 을 대신하므로 **상수만 고치면 런치 기본값(11.3)이 이긴다** |
