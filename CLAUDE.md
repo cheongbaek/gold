@@ -410,6 +410,9 @@ gold_ws/src/
     config/params.yaml   ★최상단 cruise_pulse 하나로 순항속도를 정한다★
 
   (white · white806 · white0901 — 이전 세대 스냅샷. [2026-09-30] ~/Documents 로 옮겼다, 0.4절)
+  white1_0929/   ★TODO-1 수정 전 원본 백업★ [2026-09-30] — white1/driving.py · white1/record.py ·
+                 launch/one_launch.py · sim/follow_design.py (상대경로 그대로). 패키지 아님(colcon 이
+                 안 본다). 되돌릴 때 : cp -p white1_0929/<경로> white1/<경로> 후 colcon build
   ouster-ros/                    외부 드라이버 (서브모듈)
 
   lidar/      C++ 라이다 인지·주행 (ament_cmake)
