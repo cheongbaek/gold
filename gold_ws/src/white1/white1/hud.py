@@ -1897,7 +1897,10 @@ class HudApp:
         """ego 코스트맵·롤아웃 → GPS 미니맵 (동=x, 북=y). heading 0=동 CCW."""
         h = math.radians(heading_deg)
         ch, sh = math.cos(h), math.sin(h)
-        e0, n0 = live_xy
+        #  ★ego 원점은 뒷차축(= 라이다)이고 live_xy 는 GPS 안테나(앞차축 위)다★ [2026-09-30]
+        #  그대로 얹으면 콘·회피 경로가 안테나 거리(1.25 m)만큼 앞에 그려진다.
+        e0 = live_xy[0] - dv.GPS_ANT_X_M * ch
+        n0 = live_xy[1] - dv.GPS_ANT_X_M * sh
 
         def ego_en(ex, ey):
             return e0 + ex * ch - ey * sh, n0 + ex * sh + ey * ch

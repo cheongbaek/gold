@@ -23,7 +23,7 @@ CHANGELOG.md 의 'TO DO LIST — TODO-1(흔들림 감소 + 10펄스 증속)' 의
   원본 gps_data/ 는 건드리지 않는다.
 
 차량 모델 (전부 9/13 로그 식별값 — CHANGELOG TODO-1 '모의실험' 절)
-  · 뒷차축 기준 자전거 모델, 축거 1.25 m, GPS 안테나 = 뒷차축 앞 ant_x
+  · 뒷차축 기준 자전거 모델, 축거 1.25 m, GPS 안테나 = 앞차축 위(뒷차축 앞 ant_x = 1.25 m)
   · 조향 'backlash' : 정수 지령 → 지연 T → 백래시(반폭 b) → 1차 지연 τ → 도로휠 = (pot − trim)/G
     조향 'phys'     : kasa_0909_B.ino updateSteer 모사 (허용오차 3/6 카운트 · 최소 PWM 110 ·
                       정지마찰 pwm0 · 9점 중앙값 + EMA 0.3 · 새 지령/1 s keepalive 마다 ACTIVE)
@@ -153,7 +153,8 @@ DEFAULT_PLANT = dict(
     T=0.20,            # 지령 → 조향 순수지연 [s] — 식별 0.1~0.3
     slew=70.0,         # [pot deg/s] (CLAUDE.md 1.3)
     L=1.25,
-    ant_x=1.25,        # GPS 안테나 = 뒷차축 앞 [m] ⚠️ 미실측 (driving.py 주석 '앞차축 위')
+    ant_x=1.25,        # GPS 안테나 = 뒷차축 앞 [m] — 앞차축 위 = 축거. 로그의 코너 안쪽 편향
+                       #   +0.19~0.30 이 이 값에서 재현된다(0.6 이면 +0.09~0.13)
     gps_sigma=0.012,   # RTK Fixed 잡음 [m]
     gps_lat=0.10,      # GPS 위치 지연 [s]
     gyro_sigma=1.9,    # [deg/s] 20 Hz 백색잡음 — 9/13 로그 실측 1.8~2.0

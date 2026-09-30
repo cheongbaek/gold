@@ -114,7 +114,8 @@ git submodule update --init gold_ws/src/ouster-ros
 | **최소회전반경** | **2.02 m** (= 1.25 / tan 31.7°) | `kasa_units.hpp:69` |
 | 포화 없는 LFD 문턱 | **4.04 m** (= 2 × 최소회전반경) | `kasa_units.hpp:70` |
 | 타이어 | **175/60R13**, 구름둘레 **1.6971 m** | `mad-code/CLAUDE.md` 1절 |
-| **GPS 안테나 ↔ 라이다 원점 (진행방향)** | ⚠️ **미실측 — 회귀 0.54~0.72 m**, mppi 는 **0.6 m** 로 보정 (driving 주석은 '앞차축 위') | 4.9절 [2026-09-29] · mppi `handover.gps_antenna_x_m` |
+| **GPS 안테나** | **앞차축 위** — 뒷차축에서 **1.25 m** (= 축거) | 사용자 확인 [2026-09-30] · driving `gps_ant_x_m` |
+| **라이다 (OS1-32)** | **뒷차축 위** — 그래서 안테나 ↔ 라이다 원점도 **1.25 m** | `lidar/config/ouster_driver.yaml:18` · mppi `costmap.sensor_offset_x 0.0` · `handover.gps_antenna_x_m` |
 
 > **★휠베이스는 차를 바꿀 때 반드시 갈아야 하는 유일한 기하값이다★** 순수추종
 > 조향각에 정비례한다. 1/5카(헤네스 브룬 T870)는 0.73 m 였고, 그대로 두면 모든
@@ -970,14 +971,14 @@ pot→요레이트 지연 0.10 s 에서 상관 최대 `r`=0.95):
 | | 런치 인자 (기본 → 설계값) | 무엇 | 코드 |
 |---|---|---|---|
 | A | `steer_backlash_deg` 0.0 → **0.8** (`steer_backlash_hyst_deg` 0.3) | 최종 pot 에 '움직이는 방향 × b' | `_backlash_comp()` |
-| B | `pp_rear_axle` false → **true**, `gps_ant_x_m` 1.25 ⚠️ 미실측 | 순수추종을 뒷차축에서 겨눈다 (CTE·포인터·종점은 안테나 그대로) | `pure_pursuit_steer()` |
+| B | `pp_rear_axle` false → **true**, `gps_ant_x_m` 1.25 (안테나 = 앞차축 위) | 순수추종을 뒷차축에서 겨눈다 (CTE·포인터·종점은 안테나 그대로) | `pure_pursuit_steer()` |
 | C | `yaw_damp_k` 0.0 → **0.15** | 도로휠 += k·LPF(r − v·κ경로) | `apply_yaw_damp()` · `wp_kappa` |
 | D | `corner_ay_max` 0.0 → **2.0**, `curve_preview_far_m` 24 → **40** | 코너 속도 √(a·R), 켜면 코너 하한 ≤ 3펄스 | `corner_speed()` · `_ay_speed()` |
 | E | `lfd_max_m` 11.3 → **14.0** | 10펄스가 실제로 나오게 | `lookahead_m()` · `cap_far` |
 
 ```bash
 ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15       # 1단계 (7펄스)
-#  2단계 + pp_rear_axle:=true gps_ant_x_m:=<실측>          ★B 는 C 없이 켜지 말 것★
+#  2단계 + pp_rear_axle:=true gps_ant_x_m:=1.25            ★B 는 C 없이 켜지 말 것★
 #  3단계 + corner_ay_max:=2.0 curve_preview_far_m:=40.0
 #  4단계 + lfd_max_m:=14.0 drive_pulse:=8 → 9 → 10          ★A·C 없이 E 만 올리지 말 것 (유격 ∝ LFD²)★
 ```
@@ -990,7 +991,7 @@ ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15       
 - **로그로 검증** — `/drive_diag` 에 `steer_trim_deg` · `steer_bl_dir` · `yaw_damp_deg` · `corner_ay_cap_ms`
   (record 열). 같은 잣대의 지표는 `python3 sim/follow_design.py log <record.csv> <route.csv>`.
 - ⚠️ **실차 미검증** · ⚠️ **라이다 구간은 모의에서 뺐다**(사용자 지시) — L 경로는 4단계 전에 따로 본다.
-  남은 결정·할 일은 CHANGELOG 최상단 TO DO LIST(트림 초기값 · 10펄스 종점 접근 · 안테나 실측 · 재수렴 LFD).
+  남은 결정·할 일은 CHANGELOG 최상단 TO DO LIST(트림 초기값 · 10펄스 종점 접근 · 재수렴 LFD).
 
 ### 4.2 곡률 선행제동 (속도)
 
@@ -1218,11 +1219,12 @@ GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'�
 | 23:05 | 0.54 m | 0.52 m |
 
 **왜 계획(0.45 m)보다 붙었나 — 둘을 찾았다**
-1. ★**CTE 는 GPS 안테나 자리다**★ driving 은 GPS 를 뒤차축으로 투영하지 않는데(driving.py
-   '이 차는 GPS 가 앞차축 위에 있다' 주석), mppi 는 그 CTE 를 라이다 원점의 y 로 썼다.
+1. ★**CTE 는 GPS 안테나 자리다**★ driving 은 GPS 를 뒤차축으로 투영하지 않는데(안테나는
+   앞차축 위), mppi 는 그 CTE 를 라이다 원점(뒷차축 위)의 y 로 썼다.
    헤딩 ψ 에서 콘이 **L·sin ψ** 옆으로 옮겨 보인다 — 첫 줄 안쪽 콘이 헤딩 −8° → +19° 사이에
-   +0.08 → +0.35 m 로 '움직였다'. 콘 13개 1080관측 회귀 `d_obs = d + L·sin ψ` → **L = 0.54~0.72 m**
-   (잔차 0.172 → 0.138 m). 그 겉보기 이동이 인계 뒤 목표를 +1.20 → +1.54 로 **늦게 키웠고**,
+   +0.08 → +0.35 m 로 '움직였다'. 콘 13개 1080관측 회귀 `d_obs = d + L·sin ψ` → L = 0.54~0.72 m
+   (잔차 0.172 → 0.138 m) — ★기하로는 축거 1.25 m 다★ [2026-09-30] (회귀가 작게 나온 이유는
+   확인하지 않았다). 그 겉보기 이동이 인계 뒤 목표를 +1.20 → +1.54 로 **늦게 키웠고**,
    코앞에서 목표를 쫓느라 경로 곡률이 κ 1.06 까지 치솟아 차가 목표보다 0.4 m 안쪽으로 지났다.
 2. ★**편향 적분이 회피 중에 쌓였다**★ 23:05 에서 +2.1° — 첫 줄을 비키느라 뒤처진 오차를
    직진 트림으로 읽었고, 둘째 줄로 넘어가는 우회전을 늦췄다.
@@ -1232,21 +1234,24 @@ GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'�
 | 무엇 | 값 | 어디 |
 |---|---|---|
 | **통과 여유 +0.30 m** (사용자 지시) | `avoid.pass_gap_m` **0.45 → 0.75** — 통과 목표가 그대로 30 cm 바깥 | `params.yaml` · `frenet_planner.hpp` |
-| **안테나 → 라이다 원점 보정** | `y = CTE − L·sin ψ`, `handover.gps_antenna_x_m` **0.6** (0 = 종전) | 노드 `imuCallback` · `rearmReference` |
+| **안테나 → 라이다 원점 보정** | `y = CTE − L·sin ψ`, `handover.gps_antenna_x_m` **1.25** (0 = 종전 · 9/29 에는 회귀값 0.6 → [2026-09-30] 1.25) | 노드 `imuCallback` · `rearmReference` |
 | **적분은 곧은 경로에서만** | 지금 자리·2 m 앞이 R 25 m 보다 곧고 기준선과 5.7° 안일 때만 쌓는다 | `path_tracker.hpp steadyTracking` |
 | 곡률 대체 판단이 ±3 m 밖 쪽을 고르지 않게 | 23:03 : 폭 밖으로 바꿨다가 같은 틱에 되돌렸다(⚠️ → ↔️) | `frenet_planner.cpp plan` |
 | 구간 뒤 미리보기의 쪽 결정 로그 끔 | L 구간이 끝난 뒤 기억만 잇는 동안 구간 밖 물체로 ↔️ 가 쏟아졌다 | 노드 `runPreview` |
 
-**보정값 0.6 m 는 틀려도 손해가 없다** (모의 23장면, 여유 0.75 기준 평균 간격):
+**보정은 크게 잡는 쪽이 손해가 없다 — 그래서 기하값 1.25 를 쓴다** [2026-09-30]
+(모의 23장면, 여유 0.75 기준. 장면별 최소 간격의 평균 / 가장 좁은 장면 [m]):
 
-| 실제 오프셋 | 보정 없음 | ★0.6 보정★ |
-|---|---|---|
-| 0 m | 0.83 | 0.83 |
-| 0.6 m (회귀) | 0.75 | **0.83** |
-| 1.25 m (주석) | 0.71 | 0.79 |
+| 실제 오프셋 \ 노드 보정 | 0 (보정 없음) | 0.6 (9/29) | ★1.25★ |
+|---|---|---|---|
+| 0.6 m (콘 회귀가 맞았다면) | 0.752 / 0.34 | 0.830 / 0.37 | 0.825 / 0.36 |
+| **1.25 m (앞차축 ↔ 뒷차축)** | 0.717 / 0.21 | 0.789 / 0.32 | **0.830 / 0.37** |
+
+사실대로면 9/29 의 0.6 이 손해였다 — 23:03 배치 0.89 → 0.67 m, 6 m 간격 0.48 → 0.32 m.
 
 **검증** — 모의 `test/avoid_sim.cpp` 에 두 실주행 배치를 재구성해 넣고(`real_230305`·`real_230451`),
-안테나 오프셋 0.6 m 를 실차처럼 모델링했다. 최소 간격 종전 → 신규:
+안테나 오프셋을 실차처럼 모델링했다(모의는 (실제 − 보정)·sin ψ 만 넣으므로 둘이 같으면 0.6 이든
+1.25 든 결과가 같다). 최소 간격 종전 → 신규:
 오늘 배치 0.38 → **0.87** · 23:03 배치 0.42 → **0.89** · 23:05 배치 0.45 → **0.90** ·
 사용자 그림 8 m 간격 0.51 → **0.84** · 6 m 간격 0.23 → 0.48 · 슬라럼 0.34 → 0.66 m.
 23장면 충돌 0(전폭 막힘만 정상 정지). ROS 폐루프(`test/ros_smoke.py`, 가짜 차량도 안테나
@@ -1257,8 +1262,8 @@ GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'�
 > ~19° (상한 22.9° 안). 콘을 너무 늦게 보면(L 시작 5 m 안) 둘째 줄을 같은 쪽으로 도는
 > 대체가 종전보다 잦아진다 — L 표시는 첫 줄보다 **6~8 m 앞**에 둘 것.
 >
-> ⚠️ **안테나 위치를 실측할 것** — 줄자로 안테나 ↔ 라이다 중심의 진행방향 거리를 재서
-> `handover.gps_antenna_x_m` 에 넣는다. 안테나나 라이다를 옮기면 반드시 다시 잰다.
+> ⚠️ **안테나는 앞차축 위, 라이다는 뒷차축 위다**(→ 1.25 m). 안테나나 라이다를 옮기면
+> `handover.gps_antenna_x_m` 과 driving `gps_ant_x_m` 을 함께 고친다(7절).
 
 > ✅ **9/28 23:03·23:05 실주행 2회 성공**(좌→우 S, 정지 0, 종점 도착) — 계획기 자체는 실차에서
 > 확인됐다. ⚠️ **위 [2026-09-29] 여유 +30 cm · 안테나 보정 · 적분 조건은 아직 실차 미검증**이다
@@ -1803,7 +1808,8 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
 | **흔들림 감소 + 10펄스 증속 A~E — 전부 기본 꺼짐 (4.1e) [2026-09-30]** | `driving.py _backlash_comp` · `pure_pursuit_steer`(기준점 ox,oy) · `apply_yaw_damp` · `build_curve_profile wp_kappa` · `corner_speed` (a2)(b) · `_ay_speed` · `lfd_max`·`curve_far` · `_announce_speed_setup` · `reset_steer_shaping` · 상수절 'CHANGELOG TODO-1' · `one_launch.py` 인자 8개 · `sim/follow_design.py`(실제 파라미터로 모의) |
 | **record `/drive_diag` 두 열 누락 수정 + 조향 사슬 4열 [2026-09-30]** | `record.py DRIVE_DIAG_COLUMNS`(길이 유도) · `_stash`(원래 길이로 경고) · `driving.publish_state_topics` |
-| **콘 옆 여유 +30 cm · 안테나 보정 · 적분 조건 (4.9) [2026-09-29]** | `params.yaml avoid.pass_gap_m 0.75` · `handover.gps_antenna_x_m 0.6` · 노드 `imuCallback` · `path_tracker.hpp steadyTracking` |
+| **GPS 안테나 = 앞차축 위 · 라이다 = 뒷차축 위 — mppi 안테나 보정 0.6 → 1.25 · HUD 라이다 겹쳐 그리기 원점 (1.1 · 4.9) [2026-09-30]** | `params.yaml handover.gps_antenna_x_m 1.25` · 노드 기본값 · `test/{avoid_sim.cpp,ros_smoke.py}` · `hud.py _draw_nav_lidar_overlay`(원점 = 안테나 − `GPS_ANT_X_M`) |
+| **콘 옆 여유 +30 cm · 안테나 보정 · 적분 조건 (4.9) [2026-09-29]** | `params.yaml avoid.pass_gap_m 0.75` · `handover.gps_antenna_x_m 0.6`(→ 9/30 1.25) · 노드 `imuCallback` · `path_tracker.hpp steadyTracking` |
 | **라바콘 회피 블록 계획기 · ±3 m · 인계 전 미리보기 (4.9) [2026-09-28]** | `mppi_local_planner/src/frenet_planner.cpp` · `cone_detector.cpp` · `path_tracker.hpp` · 노드 `runPreview` · `params.yaml` 회피 절 |
 | IMU 중력축 투영 (4.7절) [2026-09-09] | `driving.py cb_imu` · `solve_imu_axis` |
 | **고속 조향 발산 — 언더스티어 항 속도 클램프 (4.1b) [2026-09-13]** | `driving.py steer_command` · `UNDERSTEER_V_CLAMP_PULSE` |
@@ -2912,7 +2918,7 @@ ping -c2 192.168.6.11
 | **조이스틱 프로토콜** [2026-09-16] | `~/Arduino/joyled.ino` **+** `nxde/joyread.py`(파싱·영점·환산) **+** `nxde/arduino.py`(포트·게이트·LCD 송신) — **필드를 늘리면 세 곳을 함께 고친다.** 지금은 `J,x1,y1,k1,x2,y2,k2,swa,swb`(9토큰) 이고 구 `joy.ino`(12토큰)도 받는다. `nxde/joystick.py`(점검 도구)도 **같은 `joyread` 를 쓴다** — 그래서 "점검에서는 맞는데 실차에서 다르다" 가 생기지 않는다. LCD 줄 `D,<on>,<pulse>,<steer>,<kmh>` 는 `arduino` 와 `joystick` 두 곳이 쓰지만 **둘은 동시에 띄우지 않는다**(포트가 하나다) |
 | **회피 폭** [2026-09-28] | mppi `avoid.max_offset_m`(3.0) **+** `mppi.max_lateral_offset`(3.2)·`lateral_hard`(3.5) — **벽은 계획 폭보다 바깥이어야 한다.** 같으면 계획과 벽이 같은 자리에서 싸운다 |
 | **회피 추종·정지** [2026-09-28] | `mppi_local_planner/include/.../path_tracker.hpp` 하나를 노드와 모의실험(`test/avoid_sim.cpp`)이 같이 쓴다 — 노드에 식을 따로 적지 말 것. 계획기·추종기를 고치면 그 모의실험과 `test/ros_smoke.py` 를 다시 돌린다(빌드 명령은 각 파일 머리말) |
-| **GPS 안테나 위치** [2026-09-29] | driving 의 CTE(`/lidar_ref[0]`)는 **안테나 자리** **+** mppi `handover.gps_antenna_x_m`(안테나 ↔ 라이다 원점) — **안테나나 라이다를 옮기면 이 값을 다시 잰다.** driving 이 언젠가 CTE 를 뒤차축으로 투영하게 되면 **이 값을 0 으로** 내려야 한다(두 번 빼게 된다). ★[2026-09-30] driving `gps_ant_x_m`(4.1e B)은 **뒷차축 ↔ 안테나** 라 기준이 다르다★ — B 는 순수추종 조준만 옮기고 CTE 는 투영하지 않으므로 mppi 값은 그대로 둔다 |
+| **GPS 안테나 위치** [2026-09-29 · 09-30] | ★**안테나는 앞차축 위, 라이다는 뒷차축 위**★ — driving `gps_ant_x_m`(뒷차축 → 안테나, 4.1e B) **+** mppi `handover.gps_antenna_x_m`(라이다 원점 → 안테나) **+** hud 라이다 겹쳐 그리기(`driving.GPS_ANT_X_M` 을 쓴다) — **지금은 셋 다 1.25 m(축거)다. 안테나나 라이다를 옮기면 함께 고친다.** driving 의 CTE(`/lidar_ref[0]`)는 **안테나 자리**다 — driving 이 언젠가 CTE 를 뒤차축으로 투영하게 되면 **mppi 값을 0 으로** 내려야 한다(두 번 빼게 된다). B 는 순수추종 조준만 옮기고 CTE 는 투영하지 않으므로 B 를 켜도 mppi 값은 그대로 둔다 |
 | **`/drive_diag` 배열** [2026-09-30] | `driving.publish_state_topics()` 배열 **끝에** 붙이고 `record.py DRIVE_DIAG_COLUMNS` **끝에** 이름 — 길이는 튜플에서 유도한다(종전 `_array(23)` 이 25개 중 두 열을 조용히 버렸다). `hud.py` 는 앞쪽 인덱스(0·1·4)를 읽으므로 ★중간에 끼우지 말 것★ |
 | **TODO-1 파라미터** [2026-09-30] | `driving.py` 상수절(기본값) **+** `one_launch.py` 런치 인자(같은 기본값) **+** `sim/follow_design.py` 의 A~E 표(설계값) — 어긋나면 모의가 실차와 다른 것을 잰다. `lfd_max_m` 은 `LFD_MAX_M` 을 대신하므로 **상수만 고치면 런치 기본값(11.3)이 이긴다** |
 | **미리보기 ↔ `/lidar_ref[3]`** [2026-09-28] | mppi 미리보기는 driving 의 `zone_left`(다음 L 구간까지 호길이)로 켜진다. **그 열의 뜻을 바꾸면 미리보기가 조용히 꺼진다** |

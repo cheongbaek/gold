@@ -422,7 +422,7 @@ def generate_launch_description():
         # ── ★흔들림 감소 + 10펄스 증속 [2026-09-30]★ (CHANGELOG TODO-1, driving.py 상수절) ──
         #   ★기본값은 전부 '현행과 같음(꺼짐)'★ — 실차에서 한 단계씩 켠다:
         #     1단계 steer_backlash_deg:=0.8 yaw_damp_k:=0.15                  (7펄스)
-        #     2단계 + pp_rear_axle:=true gps_ant_x_m:=<실측>                   (7펄스)
+        #     2단계 + pp_rear_axle:=true gps_ant_x_m:=1.25                     (7펄스)
         #     3단계 + corner_ay_max:=2.0 curve_preview_far_m:=40.0            (7펄스)
         #     4단계 + lfd_max_m:=14.0 drive_pulse:=8 → 9 → 10
         #   ★실수는 소수점으로 준다★ (0.8 · 2.0) — 정수로 주면 ROS 파라미터 형이 달라 뜨지 않는다.
@@ -443,8 +443,8 @@ def generate_launch_description():
                         'CTE·진행 포인터·종점 판정은 안테나 자리 그대로다'),
         DeclareLaunchArgument(
             'gps_ant_x_m', default_value='1.25',
-            description='B 의 뒷차축 → GPS 안테나 진행방향 거리 [m]. ⚠️ 미실측 — 줄자로 잴 것. '
-                        '1.25 는 driving 주석(앞차축 위)에서 온 값이다'),
+            description='B 의 뒷차축 → GPS 안테나 진행방향 거리 [m]. GPS 안테나는 앞차축 위라 '
+                        '축거 1.25 m 다(라이다는 뒷차축 위 — mppi handover.gps_antenna_x_m 과 같은 값)'),
         DeclareLaunchArgument(
             'yaw_damp_k', default_value='0.0',
             description='C 요레이트 댐핑 [도로휠 deg/(deg/s)]. 0 = 끔. 설계값 0.15 — 경로가 '

@@ -164,7 +164,7 @@ ros2 launch mppi_local_planner one_launch.py flip_lidar_xy:=false
 - `avoid.max_offset_m` — 회피 폭 (GPS 궤적 ± 3.0 m). ★`mppi.max_lateral_offset`·
   `mppi.lateral_hard` 는 이보다 바깥에 둔다★ (같으면 계획과 벽이 같은 자리에서 싸운다).
 - `avoid.pass_gap_m` — 차체 옆면 ↔ 콘 표면 여유 (**0.75**, [2026-09-29] 0.45 에서 +30 cm). 키우면 교대가 빡빡해진다.
-- `handover.gps_antenna_x_m` — GPS 안테나가 라이다 원점보다 앞선 거리 (0.6, 회귀값). CTE 를 라이다 원점으로 되돌린다.
+- `handover.gps_antenna_x_m` — GPS 안테나가 라이다 원점보다 앞선 거리 (**1.25** — 안테나는 앞차축 위, 라이다는 뒷차축 위 = 축거. [2026-09-29] 콘 회귀값 0.6 → [2026-09-30] 1.25). CTE 를 라이다 원점으로 되돌린다.
 - `frenet.hold_pre_m` / `hold_post_m` — 블록 앞뒤로 통과 d 를 지키는 거리 (0.3).
 - `frenet.kappa_max` — 이보다 굽는 진입이면 확정 전 블록의 쪽을 반대로 검토 (0.34 ≈ 조향 상한).
 - `avoid.lookahead_m` — 순수추종 앞 점 (3.2). 줄이면 여유가 늘고 헤딩이 커진다.

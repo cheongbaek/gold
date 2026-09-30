@@ -47,7 +47,7 @@ struct Scenario
   bool preview = true;
   double steer_bias_deg = 0.0;
   double yaw_err_deg = 0.0;
-  double gps_la = 0.6;        // 안테나가 라이다보다 이만큼 앞 (실주행 회귀 0.54~0.72 m)
+  double gps_la = 1.25;       // 안테나(앞차축 위)가 라이다(뒷차축 위)보다 이만큼 앞 = 축거
   unsigned seed = 1;
 };
 
@@ -138,7 +138,7 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
   tp.predict_s = env("PRED", tp.predict_s);
   tp.k_cte = env("KCTE", tp.k_cte);
   const double ki = env("KI", 2.0), i_max = env("IMAX", 3.0);
-  const double gps_la = env("GPS_LA", sc.gps_la), node_la = env("NODE_LA", 0.6);
+  const double gps_la = env("GPS_LA", sc.gps_la), node_la = env("NODE_LA", 1.25);
   const bool int_gate = env("INT_GATE", 1.0) > 0.5;
   TrackIntegrator integ;
   const double L = 1.25, dt = 0.05;

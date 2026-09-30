@@ -356,9 +356,10 @@ private:
     declare_parameter<double>("frenet.on_path_d_m", 0.30);
     declare_parameter<double>("frenet.on_path_yaw_rad", 0.15);
     declare_parameter<double>("handover.ref_stale_s", 0.5);
-    //  ★GPS 안테나가 라이다 원점보다 이만큼 앞이다 [2026-09-29]★ driving 의 CTE 는 안테나
-    //  자리라, 헤딩 ψ 에서 라이다 원점의 횡위치는 CTE − 이 값·sin ψ 다(근거는 imuCallback).
-    declare_parameter<double>("handover.gps_antenna_x_m", 0.6);
+    //  ★GPS 안테나가 라이다 원점보다 이만큼 앞이다 [2026-09-29]★ 안테나는 앞차축 위, 라이다는
+    //  뒷차축 위라 축거 1.25 m 다 [2026-09-30]. driving 의 CTE 는 안테나 자리라, 헤딩 ψ 에서
+    //  라이다 원점의 횡위치는 CTE − 이 값·sin ψ 다(근거는 imuCallback).
+    declare_parameter<double>("handover.gps_antenna_x_m", 1.25);
     declare_parameter<bool>("handover.use_gps_ref", true);
     //  y(CTE) 만 GPS 로 덮는다. yaw 를 덮으면 외장 iAHRS 헤딩이 다시 들어온다.
     declare_parameter<bool>("handover.use_gps_yaw", true);
@@ -1344,13 +1345,14 @@ private:
       //  ══════════════════════════════════════════════════════════════════
       //  ★[2026-09-29] CTE 는 ★안테나★ 자리다 — 라이다 원점으로 되돌린다★
       //  ══════════════════════════════════════════════════════════════════
-      //  driving 은 GPS 를 뒤차축으로 투영하지 않는다(그 파일 '이 차는 GPS 가 앞차축
-      //  위에 있다' 주석). 그 값을 라이다 원점의 y 로 쓰면 헤딩 ψ 만큼 틀어질 때마다
-      //  콘이 L·sin ψ 옆으로 옮겨 보인다. 9/28 23:03·23:05 실주행 .cones.csv 회귀:
-      //  콘 13개 1080관측 d_obs = d + L·sin ψ → ★L = 0.54~0.72 m★ (잔차 0.172 → 0.138)
+      //  driving 은 GPS 를 뒤차축으로 투영하지 않는다 — ★안테나는 앞차축 위, 라이다는
+      //  뒷차축 위★ 라 L = 축거 1.25 m 다. 그 값을 라이다 원점의 y 로 쓰면 헤딩 ψ 만큼
+      //  틀어질 때마다 콘이 L·sin ψ 옆으로 옮겨 보인다. 9/28 23:03·23:05 실주행에서
       //  첫 줄 안쪽 콘이 헤딩 −8° → +19° 사이에 +0.08 → +0.35 m 로 '움직였고',
       //  그것이 인계 뒤 목표를 +1.20 → +1.54 로 늦게 키워 차가 0.4 m 뒤처진 원인이다.
-      //  0.6 m 는 틀려도 손해가 없는 값이다(모의: 실제 0 이면 같고, 0.6·1.25 면 낫다).
+      //  (.cones.csv 회귀는 L = 0.54~0.72 로 작게 나와 9/29 에는 0.6 을 썼다 [→ 9/30 1.25].
+      //   모의로는 크게 잡는 쪽이 손해가 없다 — 실제 0.6 에 1.25 면 평균 여유 0.830 → 0.825,
+      //   실제 1.25 에 0.6 이면 0.789.)
       odom_pose_.y = ref_cte_ - gps_antenna_x_m_ * std::sin(odom_pose_.yaw);
       gps_ref_live_ = true;
     } else {
@@ -2155,7 +2157,7 @@ private:
   //  ★GPS 기준선 [2026-09-11]★ (odom_mutex_ 가 지킨다)
   std::string ref_topic_ = "/lidar_ref";
   double ref_stale_s_ = 0.5;
-  double gps_antenna_x_m_ = 0.6;   // 안테나가 라이다 원점보다 앞 [m] (CTE → 라이다 원점 y)
+  double gps_antenna_x_m_ = 1.25;  // 안테나(앞차축 위)가 라이다 원점(뒷차축 위)보다 앞 [m]
   bool   use_gps_ref_ = true;
   bool   use_gps_yaw_ = true;   // 신선한 heading_err 로 yaw 를 덮음 (경로 방위 기준)
   bool   use_os1_imu_ = true;

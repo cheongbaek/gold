@@ -1,3 +1,63 @@
+**0단계 — 지금 코드가 회귀 없이 도는지 확인**
+
+```bash
+ros2 launch white1 one_launch.py
+```
+(새 인자를 하나도 안 주면 전부 기본값=꺼짐이라 지금 차와 완전히 같습니다.)
+
+**1단계 — A(백래시 보상) + C(요레이트 댐핑), 7펄스**
+
+```bash
+ros2 launch white1 one_launch.py \
+    steer_backlash_deg:=0.8 yaw_damp_k:=0.15
+```
+
+**2단계 — 여기에 B(뒷차축 기준 순수추종) 추가**
+
+gps_ant_x_m은 뒷차축→GPS 안테나 거리입니다. GPS 안테나는 앞차축 위라 축거와 같은 1.25 m이고(라이다는 뒷차축 위), 기본값도 1.25입니다.
+
+```bash
+ros2 launch white1 one_launch.py \
+    steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
+    pp_rear_axle:=true gps_ant_x_m:=1.25
+```
+
+**3단계 — 여기에 D(코너 횡가속 상한) 추가**
+
+```bash
+ros2 launch white1 one_launch.py \
+    steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
+    pp_rear_axle:=true gps_ant_x_m:=1.25 \
+    corner_ay_max:=2.0 curve_preview_far_m:=40.0
+```
+
+**4단계 — 여기에 E(LFD 상한) 추가하고 속도를 8→9→10으로 올림**
+
+```bash
+# 먼저 8펄스
+ros2 launch white1 one_launch.py \
+    steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
+    pp_rear_axle:=true gps_ant_x_m:=1.25 \
+    corner_ay_max:=2.0 curve_preview_far_m:=40.0 \
+    lfd_max_m:=14.0 drive_pulse:=8
+
+# 통과하면 9
+ros2 launch white1 one_launch.py \
+    steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
+    pp_rear_axle:=true gps_ant_x_m:=1.25 \
+    corner_ay_max:=2.0 curve_preview_far_m:=40.0 \
+    lfd_max_m:=14.0 drive_pulse:=9
+
+# 통과하면 10
+ros2 launch white1 one_launch.py \
+    steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
+    pp_rear_axle:=true gps_ant_x_m:=1.25 \
+    corner_ay_max:=2.0 curve_preview_far_m:=40.0 \
+    lfd_max_m:=14.0 drive_pulse:=10
+```
+
+---
+
 # white1 변경 기록
 
 실차 로그로 확인된 문제와 그에 대한 수정만 적는다. 각 항목은 **무엇이 관측됐는지 →
@@ -15,9 +75,39 @@
 | **TODO-1** | 흔들림 감소 + 10펄스 — ★실차 확인 0~4단계★ | 코드 완료 [2026-09-30] · **기본 꺼짐**. 아래 2026-09-30 항목 ④ 6절 순서로 켠다 |
 | **TODO-2** | 출발 직후 ≈15 s 는 트림이 없다 — 10펄스 최대 CTE 가 여기서 난다(④ 2절 ⑥ · 3절 F) | ★사용자 결정★ : 영점 캘리브(`BOARD_B.md` 3절) / 직전 주행 트림 이어받기 / 첫 15 s 는 7펄스 |
 | **TODO-3** | 10펄스 종점 접근 — `GOAL_DECEL_M` 5 m 고정으로는 2펄스까지 못 줄인다(≈34 m 필요, ④ 7절) | ★사용자 결정★ (CLAUDE.md 6.3 결정 (a) 를 다시 볼 일) |
-| **TODO-4** | GPS 안테나 위치 실측 — 뒷차축 기준(driving `gps_ant_x_m`) · 라이다 원점 기준(mppi `handover.gps_antenna_x_m`) | 줄자 |
 | **TODO-5** | L 구간이 있는 경로 — E(`lfd_max_m` 14) 전에 재수렴 LFD 를 2펄스 기준으로(CLAUDE.md 4.1b-2 ②) | 설계 있음 · 코드 전 |
 | **TODO-6** | 정리 — 옛 빌드 산출물 `install/`·`build/` 의 `white`·`white806`, `nxde/check.py` 가 찍는 `ros2 launch white …` 안내 | 사소 |
+
+---
+
+## 2026-09-30 — ★GPS 안테나는 앞차축 위, 라이다는 뒷차축 위★ · mppi 안테나 보정 0.6 → 1.25 · HUD
+
+> 사실(사용자 확인) : **GPS 안테나 = 앞차축 위 · 라이다(OS1-32) = 뒷차축 위** → 둘 사이 = 축거 **1.25 m**.
+
+| 값 | 뜻 | 종전 → 지금 |
+|---|---|---|
+| driving `gps_ant_x_m` (TODO-1 B) | 뒷차축 → 안테나 | 1.25 그대로 — '⚠️ 미실측' 표시만 지웠다 |
+| mppi `handover.gps_antenna_x_m` | 라이다 원점 → 안테나 | **0.6 → 1.25** (`params.yaml` · 노드 기본값 · 두 시험 도구) |
+| hud GPS 미니맵의 라이다 겹쳐 그리기 | 코스트맵 원점(뒷차축)을 얹는 자리 | 안테나 자리 → **뒷차축 자리** (`driving.GPS_ANT_X_M`) |
+
+- **mppi 의 0.6 은 9/28 콘 회귀값이었다**(0.54~0.72 m). 기하보다 작게 나온 이유는 확인하지 않았다.
+  모의(`test/avoid_sim.cpp`, 23장면)로는 **크게 잡는 쪽이 손해가 없다** — 장면별 최소 여유의 평균 [m]:
+
+  | 실제 \ 보정 | 0.6 | **1.25** |
+  |---|---|---|
+  | 0.6 | 0.830 | 0.825 |
+  | **1.25 (사실)** | 0.789 ← 종전 설정 | **0.830** |
+
+  사실대로면 종전 설정이 손해였다 — 23:03 실주행 배치 0.89 → 0.67 m, 6 m 간격 0.48 → 0.32 m.
+  모의는 (실제 − 보정)·sin ψ 만 넣으므로 둘이 같으면 결과가 0.6/0.6 과 같다(충돌 0 그대로).
+- **white1 모의도 안테나 1.25 에서 로그를 재현한다** — `follow_sim.py` 7펄스 코너 안쪽 편향
+  0.6 → +0.09~0.13 · 0.9 → +0.13~0.18 · **1.25 → +0.18~0.23 m** (9/13 로그 +0.19~+0.30).
+- **HUD** — GPS 미니맵에 mppi 코스트맵·회피 경로를 얹을 때 원점(뒷차축)을 안테나 자리에 두어
+  **콘과 경로가 1.25 m 앞에** 그려졌다. 표시 전용이라 주행에는 영향이 없었다.
+- TODO-4(안테나 실측)는 지웠다. 문서의 '⚠️ 미실측 · 줄자로 잴 것' 도 함께 정리했다
+  (CLAUDE.md 1.1 · 4.1e · 4.9 · 6.0 · 7절).
+- **다음에 확인할 것** : 다음 L 구간 주행의 `.cones.csv` — 콘 자리가 헤딩을 따라 움직이지 않는가.
+  9/28 과 반대 방향으로 움직이면 보정이 과한 것이다(그때는 CTE 지연을 따로 본다).
 
 ---
 
@@ -30,7 +120,7 @@
 | | 런치 인자 (기본 → 설계값) | 무엇 | 어디 |
 |---|---|---|---|
 | A | `steer_backlash_deg` 0.0 → **0.8** · `steer_backlash_hyst_deg` 0.3 | 조향 백래시 선보상 | `_backlash_comp()` |
-| B | `pp_rear_axle` false → **true** · `gps_ant_x_m` 1.25 (⚠️ 실측) | 순수추종을 뒷차축에서 겨눈다 | `pure_pursuit_steer()` |
+| B | `pp_rear_axle` false → **true** · `gps_ant_x_m` 1.25 (안테나 = 앞차축 위) | 순수추종을 뒷차축에서 겨눈다 | `pure_pursuit_steer()` |
 | C | `yaw_damp_k` 0.0 → **0.15** | 요레이트 댐핑 | `apply_yaw_damp()` · `wp_kappa` |
 | D | `corner_ay_max` 0.0 → **2.0** · `curve_preview_far_m` 24 → **40** | 코너 속도 = √(a·R), 켜면 코너 하한 ≤ 3 | `corner_speed()` · `_ay_speed()` |
 | E | `lfd_max_m` 11.3 → **14.0** | 10펄스가 실제로 나오게 | `lookahead_m()` · `cap_far` |
@@ -205,7 +295,7 @@ return clamp(u + b * self._bl_dir, ±STEER_MAX_DEG)
   `ENTER` 3 → 2, `STEER_MIN_PWM` 재조정). 모의로 유효 백래시 0.5 는 A 와 비슷한 효과다. 목표 주위
   떨림(헌팅)을 벤치에서 먼저 봐야 하고 다른 저장소라, **A 로 모자랄 때** 검토한다.
 
-**B. 순수추종 기하 = 뒷차축** — `pp_rear_axle` (끔 = false) · 새 상수 `GPS_ANT_X_M` (⚠️ 실측할 것)
+**B. 순수추종 기하 = 뒷차축** — `pp_rear_axle` (끔 = false) · 새 상수 `GPS_ANT_X_M` (1.25 m — 안테나는 앞차축 위)
 → **구현** : `pure_pursuit_steer()` 의 기준점 `(ox, oy)` · 런치 `gps_ant_x_m`.
 
 `pure_pursuit_steer()` 의 `to_body()`(그리고 그것을 쓰는 목표점 탐색)만 뒷차축 좌표로 한다:
@@ -216,10 +306,10 @@ ry = self.y - GPS_ANT_X_M * math.sin(h)
 # to_body(i) : dx, dy = wx - rx, wy - ry           (나머지 식은 그대로)
 ```
 - **CTE·진행 포인터·종점 판정은 안테나 그대로 둔다** — 경로가 안테나 궤적이다. 그래서 `/lidar_ref[0]`
-  도 그대로이고 mppi `handover.gps_antenna_x_m` 은 **바꾸지 않는다**(CLAUDE.md 7절의 'CTE 를 뒤차축으로
-  투영하면 0 으로' 는 해당 없음 — CTE 는 투영하지 않는다).
-- `GPS_ANT_X_M` = 뒷차축 → 안테나의 진행방향 거리. driving 주석은 '앞차축 위'(1.25 m)지만 **줄자로 잴 것.**
-  모의로 실제 안테나가 0.9 m 인데 1.25 로 옮겨도 코너 최대 0.38 m(같은 조건 현행 0.58 m) — 오차에 둔하다.
+  도 그대로이고, B 를 켜도 mppi `handover.gps_antenna_x_m` 은 **그대로 둔다**(CLAUDE.md 7절의 'CTE 를
+  뒤차축으로 투영하면 0 으로' 는 해당 없음 — CTE 는 투영하지 않는다).
+- `GPS_ANT_X_M` = 뒷차축 → 안테나의 진행방향 거리 = **1.25 m** (안테나가 앞차축 위라 축거와 같다).
+  0.35 m 어긋나도(모의 0.9 m) 코너 최대 0.38 m(같은 조건 현행 0.58 m) — 오차에 둔하다.
 - 모의 : 7펄스 코너 최대 0.61~0.74 → **0.21~0.27 m**, 안쪽 편향 +0.18~+0.23 → **±0.02 m**.
 - ⚠️ **단독으로 켜지 말 것** — 앞 안테나가 주던 선행(리드) 효과가 사라져 직선 흔들림이 다시 는다
   (경로 B : A 만 1.46 → A+B 1.86 °/s). **반드시 C 와 함께.**
@@ -317,7 +407,7 @@ PWM 80~95 — 이 모델을 다시 식별하면 백래시 0.9~1.2° 가 나온�
 |---|---|---|---|
 | 0 | 구현만 (전부 끔) | 7 | 지표가 9/13 과 같다 — 회귀 없음 |
 | 1 | A 0.8 + C 0.15 | 7 | 흔들림 ≤ 1.5 °/s (9/13 1.9~2.6), 직선 CTE std ≤ 0.2 m, 식별 백래시가 줄었는가 |
-| 2 | + B (안테나 실측 후) | 7 | 코너 안쪽 편향 \|·\| ≤ 0.1 m, 코너 최대 ≤ 0.35 m |
+| 2 | + B | 7 | 코너 안쪽 편향 \|·\| ≤ 0.1 m, 코너 최대 ≤ 0.35 m |
 | 3 | + D (`corner_ay_max` 2.0, 원거리 40 m) | 7 | 거의 변화가 없어야 한다 |
 | 4 | + E, `drive_pulse` 8 → 9 → 10 | 8·9·10 | ⛔ 0, 흔들림 ≤ 2.5 °/s, 코너 최대 ≤ 0.5 m, 횡가속 p99 ≤ 2.0 |
 
@@ -327,11 +417,11 @@ PWM 80~95 — 이 모델을 다시 식별하면 백래시 0.9~1.2° 가 나온�
 ros2 launch white1 one_launch.py                                                  # 0단계
 ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15       # 1단계
 ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
-    pp_rear_axle:=true gps_ant_x_m:=<실측>                                         # 2단계
+    pp_rear_axle:=true gps_ant_x_m:=1.25                                         # 2단계
 ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
-    pp_rear_axle:=true gps_ant_x_m:=<실측> corner_ay_max:=2.0 curve_preview_far_m:=40.0   # 3단계
+    pp_rear_axle:=true gps_ant_x_m:=1.25 corner_ay_max:=2.0 curve_preview_far_m:=40.0   # 3단계
 ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
-    pp_rear_axle:=true gps_ant_x_m:=<실측> corner_ay_max:=2.0 curve_preview_far_m:=40.0 \
+    pp_rear_axle:=true gps_ant_x_m:=1.25 corner_ay_max:=2.0 curve_preview_far_m:=40.0 \
     lfd_max_m:=14.0 drive_pulse:=8                                                  # 4단계 (→ 9 → 10)
 ```
 ★실수는 소수점으로★ 준다(`0.8`·`2.0`) — `2` 처럼 정수로 주면 ROS 파라미터 형이 달라 노드가 뜨지 않는다.
@@ -370,11 +460,12 @@ ROS_DOMAIN_ID 77 에서 돌아 실차 스택(도메인 7)과 섞이지 않는다
 - 원인 ① driving 의 CTE 가 **GPS 안테나 자리**인데 mppi 가 라이다 원점으로 썼다 — 헤딩에 따라 콘이
   L·sin ψ 옆으로 옮겨 보여(회귀 L = 0.54~0.72 m) 목표가 늦게 커졌고 차가 0.4 m 뒤처졌다.
   ② 편향 적분이 회피 기동 중에 +2.1° 까지 쌓였다.
-- 고침 : `avoid.pass_gap_m` 0.45 → **0.75** (사용자 지시) · `handover.gps_antenna_x_m` **0.6** ·
+- 고침 : `avoid.pass_gap_m` 0.45 → **0.75** (사용자 지시) · `handover.gps_antenna_x_m` **0.6**(→ 9/30 **1.25**) ·
   적분은 곧은 경로에서만(`steadyTracking`) · 곡률 대체가 ±3 m 밖 쪽을 고르지 않게.
 - 검증 : 모의 23장면(두 실주행 배치 재구성 포함) 충돌 0, 최소 간격 0.42 → 0.89 · 0.45 → 0.90 m.
   ROS 폐루프 목표가 정확히 30 cm 바깥(+1.20 → +1.50, −0.38 → −0.68).
-- **다음에 확인할 것** : 콘 옆 실제 간격, 교대 헤딩(모의 ~35°), 안테나 ↔ 라이다 거리 실측.
+- **다음에 확인할 것** : 콘 옆 실제 간격, 교대 헤딩(모의 ~35°), 안테나 ↔ 라이다 거리 실측
+  (→ 9/30 : 안테나 앞차축 위 · 라이다 뒷차축 위 = 1.25 m).
 
 ---
 
