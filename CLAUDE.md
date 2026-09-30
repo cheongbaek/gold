@@ -17,6 +17,7 @@
 > | 변경 이력·실차 로그 근거 | `gold_ws/src/white1/CHANGELOG.md` |
 > | ★**앞으로 할 일 (TO DO LIST)**★ | `gold_ws/src/white1/CHANGELOG.md` **최상단** |
 > | 흔들림 감소 · 10펄스 증속 (A~E) — 원인·설계·모의·구현 [2026-09-30] | 요약 4.1e · 근거 CHANGELOG 2026-09-30 항목 · 모의 도구 `gold_ws/src/white1/sim/` |
+| ★본선 코스 신호 타이머 (T1~T5)★ [2026-09-30] | 요약 4.10 · 신호 시각표·`/traffic_timer` 배열 `gold_ws/src/white1/white1/traffic_timer.py` 헤더 · 판단 `driving.py` 상수절 '본선 코스 — T1~T5' · 모의 `sim/signal_sim.py` |
 > | 아두이노 계층 구조·안전장치 | `gold_ws/src/nxde/README.md` |
 > | 라이다 패키지 | `gold_ws/src/lidar/README.md` |
 > | 단위 환산 (C++ 쪽 단일 소유자) | `gold_ws/src/lidar/include/lidar/kasa_units.hpp` |
@@ -359,11 +360,15 @@ gold_ws/src/
       speed.py         /imu 적분 → /speed [km/h]  ★보조 속도원★
       mapping.py       /fix 원값만 보고 경로 수집 → gps_data/route_*.csv
       prompt.py        CLI 메인화면 (매핑/주행/종료) — ★시작은 여기뿐★
-      record.py        주행 구간 토픽 → ros2bag/<경로이름>-<시각>.csv (87열, 20 Hz)
+      traffic_timer.py ★본선 코스 신호 타이머★ [2026-09-30] — prompt 와 ★한 프로세스★ 로 뜨고
+                       maincourse.csv 를 골랐을 때만 켜진다 (4.10)
+      record.py        주행 구간 토픽 → ros2bag/<경로이름>-<시각>.csv (120열, 20 Hz)
       hud.py           차량 상면도 HUD (구독 전용)
       traffic_light.py 신호등 인지 → 빨간불이면 리니어 2단
       camera_model.py / camera_launch.py / ports.py / paths.py
     launch/one_launch.py    통합 런치
+    sim/signal_sim.py  ★본선 코스 신호 타이머 폐루프 모의★ [2026-09-30] — driving + traffic_timer +
+                     가짜 신호등(진짜 위상). follow_sim 의 차량 모델을 그대로 쓴다 (4.10)
     sim/follow_sim.py · follow_design.py   ★driving 폐루프 모의★ [2026-09-29] — DrivingNode 를
                      그대로 돌린다(ROS_DOMAIN_ID 77). 빌드 대상 아님. CHANGELOG 2026-09-30 ④ 의 수치를
                      재현 — [2026-09-30] 부터 패치가 아니라 driving 의 ★실제 파라미터★ 를 넘긴다
@@ -441,12 +446,17 @@ gold_ws/src/
 | `/brake_level` | Int32 | 0/1/2 — **`max(내 요청, 신호등 요청)`** 으로 합쳐서 낸다 |
 | `/mapping_cmd` | Bool | 매핑 시작/종료 |
 | `/drive_state` `/drive_event` | String | 상태·사건 (prompt·hud·sound 가 본다) |
-| `/tl_permit` | Bool | 신호등 개입 허락 |
+| `/tl_permit` | Bool | 신호등 개입 허락 — T 구간에서만 ([2026-09-30] 본선 코스는 T5 만) |
+| **`/tl_zone`** [2026-09-30] | String | **지금 상대하는 신호 라벨** — T 구간 안이거나 시작 40 m 앞이면 `T`·`T1`~`T5`, 아니면 `''`. traffic_timer 가 `T1` 인 동안만 전환을 본다 |
 | **`/lstatus`** | String | **`'0'` GPS추종 / `'L'` 라이다 / `'S'` 일시정지 — ★이것이 조종권이다★** |
 | `/ego_state` `/drive_diag` | Float64MultiArray | 계측·진단 |
 
 **`driving` 노드 구독** — `/gps_fused` `/imu` `/encoder` `/speed` `/vehicle_mode`
-`/estop` `/drive_cmd` `/tl_brake_req` `/lidar_active`
+`/estop` `/drive_cmd` `/tl_brake_req` `/lidar_active` `/traffic_timer`(본선 코스에서만 읽는다)
+
+**`traffic_timer` 노드** (`prompt` 와 한 프로세스, [2026-09-30]) — 구독 `/tl/state` `/tl_zone`
+`/drive_state` · 발행 **`/traffic_timer`** (Float64MultiArray 8칸, 20 Hz — ★본선 코스가 아니면 아예 안 낸다★,
+배열 규약은 `traffic_timer.py` 헤더)
 
 > **`/lstatus` 는 `terrain` 원값이 아니다.** `lstatus_now()` 가 "내가 실제로 손을
 > 놓았는가" 로 만든다 — `S_DRIVE_RUN` 이 아니면 무조건 `'0'`, `_revoke_lidar`
@@ -516,6 +526,7 @@ S_IDLE ──MAP_START──▶ S_MAP_HEADING ──헤딩 확정──▶ S_MAP
 | 🛑 | 정지명령 | prompt 의 STOP → DRIVE_DONE |
 | 🔻 | 종점 1단 접근제동 | DRIVE_RUN 안에서 (감속) |
 | 🅑 | 코너 1단 선행제동 | DRIVE_RUN 안에서 (감속) |
+| 🚦 | 신호 대기 (본선 코스 T1·T3·T4) [2026-09-30] | 진입 순간 타이머상 적색 → DRIVE_RUN 안에서 2단 (S 서브페이즈, 4.10) |
 
 ### 3.4 데이터 — 파일 위치와 CSV 양식
 
@@ -574,7 +585,10 @@ throttle_pulse,wheel_pulse,wheel_speed,steer_measured,throttle_raw,auto_mode,est
 
 | 값 | 뜻 | 누가 모나 |
 |---|---|---|
-| **`L` / `l`** | **라이다 구간** — 라바콘 회피 | `mppi_local_planner` |
+| **`L` / `l`** | **라이다 구간** — 라바콘 회피 (여러 행) | `mppi_local_planner` |
+| **`S` / `s`** | **일시정지** — 2단 정지 → 3.5 s → 재출발 (★한 행★, 6.1) | `white1/driving` |
+| **`T` / `t`** | **신호등 구간** — 카메라가 빨간불이면 2단 (여러 행) | `white1/driving` + `traffic_light` |
+| **`T1`~`T5`** [2026-09-30] | ★본선 코스(`maincourse.csv`)만★ — T1 타이머 0초 · T2 무시 · T3·T4 타이머 · T5 카메라 (4.10). ★다른 경로에서는 번호를 버리고 `T` 로 본다★ | `white1/driving` + `traffic_timer` |
 | 그 밖 (빈 칸 · `0` · 숫자 · 열 없음) | GPS 추종 | `white1/driving` |
 
 `driving.py:963-964`, 판정은 `zone_at()`(:1511), 읽는 곳은 `select_route()`(:1678).
@@ -595,10 +609,15 @@ throttle_pulse,wheel_pulse,wheel_speed,steer_measured,throttle_raw,auto_mode,est
 `L`/`S` 를 손으로 적을 때는 **그 숫자를 지우고 적는 것**임을 알고 있어야 한다.
 (열 구성도 다르다 — `lane_*` 3열이 있고 `throttle_pulse` 이하가 없다.)
 
+> **본선 코스 = `gps_data/maincourse.csv`** [2026-09-30] — 옛 `route_20260913_161721.csv` 를 `git mv` 하고
+> terrain 의 T 다섯 토막을 위에서부터 `T1`~`T5` 로 바꿨다(328칸만 — CRLF·다른 열은 바이트 그대로).
+> **이 이름이 곧 '타이머를 켜라' 는 뜻이다** — prompt 가 목록 맨 위에 고정하고, 고르면 신호 타이머가 켜진다.
+> 이름의 단일 소유자는 `traffic_timer.MAINCOURSE_FILE`.
+
 #### 주행 기록 CSV — `ros2bag/<경로이름>-<YYYYMMDD>_<HHMMSS>.csv`
 
 `record.py` 가 `one_launch` 와 함께 뜨고 **자율주행 모드 + 주행 구간에서만** 스스로
-켜진다. **한 행 = 한 시점의 차량 전체 상태**(20 Hz 스냅샷, 87열). 숫자 토픽은 다음
+켜진다. **한 행 = 한 시점의 차량 전체 상태**(20 Hz 스냅샷, 120열). 숫자 토픽은 다음
 값이 올 때까지 유지, 문자열·이벤트는 새로 온 행에만 찍는다. 앞 두 열은 항상
 `t_wall`(UNIX epoch)·`t_rel`. 기록 대상은 `record.py` 상단 `RECORD_TOPICS` 표 하나.
 
@@ -1275,6 +1294,52 @@ GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'�
 > mppi 로그의 `🚧 블록 #n → 쪽 (근거)` · `🛞 조종권 인수 — 미리보기 이어받음` ·
 > `ld_y` 가 `ld_target_y` 를 따라가는가 · 콘 옆 실제 여유.
 
+
+### 4.10 ★본선 코스 신호 타이머 — T1 전환으로 0초, T3·T4 는 타이머만★ [2026-09-30]
+
+**왜** — T2·T3·T4 에서 카메라 인지가 잘 안 된다(9/13 기록: T4 는 구간 끝을 지나서야 RED_FAR 12~14 px).
+그런데 **모든 신호등이 0~100초 한 주기로 연동**되므로(사용자), T1 에서 적색→녹색 전환 한 번만 보면
+나머지는 시계로 안다. **`maincourse.csv` 를 골랐을 때만** 이렇게 돈다 — 다른 경로는 종전 T(카메라) 그대로.
+
+| 신호 | 녹색 [s] | 판단 | 들어서는 순간 |
+|---|---|---|---|
+| **T1** | 0~32 | 카메라가 **적색→녹색 전환을 봤는가** (= 타이머 0초) | 이번 주행에서 초기화됐고 T1 녹색이면 통과, 아니면 **2단 정지 → 전환을 보면 출발** (녹색이어도 선다) |
+| T2 | 0~32 | — (T1 과 같은 시각표) | **아무것도 안 한다** (마킹만) |
+| **T3** | 35~47 | 타이머 | 녹색이면 통과, 아니면 2단 정지 → 녹색이 되면 출발 |
+| **T4** | 60~97 | 타이머 | 같다 |
+| T5 | 0~57 | 카메라 (종전 T) | 빨간불이면 카메라가 2단 |
+
+**사용자 결정** — 정지 위치 = **T 구간 진입 즉시 2단** · 접근 중(서기 전)에 전환을 봤으면 T1 에서 서지 않는다 ·
+비상 대체 경로 없음(**T3·T4 전에는 반드시 T1 을 지나고, T1 은 전환을 봐야만 지나간다**) · 여유 없음(시각표 그대로 `[시작, 끝)`).
+
+```
+traffic_light ─/tl/state──▶ traffic_timer (prompt 프로세스) ─/traffic_timer─▶ driving
+driving ──────/tl_zone ('T1' …)──▶ traffic_timer ◀──/drive_state────── driving
+```
+
+- **traffic_timer 는 시계일 뿐이다** — 차를 세우고 보내는 것은 driving 이다. 정지·대기·재출발은
+  **S 서브페이즈를 그대로** 쓰고 대기를 끝내는 조건만 '타이머 녹색' 이다(새 state 를 만들면 `enter()` 가 리니어를 푼다).
+- **전환은 `/tl_zone` 이 `T1` 인 동안만 본다** — T1 시작 40 m 앞부터(9/13 기록에서 T1 신호등이 처음 잡힌 곳이
+  35 m 앞). 적색(RED·RED_FAR) 0.3 s 이상 → 3 s 안에 녹색 0.4 s 이상이면 전환이고 **첫 녹색 프레임 시각이 0초**다.
+  T3·T4 의 좌회전 녹색(35·60초)을 0초로 잘못 잡지 않으려고 다른 곳에서는 안 본다.
+- **주행마다 다시 잰다** (DRIVE_HEADING 에서 기준을 지운다). 시계는 `time.time()` (사용자 지시).
+- **판단은 '지금 구간 안이고 아직 처리 안 했는가'** — E-STOP 이 대기를 지워도 재개한 첫 틱에 다시 판단한다.
+- prompt 가 죽으면 `/traffic_timer` 가 끊겨 go 가 0 이 되고 **T1·T3·T4 에서 선 채로 기다린다** (신호위반보다 정지).
+- `select_route` 가 본선 코스의 순서를 검사한다 — T1 이 없거나 T3·T4 가 T1 보다 앞이면 ❌ 로 말한다(그 자리에서 영영 못 간다).
+
+**모의** (`sim/signal_sim.py`, 7펄스, 진짜 위상 0~95초 5초 간격 20경우) — **전부 도착 · 판단 오류 0**.
+- 0초 오차 **+70 ms** (카메라 한 프레임, 모의 15 Hz). 첫 녹색 프레임이 빠지면 +140 ms. **늦게만** 잡힌다.
+- ★7펄스면 T1 을 0초에 떠난 뒤 **T3 에는 늘 33~34초(창 직전)에 닿아 2~3초 서고, T4 에는 53초에 닿아 약 7초 선다**★ —
+  시각표와 코스 길이가 정한 것이라 T1 도착 위상과 무관하다.
+- ⚠️ **4펄스면 T3 에 54초쯤 닿아 창(35~47)을 매번 놓치고 약 81초** 기다린다.
+- 정지 지점은 구간 끝(≈정지선)보다 **T1 14.7 m · T3 24 m · T4 21 m 앞**이다(진입 즉시 정지의 대가).
+- ⚠️ **정지 상태에서 정지선까지 7~8초** 걸린다 — T3 에서 40초 이후에 출발하면 47초를 넘겨 정지선을 지난다.
+  E-STOP 으로 대기가 길어진 모의에서 실제로 47.5초에 지났다(여유 없음 결정과 맞물린다 — CHANGELOG TODO-9).
+- 기존 GPS 추종 거동은 불변 — terrain 을 지운 경로 A·B 모의 궤적 해시가 수정 전과 같다.
+
+**실차에서 먼저 볼 것** — prompt 헤더의 `🚦 신호 타이머` 줄 · drive_event `🚦 신호 타이머 초기화 — … = 0초` 와
+실제 녹색 시작의 차이(인지 영상) · `🚦 T3 통과/신호 대기 [타이머 N초]` 의 N · record 의 `tl_zone`·`tt_*` 열.
+
 ---
 
 ## 5. 실행
@@ -1284,7 +1349,7 @@ cd gold_ws && colcon build && source install/setup.bash      # ★--symlink-inst
 
 ros2 run nxde check                    # 0) 하드웨어 연결 점검 (포트 점유 없이)
 ros2 launch white1 one_launch.py       # 1) 센서 + arduino + 자율주행 + 라이다
-ros2 run white1 prompt                 # 2) CLI 메뉴 (별 터미널)
+ros2 run white1 prompt                 # 2) CLI 메뉴 (별 터미널) — ★본선 코스 신호 타이머도 함께 뜬다★
 ros2 run white1 hud                    # 2') 상면도 HUD (구독 전용, 선택)
 ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때
 ```
@@ -1808,6 +1873,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
 | **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
+| **본선 코스 신호 타이머 T1~T5 (4.10) [2026-09-30]** | `traffic_timer.py`(신설) · `driving.py tl_label` · `tl_camera_zone` · `tl_go` · `tl_zone_now` · `timer_signal_here` · `begin_signal_stop` · `run_stop_zone`(대기 조건) · `_warn_maincourse_order` · `_tl_segments` · `prompt.py`(한 프로세스 · 목록 고정) · `record.py TRAFFIC_TIMER_COLUMNS` · `hud._zone_char` · `gps_data/maincourse.csv` · `sim/signal_sim.py` |
 | **흔들림 감소 + 10펄스 증속 A~E — 전부 기본 꺼짐 (4.1e) [2026-09-30]** | `driving.py _backlash_comp` · `pure_pursuit_steer`(기준점 ox,oy) · `apply_yaw_damp` · `build_curve_profile wp_kappa` · `corner_speed` (a2)(b) · `_ay_speed` · `lfd_max`·`curve_far` · `_announce_speed_setup` · `reset_steer_shaping` · 상수절 'CHANGELOG TODO-1' · `one_launch.py` 인자 8개 · `sim/follow_design.py`(실제 파라미터로 모의) |
 | **record `/drive_diag` 두 열 누락 수정 + 조향 사슬 4열 [2026-09-30]** | `record.py DRIVE_DIAG_COLUMNS`(길이 유도) · `_stash`(원래 길이로 경고) · `driving.publish_state_topics` |
 | **GPS 안테나 = 앞차축 위 · 라이다 = 뒷차축 위 — mppi 안테나 보정 0.6 → 1.25 · HUD 라이다 겹쳐 그리기 원점 (1.1 · 4.9) [2026-09-30]** | `params.yaml handover.gps_antenna_x_m 1.25` · 노드 기본값 · `test/{avoid_sim.cpp,ros_smoke.py}` · `hud.py _draw_nav_lidar_overlay`(원점 = 안테나 − `GPS_ANT_X_M`) |
@@ -2922,6 +2988,10 @@ ping -c2 192.168.6.11
 | **회피 폭** [2026-09-28] | mppi `avoid.max_offset_m`(3.0) **+** `mppi.max_lateral_offset`(3.2)·`lateral_hard`(3.5) — **벽은 계획 폭보다 바깥이어야 한다.** 같으면 계획과 벽이 같은 자리에서 싸운다 |
 | **회피 추종·정지** [2026-09-28] | `mppi_local_planner/include/.../path_tracker.hpp` 하나를 노드와 모의실험(`test/avoid_sim.cpp`)이 같이 쓴다 — 노드에 식을 따로 적지 말 것. 계획기·추종기를 고치면 그 모의실험과 `test/ros_smoke.py` 를 다시 돌린다(빌드 명령은 각 파일 머리말) |
 | **GPS 안테나 위치** [2026-09-29 · 09-30] | ★**안테나는 앞차축 위, 라이다는 뒷차축 위**★ — driving `gps_ant_x_m`(뒷차축 → 안테나, 4.1e B) **+** mppi `handover.gps_antenna_x_m`(라이다 원점 → 안테나) **+** hud 라이다 겹쳐 그리기(`driving.GPS_ANT_X_M` 을 쓴다) — **지금은 셋 다 1.25 m(축거)다. 안테나나 라이다를 옮기면 함께 고친다.** driving 의 CTE(`/lidar_ref[0]`)는 **안테나 자리**다 — driving 이 언젠가 CTE 를 뒤차축으로 투영하게 되면 **mppi 값을 0 으로** 내려야 한다(두 번 빼게 된다). B 는 순수추종 조준만 옮기고 CTE 는 투영하지 않으므로 B 를 켜도 mppi 값은 그대로 둔다 |
+| **본선 코스 이름 · 신호 시각표** [2026-09-30] | `traffic_timer.py` 의 `MAINCOURSE_FILE`·`SIGNAL_WINDOWS` **한 곳** — prompt·driving·record·`sim/signal_sim.py` 가 import 한다. 사이트(find_wc)의 `PINNED_ROUTE` 는 다른 저장소라 이름을 베껴 적었다 — **파일 이름을 바꾸면 거기도** |
+| **`/traffic_timer` 배열** [2026-09-30] | `traffic_timer.py` 헤더(규약)·`F_*` **+** `record.py TRAFFIC_TIMER_COLUMNS`(길이는 import 때 assert) — driving 은 `tt.F_*` 로만 읽는다 |
+| **T 라벨 판정** [2026-09-30] | `driving.tl_label` 하나 — hud 는 그것을 부른다. find_wc `csv.ts zoneOf` 는 같은 규칙을 따로 적었다(다른 저장소) |
+| **`/tl_zone` 관찰 창** [2026-09-30] | `driving.tl_zone_now` 가 `tt.WATCH_PRE_M`(40 m)로 만든다 — traffic_timer 는 그 라벨이 `tt.INIT_SIGNAL` 인 동안만 전환을 본다 |
 | **`/drive_diag` 배열** [2026-09-30] | `driving.publish_state_topics()` 배열 **끝에** 붙이고 `record.py DRIVE_DIAG_COLUMNS` **끝에** 이름 — 길이는 튜플에서 유도한다(종전 `_array(23)` 이 25개 중 두 열을 조용히 버렸다). `hud.py` 는 앞쪽 인덱스(0·1·4)를 읽으므로 ★중간에 끼우지 말 것★ |
 | **TODO-1 파라미터** [2026-09-30] | `driving.py` 상수절(기본값) **+** `one_launch.py` 런치 인자(같은 기본값) **+** `sim/follow_design.py` 의 A~E 표(설계값) — 어긋나면 모의가 실차와 다른 것을 잰다. `lfd_max_m` 은 `LFD_MAX_M` 을 대신하므로 **상수만 고치면 런치 기본값(11.3)이 이긴다** |
 | **미리보기 ↔ `/lidar_ref[3]`** [2026-09-28] | mppi 미리보기는 driving 의 `zone_left`(다음 L 구간까지 호길이)로 켜진다. **그 열의 뜻을 바꾸면 미리보기가 조용히 꺼진다** |

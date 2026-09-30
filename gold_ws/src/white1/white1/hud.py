@@ -176,9 +176,12 @@ def _yaw_from_quat(x, y, z, w):
 
 
 def _zone_char(raw):
-    """CSV terrain 한 칸 → '0'|'L'|'S'|'T'. driving 이 구간으로 인정하는 문자만."""
+    """CSV terrain 한 칸 → '0'|'L'|'S'|'T'. driving 이 구간으로 인정하는 문자만.
+    [2026-09-30] 본선 코스의 'T1'~'T5' 도 'T' 로 접는다(판정은 driving.tl_label)."""
+    if dv.tl_label(raw):
+        return ZONE_TL
     z = str(raw or '').strip().upper()
-    if z in (ZONE_LIDAR, ZONE_STOP, ZONE_TL):
+    if z in (ZONE_LIDAR, ZONE_STOP):
         return z
     return ZONE_GPS
 

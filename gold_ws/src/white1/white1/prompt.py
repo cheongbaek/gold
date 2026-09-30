@@ -85,6 +85,10 @@ from white1 import paths
 #  ★라이다 준비 판정의 상수·토픽은 driving.py 가 소유자다★ 여기서 다시 적으면
 #  두 곳이 어긋나 '화면은 출발, driving 은 거절' 이 된다(gate_for 의 lidar_ready).
 from white1 import driving as dv
+#  ★[2026-09-30] 본선 코스 신호 타이머 — 이 화면과 한 프로세스로 뜬다 (사용자 지시)★
+#  main() 이 노드를 만들어 같은 실행기에 얹고, 경로를 고를 때 set_route() 로 켜고 끈다.
+#  ★maincourse.csv 를 골랐을 때만 켜진다★ — 그 밖에는 떠 있어도 아무것도 내지 않는다.
+from white1 import traffic_timer as tt
 
 # ★음성 안내 [2026-08-12 → 2026-08-21]★ 이 화면이 직접 내는 것은 ★네 개★ 다 —
 #   시작 인사와 대기 안내 셋(스위치 둘 + E-STOP 하나). 전부 토픽에 나타나지 않는
@@ -136,8 +140,9 @@ GATE_LIDAR  = 'LIDAR'     # 라이다가 아직 안 켜졌다 (주행만)
 
 class PromptNode(Node):
 
-    def __init__(self):
+    def __init__(self, timer=None):
         super().__init__('prompt_node')
+        self.timer = timer            # 본선 코스 신호 타이머 (main 이 만든다, 없으면 None)
         self.declare_parameter('data_dir', '')
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
         # ★[2026-08-14] 음원 폴더를 직접 넘긴다★ 음원이 nxde/sound → white1/sound 로
@@ -284,12 +289,19 @@ class PromptNode(Node):
 
     # ── 화면 ───────────────────────────────────────────────────────────────────
     def routes(self):
+        """경로 목록 — 최신순. ★본선 코스(maincourse.csv)는 맨 위에 고정한다★ [2026-09-30]
+        (이름이 route_ 로 시작하지 않아 종전 거름망에 빠지고, 날짜순으로도 설 자리가 없다)."""
         try:
-            names = [f for f in os.listdir(self.data_dir)
-                     if f.startswith('route_') and f.endswith('.csv')]
+            files = os.listdir(self.data_dir)
         except OSError:
             return []
-        return sorted(names, reverse=True)
+        names = sorted((f for f in files if f.startswith('route_') and f.endswith('.csv')),
+                       reverse=True)
+        return ([tt.MAINCOURSE_FILE] if tt.MAINCOURSE_FILE in files else []) + names
+
+    def timer_line(self):
+        """신호 타이머 한 줄 — 본선 코스가 아니면 ''(화면에 안 나온다)."""
+        return self.timer.status_text() if self.timer else ''
 
     def mode_str(self):
         if self.auto_mode is None:
@@ -298,13 +310,17 @@ class PromptNode(Node):
 
     def header(self):
         est = "🚨 E-STOP 발동 중" if self.estop else "정상"
+        timer = self.timer_line()
         return (f"\n{BANNER}\n"
                 f" white1   상태: {self.state}   모드: {self.mode_str()}   {est}\n"
                 f" 선택된 경로: {self.selected or '(없음)'}\n"
-                f"{BANNER}")
+                + (f" {timer}\n" if timer else "")
+                + f"{BANNER}")
 
     def menu_screen(self, routes):
-        latest = routes[0] if routes else '(없음)'
+        #  ★최신은 날짜로 딴 것 중에서★ — 맨 위에 고정한 본선 코스는 '최신' 이 아니다
+        dated = [r for r in routes if not tt.is_maincourse(r)]
+        latest = dated[0] if dated else '(없음)'
         lines = [self.header(),
                  f" 저장된 경로: {len(routes)}개   (최신: {latest})",
                  ""]
@@ -327,7 +343,8 @@ class PromptNode(Node):
             lines.append("   (없음)")
         for i, name in enumerate(routes[:ROUTE_LIST_MAX], 1):
             mark = "★" if name == self.selected else " "
-            lines.append(f"  {mark}{i:2d}) {name}")
+            note = "   ← 본선 코스 (신호 타이머 T1~T5)" if tt.is_maincourse(name) else ""
+            lines.append(f"  {mark}{i:2d}) {name}{note}")
         if len(routes) > ROUTE_LIST_MAX:
             #  잘린 것이 있으면 그렇다고 말한다 — 조용히 안 보이면 없는 줄 안다.
             lines.append(f"   … 오래된 {len(routes) - ROUTE_LIST_MAX}개는 목록에 없다 "
@@ -422,9 +439,16 @@ class PromptNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PromptNode()
+    #  ★[2026-09-30] 신호 타이머를 같은 실행기에 얹는다 (사용자 지시 'prompt 와 함께')★
+    #  스레드 하나가 두 노드를 다 돌린다 — 타이머 콜백은 문자열 비교와 배열 하나라
+    #  가볍고, 따로 띄우면 /traffic_timer 발행자가 둘이 되어 0초가 갈라질 수 있다.
+    timer = tt.TrafficTimerNode()
+    node = PromptNode(timer)
+    executor = rclpy.executors.SingleThreadedExecutor()
+    executor.add_node(node)
+    executor.add_node(timer)
 
-    spin = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin = threading.Thread(target=executor.spin, daemon=True)
     spin.start()
 
     ui = UI_MENU
@@ -504,6 +528,9 @@ def main(args=None):
                     if 1 <= i <= min(len(routes), ROUTE_LIST_MAX):
                         node.selected = routes[i - 1]
                         node.pub_cmd.publish(String(data=node.selected))
+                        #  ★본선 코스일 때만 신호 타이머가 켜진다★ (다른 경로면 꺼진다)
+                        if node.timer:
+                            node.timer.set_route(node.selected)
                         if node.auto_mode is None:
                             print("⚠️ 주행모드를 아직 알 수 없습니다 (nxde arduino 연결 확인)")
                             ui = UI_MENU
@@ -562,6 +589,7 @@ def main(args=None):
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     finally:
+        timer.destroy_node()
         node.destroy_node()
         if rclpy.ok():
                 rclpy.shutdown()

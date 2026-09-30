@@ -58,6 +58,9 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
     L / l      라바콘 회피 (★여러 행 연속★)             mppi_local_planner
     S / s      3초 일시정지 후 재출발 (★한 행★)         white1/driving 내부
     T / t      ★신호등 인지 구간★ (★여러 행 연속★)      white1/traffic_light
+    T1 ~ T5    ★본선 코스(maincourse.csv)에서만★        white1/driving + traffic_timer
+               T1 타이머 0초 · T2 무시 · T3·T4 타이머   (prompt 와 한 프로세스)
+               · T5 카메라 [2026-09-30] — 다른 경로에서는 번호를 버리고 T 로 본다
     그 밖       GPS 추종                               white1/driving
     (빈 칸·'0'·숫자·열 없음 — ★기존 CSV 가 그대로 돈다★)
 

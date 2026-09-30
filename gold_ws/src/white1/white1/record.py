@@ -104,6 +104,7 @@ from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
 from nav_msgs.msg import Path as NavPath
 
 from white1 import paths
+from white1 import traffic_timer as tt       # /traffic_timer 배열 길이·토픽 [2026-09-30]
 
 
 # 이 상태들에서만 기록한다 (driving.py 의 상태 이름과 같아야 한다)
@@ -186,6 +187,15 @@ DRIVE_DIAG_COLUMNS: Tuple[str, ...] = (
     'lidar_zone', 'rejoin',
     'steer_trim_deg', 'steer_bl_dir', 'yaw_damp_deg', 'corner_ay_cap_ms',
 )
+
+#  ★/traffic_timer 열 이름 [2026-09-30]★ 배열 규약의 소유자는 traffic_timer.py 헤더다 —
+#  길이가 어긋나면 import 하는 순간 멈춘다(조용히 열이 비는 것보다 낫다 — 위 DRIVE_DIAG 교훈).
+TRAFFIC_TIMER_COLUMNS: Tuple[str, ...] = (
+    'tt_armed', 'tt_init', 'tt_phase_s', 'tt_go_t1', 'tt_go_t3', 'tt_go_t4',
+    'tt_watch', 'tt_t0',
+)
+assert len(TRAFFIC_TIMER_COLUMNS) == tt.N_FIELDS, \
+    "record.TRAFFIC_TIMER_COLUMNS 와 traffic_timer 배열 길이가 다르다"
 
 RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     # ── 제어 명령 ──
@@ -380,6 +390,18 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     TopicSpec('/tl_brake_req', Int32, ('tl_req',), _scalar,
               note='신호등이 요구한 브레이크 단계. driving 이 자기 요청과 max() 로 '
                    '합쳐 /brake_level 을 낸다 — 두 발행자가 다투지 않게'),
+    #   ★본선 코스 신호 타이머 두 열 묶음 [2026-09-30]★ T1·T3·T4 에서 '왜 섰나/왜
+    #   지나갔나' 를 가른다 — drive_event 의 '🚦 T3 …' 줄과 같은 행의 tt_phase_s 를
+    #   나란히 읽으면 된다. 본선 코스가 아니면 /traffic_timer 는 아예 안 나온다(빈 열).
+    TopicSpec(tt.ZONE_TOPIC, String, ('tl_zone',), _scalar,
+              note="driving 이 낸 '지금 상대하는 신호' 라벨 — T 구간 안이거나 시작 "
+                   f"{tt.WATCH_PRE_M:.0f} m 앞이면 그 라벨(T·T1~T5), 아니면 빈칸. "
+                   "traffic_timer 는 'T1' 인 동안만 적색→녹색 전환을 본다"),
+    TopicSpec(tt.TOPIC, Float64MultiArray, TRAFFIC_TIMER_COLUMNS,
+              _array(len(TRAFFIC_TIMER_COLUMNS)),
+              note='본선 코스에서만 나온다(prompt 가 켠다). tt_phase_s = T1 녹색 시작을 '
+                   '0초로 한 위상(0~100). tt_go_* = 그 신호가 지금 녹색(1). tt_watch '
+                   '0 안 봄 / 1 T1 관찰 / 2 적색 확인·녹색 대기. tt_t0 = 0초의 UNIX 시각'),
     TopicSpec('/tl/state', String, ('tl_state',), _scalar,
               note='RED / RED_FAR / GREEN / UNKNOWN — 프레임 판정'),
     TopicSpec('/tl/near_metric', Float32, ('tl_near_metric',), _scalar,

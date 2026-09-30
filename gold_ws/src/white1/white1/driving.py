@@ -281,6 +281,9 @@ from white1 import paths
 #   (mapping.py 는 종전대로 /fix 원값을 직접 받는다 — gps.py 헤더의 '매핑' 절 참고)
 from white1.gps import (GPS_FUSED_FIELDS, GPS_FUSED_TOPIC, Q_FIXED, Q_LABEL,
                         Q_NONE)
+# ★[2026-09-30] 본선 코스 신호 타이머★ 파일 이름·신호 시각표·/traffic_timer 배열 규약의
+#   단일 소유자는 traffic_timer.py 다(그 파일 헤더). 여기서는 읽기만 한다.
+from white1 import traffic_timer as tt
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1530,6 +1533,50 @@ STOP_ZONE_CHARS = ('S', 's')
 #  구간이 겹칠 일이 없다. 검사 로직을 두지 않는다 — 검사하지 않는 것을 검사하는
 #  코드가 남아 있으면 그것 자체가 '겹칠 수 있다' 는 잘못된 신호가 된다.
 TL_ZONE_CHARS = ('T', 't')
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-09-30] 본선 코스 — T1~T5 를 구분한다 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★maincourse.csv 에서만★ T 뒤의 번호를 읽는다. 그 밖의 경로는 'T3' 이라고 적혀
+#  있어도 'T' 로 접어 ★종전 그대로(카메라)★ 돈다. 파일 이름과 시각표의 소유자는
+#  traffic_timer.py 다.
+#
+#      T1  ★타이머 0초의 기준★ — 구간에 들어서는 순간 리니어 2단으로 서고, 카메라가
+#          적색→녹색 전환을 볼 때까지 기다린다(녹색이어도 선다). 들어서기 전에 이미
+#          전환을 봤으면(타이머가 초기화됐고 T1 녹색이면) 서지 않고 지나간다.
+#      T2  마킹만 있다 — ★아무것도 안 한다★ (T1 과 같은 시각표라서)
+#      T3·T4  ★카메라 없이 타이머만★ — 들어서는 순간 타이머상 녹색이면 통과,
+#          아니면 그 자리에서 2단으로 서고 녹색이 되면 출발한다
+#      T5  종전 T 와 같다 — 카메라가 빨간불이면 세운다
+#
+#  ★판단은 구간에 들어서는 순간 한 번★ (사용자 결정 '진입 즉시 정지'). 통과로
+#  판단했으면 그 구간이 끝날 때까지 다시 보지 않는다 — 구간 중간에 신호가 바뀌었다고
+#  교차로 앞에서 급제동하지 않는다.
+#
+#  ★정지·대기·재출발은 S 일시정지의 서브페이즈를 그대로 쓴다★ 다른 것은 '대기를
+#  끝내는 조건' 하나다 — S 는 3.5초, T 는 타이머가 녹색이라고 할 때. 그래서 새
+#  state 를 만들지 않는다(enter() 가 리니어를 풀어 버린다 — 위 'terrain S' 절).
+#
+#  ★E-STOP 이 대기를 지워도 신호를 놓치지 않는다★ 판정이 '구간 시작을 지났는가' 가
+#  아니라 ★'지금 구간 안이고 아직 처리 안 했는가'★ 라서, 재개한 첫 틱에 다시 판단한다.
+#
+#  ★T1 을 안 지나고 T3·T4 에 오는 일은 없다★ (사용자 지시 — 본선 코스의 순서다).
+#  그래서 '타이머가 없을 때' 의 대체 경로를 두지 않았다 — 타이머가 초기화 전이거나
+#  끊겼으면 go 가 0 이라 그냥 서서 기다린다(신호위반보다 정지가 낫다). CSV 의 순서가
+#  어긋나 있으면 select_route 가 그 자리에서 말한다(_warn_tl_zones).
+
+
+def tl_label(z):
+    """terrain 한 칸 → 신호 라벨. 'T'·'t' → 'T', 'T3'·'t03' → 'T3', 그 밖은 ''."""
+    s = str(z or '').strip().upper()
+    if s[:1] != 'T':
+        return ''
+    num = s[1:]
+    if not num:
+        return 'T'
+    return f"T{int(num)}" if num.isdigit() else ''
+
+
 STOP_HOLD_AFTER_ZERO_S = 3.5   # [s] 양 펄스 0 확인 뒤 이만큼 기다렸다 리니어를 푼다
 #  ★'양 펄스가 모두 0' 은 /encoder 로 정확히 판정된다★ 그 토픽은 좌+우 ★합★ 이고
 #  둘 다 음수가 아니므로 합 0 ⇔ 양쪽 0 이다. 다만 self.enc_pulse 는 중앙값 3점 뒤
@@ -2142,6 +2189,14 @@ class DrivingNode(Node):
         self._stop_done = set()       # 이미 처리한 S 인덱스 (재발동 방지)
         self._wp_idx_prev = 0         # 직전 틱의 진행 포인터 (구간 검사용)
         self._last_steer = 0.0        # 마지막으로 내보낸 조향각 (S 정지 중 유지)
+        # ── 본선 코스 신호 [2026-09-30] ── 상수절 '본선 코스 — T1~T5' 참고
+        self._maincourse = False      # 지금 경로가 maincourse.csv 인가 (select_route 가 정한다)
+        self._tl_segs = []            # [(라벨, i0, i1)] T 구간 표 (주행 직전 계산)
+        self._tl_done = set()         # 이번 주행에서 판단을 끝낸 T 구간의 i0
+        self._sp_kind = ''            # 서브페이즈가 S 면 '', 신호 대기면 그 라벨('T1'…)
+        self._tt = None               # 마지막 /traffic_timer 배열
+        self._tt_t = 0.0              # 그 수신 시각 — ★신선할 때만 믿는다★
+        self._tt_t0_said = None       # 이벤트로 이미 말한 0초 기준 시각
 
         # ── 진단 계측 (/drive_diag) ★제어 판단에 절대 쓰지 않는다★ ──
         #   여기 있는 값이 제어로 새어 들어가면 '계측을 위해 거동이 바뀌는' 상태가
@@ -2174,6 +2229,9 @@ class DrivingNode(Node):
         # ★신호등 개입 허락★ 상수 TRAFFIC_LIGHT_ENABLE + DRIVE_RUN 일 때만 True.
         #   traffic_light 는 이것과 master 의 /tl_enable 을 OR 로 본다.
         self.pub_tl_permit = self.create_publisher(Bool, '/tl_permit',      10)
+        #  ★[2026-09-30] 지금 상대하는 신호 라벨★ → traffic_timer(T1 전환 관찰)·record.
+        #  T 구간 안이거나 시작까지 tt.WATCH_PRE_M 안이면 그 라벨, 아니면 ''.
+        self.pub_tl_zone = self.create_publisher(String, tt.ZONE_TOPIC, 10)
         #  ★라이다 구간 이양★ 상단 '라이다 구간 이양' 절 참고. /tl_permit 과 같은
         #  규약이다 — True/False 를 매 틱 계속 내므로 ★신선도가 곧 허락★ 이고, 이
         #  노드가 죽으면 값이 끊겨 mppi 가 스스로 손을 뗀다.
@@ -2205,6 +2263,9 @@ class DrivingNode(Node):
                                  self.cb_steer_measured, 10)
         # 신호등 노드의 브레이크 요구 — 내 요청과 max 로 합쳐서 낸다(cb_tl_brake_req)
         self.create_subscription(Int32,     '/tl_brake_req', self.cb_tl_brake_req, 10)
+        #  ★본선 코스 신호 타이머 [2026-09-30]★ maincourse.csv 에서만 읽는다(tl_go).
+        self.create_subscription(Float64MultiArray, tt.TOPIC,
+                                 self.cb_traffic_timer, 10)
         self.create_subscription(Float32,   '/speed',        self.cb_speed,   10)
         self.create_subscription(Bool,      '/vehicle_mode', self.cb_mode,    10)
         self.create_subscription(Bool,      '/estop',        self.cb_estop,   10)
@@ -2539,8 +2600,99 @@ class DrivingNode(Node):
         ★in_lidar_zone 과 같은 O(1) 판정이다★ 사전계산 표가 필요 없다 —
         구간의 '시작까지 남은 거리' 를 재야 하는 L(인계 서행)과 달리, T 는
         '지금 안에 있는가' 만 물으면 되기 때문이다.
+        [2026-09-30] 'T1'~'T5' 도 T 구간이다(tl_label).
         """
-        return self.zone_at(self.wp_idx if idx is None else idx) in TL_ZONE_CHARS
+        return bool(tl_label(self.zone_at(self.wp_idx if idx is None else idx)))
+
+    def tl_camera_zone(self):
+        """지금 ★카메라가 개입해도 되는★ T 구간인가.  [2026-09-30]
+
+        본선 코스가 아니면 종전 그대로 T 전부다. 본선 코스에서는 T5(와 번호 없는 T)
+        뿐이다 — T1 은 카메라를 '보기만' 하고(타이머 초기화), T2 는 무시, T3·T4 는
+        타이머가 판단한다(상수절 '본선 코스 — T1~T5').
+        """
+        label = tl_label(self.zone_at(self.wp_idx))
+        if not label:
+            return False
+        if not self._maincourse:
+            return True
+        return label == 'T' or label in tt.CAMERA_SIGNALS
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  본선 코스 신호 타이머 [2026-09-30] — 판단 재료는 traffic_timer 가 준다
+    # ══════════════════════════════════════════════════════════════════════════
+    def cb_traffic_timer(self, msg: Float64MultiArray):
+        if len(msg.data) < tt.N_FIELDS:
+            return
+        self._tt = list(msg.data)
+        self._tt_t = time.time()
+
+    def _tt_fresh(self):
+        return (self._tt is not None and (time.time() - self._tt_t) <= tt.STALE_S
+                and self._tt[tt.F_ARMED] > 0.5)
+
+    def tl_go(self, label):
+        """타이머가 지금 label 신호를 녹색이라고 하는가. ★모르면 적색★ (끊김·초기화 전)."""
+        idx = tt.GO_FIELD.get(label)
+        return idx is not None and self._tt_fresh() and self._tt[idx] > 0.5
+
+    def tt_phase_txt(self):
+        """이벤트 문구용 '타이머 36.2초'. 초기화 전·끊김이면 그 사실을 말한다."""
+        if not self._tt_fresh():
+            return "타이머 신호 없음(prompt 가 떠 있는가)"
+        ph = self._tt[tt.F_PHASE]
+        if self._tt[tt.F_INIT] < 0.5 or not math.isfinite(ph):
+            return "타이머 초기화 전"
+        return f"타이머 {ph:.1f}초"
+
+    def tl_zone_now(self):
+        """/tl_zone 에 낼 라벨 — ★지금 상대하는 신호★. DRIVE_RUN 이 아니면 ''.
+
+        T 구간 안이면 그 라벨, 아니면 다음 T 구간 시작까지 tt.WATCH_PRE_M 안일 때 그
+        라벨이다. traffic_timer 는 이것이 'T1' 인 동안만 적색→녹색 전환을 본다 —
+        그래야 T1 에 들어서기 전(접근 중)에 본 전환도 쓸 수 있다(사용자 결정).
+        """
+        if self.state != S_DRIVE_RUN or not self._tl_segs or not self.wp_s:
+            return ''
+        i = min(self.wp_idx, len(self.wp_s) - 1)
+        here = self.wp_s[i]
+        for label, i0, i1 in self._tl_segs:
+            if i0 <= i <= i1:
+                return label
+            if i < i0 and self.wp_s[i0] - here <= tt.WATCH_PRE_M:
+                return label
+        return ''
+
+    def timer_signal_here(self):
+        """본선 코스에서 ★타이머가 판단하는 T 구간 안★ 이고 아직 판단 전이면
+        (라벨, i0). 아니면 None.
+
+        '구간 시작을 지났는가' 가 아니라 '지금 안에 있는가' 로 본다 — E-STOP 이
+        대기를 지우고 재개해도 다음 틱에 다시 판단하게 하려는 것이다(상수절).
+        """
+        if not self._maincourse:
+            return None
+        i = self.wp_idx
+        for label, i0, i1 in self._tl_segs:
+            if i0 <= i <= i1:
+                if label in tt.TIMER_SIGNALS and i0 not in self._tl_done:
+                    return label, i0
+                return None
+        return None
+
+    def _say_timer_init(self):
+        """0초가 새로 잡히면 ★한 번★ 이벤트로 남긴다 — record 의 drive_event 에
+        '언제 0초가 잡혔나' 가 남아야 T3·T4 판단을 사후에 대조할 수 있다.
+        ★기준 시각이 바뀔 때만★ 말한다(토픽이 잠깐 끊겼다 이어져도 되풀이하지 않게)."""
+        if not self._maincourse or not self._tt_fresh():
+            return
+        t0 = self._tt[tt.F_T0]
+        if not math.isfinite(t0) or t0 == self._tt_t0_said:
+            return
+        self._tt_t0_said = t0
+        self.event(f"🚦 신호 타이머 초기화 — T1 적색→녹색 "
+                   f"{time.strftime('%H:%M:%S', time.localtime(t0))} = 0초 "
+                   f"(지금 {self.tt_phase_txt()})")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  /lstatus — ★이 토픽이 조종권이다★ [2026-09-07]
@@ -2761,6 +2913,26 @@ class DrivingNode(Node):
         재출발 궤적에 낫고, 정지 상태에서 조향 기구를 돌리는 것은 부하도 크다.
         (순수추종은 계속 계산해 내보내고 펄스만 0 으로 둔다 — run_follow 참고)
         """
+        self._sp_kind = ''
+        self._sp_begin(idx)
+        self.event(f"🛑 일시정지 지점 — WP {idx}/{len(self.waypoints)} "
+                   f"(terrain='S'), 리니어 2단. 완전정지 뒤 "
+                   f"{STOP_HOLD_AFTER_ZERO_S:.1f}초 대기 후 재출발")
+
+    def begin_signal_stop(self, label, i0):
+        """본선 코스 T1·T3·T4 에 들어섰는데 타이머상 녹색이 아니다 — ★즉시 리니어 2단★.
+        [2026-09-30] 서브페이즈는 S 와 같고, 대기를 끝내는 조건만 다르다(run_stop_zone)."""
+        self._sp_kind = label
+        self._sp_begin(i0)
+        if label == tt.INIT_SIGNAL:
+            why = "적색→녹색 전환을 볼 때까지 선다 (그 순간이 타이머 0초)"
+        else:
+            why = f"타이머상 녹색({tt.window_txt(label)})이 되면 출발"
+        self.event(f"🚦 {label} 신호 대기 — WP {i0}, 리니어 2단. {why} "
+                   f"[{self.tt_phase_txt()}]")
+
+    def _sp_begin(self, idx):
+        """S·신호 대기 공통 — 서브페이즈에 들어가며 리니어 2단을 문다."""
         self._sp_state = SP_BRAKING
         self._sp_idx = idx
         self._sp_t = time.time()
@@ -2770,14 +2942,13 @@ class DrivingNode(Node):
         self.set_brake(BRAKE_FULL)
         self._publish_brake(force=True)
         self.publish_lstatus(LSTATUS_STOP)       # 한 틱 먼저 알린다
-        self.event(f"🛑 일시정지 지점 — WP {idx}/{len(self.waypoints)} "
-                   f"(terrain='S'), 리니어 2단. 완전정지 뒤 "
-                   f"{STOP_HOLD_AFTER_ZERO_S:.1f}초 대기 후 재출발")
 
     def run_stop_zone(self, steer):
         """S 서브페이즈 한 틱. ★조향은 계속 내고 펄스만 0 이다★
 
         BRAKING ─(양 펄스 0 이 0.5초)─▶ WAIT ─(3.5초)─▶ RELEASE ─(1.0초)─▶ RESUME ─▶ NONE
+        [2026-09-30] 신호 대기(_sp_kind='T1'·'T3'·'T4')는 WAIT 를 ★타이머가 녹색이라고
+        할 때★ 끝낸다. 나머지 단계는 한 글자도 다르지 않다.
         """
         now = time.time()
 
@@ -2791,8 +2962,9 @@ class DrivingNode(Node):
             elif now - self._sp_zero_t >= STOP_ZERO_HOLD_S:
                 self._sp_state = SP_WAIT
                 self._sp_ready_t = now
-                self.event(f"⏸️ 완전정지 확인(엔코더 0) — "
-                           f"{STOP_HOLD_AFTER_ZERO_S:.1f}초 대기 시작")
+                self.event("⏸️ 완전정지 확인(엔코더 0) — "
+                           + (f"{self._sp_kind} 녹색을 기다린다" if self._sp_kind
+                              else f"{STOP_HOLD_AFTER_ZERO_S:.1f}초 대기 시작"))
                 return
             #  ★굳지 않는다★ 엔코더가 영영 0 이 안 되어도 대기로 넘어간다.
             if now - self._sp_t >= STOP_WAIT_MAX_S:
@@ -2805,12 +2977,21 @@ class DrivingNode(Node):
 
         if self._sp_state == SP_WAIT:
             self.send(0, steer, control=True)
-            if now - self._sp_ready_t >= STOP_HOLD_AFTER_ZERO_S:
-                self._sp_state = SP_RELEASE
-                self._sp_t = now
-                self.set_brake(BRAKE_NONE)
-                self._publish_brake(force=True)   # ★0 은 평소 재확인하지 않는다★
-                self.event(f"🟢 {STOP_HOLD_AFTER_ZERO_S:.1f}초 경과 — 리니어 0단")
+            if self._sp_kind:
+                #  ★신호 대기 — 타이머가 녹색이라고 할 때만 푼다★ 끊겼거나 초기화
+                #  전이면 tl_go 가 False 라 계속 선다(모르면 적색).
+                if not self.tl_go(self._sp_kind):
+                    return
+                why = f"🟢 {self._sp_kind} 녹색 [{self.tt_phase_txt()}] — 리니어 0단"
+            elif now - self._sp_ready_t >= STOP_HOLD_AFTER_ZERO_S:
+                why = f"🟢 {STOP_HOLD_AFTER_ZERO_S:.1f}초 경과 — 리니어 0단"
+            else:
+                return
+            self._sp_state = SP_RELEASE
+            self._sp_t = now
+            self.set_brake(BRAKE_NONE)
+            self._publish_brake(force=True)   # ★0 은 평소 재확인하지 않는다★
+            self.event(why)
             return
 
         if self._sp_state == SP_RELEASE:
@@ -2828,15 +3009,18 @@ class DrivingNode(Node):
         # SP_RESUME — 굴러가기 시작하면 평소 규칙으로 돌려준다
         kmh = self.measured_kmh()
         if kmh is not None and kmh >= STOP_RESUME_KMH:
-            self._stop_done.add(self._sp_idx)
+            #  ★처리 완료 표시는 굴러가기 시작한 뒤에만★ E-STOP 이 그 전에 대기를 지우면
+            #  표시가 안 남아, 재개한 첫 틱에 S 는 놓치고(종전 그대로) T 는 다시 판단한다.
+            (self._tl_done if self._sp_kind else self._stop_done).add(self._sp_idx)
             self._sp_state = SP_NONE
             self.event(f"✅ 재출발 확인({kmh:.1f}km/h) — 평소 추종으로 복귀")
             return
         if now - self._sp_t >= STOP_RESUME_MAX_S:
             self.enter(S_DRIVE_DONE,
-                       f"⛔ 일시정지 뒤 {STOP_RESUME_MAX_S:.0f}초 안에 못 떴다 "
-                       f"(WP {self._sp_idx}). 정지 + 리니어 2단 — "
-                       f"스위치를 내려 사람이 옮길 것")
+                       f"⛔ {'신호 대기' if self._sp_kind else '일시정지'} 뒤 "
+                       f"{STOP_RESUME_MAX_S:.0f}초 안에 못 떴다 "
+                       f"(WP {self._sp_idx}{' ' + self._sp_kind if self._sp_kind else ''}). "
+                       f"정지 + 리니어 2단 — 스위치를 내려 사람이 옮길 것")
             return
         self.send(STOP_RESUME_PULSE, steer, control=True)
 
@@ -3018,6 +3202,9 @@ class DrivingNode(Node):
             return
         wps = []
         zone = []
+        #  ★[2026-09-30] 본선 코스만 T 뒤의 번호를 읽는다★ (상수절 '본선 코스 — T1~T5')
+        #  다른 경로에 'T3' 이 적혀 있어도 'T' 로 접는다 — 종전 그대로 카메라가 본다.
+        maincourse = tt.is_maincourse(name)
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 for row in csv.DictReader(f):
@@ -3029,7 +3216,11 @@ class DrivingNode(Node):
                     #   실패하면 continue 로 빠지므로 두 리스트의 인덱스가 항상
                     #   1:1 로 맞는다 — 어긋나면 이양 지점이 조용히 밀린다.
                     #   ★'L'/'l' 만 라이다이고 나머지는 전부 GPS★ (zone_at 참고)
-                    zone.append(str(row.get(LIDAR_ZONE_COLUMN, '') or '').strip())
+                    z = str(row.get(LIDAR_ZONE_COLUMN, '') or '').strip()
+                    label = tl_label(z)
+                    if label:
+                        z = label if maincourse else 'T'
+                    zone.append(z)
         except Exception as e:
             self.event(f"❌ 경로 읽기 실패: {e}")
             return
@@ -3038,6 +3229,7 @@ class DrivingNode(Node):
             return
         self.route_name, self.route_path, self.raw_wps = name, path, wps
         self.raw_zone = zone
+        self._maincourse = maincourse
         n_lidar = sum(1 for z in zone if z in LIDAR_ZONE_CHARS)
         self.event(f"📁 경로 선택: {name} (WP {len(wps)}개) — 스위치를 자율로 올리면 출발")
         self._warn_stop_zones(zone)
@@ -3093,35 +3285,100 @@ class DrivingNode(Node):
         사용자 결정에 따라 ★구간을 벗어나는 순간 제동이 풀리므로★, 구간이 짧으면
         빨간불에 물린 채 관성으로 빠져나가며 브레이크가 풀린다.
         """
-        segs = self._zone_segments(zone, TL_ZONE_CHARS)
+        segs = self._tl_segments(zone)
         if not segs:
             #  ★조용히 달라지지 않게 말한다★ 종전 CSV 는 전부 여기에 해당하고,
             #  그 경로에서는 신호등이 아무 개입도 하지 않는다.
             self.event(f"🚦 신호등 구간 없음 ({LIDAR_ZONE_COLUMN} 열에 'T' 가 없다) — "
                        f"★이 경로에서는 신호등 개입이 전혀 없다★")
             return
-        n_tl = sum(1 for z in zone if z in TL_ZONE_CHARS)
+        n_tl = sum(i1 - i0 + 1 for _, i0, i1 in segs)
         self.event(f"🚦 신호등 구간 {len(segs)}곳 / WP {n_tl}개 "
-                   f"({', '.join(f'{i0}~{i1}' for i0, i1 in segs)}) — "
-                   f"{LIDAR_ZONE_COLUMN} 열의 'T'. 이 구간에서만 빨간불 2단이 유효하다")
+                   f"({', '.join(f'{lab} {i0}~{i1}' for lab, i0, i1 in segs)}) — "
+                   f"{LIDAR_ZONE_COLUMN} 열의 'T'"
+                   + (". 본선 코스 — T1 전환으로 타이머 0초 · T2 무시 · T3·T4 타이머 · "
+                      "T5 카메라" if self._maincourse
+                      else ". 이 구간에서만 빨간불 2단이 유효하다"))
+        if self._maincourse:
+            self._warn_maincourse_order(segs)
 
         #  ★구간이 정지거리를 담는가★ — 이 결정(구간 밖 즉시 해제)의 유일한 위험이다.
         #     ★WP 간격을 가정하지 않고 실제 경로에서 잰다★ 지금 매핑은 0.25m 고정이지만
         #     구 CSV 는 0.23~0.43m 로 제각각이라, 0.25 를 곱하면 길이를 과소평가해
         #     ★경고가 안 떠야 할 곳에서 뜨거나 떠야 할 곳에서 안 뜬다.★
         #     (wp_s 는 아직 없다 — 여기는 경로 '선택' 시점이라 좌표 변환 전이다.)
+        #  [2026-09-30] 본선 코스의 T1·T3·T4 는 ★들어서는 순간 2단★ 이라 같은 비교가
+        #     '구간 끝(≈정지선)을 넘어 서지 않는가' 가 된다. T2 는 아무것도 안 하므로 뺀다.
         v = self.drive_pulse * MS_PER_PULSE
         need = self.stop_dist(v, GOAL_BRAKE2_MS2, GOAL_BRAKE2_LAG_S)
-        for i0, i1 in segs:
+        for label, i0, i1 in segs:
+            if self._maincourse and label in tt.IGNORED_SIGNALS:
+                continue
             span_m = self._span_m(i0, i1)
             if not math.isfinite(span_m) or span_m >= need:
                 continue
+            if self._maincourse and label in tt.TIMER_SIGNALS:
+                self.event(
+                    f"⚠️ {label} 구간 WP {i0}~{i1} 이 {span_m:.1f}m 뿐이다 — "
+                    f"들어서는 순간 2단으로 서는데 {self.drive_pulse}펄스"
+                    f"({v * 3.6:.1f}km/h) 2단 정지거리가 {need:.1f}m 라 ★구간 끝"
+                    f"(≈정지선)을 넘어 설 수 있다★ — {label} 시작을 "
+                    f"{need - span_m:.1f}m 앞당겨 적을 것")
+                continue
             self.event(
-                f"⚠️ 신호등 구간 WP {i0}~{i1} 이 {span_m:.1f}m 뿐이다 — "
+                f"⚠️ 신호등 구간 {label} WP {i0}~{i1} 이 {span_m:.1f}m 뿐이다 — "
                 f"{self.drive_pulse}펄스({v * 3.6:.1f}km/h) 2단 정지거리 "
                 f"{need:.1f}m 보다 짧다. ★구간을 벗어나면 제동이 즉시 풀리므로★ "
                 f"빨간불에 물린 채 교차로로 굴러갈 수 있다 — "
                 f"T 를 정지선 뒤로 {need - span_m:.1f}m 더 이어서 적을 것")
+
+    def _warn_maincourse_order(self, segs):
+        """본선 코스의 T 라벨이 ★타이머가 돌 수 있는 순서★ 인가.  [2026-09-30]
+
+        타이머는 T1 의 전환으로만 0초를 잡으므로, T1 보다 앞에 T3·T4 가 있으면 그
+        자리에서 영영 녹색이 안 된다(= 거기서 서서 끝난다). 사람이 손으로 적는
+        열이라 여기서 말해 둔다 — ★고치지는 않는다★ (무엇이 맞는지는 사람이 안다).
+        """
+        labels = [lab for lab, _, _ in segs]
+        first_t1 = labels.index(tt.INIT_SIGNAL) if tt.INIT_SIGNAL in labels else None
+        if first_t1 is None:
+            self.event(f"❌ 본선 코스인데 {tt.INIT_SIGNAL} 이 없다 — 타이머가 0초를 못 잡아 "
+                       f"T3·T4 에서 ★영영 출발하지 못한다★")
+        for k, lab in enumerate(labels):
+            if lab in tt.TIMER_SIGNALS and lab != tt.INIT_SIGNAL \
+                    and (first_t1 is None or k < first_t1):
+                self.event(f"❌ {lab}(WP {segs[k][1]}) 가 {tt.INIT_SIGNAL} 보다 앞이다 — "
+                           f"그 자리에서는 타이머가 아직 0초를 모른다")
+        dup = sorted({lab for lab in labels if labels.count(lab) > 1})
+        if dup:
+            self.event(f"⚠️ 같은 라벨이 여러 토막이다: {', '.join(dup)} — "
+                       f"오타로 구간이 끊겼는지 볼 것 (토막마다 따로 판단한다)")
+        plain = [i0 for lab, i0, _ in segs if lab == 'T']
+        if plain:
+            self.event(f"⚠️ 번호 없는 T 가 있다 (WP {', '.join(map(str, plain))}) — "
+                       f"종전 T 처럼 카메라가 본다")
+        unknown = sorted({lab for lab in labels
+                          if lab != 'T' and lab not in tt.SIGNAL_WINDOWS})
+        if unknown:
+            self.event(f"⚠️ 시각표에 없는 라벨: {', '.join(unknown)} — 아무것도 하지 않는다 "
+                       f"(traffic_timer.SIGNAL_WINDOWS 에 없다)")
+
+    @staticmethod
+    def _tl_segments(zone):
+        """T 구간을 [(라벨, 시작idx, 끝idx)] 로 접는다. ★라벨이 바뀌면 다른 구간★ 이다
+        ('T1' 바로 뒤에 'T2' 가 붙어 있어도 둘로 나뉜다)."""
+        segs, i, n = [], 0, len(zone)
+        while i < n:
+            lab = tl_label(zone[i])
+            if not lab:
+                i += 1
+                continue
+            j = i
+            while j + 1 < n and tl_label(zone[j + 1]) == lab:
+                j += 1
+            segs.append((lab, i, j))
+            i = j + 1
+        return segs
 
     def _span_m(self, i0, i1):
         """raw_wps 의 i0~i1 구간 호길이 [m]. 좌표 변환 전에도 쓸 수 있다."""
@@ -3177,8 +3434,12 @@ class DrivingNode(Node):
         self._stop_idx = [i for i, z in enumerate(self.wp_zone)
                           if z in STOP_ZONE_CHARS]
         self._stop_done = set()
+        #  ★[2026-09-30] T 구간 표★ 라벨별 토막. 본선 코스의 T1·T3·T4 판단과 /tl_zone 이 쓴다.
+        self._tl_segs = self._tl_segments(self.wp_zone)
+        self._tl_done = set()
         self._wp_idx_prev = 0
         self._sp_state = SP_NONE
+        self._sp_kind = ''
         self._lz_slow = False
         self._lz_done_s0 = None
         return True
@@ -3883,6 +4144,21 @@ class DrivingNode(Node):
                 self.begin_stop_zone(hit)
                 self.run_stop_zone(self._last_steer)
                 return
+            #  ── 본선 코스 T1·T3·T4 — ★들어서는 순간 한 번 판단★ [2026-09-30] ──
+            #    타이머상 녹색이면 통과(그 구간은 다시 안 본다), 아니면 그 자리에서
+            #    2단으로 서서 녹색을 기다린다(상수절 '본선 코스 — T1~T5').
+            sig = self.timer_signal_here()
+            if sig is not None:
+                label, i0 = sig
+                if self.tl_go(label):
+                    self._tl_done.add(i0)
+                    self.event(f"🚦 {label} 통과 — 녹색 [{self.tt_phase_txt()}]"
+                               + (" · 적색→녹색 전환을 이미 봤다"
+                                  if label == tt.INIT_SIGNAL else ""))
+                else:
+                    self.begin_signal_stop(label, i0)
+                    self.run_stop_zone(self._last_steer)
+                    return
         else:
             #  종점이 리니어를 잡고 있으면 S 를 발동하지 않는다 — 어차피 종점이
             #  세운다. 다만 ★적었는데 안 섰다★ 가 로그에 남아야 한다.
@@ -5457,7 +5733,8 @@ class DrivingNode(Node):
         세 항의 AND 다:
           ① TRAFFIC_LIGHT_ENABLE — 코드 내부 상수 (기능 자체의 on/off)
           ② state == DRIVE_RUN   — 자율주행으로 실제 굴러가는 중일 때만
-          ③ in_tl_zone()         — ★사람이 terrain 열에 'T' 를 적은 구간★
+          ③ tl_camera_zone()     — ★사람이 terrain 열에 'T' 를 적은 구간★
+                                   [2026-09-30] 본선 코스에서는 T5(와 번호 없는 T)만
 
         ★S(일시정지)·L(라이다) 과 달리 여기서 아무것도 '하지' 않는다★ 이 함수는
         허락만 낸다. 빨간불 판정도, 정지선도, 리니어 체결도 전부 traffic_light 가
@@ -5465,7 +5742,7 @@ class DrivingNode(Node):
         """
         return bool(TRAFFIC_LIGHT_ENABLE
                     and self.state == S_DRIVE_RUN
-                    and self.in_tl_zone())
+                    and self.tl_camera_zone())
 
     def publish_state_topics(self):
         self.pub_dstate.publish(String(data=self.state))
@@ -5480,6 +5757,10 @@ class DrivingNode(Node):
         #   ⚠️ ★구간을 벗어나면 즉시 False 다 (사용자 결정)★ 그래서 T 는 정지선 뒤로
         #   정지거리만큼 더 이어져 있어야 하고, select_route 가 그것을 재서 경고한다.
         self.pub_tl_permit.publish(Bool(data=self.tl_permit_now()))
+        #  ★[2026-09-30] 지금 상대하는 신호★ traffic_timer 는 이것이 'T1' 인 동안만
+        #  전환을 본다. 매 틱 낸다 — 그쪽이 신선도로 'T1 을 상대 중인가' 를 판정한다.
+        self.pub_tl_zone.publish(String(data=self.tl_zone_now()))
+        self._say_timer_init()
         #  ★GPS 기준선 [2026-09-11]★ mppi 의 추측항법을 대체한다.
         self.publish_lidar_ref()
         # ★라이다 허락 [2026-09-01]★ /tl_permit 과 같은 규약이다 — True/False 를 매 틱
