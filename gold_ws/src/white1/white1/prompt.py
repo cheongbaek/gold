@@ -105,6 +105,11 @@ except Exception:                       # noqa: BLE001 — 음성이 없다고 C
 
 BANNER = "═" * 74
 
+#  ★경로 선택 화면에 한 번에 보이는 개수★ [2026-09-30] — 12 였는데 경로가 늘어 목록 끝
+#  (최신순이라 이름이 route_2020… 인 참고 경로들)이 잘려 안 보였다. 번호 입력 판정도
+#  이 값 하나를 쓴다 — 둘이 갈라지면 보이는 번호를 골라도 거절된다.
+ROUTE_LIST_MAX = 30
+
 # ── 이 화면의 로컬 UI 모드 ── driving_node 의 self.state 와는 별개다. IDLE 인
 #   동안에도 '경로 고르는 중'·'스위치 전환 대기 중' 처럼 이 화면만의 하위 흐름이
 #   있어야 하기 때문이다.
@@ -320,9 +325,13 @@ class PromptNode(Node):
         lines = [self.header(), " 주행할 경로 (최신순)"]
         if not routes:
             lines.append("   (없음)")
-        for i, name in enumerate(routes[:12], 1):
+        for i, name in enumerate(routes[:ROUTE_LIST_MAX], 1):
             mark = "★" if name == self.selected else " "
             lines.append(f"  {mark}{i:2d}) {name}")
+        if len(routes) > ROUTE_LIST_MAX:
+            #  잘린 것이 있으면 그렇다고 말한다 — 조용히 안 보이면 없는 줄 안다.
+            lines.append(f"   … 오래된 {len(routes) - ROUTE_LIST_MAX}개는 목록에 없다 "
+                         f"(최대 {ROUTE_LIST_MAX}개 · 전체 {len(routes)}개)")
         lines += ["", " 번호를 입력하세요 — 취소: q 또는 그냥 [Enter]", ""]
         return "\n".join(lines)
 
@@ -492,7 +501,7 @@ def main(args=None):
                     continue
                 if line.isdigit():
                     i = int(line)
-                    if 1 <= i <= min(len(routes), 12):
+                    if 1 <= i <= min(len(routes), ROUTE_LIST_MAX):
                         node.selected = routes[i - 1]
                         node.pub_cmd.publish(String(data=node.selected))
                         if node.auto_mode is None:
