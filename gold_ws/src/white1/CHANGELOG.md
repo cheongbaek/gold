@@ -8,13 +8,68 @@
 
 ---
 
-## ★ TO DO LIST ★ — 설계만 끝내 두고 아직 코드에 넣지 않은 일
+## ★ TO DO LIST ★ — 아직 하지 않은 일
 
 | # | 할 일 | 상태 |
 |---|---|---|
-| **TODO-1** | 주행 전반의 흔들림(오실레이션) 감소 + 기본속도 7 → **10펄스** | 원인·설계·모의 완료 [2026-09-29] — **코드 수정 전** |
+| **TODO-1** | 흔들림 감소 + 10펄스 — ★실차 확인 0~4단계★ | 코드 완료 [2026-09-30] · **기본 꺼짐**. 아래 2026-09-30 항목 ④ 6절 순서로 켠다 |
+| **TODO-2** | 출발 직후 ≈15 s 는 트림이 없다 — 10펄스 최대 CTE 가 여기서 난다(④ 2절 ⑥ · 3절 F) | ★사용자 결정★ : 영점 캘리브(`BOARD_B.md` 3절) / 직전 주행 트림 이어받기 / 첫 15 s 는 7펄스 |
+| **TODO-3** | 10펄스 종점 접근 — `GOAL_DECEL_M` 5 m 고정으로는 2펄스까지 못 줄인다(≈34 m 필요, ④ 7절) | ★사용자 결정★ (CLAUDE.md 6.3 결정 (a) 를 다시 볼 일) |
+| **TODO-4** | GPS 안테나 위치 실측 — 뒷차축 기준(driving `gps_ant_x_m`) · 라이다 원점 기준(mppi `handover.gps_antenna_x_m`) | 줄자 |
+| **TODO-5** | L 구간이 있는 경로 — E(`lfd_max_m` 14) 전에 재수렴 LFD 를 2펄스 기준으로(CLAUDE.md 4.1b-2 ②) | 설계 있음 · 코드 전 |
+| **TODO-6** | 정리 — 옛 빌드 산출물 `install/`·`build/` 의 `white`·`white806`, `nxde/check.py` 가 찍는 `ros2 launch white …` 안내 | 사소 |
 
-### TODO-1 ★흔들림 감소 + 10펄스 증속★ — 원인 · 설계 · 모의 [2026-09-29]
+---
+
+## 2026-09-30 — ★흔들림 감소 + 10펄스 증속을 코드로(기본 꺼짐)★ · record 두 열 누락 · src 정리
+
+> 근거 : 아래 ④ (옛 TO DO LIST — TODO-1, 2026-09-29 분석·모의). 수정 전 원본 : `gold_ws/src/white1_0929/`.
+
+### ① TODO-1 의 A~E 를 driving.py 에 넣었다 — ★파라미터 8개, 기본값은 전부 '현행과 같음'★
+
+| | 런치 인자 (기본 → 설계값) | 무엇 | 어디 |
+|---|---|---|---|
+| A | `steer_backlash_deg` 0.0 → **0.8** · `steer_backlash_hyst_deg` 0.3 | 조향 백래시 선보상 | `_backlash_comp()` |
+| B | `pp_rear_axle` false → **true** · `gps_ant_x_m` 1.25 (⚠️ 실측) | 순수추종을 뒷차축에서 겨눈다 | `pure_pursuit_steer()` |
+| C | `yaw_damp_k` 0.0 → **0.15** | 요레이트 댐핑 | `apply_yaw_damp()` · `wp_kappa` |
+| D | `corner_ay_max` 0.0 → **2.0** · `curve_preview_far_m` 24 → **40** | 코너 속도 = √(a·R), 켜면 코너 하한 ≤ 3 | `corner_speed()` · `_ay_speed()` |
+| E | `lfd_max_m` 11.3 → **14.0** | 10펄스가 실제로 나오게 | `lookahead_m()` · `cap_far` |
+
+- **켜는 순서** : 0단계(전부 끔) → 1단계 A+C → 2단계 +B → 3단계 +D → 4단계 +E 와 `drive_pulse` 8 → 9 → 10.
+  명령·합격 기준은 ④ 6절.
+- **시작할 때 말한다** — 켠 기능을 `🧪 TODO-1 켜짐 : …` 한 줄로 알리고, `drive_pulse` 가 LFD 상한에 묶여
+  덜 나오면 `⚠️ drive_pulse:=10 이지만 … 직선에서도 9펄스까지만 …`, B 만 켜고 C 를 껐으면 그 경고를 낸다.
+- **진단 4열** (`/drive_diag` → record) : `steer_trim_deg` · `steer_bl_dir` · `yaw_damp_deg` · `corner_ay_cap_ms`.
+  발행 pot = 역모델 + 트림 + 백래시 방향×b 를 로그에서 가를 수 있다(트림은 지금까지 이벤트 문자열로만 남았다).
+- **검증 (책상)**
+  - 기본값 : 모의 궤적 해시 12개(3경로 × 7·10펄스 × 2시드)가 수정 전과 **비트 단위로 같다** — 끈 상태에서는
+    한 틱도 바뀌지 않았다.
+  - 켠 상태 : `follow_design.py` 를 패치 대신 실제 파라미터로 바꿔 돌린 compare·robust 표가 ④ 4·5절
+    (패치로 낸 설계 모의)과 **모든 칸이 같다**.
+  - 파라미터 형 : 기본값 · 4단계 전부 + 10펄스 · 10펄스만 · B 만의 네 조합으로 노드를 만들어 확인(도메인 77).
+    `colcon build --packages-select white1` 통과, 설치본 = 소스.
+- ⚠️ **실차는 아직이다** — 0단계(전부 끈 채 한 번 달려 9/13 과 같은 지표인가)부터 한다.
+
+### ② record.py — `/drive_diag` 의 `lidar_zone`·`rejoin` 두 열이 9/1 부터 비어 있었다
+
+- 관측 : 9/13 로그 전부 두 열이 빈 칸이었다(이번 분석에서 재수렴 구간을 못 거른 이유).
+- 원인 : driving 은 25개를 내는데 record 가 `_array(23)` 으로 잘랐다 — [2026-09-01] 에 두 열을 더하면서
+  숫자를 안 올렸다. 열 개수 경고가 있었지만 한 번만 뜨고 묻혔다.
+- 고침 : 열 이름을 `DRIVE_DIAG_COLUMNS` 한 튜플로 모으고 길이를 거기서 유도한다(`_array(len(…))`).
+  경고는 추출 뒤가 아니라 메시지 **원래** 길이로 비교한다(`_array` 가 늘 n 개로 맞춰 주므로 뒤에서는 안 보인다).
+  지금 29열이고 `/lidar_diag`(14) · `/gps_fused`(13) · `/ego_state`(7) 도 발행 길이와 같다.
+- 다음에 확인 : 새 로그에서 `lidar_zone`·`rejoin` 이 L 구간에서 1 로 찍히는가.
+
+### ③ `gold_ws/src` 정리 · 백업
+
+- `src/` 에는 쓰는 다섯(lidar · mppi_local_planner · nxde · ouster-ros · white1)만 남겼다. `white` · `white806` ·
+  `white0901` · `white2` · `white1 0910` · `rosbag2_2026_09_12-*` 2개 · `sliver.zip` → 이 기계의 `~/Documents/`.
+  남은 다섯은 그것들을 import · 런치 · package.xml 어디에서도 쓰지 않는다(전수 확인). 옛 빌드 산출물
+  `install/white*` 는 남아 있다(TODO-6, CLAUDE.md 0.4).
+- TODO-1 로 고친 파이썬 4개(`white1/driving.py` · `white1/record.py` · `launch/one_launch.py` ·
+  `sim/follow_design.py`)의 수정 전 원본을 `gold_ws/src/white1_0929/` 에 같은 상대경로로 두었다.
+
+### ④ 원인 · 설계 · 모의 (옛 TODO-1 — 2026-09-29 분석, 수치는 그대로)
 
 > 근거 로그 : 9/13 최신 주행 4개 — `ros2bag/route_20200101_111113-20260913_{155621,160154}.csv` ·
 > `route_20260913_161721-20260913_163010.csv` · `route_20200202_222200-20260913_170016.csv`
@@ -119,12 +174,14 @@ int(10/2) = 5펄스(15.9 km/h)로 올라간다. 7펄스 로그의 횡가속 p99 
 | 역모델 전달비를 실측 1.55 로 | 코너 편향은 줄지만 직선 CTE std 0.30 → **0.56** (횡강성이 줄면 백래시 유격이 커진다) |
 | 자이로 잡음·GPS 지연·트림·CTE 적분 손보기 | 흔들림 변화 ±10% 이내 (① 소거 실험) |
 
-#### 3. 설계 — 무엇을 어떻게 바꾸나
+#### 3. 설계 — 무엇을 어떻게 바꿨나 (★[2026-09-30] 구현됨 — 각 항목의 '→ 구현' 줄★)
 
-**전부 파라미터로 두고 기본값은 '현행과 같음(끔)'** 으로 한다 — 실차에서 하나씩 켜고 끄며 비교한다
+**전부 파라미터이고 기본값은 '현행과 같음(끔)'** 이다 — 실차에서 하나씩 켜고 끄며 비교한다
 (재빌드 없이 런치 인자로). 상수는 `driving.py` 상수절, 런치 인자는 `one_launch.py` (CLAUDE.md 7절 단일 소유자).
 
 **A. 조향 백래시 선보상** — `steer_backlash_deg` (끔 = 0.0, 설계값 **0.8**) · `steer_backlash_hyst_deg` 0.3
+→ **구현** : `driving._backlash_comp()` — `steer_command()` 의 두 반환 지점에서 `_with_trim()` 결과에 건다.
+상태는 `reset_steer_shaping()` 이 지운다(`enter` · `_clear_transients` · `end_lidar_zone`).
 
 `_with_trim()` 이 낸 **최종 pot(트림 포함)** 에 '움직이는 방향 × b' 를 더한다:
 ```python
@@ -149,6 +206,7 @@ return clamp(u + b * self._bl_dir, ±STEER_MAX_DEG)
   떨림(헌팅)을 벤치에서 먼저 봐야 하고 다른 저장소라, **A 로 모자랄 때** 검토한다.
 
 **B. 순수추종 기하 = 뒷차축** — `pp_rear_axle` (끔 = false) · 새 상수 `GPS_ANT_X_M` (⚠️ 실측할 것)
+→ **구현** : `pure_pursuit_steer()` 의 기준점 `(ox, oy)` · 런치 `gps_ant_x_m`.
 
 `pure_pursuit_steer()` 의 `to_body()`(그리고 그것을 쓰는 목표점 탐색)만 뒷차축 좌표로 한다:
 ```python
@@ -167,6 +225,7 @@ ry = self.y - GPS_ANT_X_M * math.sin(h)
   (경로 B : A 만 1.46 → A+B 1.86 °/s). **반드시 C 와 함께.**
 
 **C. 요레이트 댐핑** — `yaw_damp_k` (끔 = 0.0, 설계값 **0.15** 도로휠° / (°/s))
+→ **구현** : `apply_yaw_damp()`(`run_follow` 에서 순수추종 직후 · 적분 전) + `build_curve_profile()` 의 `wp_kappa`.
 ```python
 # build_curve_profile() 에서 한 번 : self.wp_kappa[i] = 부호 있는 경로 곡률 (±3 m 창, + = 좌)
 v = self.gps_ms()                                   # None 이면 댐핑을 끈다 (곡률 요구분을 못 뺀다)
@@ -179,6 +238,8 @@ road += self.yaw_damp_k * self._yd                  # ★B보드 부호(+우)★
 - 모의 : A+C 7펄스 흔들림 **1.09~1.25 °/s**(현행 1.89~2.82), 10펄스 1.22~2.25.
 
 **D. 코너 속도 = 횡가속 상한** — `corner_ay_max` (끔 = 0.0, 설계값 **2.0 m/s²**)
+→ **구현** : `corner_speed()` 의 (a2) 근거리 · (b) `v_corner` + `_ay_speed()` · `__init__` 의 코너 하한.
+원거리 스캔은 런치 `curve_preview_far_m`(기본 24 = 종전 `CURVE_PREVIEW_FAR_MAX`).
 ```
 v_corner(요구각) = √(corner_ay_max · R),   R = L / tan(요구 도로휠각)
 근거리 : v_target = min(v_target, v_corner(near_for_speed))
@@ -192,7 +253,8 @@ CURVE_PREVIEW_FAR_MAX 24 → 40 m
 - 모의 : 10펄스 횡가속 p99 2.3~2.8 → **1.0~1.2 m/s²**(7펄스 로그 수준), 코너 최대 0.24~0.25 m.
   7펄스에서는 거의 걸리지 않는다(회귀 확인용).
 
-**E. `LFD_MAX_M` 11.3 → 14.0 m** — ③ 때문이다. 7펄스(11.22 m)는 그대로, 8펄스 12.8 m, 9·10펄스 14 m
+**E. `LFD_MAX_M` 11.3 → 14.0 m** — ③ 때문이다. → **구현** : 런치 `lfd_max_m`(기본 11.3) —
+`lookahead_m()` 다섯 곳 · `corner_speed()` 의 `cap_far` · LFD 초기값이 이 값을 쓴다. 7펄스(11.22 m)는 그대로, 8펄스 12.8 m, 9·10펄스 14 m
 (10펄스 실효 ω_n 0.89, 식별 지연 0.35 s 로 위상여유 ≈ 47°).
 - ⚠️ 유격 ∝ Ld² — **A·C 없이 E 만 하면** 유격 0.55 → 0.86 m. 반드시 A·C 다음에.
 - ⚠️ 라이다 복귀 재수렴(CLAUDE.md 4.1b-2)의 잔류 CTE 도 Ld² 로 커진다(14 m 에서 ≈1.9 m, 문턱 0.5 m).
@@ -261,6 +323,19 @@ PWM 80~95 — 이 모델을 다시 식별하면 백래시 0.9~1.2° 가 나온�
 
 되돌리기는 런치 인자를 0/false 로. **라이다 구간(L)이 있는 경로는 4단계 전에 따로 본다**(이번 모의 밖).
 
+```bash
+ros2 launch white1 one_launch.py                                                  # 0단계
+ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15       # 1단계
+ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
+    pp_rear_axle:=true gps_ant_x_m:=<실측>                                         # 2단계
+ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
+    pp_rear_axle:=true gps_ant_x_m:=<실측> corner_ay_max:=2.0 curve_preview_far_m:=40.0   # 3단계
+ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15 \
+    pp_rear_axle:=true gps_ant_x_m:=<실측> corner_ay_max:=2.0 curve_preview_far_m:=40.0 \
+    lfd_max_m:=14.0 drive_pulse:=8                                                  # 4단계 (→ 9 → 10)
+```
+★실수는 소수점으로★ 준다(`0.8`·`2.0`) — `2` 처럼 정수로 주면 ROS 파라미터 형이 달라 노드가 뜨지 않는다.
+
 #### 7. 증속 전에 함께 볼 것 — 이번 모의 범위 밖 (조향 설계와 별개로 필요)
 
 - **종점** — `GOAL_DECEL_M` 5 m 고정(CLAUDE.md 6.3 사용자 결정 (a)). 10펄스는 2펄스까지 줄이는 데
@@ -279,8 +354,9 @@ python3 follow_design.py logs                   # 1절 표 (9/13 주행 4개)
 python3 follow_design.py compare --cands 현행,A+C,A+B+C,A+B+C+D+E --pulses 7,10   # 4절
 python3 follow_design.py robust  --cands 현행,A+B+C+D+E --pulses 7,10            # 5절 (32코어 ≈6분)
 ```
-ROS_DOMAIN_ID 77 에서 돌아 실차 스택(도메인 7)과 섞이지 않는다. **구현하면 `follow_design.py` 의
-패치를 지우고 새 파라미터를 넘기도록 바꾼다** — 그래야 모의가 실제 코드를 돈다.
+ROS_DOMAIN_ID 77 에서 돌아 실차 스택(도메인 7)과 섞이지 않는다. ★[2026-09-30] `follow_design.py` 는
+이제 패치가 아니라 driving 의 **실제 파라미터**를 넘긴다★ — 위 4·5절 표를 그 방식으로 다시 내도
+모든 칸이 같다. 손잡이 하나만 바꿔 보려면 `--extra '{"steer_backlash_deg": 0.6}'`.
 
 ---
 

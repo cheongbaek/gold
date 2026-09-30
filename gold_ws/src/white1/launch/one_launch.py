@@ -360,9 +360,10 @@ def generate_launch_description():
                         '[2026-09-12] 기본 4 → 7. 4 는 A보드 적분 동결 함정값이라 '
                         '(err 가 정확히 4 여서 적분이 안 자란다) 지령 4펄스에 실측이 '
                         '2.5~2.7펄스밖에 안 나왔다. driving.py 의 '
-                        'MAX_PULSE_LIMIT(10)으로 잘린다 — 다만 파생 상수'
-                        '(LFD_MAX_M·CURVE_PREVIEW_FAR_MAX)는 ★7펄스 기준★ 이라 '
-                        '8 이상을 쓰려면 그 둘을 다시 계산할 것'),
+                        'MAX_PULSE_LIMIT(10)으로 잘린다. ★8 이상은 lfd_max_m · '
+                        'curve_preview_far_m · corner_ay_max 를 함께 줄 것★ '
+                        '(CHANGELOG 2026-09-30 TODO-1 4단계) — lfd_max_m 11.3 그대로면 '
+                        '10 을 줘도 직선에서 9펄스까지만 나온다(driving 이 시작 때 경고한다)'),
         DeclareLaunchArgument(
             'heading_pulse', default_value='3',
             description='헤딩 초기화 중 속도[펄스] 3 ≈ 9.5 km/h'),
@@ -418,6 +419,51 @@ def generate_launch_description():
                         '순수추종이 못 지우는 정상상태 측방편향(실측 +0.13~0.27m)을 '
                         '천천히 지우는 용도다. 0 이면 적분항을 끈다. 기여는 '
                         'driving.py 의 CTE_I_MAX_DEG(2.5°)로 한 번 더 잘린다'),
+        # ── ★흔들림 감소 + 10펄스 증속 [2026-09-30]★ (CHANGELOG TODO-1, driving.py 상수절) ──
+        #   ★기본값은 전부 '현행과 같음(꺼짐)'★ — 실차에서 한 단계씩 켠다:
+        #     1단계 steer_backlash_deg:=0.8 yaw_damp_k:=0.15                  (7펄스)
+        #     2단계 + pp_rear_axle:=true gps_ant_x_m:=<실측>                   (7펄스)
+        #     3단계 + corner_ay_max:=2.0 curve_preview_far_m:=40.0            (7펄스)
+        #     4단계 + lfd_max_m:=14.0 drive_pulse:=8 → 9 → 10
+        #   ★실수는 소수점으로 준다★ (0.8 · 2.0) — 정수로 주면 ROS 파라미터 형이 달라 뜨지 않는다.
+        DeclareLaunchArgument(
+            'steer_backlash_deg', default_value='0.0',
+            description='A 조향 백래시 선보상 [pot deg]. 0 = 끔. 설계값 0.8 — B보드는 |오차|가 '
+                        '6카운트(1.78°)를 넘어야 조향을 돌려 목표 ~1° 앞에서 선다(9/13 식별 '
+                        '0.8~1.2°). 움직이는 방향으로 이만큼 더 준다. ★식별값보다 크게 주지 말 것★ '
+                        '(과보상은 서보를 쉬지 않게 흔든다)'),
+        DeclareLaunchArgument(
+            'steer_backlash_hyst_deg', default_value='0.3',
+            description='A 의 방향 판정 히스테리시스 [pot deg]. 지령이 극값에서 이만큼 '
+                        '되돌아와야 방향을 뒤집는다(잡음 반전 방지)'),
+        DeclareLaunchArgument(
+            'pp_rear_axle', default_value='false',
+            description='B 순수추종을 뒷차축에서 겨눈다. 코너 안쪽 파고듦(9/13 +0.19~+0.30 m)의 '
+                        '원인 제거. ★yaw_damp_k 와 함께 켤 것★ — 혼자 켜면 직선 흔들림이 는다. '
+                        'CTE·진행 포인터·종점 판정은 안테나 자리 그대로다'),
+        DeclareLaunchArgument(
+            'gps_ant_x_m', default_value='1.25',
+            description='B 의 뒷차축 → GPS 안테나 진행방향 거리 [m]. ⚠️ 미실측 — 줄자로 잴 것. '
+                        '1.25 는 driving 주석(앞차축 위)에서 온 값이다'),
+        DeclareLaunchArgument(
+            'yaw_damp_k', default_value='0.0',
+            description='C 요레이트 댐핑 [도로휠 deg/(deg/s)]. 0 = 끔. 설계값 0.15 — 경로가 '
+                        '요구하지 않은 요레이트(r − v·κ)만 누른다. 백래시가 만든 위상지연을 '
+                        '되돌리는 선행 성분이다'),
+        DeclareLaunchArgument(
+            'corner_ay_max', default_value='0.0',
+            description='D 코너 속도 횡가속 상한 [m/s²]. 0 = 끔. 설계값 2.0 — v = √(a·R). '
+                        '켜면 코너 하한 펄스가 min(drive_pulse/2, 3) 이 된다. 7펄스에서는 거의 '
+                        '안 걸린다(9/13 횡가속 p99 0.5~1.1)'),
+        DeclareLaunchArgument(
+            'curve_preview_far_m', default_value='24.0',
+            description='원거리 곡률 스캔 [m] (driving 의 CURVE_PREVIEW_FAR_MAX). 7펄스 코너 1단 '
+                        '체결 22.8 m 를 담는 값. ★8펄스 이상은 40.0★'),
+        DeclareLaunchArgument(
+            'lfd_max_m', default_value='11.3',
+            description='E LFD 상한 [m] (driving 의 LFD_MAX_M). 7펄스 설계 LFD 11.22 m 를 담는 '
+                        '값. ★10펄스는 14.0★ — 11.3 이면 ω_n 결속이 직선에서도 9펄스로 묶는다. '
+                        '★백래시 보상·요댐핑 없이 올리지 말 것★ (유격 ∝ LFD²)'),
         # ── 종점 접근 [2026-08-12 도입 → 2026-08-19 개편] ── driving.py '종점 접근' 절
         DeclareLaunchArgument(
             'goal_brake_m', default_value='20.0',
@@ -613,6 +659,15 @@ def generate_launch_description():
             'steer_plant_gain': LaunchConfiguration('steer_plant_gain'),
             'steer_understeer': LaunchConfiguration('steer_understeer'),
             'cte_ki':        LaunchConfiguration('cte_ki'),
+            #  ★[2026-09-30] 흔들림 감소 + 10펄스 증속 — 기본은 전부 꺼짐★
+            'steer_backlash_deg':      LaunchConfiguration('steer_backlash_deg'),
+            'steer_backlash_hyst_deg': LaunchConfiguration('steer_backlash_hyst_deg'),
+            'pp_rear_axle':            LaunchConfiguration('pp_rear_axle'),
+            'gps_ant_x_m':             LaunchConfiguration('gps_ant_x_m'),
+            'yaw_damp_k':              LaunchConfiguration('yaw_damp_k'),
+            'corner_ay_max':           LaunchConfiguration('corner_ay_max'),
+            'curve_preview_far_m':     LaunchConfiguration('curve_preview_far_m'),
+            'lfd_max_m':               LaunchConfiguration('lfd_max_m'),
             #  ★주행은 라이다가 켜진 뒤에 시작한다 [2026-09-10]★ use_lidar 를
             #  그대로 물려준다 — 라이다를 안 띄우는 구성에서 영영 대기하지
             #  않게 하는 스위치다. ★매핑은 이 게이트를 받지 않는다.★

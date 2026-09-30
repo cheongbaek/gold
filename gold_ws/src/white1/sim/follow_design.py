@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-follow_design.py ― TODO-1(흔들림 감소 + 10펄스 증속) 설계 후보를 모의로 비교한다  [2026-09-29]
+follow_design.py ― TODO-1(흔들림 감소 + 10펄스 증속) 설계를 모의로 비교한다  [2026-09-29 → 09-30]
 ════════════════════════════════════════════════════════════════════════════════
-★여기 있는 것은 driving.py 를 고치지 않고 '고쳤다면' 을 흉내 낸 패치다★
-  노드의 메서드를 감싸기만 한다. 실제로 넣을 때의 코드 설계는 CHANGELOG.md 의
-  TO DO LIST — TODO-1 절이 정본이고, 이 파일은 그 수치를 다시 내는 도구다.
+★[2026-09-30] 이제 패치가 아니라 driving.py 의 ★실제 파라미터★ 를 넘긴다★
+  A~E 가 driving.py 에 들어갔으므로 모의가 실차와 같은 코드를 돈다(파라미터 기본값은
+  전부 꺼짐 = 현행 — 궤적이 수정 전과 비트 단위로 같다). 근거·설계는 CHANGELOG.md 의
+  2026-09-30 항목(원래 TO DO LIST — TODO-1)이 정본이다.
 
-  A  조향 백래시 선보상     backlash_comp(0.8, 0.3)   최종 pot 에 '움직이는 방향 × 0.8°'
-  B  순수추종 기하 = 뒷차축  rear_axle_pp(1.25)        안테나 좌표를 뒤로 옮겨 겨눈다
-  C  요레이트 댐핑          yaw_damp(0.15)           도로휠 += 0.15·(r − v·κ경로)
-  D  코너 속도 = 횡가속 상한 corner_ay_cap(2.0)       v = √(2.0·R), 원거리 스캔 40 m
-  E  LFD 상한 11.3 → 14 m   (ModuleConst)            10펄스가 실제로 나오게
+  A  조향 백래시 선보상     steer_backlash_deg 0.8      최종 pot 에 '움직이는 방향 × 0.8°'
+  B  순수추종 기하 = 뒷차축  pp_rear_axle true (gps_ant_x_m 1.25)
+  C  요레이트 댐핑          yaw_damp_k 0.15             도로휠 += 0.15·(r − v·κ경로)
+  D  코너 속도 = 횡가속 상한 corner_ay_max 2.0 + curve_preview_far_m 40
+  E  LFD 상한 11.3 → 14 m   lfd_max_m 14.0              10펄스가 실제로 나오게
 
-사용 (ROS 환경만 source — 빌드 불필요. 코어를 다 쓴다):
+  기각한 대안 둘(전달비 1.55 · LFD 실측속도)은 코드에 없으므로 패치로 남긴다.
+
+사용 (ROS 환경만 source — 빌드 불필요. 소스트리의 driving.py 를 그대로 쓴다):
     source /opt/ros/humble/setup.bash
     cd gold_ws/src/white1/sim
     python3 follow_design.py compare --cands 현행,A,A+C,A+B+C,A+B+C+D+E --pulses 7,10
+    python3 follow_design.py compare --cands A+C --extra '{"steer_backlash_deg": 0.6}'   # 손잡이 하나만
     python3 follow_design.py robust  --cands 현행,A+B+C+D+E --pulses 7,10
     python3 follow_design.py logs                       # 9/13 주행 4개를 같은 잣대로
     python3 follow_design.py log <record.csv> <route.csv>   # 새 실차 로그 (라이다 구간 제외)
 """
 import argparse
 import concurrent.futures as cf
+import json
 import math
 import multiprocessing as mp
 import os
@@ -34,154 +39,29 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  설계 후보 — 노드 메서드 감싸기
+#  설계 후보 — driving.py 의 실제 파라미터 [2026-09-30]
 # ══════════════════════════════════════════════════════════════════════════════
-def backlash_comp(b_c=0.8, h=0.3):
-    """A ★조향 백래시 선보상★ 최종 pot(트림 포함)에 '움직이는 방향 × b_c' 를 더한다.
-    방향은 지령이 극값에서 h 이상 되돌아올 때만 뒤집는다(잡음 반전 방지)."""
-    def m(n):
-        orig = n._with_trim
-        st = {'dir': 0, 'ext': None}
-
-        def with_trim(pot_signed):
-            u = orig(pot_signed)
-            if st['ext'] is None:
-                st['ext'] = u
-            if st['dir'] >= 0 and u < st['ext'] - h:
-                st['dir'], st['ext'] = -1, u
-            elif st['dir'] <= 0 and u > st['ext'] + h:
-                st['dir'], st['ext'] = 1, u
-            elif st['dir'] > 0:
-                st['ext'] = max(st['ext'], u)
-            elif st['dir'] < 0:
-                st['ext'] = min(st['ext'], u)
-            return max(-40.0, min(40.0, u + b_c * st['dir']))
-        n._with_trim = with_trim
-    return m
-
-
-def rear_axle_pp(ant_x=1.25):
-    """B ★순수추종 기하만 뒷차축 기준★ 안테나 좌표를 ant_x 만큼 뒤로 옮겨 겨눈다.
-    CTE·진행 포인터·종점 판정은 안테나 그대로 — 경로가 안테나 궤적이므로."""
-    def m(n):
-        orig = n.pure_pursuit_steer
-
-        def pps(lfd):
-            x, y = n.x, n.y
-            h = math.radians(n.heading)
-            n.x, n.y = x - ant_x * math.cos(h), y - ant_x * math.sin(h)
-            try:
-                return orig(lfd)
-            finally:
-                n.x, n.y = x, y
-        n.pure_pursuit_steer = pps
-    return m
-
-
-def yaw_damp(k=0.15, lpf=0.3):
-    """C ★요레이트 댐핑★ 도로휠(B보드 부호 +우) += k·LPF(r − v·κ경로) [deg / (deg/s)].
-    r = 투영·바이어스 보정된 자이로, κ경로 = 진행 포인터 ±3 m 의 부호 있는 곡률."""
-    def m(n):
-        orig = n.pure_pursuit_steer
-        st = {'e': 0.0}
-
-        def kappa_at():
-            w, s, i = n.waypoints, n.wp_s, n.wp_idx
-            j0 = i
-            while j0 > 0 and s[i] - s[j0] < 3.0:
-                j0 -= 1
-            j2 = i
-            while j2 < len(w) - 1 and s[j2] - s[i] < 3.0:
-                j2 += 1
-            if j2 - j0 < 2 or s[j2] - s[j0] < 1.0:
-                return 0.0
-            h0 = math.atan2(w[i][1] - w[j0][1], w[i][0] - w[j0][0])
-            h1 = math.atan2(w[j2][1] - w[i][1], w[j2][0] - w[i][0])
-            dh = (h1 - h0 + math.pi) % (2 * math.pi) - math.pi
-            return dh / ((s[j2] - s[j0]) / 2.0)
-
-        def pps(lfd):
-            road = orig(lfd)
-            v = n.gps_ms() or 0.0
-            err = math.degrees(n.gyro_z - v * kappa_at())
-            st['e'] += lpf * (err - st['e'])
-            return max(-n.road_max, min(n.road_max, road + k * st['e']))
-        n.pure_pursuit_steer = pps
-    return m
-
-
-def corner_ay_cap(a_lat=2.0, floor_pulse=3):
-    """D ★코너 속도 = 횡가속 상한★ v = √(a_lat·R). corner_speed 결과 위에 min 으로만 얹는다.
-    코너 하한 펄스는 drive_pulse 와 떼어 floor_pulse(3)에 둔다 (10펄스에서 int(10/2)=5 가 되지 않게)."""
-    import white1.driving as drv
-
-    def m(n):
-        orig = n.corner_speed
-        n.corner_min_pulse = min(n.corner_min_pulse, floor_pulse)
-        n.min_speed_ms = n.corner_min_pulse * drv.MS_PER_PULSE
-        L = n.wheelbase
-
-        def vcap(demand_deg):
-            k = math.tan(math.radians(max(0.0, demand_deg))) / L
-            return math.sqrt(a_lat / k) if k > 1e-5 else float('inf')
-
-        def cs(near_win, near_peak, far_win, far_dist, far_peak, far_peak_dist, lfd_win_only, lfd_speed):
-            pulse, gate_dist, gvc = orig(near_win, near_peak, far_win, far_dist, far_peak,
-                                         far_peak_dist, lfd_win_only, lfd_speed)
-            bl = drv.PEAK_SPEED_BLEND
-            v_t = vcap(near_win + bl * max(0.0, near_peak - near_win))
-            far_for_gate = far_win + bl * max(0.0, far_peak - far_win)
-            gd = far_dist
-            if far_peak_dist != float('inf') and far_peak > far_win + 1.0:
-                gd = min(gd, far_peak_dist)
-            if gd != float('inf') and far_for_gate > near_win + 1.0:
-                vc = vcap(far_for_gate)
-                v_t = min(v_t, math.sqrt(vc * vc + 2.0 * drv.BRAKE_GATE_DECEL
-                                         * max(0.0, gd - drv.BRAKE_GATE_MARGIN)))
-                gvc = vc if gvc is None else min(gvc, vc)
-            if math.isfinite(v_t):
-                pulse = min(pulse, max(floor_pulse, int(v_t / drv.MS_PER_PULSE + 0.5)))
-            return pulse, gate_dist, gvc
-        n.corner_speed = cs
-    return m
-
-
-class ModuleConst:
-    """driving 모듈 상수를 잠깐 바꾼다 (LFD_MAX_M 등)."""
-    def __init__(self, **kw):
-        self.kw, self.old = kw, {}
-
-    def __enter__(self):
-        import white1.driving as drv
-        for k, v in self.kw.items():
-            self.old[k] = getattr(drv, k)
-            setattr(drv, k, v)
-
-    def __exit__(self, *a):
-        import white1.driving as drv
-        for k, v in self.old.items():
-            setattr(drv, k, v)
+A = {'steer_backlash_deg': 0.8}
+B = {'pp_rear_axle': True, 'gps_ant_x_m': 1.25}
+C = {'yaw_damp_k': 0.15}
+D = {'corner_ay_max': 2.0, 'curve_preview_far_m': 40.0}
+E = {'lfd_max_m': 14.0}
 
 
 def candidate(name):
-    """→ (mods, params, consts)"""
-    A = backlash_comp(0.8, 0.3)
-    B = rear_axle_pp(1.25)
-    C = yaw_damp(0.15)
-    D = corner_ay_cap(2.0)
-    far = {'CURVE_PREVIEW_FAR_MAX': 40.0}
+    """→ (mods, params). mods 는 기각한 대안(코드에 없는 것)만 쓴다."""
     table = {
-        '현행': ([], {}, {}),
-        'A': ([A], {}, {}),
-        'C': ([C], {}, {}),
-        'A+C': ([A, C], {}, {}),
-        'A+B': ([A, B], {}, {}),
-        'A+B+C': ([A, B, C], {}, {}),
-        'A+B+C+D': ([A, B, C, D], {}, far),
-        'A+B+C+D+E': ([A, B, C, D], {}, dict(far, LFD_MAX_M=14.0)),
-        # 기각된 대안 (CHANGELOG TODO-1 '검토했으나 기각')
-        '전달비1.55': ([_model_gain(1.55)], {}, {}),
-        'LFD실측속도': ([_lfd_by_speed()], {}, {}),
+        '현행': ([], {}),
+        'A': ([], dict(A)),
+        'C': ([], dict(C)),
+        'A+C': ([], {**A, **C}),
+        'A+B': ([], {**A, **B}),
+        'A+B+C': ([], {**A, **B, **C}),
+        'A+B+C+D': ([], {**A, **B, **C, **D}),
+        'A+B+C+D+E': ([], {**A, **B, **C, **D, **E}),
+        # 기각된 대안 (CHANGELOG 2026-09-30 '검토했으나 기각')
+        '전달비1.55': ([_model_gain(1.55)], {}),
+        'LFD실측속도': ([_lfd_by_speed()], {}),
     }
     return table[name]
 
@@ -239,13 +119,14 @@ VARIANTS = [
 #  실행
 # ══════════════════════════════════════════════════════════════════════════════
 def _work(job):
-    cand, pulse, route, seed, plant = job
+    cand, pulse, route, seed, plant, extra = job
     import follow_sim as fs
-    mods, params, consts = candidate(cand)
+    mods, params = candidate(cand)
+    params = dict(params)
+    params.update(dict(extra))              # --extra : 모든 후보 위에 같은 값을 덮는다
     pl = dict(plant)
     pl['seed'] = seed
-    with ModuleConst(**consts):
-        s = fs.Sim(fs.ROUTES[route], drive_pulse=pulse, params=params, plant=pl, mods=mods).run()
+    s = fs.Sim(fs.ROUTES[route], drive_pulse=pulse, params=params, plant=pl, mods=mods).run()
     o = fs.stats(s.tr, s.wps)
     o['stops'] = [e[1] for e in s.events if '⛔' in e[1]]
     o['done'] = float(s.tr['wp'][-1]) / max(1, len(s.wps) - 1) >= 0.97 and not o['stops']
@@ -261,6 +142,13 @@ def _pool(jobs, workers):
     return out
 
 
+def _extra(a):
+    """--extra JSON → 작업 키로 쓸 수 있는 (키, 값) 튜플."""
+    if not getattr(a, 'extra', ''):
+        return ()
+    return tuple(sorted(json.loads(a.extra).items()))
+
+
 def _mean(L, k):
     x = [o.get(k, float('nan')) for o in L]
     return float(np.nanmean(x)) if np.any(np.isfinite(x)) else float('nan')
@@ -271,13 +159,14 @@ def cmd_compare(a):
     pulses = [int(x) for x in a.pulses.split(',')]
     routes = a.routes.split(',')
     seeds = range(1, a.seeds + 1)
-    jobs = [(c, p, r, s, ()) for c in cands for p in pulses for r in routes for s in seeds]
+    ex = _extra(a)
+    jobs = [(c, p, r, s, (), ex) for c in cands for p in pulses for r in routes for s in seeds]
     res = _pool(jobs, a.workers)
     print("흔들림 = RMS(r − v·κ경로) [°/s] · 코너 = κ>0.04 구간 · 안쪽(+) = 코너 안쪽으로 파고듦")
     for p in pulses:
         for r in routes:
             for c in cands:
-                L = [res[(c, p, r, s, ())] for s in seeds]
+                L = [res[(c, p, r, s, (), ex)] for s in seeds]
                 bad = sum(0 if o['done'] else 1 for o in L)
                 print(f"{p:2d}p {r} {c:12s} 흔들림 {_mean(L, 'wob'):4.2f}°/s | |CTE| {_mean(L, 'cte_abs'):.2f} "
                       f"최대 {max(o['cte_max'] for o in L):.2f} | 코너 최대 {max(o.get('c_max', 0) for o in L):.2f} "
@@ -292,7 +181,8 @@ def cmd_robust(a):
     routes = a.routes.split(',')
     seeds = range(1, a.seeds + 1)
     # 차량 모델 덮어쓰기는 (키, 값) 튜플로 싣는다 — 작업 키로 쓰려면 해시가 돼야 한다
-    jobs = [(c, p, r, s, tuple(sorted(pl.items()))) for _, pl in VARIANTS for c in cands
+    ex = _extra(a)
+    jobs = [(c, p, r, s, tuple(sorted(pl.items())), ex) for _, pl in VARIANTS for c in cands
             for p in pulses for r in routes for s in seeds]
     res = _pool(jobs, a.workers)
     for p in pulses:
@@ -301,7 +191,7 @@ def cmd_robust(a):
             key = tuple(sorted(pl.items()))
             cells = []
             for c in cands:
-                L = [res[(c, p, r, s, key)] for r in routes for s in seeds]
+                L = [res[(c, p, r, s, key, ex)] for r in routes for s in seeds]
                 bad = sum(0 if o['done'] else 1 for o in L)
                 cells.append(f"{c}: {_mean(L, 'wob'):5.2f} {_mean(L, 'cte_abs'):.2f} "
                              f"{max(o.get('c_max', 0) for o in L):.2f} {max(o['cte_max'] for o in L):.2f} "
@@ -343,6 +233,8 @@ def main():
         sp.add_argument('--routes', default='A,B,C')
         sp.add_argument('--seeds', type=int, default=3)
         sp.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2) - 2))
+        sp.add_argument('--extra', default='',
+                        help='모든 후보 위에 덮을 driving 파라미터 JSON (예: {"steer_backlash_deg": 0.6})')
     sub.add_parser('logs')
     sp = sub.add_parser('log')
     sp.add_argument('record')

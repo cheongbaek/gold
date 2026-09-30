@@ -67,7 +67,8 @@ one_launch.py 가 함께 띄우며, 단독 실행은 `ros2 run white1 record`.
   값이 없었다. /cmd_vel_raw(무엇을 시켰나) 와 /ego_state(어디에 있나) 는 있는데,
   '경로에서 얼마나 벗어났나' 가 없어서 로그만 보고는 성패를 판정할 수 없었다.
 
-  · /drive_diag  — driving 이 내놓는 추종 진단 13종. 아래 네 묶음이다.
+  · /drive_diag  — driving 이 내놓는 추종 진단(★열 이름·개수는 DRIVE_DIAG_COLUMNS 가
+      소유한다★ — 지금 29종). 처음 13종은 아래 네 묶음이다.
       추종품질 : cte_m(★부호 있는 경로이탈 — 이 열 하나가 성패 판정의 핵심★),
                  heading_err_deg(제어기 입력 오차), target_dist_m(실효 선행거리)
       진행     : target_idx, goal_dist_m
@@ -76,6 +77,8 @@ one_launch.py 가 함께 띄우며, 단독 실행은 `ros2 run white1 record`.
                    자이로 부호가 맞는지를 사후에 확인할 수 있다
       출발조건 : head_init_* 4종. 확정 시점 값을 그대로 붙들고 있으므로
                  '이 주행은 σ 몇 도짜리 헤딩으로 출발했나' 가 매 행에 남는다
+      조향사슬 : steer_trim_deg · steer_bl_dir · yaw_damp_deg · corner_ay_cap_ms
+                 [2026-09-30] 발행 pot = 역모델 + 트림 + 백래시 방향×b 를 가른다
   · /board_status — A/B 보드 링크 상태. B보드 USB 가 끊기면 D5(주행모드)가
       멈춰 상태기계가 굳는데, 그 원인을 로그에서 구별할 수단이 없었다.
 
@@ -167,6 +170,23 @@ class TopicSpec:
     note: str = ""
 
 
+#  ★/drive_diag 열 이름 — driving.publish_state_topics() 의 배열 순서와 1:1 이다★
+#  ★[2026-09-30] 길이를 이 튜플에서 유도한다★ 종전에는 _array(23) 이 따로 적혀 있었는데
+#  [2026-09-01] 에 lidar_zone·rejoin 두 열을 더하면서 그 숫자를 25 로 안 올려, 그 뒤 모든
+#  기록에서 ★두 열이 비어 있었다★(9/13 로그 전부). 이름과 길이를 한 곳에 두면 어긋날 수 없다.
+#  열을 더할 때는 driving.py 의 배열 끝에 붙이고 여기 끝에 이름을 붙인다(7절 짝).
+DRIVE_DIAG_COLUMNS: Tuple[str, ...] = (
+    'cte_m', 'heading_err_deg', 'target_idx', 'target_dist_m',
+    'goal_dist_m', 'gps_course_deg', 'fuse_corr_deg', 'gyro_z_dps',
+    'brake_latched', 'head_init_deg', 'head_sigma_deg',
+    'head_resid_m', 'head_dist_m',
+    'ref_pulse', 'out_pulse', 'meas_pulse',
+    'cte_integral', 'cte_i_term_deg', 'goal_phase',
+    'cb_state', 'cb_v0_ms', 'cb_v_corner_ms', 'goal_need_m',
+    'lidar_zone', 'rejoin',
+    'steer_trim_deg', 'steer_bl_dir', 'yaw_damp_deg', 'corner_ay_cap_ms',
+)
+
 RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     # ── 제어 명령 ──
     TopicSpec('/cmd_vel_raw', Twist,
@@ -207,21 +227,16 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     #      goal_phase,                              ← [2026-08-12] 종점 접근 단계
     #      cb_state, cb_v0_ms, cb_v_corner_ms,      ← [2026-08-18] 코너 1단 선행제동 3종
     #      goal_need_m,                             ← [2026-08-19] 종점 접근 필요 제동거리
-    #      lidar_zone, rejoin]                      ← [2026-09-01] 라이다 구간 이양 2종
+    #      lidar_zone, rejoin,                      ← [2026-09-01] 라이다 구간 이양 2종
+    #      steer_trim_deg, steer_bl_dir,            ← [2026-09-30] 조향 사슬 분해 +
+    #      yaw_damp_deg, corner_ay_cap_ms]             TODO-1 검증 4종
     #   ★lidar_zone=1 인 구간의 out_pulse 를 믿지 말 것★ 그 구간에서 driving 은
     #   /cmd_vel_raw 를 아예 내지 않으므로 그 열은 ★직전에 낸 값에 굳어 있다★.
     #   실제로 나간 지령은 /cmd_vel_raw 열(아래에서 따로 받는다)에서 본다 —
     #   그것을 낸 것은 mppi_local_planner 다.
     TopicSpec('/drive_diag', Float64MultiArray,
-              ('cte_m', 'heading_err_deg', 'target_idx', 'target_dist_m',
-               'goal_dist_m', 'gps_course_deg', 'fuse_corr_deg', 'gyro_z_dps',
-               'brake_latched', 'head_init_deg', 'head_sigma_deg',
-               'head_resid_m', 'head_dist_m',
-               'ref_pulse', 'out_pulse', 'meas_pulse',
-               'cte_integral', 'cte_i_term_deg', 'goal_phase',
-               'cb_state', 'cb_v0_ms', 'cb_v_corner_ms', 'goal_need_m',
-               'lidar_zone', 'rejoin'),
-              _array(23),
+              DRIVE_DIAG_COLUMNS,
+              _array(len(DRIVE_DIAG_COLUMNS)),
               note='★cte_m 이 핵심★ 경로이탈 +왼쪽/−오른쪽. 나머지는 헤딩 융합 '
                    '건전성과 출발 헤딩 품질. ref/out/meas 는 저속 펄스 보정 검증용 — '
                    'out≠ref 인 구간이 보정이 걸린 구간이다. cte_i_term_deg 는 '
@@ -652,10 +667,17 @@ class RecordNode(Node):
             self.get_logger().warning(f"{spec.topic} 추출 실패: {e}")
             return
         self._rx[spec.topic] += 1
-        if len(values) != len(spec.columns) and spec.topic not in self._warned:
+        #  ★[2026-09-30] 메시지 ★원래★ 길이로 본다★ _array(n) 는 모자라면 채우고 넘치면
+        #  잘라 늘 n 개를 돌려주므로, 추출 뒤 길이로는 발행측이 열을 늘린 것이 안 보인다.
+        #  (9/1~9/29 의 /drive_diag 는 lidar_zone·rejoin 두 열을 그렇게 조용히 잃었다.)
+        raw = getattr(msg, 'data', None)
+        n_raw = (len(raw) if raw is not None and hasattr(raw, '__len__')
+                 and not isinstance(raw, (str, bytes)) else len(values))
+        if n_raw != len(spec.columns) and spec.topic not in self._warned:
             self._warned.add(spec.topic)
             self.get_logger().warning(
-                f"{spec.topic} 필드 수가 표와 다르다 — record.py 의 columns 확인 필요")
+                f"{spec.topic} 필드 수 {n_raw} 가 표({len(spec.columns)}열)와 다르다 — "
+                f"record.py 의 columns 와 발행측 배열을 함께 확인할 것")
 
         if spec.hold:
             for col, val in zip(spec.columns, values):

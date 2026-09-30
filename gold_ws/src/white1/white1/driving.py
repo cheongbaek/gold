@@ -1671,6 +1671,83 @@ CTE_I_FLIP_SCALE  = 0.35
 #  출발하는 순간 그만큼 튀기만 한다 — 전형적인 와인드업이다.
 CTE_I_MIN_PULSE   = 0.3    # 실측이 이 밑이면 적분을 ★동결★ 한다(감쇠도 안 한다)
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ 흔들림 감소 + 10펄스 증속 (CHANGELOG TODO-1) [2026-09-30] — ★전부 기본 꺼짐★ ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  원인·모의·실차 확인 순서의 정본은 white1/CHANGELOG.md 의 2026-09-30 항목이다
+#  (9/13 주행 4개 분석 + sim/follow_design.py 폐루프 모의). 요약만 옮긴다:
+#    · '기우뚱' 은 ★조향 서보 불감대가 만드는 백래시 한계순환★ 이다. B보드는 |오차|가
+#      6카운트(1.78° pot)를 넘어야 모터를 돌리므로 목표 ~1° 앞에서 선다(식별 0.8~1.2°).
+#      순수추종 횡강성으로 옮기면 유격 e = (b/G)·Ld²/(2L) — LFD 11.2 m 에서 ±0.55 m.
+#      ★LFD 가 같으면 진폭은 속도와 무관하고 주기만 짧아져 횡가속이 v² 로 커진다★.
+#    · 코너 안쪽 파고듦(9/13 네 주행 전부 +0.19~+0.30 m)은 ★뒷차축용 순수추종 식에
+#      앞차축(안테나) 좌표를 넣어서★ 생긴다.
+#    · drive_pulse 10 은 LFD_MAX_M 11.3 의 ω_n 결속(corner_speed (b2))에 묶여 ★9펄스★ 로 돈다.
+#    · 코너 속도가 drive_pulse 에 비례해 10펄스 코너 횡가속이 2.3~2.8 m/s² 가 된다.
+#  ★기본값은 전부 '현행과 같음'★ 이라 이 절이 있어도 거동은 한 틱도 바뀌지 않는다
+#  (모의 궤적 해시가 수정 전과 비트 단위로 같다). 실차에서 런치 인자로 한 단계씩 켠다:
+#      1단계  steer_backlash_deg:=0.8  yaw_damp_k:=0.15                    (7펄스)
+#      2단계  + pp_rear_axle:=true  gps_ant_x_m:=<실측>                     (7펄스)
+#      3단계  + corner_ay_max:=2.0  curve_preview_far_m:=40.0              (7펄스)
+#      4단계  + lfd_max_m:=14.0  drive_pulse:=8 → 9 → 10
+#
+#  ── A. 조향 백래시 선보상 ──
+#  최종 pot 지령(트림 포함)에 '움직이는 방향 × b' 를 더한다. 방향이 뒤집히는 순간 지령이
+#  2b(정수로 2° = 6.75카운트) 튀어 ★B보드의 6카운트 문턱을 곧장 넘긴다★. 방향은 지령이
+#  직전 극값에서 히스테리시스 h 이상 되돌아올 때만 뒤집는다(잡음 반전 방지).
+#  ★설계값 0.8 은 식별 범위(0.8~1.2)의 아래쪽이다★ — 과보상은 불안정해지지는 않지만
+#  (모의 : 실제 백래시 0 에 0.8 을 주면) 지령 반전 58 → 154회/분, 서보 이동량 2.4 → 6.2
+#  pot°/s 로 모터·드라이버를 괴롭힌다. ★덜 보상하는 쪽이 안전하다★. 켠 뒤 새 로그를
+#  `sim/follow_design.py log` 로 다시 식별해 b 를 맞출 것.
+#  ★driving 에만 둔다★ arduino.py(보드 규약의 소유자)에 두면 mppi·조이스틱까지 바뀐다.
+STEER_BACKLASH_DEG      = 0.0    # [pot deg] 0 = 끔. 설계값 0.8
+STEER_BACKLASH_HYST_DEG = 0.3    # [pot deg] 방향 판정 히스테리시스
+#
+#  ── B. 순수추종 기하 = 뒷차축 ──
+#  순수추종은 ★뒷차축★ 기준으로 유도된 식이라 뒷차축을 넣으면 원 위에서 정상상태 오차가
+#  0 이다. 안테나(앞차축 위) 좌표를 넣으면 그 점의 속도가 헤딩이 아니라 헤딩 + δ 를
+#  향해 원호가 접선이 되지 못하고 안쪽으로 붙는다. 켜면 pure_pursuit_steer() 의
+#  목표점 탐색·조준만 뒷차축에서 한다 — ★CTE·진행 포인터·종점 판정은 안테나 그대로★
+#  (경로가 안테나 궤적이다). 그래서 /lidar_ref[0] 도 그대로이고 mppi 의
+#  handover.gps_antenna_x_m 은 바꾸지 않는다.
+#  ⚠️ ★단독으로 켜지 말 것★ 앞 안테나가 주던 선행(리드) 효과가 사라져 직선 흔들림이
+#     다시 는다(모의 경로 B : A 만 1.46 → A+B 1.86 °/s). C 와 함께 켠다.
+PP_REAR_AXLE = False
+GPS_ANT_X_M  = 1.25   # [m] 뒷차축 → GPS 안테나 진행방향 거리. ⚠️ ★미실측★ — 이 파일의
+                      #   주석('GPS 가 앞차축 위')에서 온 값이다. 줄자로 잴 것. 모의로 실제
+                      #   0.9 m 인데 1.25 로 옮겨도 코너 최대 CTE 0.38 m(현행 0.58)로 둔하다
+#
+#  ── C. 요레이트 댐핑 ──
+#  도로휠 += k · LPF(r − v·κ경로)  [B보드 부호 + = 우 — 왼쪽으로 더 돌면 오른쪽으로 민다]
+#  r = 투영·바이어스 보정된 자이로(cb_imu), κ경로 = 진행 포인터의 부호 있는 경로 곡률
+#  (build_curve_profile 이 ±YAW_DAMP_KAPPA_WIN_M 창으로 한 번 계산), v = GPS 속도.
+#  ★경로가 요구하지 않은 요레이트만★ 누른다 — 코너를 도는 데 필요한 회전은 건드리지 않는다.
+#  자이로 잡음 실측 1.8~2.0 °/s → LPF 뒤 ≈0.8 °/s × 0.15 = 도로휠 0.12° — 정수 지령
+#  (1° pot)보다 작다. 트림 추정(실측 pot ↔ 요레이트 회귀)과는 무관하다.
+YAW_DAMP_K           = 0.0    # [도로휠 deg / (deg/s)] 0 = 끔. 설계값 0.15
+YAW_DAMP_LPF         = 0.3    # 틱당 1차 저역 계수 (20 Hz 에서 시정수 ≈0.14 s)
+YAW_DAMP_KAPPA_WIN_M = 3.0    # [m] 부호 있는 곡률의 앞뒤 창
+#
+#  ── D. 코너 속도 = 횡가속 상한 ──
+#  v_corner = √(a·R), R = L / tan(요구 도로휠각). corner_speed 의 근거리 목표와 원거리
+#  게이트(v_brake) 양쪽에 min 으로만 얹는다(올리지 않는다). 켜면 코너 하한 펄스도
+#  int(drive_pulse/2) 대신 min(그 값, 3) — 10펄스에서 하한이 5(15.9 km/h)가 되지 않게.
+#  9/13 7펄스 로그의 횡가속 p99 는 0.5~1.1 m/s² 였고, 모의 10펄스 현행은 2.3~2.8 이다
+#  (자전거 모델이라 미끄러짐이 없는 낙관값). 2.0 이면 모의 p99 가 1.0~1.2 로 돌아온다.
+#  ★원거리 스캔(curve_preview_far_m)을 함께 40 m 로★ — 10펄스 → R 10 m 코너를 1단(a 1.3)
+#  으로 맞추려면 (78.1 − 20.0)/2.6 × 1.2 + 1.5 = 28 m, 보수 a 0.88 이면 41 m 가 필요하다.
+CORNER_AY_MAX_MS2     = 0.0   # [m/s²] 0 = 끔. 설계값 2.0
+CORNER_AY_FLOOR_PULSE = 3     # 켜면 코너 하한 펄스를 이 이하로 둔다 (★4 는 적분 동결 함정★)
+#
+#  ── E. LFD 상한 (lfd_max_m, 기본 = LFD_MAX_M 11.3) ──
+#  corner_speed (b2) 의 ω_n 결속은 v ≤ OMEGA_N_MAX·LFD/√2 다. 10펄스 설계 LFD 가
+#  8.84·√2/0.78 = 16.0 m 라 상한 11.3 에 잘리면 ★직선에서도★ v ≤ 7.59 m/s = 8.6펄스 →
+#  지령 9 로 묶인다. 10펄스를 내려면 상한이 8.84·√2/0.95 = 13.2 m 이상이어야 하고 설계값은
+#  14 m 다(10펄스 실효 ω_n 0.89). 7펄스(11.22 m)는 11.3·14 어느 쪽이든 그대로다.
+#  ⚠️ 백래시 유격 ∝ Ld² — ★A·C 없이 E 만 하면★ 유격 0.55 → 0.86 m. 반드시 A·C 다음에.
+#  ⚠️ 라이다 복귀 재수렴(CLAUDE.md 4.1b-2)의 잔류 CTE 도 Ld² 로 커진다(14 m 에서 ≈1.9 m) —
+#     L 구간이 있는 경로는 그쪽 ②(재수렴 구간만 2펄스 기준 LFD)를 먼저 할 것.
+
 EARTH_R = 6378137.0
 
 
@@ -1816,6 +1893,16 @@ class DrivingNode(Node):
         #     ros2 param set /driving_node corner_brake_enable false
         self.declare_parameter('corner_brake_enable', CORNER_BRAKE_ENABLE)
         self.declare_parameter('corner_brake_late_k', CORNER_BRAKE_LATE_K)
+        # ── 흔들림 감소 + 10펄스 증속 [2026-09-30] ── 상수절 'CHANGELOG TODO-1' 절.
+        #   ★기본값은 전부 현행과 같다(꺼짐)★ — 실차에서 한 단계씩 켠다.
+        self.declare_parameter('steer_backlash_deg', STEER_BACKLASH_DEG)          # A
+        self.declare_parameter('steer_backlash_hyst_deg', STEER_BACKLASH_HYST_DEG)
+        self.declare_parameter('pp_rear_axle', PP_REAR_AXLE)                      # B
+        self.declare_parameter('gps_ant_x_m', GPS_ANT_X_M)
+        self.declare_parameter('yaw_damp_k', YAW_DAMP_K)                          # C
+        self.declare_parameter('corner_ay_max', CORNER_AY_MAX_MS2)                # D
+        self.declare_parameter('curve_preview_far_m', CURVE_PREVIEW_FAR_MAX)
+        self.declare_parameter('lfd_max_m', LFD_MAX_M)                            # E
 
         self.data_dir = paths.data_dir(self.get_parameter('data_dir').value or '')
         # ★파라미터도 MAX_PULSE_LIMIT 로 자른다 [2026-08-11]★ send() 에서만 자르면
@@ -1857,6 +1944,21 @@ class DrivingNode(Node):
         #   늦게 물면 코너 진입속도가 목표를 넘는 것이 ★계산으로 이미 확정★ 이다.
         self.cb_late_k = max(1.0, float(self.get_parameter('corner_brake_late_k').value))
         self.road_max = STEER_MAX_DEG / self.plant_gain
+        # ── 흔들림 감소 + 10펄스 증속 [2026-09-30] ── ★0/false 가 '끔' = 현행 그대로★
+        #   음수를 못 주게 막는다 — 백래시·댐핑·횡가속 상한은 음수가 '반대로 켜기' 라 뜻이
+        #   통째로 뒤집힌다(조용히 발산시키는 오타가 된다).
+        self.bl_deg = max(0.0, float(self.get_parameter('steer_backlash_deg').value))
+        self.bl_hyst = max(0.05, float(self.get_parameter('steer_backlash_hyst_deg').value))
+        self.pp_rear = bool(self.get_parameter('pp_rear_axle').value)
+        self.ant_x = float(self.get_parameter('gps_ant_x_m').value)
+        self.yaw_k = max(0.0, float(self.get_parameter('yaw_damp_k').value))
+        self.ay_max = max(0.0, float(self.get_parameter('corner_ay_max').value))
+        #   원거리 스캔은 곡률 창(3 m)보다 짧으면 뜻이 없다.
+        self.curve_far = max(CURVE_WINDOW_M,
+                             float(self.get_parameter('curve_preview_far_m').value))
+        #   ★상한이 하한보다 작으면 하한이 이긴다★ — lookahead_m 의 min/max 순서가
+        #   뒤집혀 LFD 가 튀는 것을 여기서 막는다.
+        self.lfd_max = max(self.lfd_min, float(self.get_parameter('lfd_max_m').value))
 
         # ── 속도 대역 (구 white 의 max_speed_ms / min_speed_ms 와 같은 역할) ──
         #   white1 은 정수 펄스로 명령하므로 상한은 drive_pulse 가 정하고, 하한은
@@ -1880,6 +1982,12 @@ class DrivingNode(Node):
         self.corner_min_pulse = min(
             self.drive_pulse,
             max(CORNER_MIN_PULSE_FLOOR, int(self.drive_pulse * MIN_SPEED_RATIO)))
+        #  ★[2026-09-30] 횡가속 상한(D)을 켜면 코너 하한을 기본속도와 뗀다★ 절반 규칙은
+        #    10펄스에서 5펄스(4.42 m/s)를 주는데, R 5 m 코너면 그것만으로 횡가속 3.9 m/s²
+        #    다. 하한이 상한을 이기면 상한이 무의미해진다. 끄면(0) 종전 그대로.
+        #    4펄스 → 2 (그대로) / 7펄스 → 3 (그대로) / 8·10펄스 → 3
+        if self.ay_max > 0.0:
+            self.corner_min_pulse = min(self.corner_min_pulse, CORNER_AY_FLOOR_PULSE)
         self.min_speed_ms = min(self.max_speed_ms,
                                 max(MIN_SPEED_FLOOR,
                                     self.corner_min_pulse * MS_PER_PULSE))
@@ -1888,9 +1996,17 @@ class DrivingNode(Node):
         self.wp_s = []          # 누적 호길이 [m]
         self.wp_req_win = []    # 3.0m 창 요구 도로휠각 [deg]
         self.wp_req_peak = []   # 1.2m 창(Menger) 요구 도로휠각 [deg]
-        self._lfd_lpf = LFD_MAX_M
-        self._lfd_out = LFD_MAX_M
+        self.wp_kappa = []      # [1/m] ★부호 있는★ 경로 곡률 (+ = 좌) — 요레이트 댐핑(C)용
+        self._lfd_lpf = self.lfd_max
+        self._lfd_out = self.lfd_max
         self._warned_infeasible = False
+
+        # ── 조향 성형 상태 [2026-09-30] — reset_steer_shaping() 이 한 곳에서 지운다 ──
+        self._bl_dir = 0                  # A 백래시 선보상 : 지금 움직이는 방향 −1/0/+1
+        self._bl_ext = None               #   방향이 바뀐 뒤의 극값 [pot deg]
+        self._yd = 0.0                    # C 요레이트 댐핑 LPF 상태 [deg/s]
+        self._diag_yd = 0.0               #   이번 틱의 댐핑 기여 [도로휠 deg]
+        self._diag_ay_cap = float('nan')  # D 이번 틱의 횡가속 상한 속도 [m/s] (끔·직선 = nan)
 
         # ── 센서 상태 ──
         self.lat0 = self.lon0 = None      # 로컬 평면 원점(첫 fix)
@@ -2107,6 +2223,45 @@ class DrivingNode(Node):
 
         self.event(f"white1 driving 준비 — 경로 폴더 {self.data_dir}")
         self.event("prompt 에서 1)매핑 또는 2)주행 선택 — 스위치는 취소·정리만 한다")
+        self._announce_speed_setup()
+
+    def _announce_speed_setup(self):
+        """[2026-09-30] 켜진 TODO-1 기능과 ★drive_pulse 가 실제로 나오는지★ 를 알린다.
+
+        ★조용히 덜 나오는 것이 제일 나쁘다★ corner_speed 의 (b2) ω_n 결속은
+        v ≤ OMEGA_N_MAX·LFD/√2 인데, 설계 LFD(v√2/ω_n)가 lfd_max 에 잘리면 그 결속이
+        ★직선에서도★ 걸린다. drive_pulse:=10 에 lfd_max 11.3 이면 지령이 9 에서 멈추고
+        아무 말도 없다 — 그래서 여기서 계산해 미리 말한다.
+        """
+        v = self.drive_pulse * MS_PER_PULSE
+        lfd_design = v * math.sqrt(2.0) / self.lfd_omega_at(v)
+        v_cap = OMEGA_N_MAX * self.lfd_max / math.sqrt(2.0)
+        p_cap = int(v_cap / MS_PER_PULSE + 0.5)
+        if lfd_design > self.lfd_max + 0.05 and p_cap < self.drive_pulse:
+            need = v * math.sqrt(2.0) / OMEGA_N_MAX
+            self.event(f"⚠️ drive_pulse:={self.drive_pulse} 이지만 LFD 상한 {self.lfd_max:.1f} m 의 "
+                       f"ω_n 결속 때문에 ★직선에서도 {p_cap}펄스까지만★ 나온다 — "
+                       f"lfd_max_m:={max(14.0, math.ceil(need * 10) / 10):.1f} 이상을 줄 것 "
+                       f"(CHANGELOG TODO-1 ③)")
+        on = []
+        if self.bl_deg > 0.0:
+            on.append(f"A 백래시보상 {self.bl_deg:.2f}°")
+        if self.pp_rear:
+            on.append(f"B 뒷차축 순수추종(안테나 {self.ant_x:.2f} m)")
+        if self.yaw_k > 0.0:
+            on.append(f"C 요댐핑 {self.yaw_k:.2f}")
+        if self.ay_max > 0.0:
+            on.append(f"D 횡가속상한 {self.ay_max:.1f} m/s²(코너하한 {self.corner_min_pulse}펄스)")
+        if abs(self.lfd_max - LFD_MAX_M) > 1e-6:
+            on.append(f"E LFD상한 {self.lfd_max:.1f} m")
+        if abs(self.curve_far - CURVE_PREVIEW_FAR_MAX) > 1e-6:
+            on.append(f"원거리스캔 {self.curve_far:.0f} m")
+        if on:
+            self.event("🧪 TODO-1 켜짐 : " + " · ".join(on))
+        if self.pp_rear and not self.yaw_k > 0.0:
+            self.event("⚠️ 뒷차축 순수추종(B)을 켜고 요댐핑(C)은 껐다 — 앞 안테나가 주던 선행이 "
+                       "사라져 직선 흔들림이 다시 는다(모의 경로 B : 1.46 → 1.86 °/s). "
+                       "yaw_damp_k:=0.15 를 함께 줄 것")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  수신
@@ -2768,6 +2923,7 @@ class DrivingNode(Node):
         같은 단계를 계속 주장해 ★남(mppi·B보드)의 제동과 다투게 된다★.
         """
         self.reset_cte_integral()
+        self.reset_steer_shaping()
         self._goal_phase = GOAL_PHASE_NONE
         self._goal_brake_t = 0.0
         self._goal_v0 = 0.0
@@ -3009,7 +3165,7 @@ class DrivingNode(Node):
         if len(self.wp_zone) < len(self.waypoints):
             self.wp_zone += [''] * (len(self.waypoints) - len(self.wp_zone))
         self.wp_idx = 0
-        self._lfd_lpf = self._lfd_out = LFD_MAX_M
+        self._lfd_lpf = self._lfd_out = self.lfd_max
         self._warned_infeasible = False
         self.build_curve_profile()
         #  ★[2026-09-07] 구간 표를 ★주행 시작 직전★ 에 한 번 만든다 (사용자 지시)★
@@ -3085,6 +3241,28 @@ class DrivingNode(Node):
         self.wp_req_win = req_win
         self.wp_req_peak = req_peak
 
+        # ── [2026-09-30] 부호 있는 곡률 (+ = 좌) — 요레이트 댐핑(C)이 뺄 '경로가 요구하는
+        #   요레이트 v·κ' 의 κ. 위 두 창은 |요구각| 이라 부호가 없어 따로 둔다.
+        #   앞뒤 YAW_DAMP_KAPPA_WIN_M 을 넘는 첫 점까지의 두 현(弦) 방위차 / 현 중점 간 거리.
+        #   ★양 끝처럼 창이 한쪽으로 닫히는 점은 0★ — 방위를 잴 현이 없다(0 은 '댐핑이
+        #   곡률 요구분을 안 뺀다' 일 뿐이라 틀려도 안전한 쪽이다).
+        kw = YAW_DAMP_KAPPA_WIN_M
+        kap = [0.0] * n
+        for i in range(n):
+            j0 = i
+            while j0 > 0 and s[i] - s[j0] < kw:
+                j0 -= 1
+            j2 = i
+            while j2 < n - 1 and s[j2] - s[i] < kw:
+                j2 += 1
+            if not (j0 < i < j2) or s[j2] - s[j0] < 1.0:
+                continue
+            h0 = math.atan2(p[i][1] - p[j0][1], p[i][0] - p[j0][0])
+            h1 = math.atan2(p[j2][1] - p[i][1], p[j2][0] - p[i][0])
+            dh = (h1 - h0 + math.pi) % (2.0 * math.pi) - math.pi
+            kap[i] = dh / ((s[j2] - s[j0]) / 2.0)
+        self.wp_kappa = kap
+
         # 이 경로가 애초에 따라갈 수 있는 것인지 먼저 알려 준다 — 도로휠각 상한을
         # 넘는 코너는 ★속도를 0 으로 줄여도 기하적으로 불가능★ 하다.
         worst = max(req_peak) if req_peak else 0.0
@@ -3147,6 +3325,7 @@ class DrivingNode(Node):
         # ★상태가 바뀌면 CTE 적분을 지운다★ 이전 구간의 누적이 다음 구간 첫 틱에
         #   실리면 출발하자마자 한쪽으로 튄다(reset_cte_integral 주석).
         self.reset_cte_integral()
+        self.reset_steer_shaping()
         #  ★[2026-09-13] 조향 트림도 ★주행 시작에서★ 0 부터 다시 추정한다★
         #  (사용자 결정 — 상수절 _trim_reset_stats 주석에 근거). 주행 중 상태 전이
         #  (예: L 구간 왕복)에서는 지우지 않는다 — 그때마다 지우면 15초를 다시
@@ -3634,6 +3813,7 @@ class DrivingNode(Node):
         cte = self.signed_cte()
         self._rejoin_cte0 = 0.0 if math.isnan(cte) else cte
         self.reset_cte_integral()            # 이양 구간 동안 낡은 적분을 버린다
+        self.reset_steer_shaping()           # 그동안 조향은 mppi 가 냈다 — 방향·필터가 낡았다
         #  ★리니어 0 을 한 번 강제로 낸다★ mppi 가 구간 끝에서 장애물을 보고 2단을
         #  물고 있었으면 /brake_level 의 마지막 값이 2 인 채로 남는다. 이 노드의
         #  brake_now 는 0 이지만 _publish_brake 는 '0 은 재확인하지 않는다'는 규칙
@@ -3769,7 +3949,7 @@ class DrivingNode(Node):
         near_preview = max(self.lfd_min, self._lfd_out) * CURVE_PREVIEW_NEAR_K
         near_win, _, near_peak, _ = self.scan_curve_demand(near_preview)
         far_win, far_dist, far_peak, far_peak_dist = \
-            self.scan_curve_demand(CURVE_PREVIEW_FAR_MAX)
+            self.scan_curve_demand(self.curve_far)     # 기본 = CURVE_PREVIEW_FAR_MAX
 
         # ── 판단 1. LFD = min(속도표, 곡률캡) ──
         lfd, lfd_win_only, lfd_speed = self.lookahead_m(d2goal, near_win, near_peak)
@@ -3806,8 +3986,11 @@ class DrivingNode(Node):
         if self._rejoin:
             pulse = min(pulse, REJOIN_PULSE_MAX)
 
-        # ── 제어 : 순수추종(도로휠각) + CTE 적분 → 전달계 보정 → pot 지령 ──
+        # ── 제어 : 순수추종(도로휠각) + 요레이트 댐핑 + CTE 적분 → 전달계 보정 → pot 지령 ──
         road = self.pure_pursuit_steer(lfd)
+        #  ★[2026-09-30] 요레이트 댐핑(C)은 적분 앞에★ — 적분은 '천천히 남는 편향' 을
+        #  지우고 댐핑은 '빠른 흔들림' 을 누른다. 끄면(yaw_damp_k 0) road 그대로다.
+        road = self.apply_yaw_damp(road)
         #   ★재수렴 중에는 적분을 태우지 않는다★ 그 항은 '편향을 천천히 지우는' 것이라
         #   1m 단위 오차에서 감기면 수렴한 뒤에 반대로 밀어낸다. 계속 0 으로 눌러 둔다.
         if self._rejoin:
@@ -4124,6 +4307,12 @@ class DrivingNode(Node):
                 peak_max, peak_d = self.wp_req_peak[i], d
         return win_max, win_d, peak_max, peak_d
 
+    def _ay_speed(self, demand_deg):
+        """[2026-09-30] 요구 도로휠각 → 횡가속 상한 속도 √(corner_ay_max · R) [m/s].
+        R = L / tan(요구각). 곧으면(요구각 ≈ 0) inf — 상한이 없다."""
+        k = math.tan(math.radians(max(0.0, demand_deg))) / self.wheelbase
+        return math.sqrt(self.ay_max / k) if k > 1e-5 else float('inf')
+
     def corner_speed(self, near_win, near_peak, far_win, far_dist,
                      far_peak, far_peak_dist, lfd_win_only, lfd_speed):
         """곡률 선행제동 → ★(목표 주행펄스, 게이트거리, 코너 목표속도)★
@@ -4153,6 +4342,14 @@ class DrivingNode(Node):
         # (a) 현재 코너 — 피크는 절반만 반영(곡률캡이 이미 컷을 막으므로)
         near_for_speed = near_win + PEAK_SPEED_BLEND * max(0.0, near_peak - near_win)
         v_target = demand_to_speed(near_for_speed)
+        # (a2) ★[2026-09-30] 횡가속 상한 (D)★ — 요구각의 비율이 아니라 v = √(a·R).
+        #   위 (a) 는 [drive_pulse, 그 절반] 을 선형으로 잇기 때문에 속도를 올리면 같은
+        #   코너의 횡가속이 v² 로 커진다(R 10 m : 7펄스 2.0 → 10펄스 4.5 m/s²).
+        #   ★낮추는 방향으로만★ min 이다. 끄면(corner_ay_max 0) 건너뛴다 = 종전 그대로.
+        ay_cap = float('inf')
+        if self.ay_max > 0.0:
+            ay_cap = self._ay_speed(near_for_speed)
+            v_target = min(v_target, ay_cap)
 
         # (b) 다가오는 코너 제동거리 게이팅
         far_for_gate = far_win + PEAK_SPEED_BLEND * max(0.0, far_peak - far_win)
@@ -4169,14 +4366,21 @@ class DrivingNode(Node):
                 #  ★[2026-09-13] lookahead_m 과 ★같은 K★ 를 써야 한다★ — 여기서
                 #  예측하는 cap_far 는 '코너에 도착했을 때 lookahead_m 이 낼 LFD' 다.
                 #  둘이 갈라지면 예측과 실제가 어긋나 진입 직전에 속도가 튄다.
-                cap_far = min(LFD_MAX_M, max(self.lfd_min,
+                cap_far = min(self.lfd_max, max(self.lfd_min,
                                              math.sqrt(self.curve_cap_k_at(
                                                  self.drive_pulse * MS_PER_PULSE) * r_far)))
                 v_corner = min(v_corner, OMEGA_N_MAX * cap_far / math.sqrt(2.0))
+            #  ★[2026-09-30] 다가오는 코너에도 같은 횡가속 상한 (D)★ v_corner 자체를
+            #  낮추므로 아래 v_brake 와 corner_brake 가 겨누는 목표(gate_v_corner)가
+            #  함께 따라온다 — 둘을 따로 낮추면 제동은 옛 목표를 겨눈다.
+            if self.ay_max > 0.0:
+                v_corner = min(v_corner, self._ay_speed(far_for_gate))
             brake_d = max(0.0, gate_dist - BRAKE_GATE_MARGIN)
             v_brake = math.sqrt(max(0.0, v_corner * v_corner
                                     + 2.0 * BRAKE_GATE_DECEL * brake_d))
             v_target = min(v_target, v_brake)
+            if self.ay_max > 0.0:
+                ay_cap = min(ay_cap, v_brake)
             # ★[2026-08-18] 리니어 1단 제동의 판정 기준은 이 v_corner 다★
             #   여기까지 내려온 v_corner 는 곡률(far_for_gate)과 ω_n 결속을 모두 통과한
             #   '코너에서 실제로 내야 하는 속도'다. corner_brake 는 이 값과 gate_dist
@@ -4218,6 +4422,8 @@ class DrivingNode(Node):
         #   내려가면 이 차는 코너에서 아예 못 움직여 그 자리에 선다(실측).
         pulse = int(v_target / MS_PER_PULSE + 0.5)
         pulse = max(self.corner_min_pulse, min(self.drive_pulse, pulse))
+        #  진단 : 이번 틱에 횡가속 상한이 준 속도 (끔·곧은 길 = nan) — record 의 corner_ay_cap_ms
+        self._diag_ay_cap = ay_cap if math.isfinite(ay_cap) else float('nan')
         return pulse, gate_dist, gate_v_corner
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -4387,6 +4593,33 @@ class DrivingNode(Node):
         self._cb_lock_gate = 0.0 if gate_dist == float('inf') else gate_dist
         self.event(("⚠️ 코너 1단 " if warn else "🅑 코너 1단 ") + why)
 
+    def apply_yaw_damp(self, road_deg):
+        """C ★요레이트 댐핑★ [2026-09-30] 도로휠 += k·LPF(r − v·κ경로). 끄면(0) 그대로.
+
+        ★경로가 요구하지 않은 요레이트만 누른다★ — v·κ 를 빼므로 코너를 도는 데 필요한
+        회전에는 손대지 않는다. ★B보드 부호(+ = 우)★ 로 더한다: 차가 왼쪽으로 더 돌면
+        (r − vκ > 0) 오른쪽(+)으로 민다.
+
+        ★왜 필요한가★ 조향 백래시가 만든 위상지연을 선행 성분으로 되돌린다. 순수추종에
+        앞차축 좌표를 넣던 지금은 그 기하가 우연히 선행을 주고 있었는데, B(뒷차축 기준)로
+        바꾸면 그것이 사라진다 — B 를 켤 때 이것을 함께 켜야 하는 이유다(상수절 B).
+        ★GPS 속도를 모르면 끈다★ — 곡률 요구분(v·κ)을 못 빼면 코너 회전 자체를 누른다.
+        """
+        if self.yaw_k <= 0.0 or not self.wp_kappa:
+            self._diag_yd = 0.0
+            return road_deg
+        v = self.gps_ms()
+        if v is None:
+            self._yd = 0.0
+            self._diag_yd = 0.0
+            return road_deg
+        k = self.wp_kappa[min(self.wp_idx, len(self.wp_kappa) - 1)]
+        r_ex = math.degrees(self.gyro_z - v * k)
+        self._yd += YAW_DAMP_LPF * (r_ex - self._yd)
+        term = self.yaw_k * self._yd
+        self._diag_yd = term
+        return max(-self.road_max, min(self.road_max, road_deg + term))
+
     def apply_cte_integral(self, road_deg, cte):
         """순수추종이 낸 도로휠각에 ★CTE 적분항만★ 더한다 (Ki 단독, P·D 없음).
         [2026-08-12 구 white 의 적분 로직만 이식 — 근거는 상단 'CTE 적분항' 절]
@@ -4438,6 +4671,19 @@ class DrivingNode(Node):
         self._cte_i = 0.0
         self._cte_i_term = 0.0
         self._cte_prev = 0.0
+
+    def reset_steer_shaping(self):
+        """[2026-09-30] 백래시 선보상(A)의 방향과 요레이트 댐핑(C)의 필터를 지운다.
+
+        ★조향을 이 노드가 이어서 내지 않았던 구간 뒤에는 반드시 부른다★ — 상태 전이
+        (enter), 손을 놓는 사건(_clear_transients : E-STOP 일시정지·라이다 이양),
+        라이다 복귀(end_lidar_zone). 그 사이 서보를 누가 어디로 옮겼는지 모르므로 낡은
+        방향으로 ±b 를 얹으면 첫 반전이 거꾸로 튄다. 지워 두면 첫 반전에서 새로 잡는다.
+        """
+        self._bl_dir = 0
+        self._bl_ext = None
+        self._yd = 0.0
+        self._diag_yd = 0.0
 
     def speed_blend(self, v_ms):
         """중저속(LFD_OMEGA_LO_PULSE) 0.0 ~ 고속(LFD_OMEGA_HI_PULSE) 1.0 [2026-09-13]
@@ -4617,7 +4863,7 @@ class DrivingNode(Node):
         #  ★[2026-09-13] 조향 0 에서도 트림은 나가야 한다★ — 직진이 곧 트림이
         #  제일 필요한 구간이다. 종전에는 여기서 0.0 으로 즉시 반환해 버렸다.
         if d < 1e-6:
-            return self._with_trim(0.0)
+            return self._backlash_comp(self._with_trim(0.0))
         #  ★[2026-09-13] 언더스티어 항의 속도만 묶는다★ — 상수절 참고.
         #  실측 전달비는 큰 각(7~20°)에서 pot/도로휠 ≈ 1.5 로 ★속도와 무관하게
         #  평평하다★. 4펄스 위로 이 항을 더 키우면 7펄스에서 루프이득이 2.57배로
@@ -4627,7 +4873,8 @@ class DrivingNode(Node):
             v_eff = min(v_eff, self.understeer_v_max)
         pot = self.plant_gain * d + self.understeer * v_eff * v_eff \
             * math.tan(math.radians(d)) / self.wheelbase
-        return self._with_trim(math.copysign(min(STEER_MAX_DEG, pot), road_deg))
+        return self._backlash_comp(
+            self._with_trim(math.copysign(min(STEER_MAX_DEG, pot), road_deg)))
 
     def _with_trim(self, pot_signed):
         """지령 pot 에 트림을 더하고 상한을 다시 지킨다. [2026-09-13]
@@ -4640,6 +4887,32 @@ class DrivingNode(Node):
             return pot_signed
         out = pot_signed + self.steer_trim
         return max(-float(STEER_MAX_DEG), min(float(STEER_MAX_DEG), out))
+
+    def _backlash_comp(self, pot):
+        """A ★조향 백래시 선보상★ [2026-09-30] 최종 pot(트림 포함)에 '움직이는 방향 × b'.
+
+        ★왜 트림 뒤인가★ 서보가 보는 것은 트림까지 더한 최종 목표다 — 방향 판정도 그 값으로
+        해야 실제 서보 움직임과 같다. ★방향은 극값에서 h 이상 되돌아올 때만 뒤집는다★ —
+        틱 간 잡음(GPS·헤딩)으로 뒤집히면 ±b 가 매 틱 튀어 서보를 괴롭힌다.
+        ★정수 반올림은 arduino 가 한다★ 여기서는 실수로 더하기만 한다(b 0.8 은 반전 순간
+        정수 지령을 2 만큼 옮겨 6.75카운트 = B보드 문턱 6카운트를 넘긴다).
+        끄면(steer_backlash_deg 0) 그대로 돌려준다 = 종전 그대로.
+        """
+        if self.bl_deg <= 0.0:
+            return pot
+        if self._bl_ext is None:
+            self._bl_ext = pot
+        h = self.bl_hyst
+        if self._bl_dir >= 0 and pot < self._bl_ext - h:
+            self._bl_dir, self._bl_ext = -1, pot
+        elif self._bl_dir <= 0 and pot > self._bl_ext + h:
+            self._bl_dir, self._bl_ext = 1, pot
+        elif self._bl_dir > 0:
+            self._bl_ext = max(self._bl_ext, pot)
+        elif self._bl_dir < 0:
+            self._bl_ext = min(self._bl_ext, pot)
+        return max(-float(STEER_MAX_DEG),
+                   min(float(STEER_MAX_DEG), pot + self.bl_deg * self._bl_dir))
 
     def advance_wp_idx(self):
         """진행 포인터를 ★창 안의 최근접점★ 으로 옮긴다.
@@ -4818,13 +5091,13 @@ class DrivingNode(Node):
             #  남은 분기는 tan(0) 나눗셈을 막는 수치 가드다(그 각의 cap 은 46 m 라
             #  어차피 min() 에 잘린다 — 거동이 바뀌지 않는다).
             if demand_deg <= CURVE_CAP_EPS_DEG:
-                return LFD_MAX_M
+                return self.lfd_max
             r = self.wheelbase / math.tan(math.radians(min(demand_deg, self.road_max)))
-            return min(LFD_MAX_M, math.sqrt(cap_k * r))
+            return min(self.lfd_max, math.sqrt(cap_k * r))
 
-        lfd_win_only = min(LFD_MAX_M, max(self.lfd_min,
+        lfd_win_only = min(self.lfd_max, max(self.lfd_min,
                                           min(lfd_speed, curve_cap(near_win))))
-        target = min(LFD_MAX_M, max(self.lfd_min,
+        target = min(self.lfd_max, max(self.lfd_min,
                                     min(lfd_speed, curve_cap(near_peak))))
 
         # 급변 완화 + 비대칭 슬루(감소는 신속 = 코너 보호, 증가는 완만 = 탈출 후
@@ -4833,7 +5106,7 @@ class DrivingNode(Node):
         self._lfd_lpf += LFD_LPF_ALPHA * (target - self._lfd_lpf)
         self._lfd_out = min(self._lfd_out + LFD_RATE_UP * dt,
                             max(self._lfd_out - LFD_RATE_DOWN * dt, self._lfd_lpf))
-        lfd = max(self.lfd_min, min(LFD_MAX_M, self._lfd_out))
+        lfd = max(self.lfd_min, min(self.lfd_max, self._lfd_out))
 
         # 종점 접근 캡은 마지막에 — 위 슬루 상태를 오염시키지 않는다
         #  ★[2026-09-13 저녁] 이 캡만은 lfd_min 을 받지 않는다★
@@ -4877,11 +5150,20 @@ class DrivingNode(Node):
         n = len(self.waypoints)
         ch = math.cos(math.radians(self.heading))
         sh = math.sin(math.radians(self.heading))
+        #  ★[2026-09-30] B — 겨누는 자리를 뒷차축으로 (pp_rear_axle)★ 상수절 'B' 참고.
+        #  순수추종 식은 뒷차축 기준이라 그 자리에서 겨누면 원 위 정상상태 오차가 0 이다.
+        #  ★목표점 탐색과 조준만★ 옮긴다 — CTE·진행 포인터·종점 판정은 안테나 그대로다
+        #  (경로가 안테나 궤적이다). 끄면(false) 안테나 자리 = 종전 그대로.
+        if self.pp_rear:
+            ox = self.x - self.ant_x * ch
+            oy = self.y - self.ant_x * sh
+        else:
+            ox, oy = self.x, self.y
 
         def to_body(i):
-            """WP → 차체기준 (전방 lx, 왼쪽 ly)."""
+            """WP → 차체기준 (전방 lx, 왼쪽 ly). 기준점은 위 (ox, oy)."""
             wx, wy = self.waypoints[i]
-            dx, dy = wx - self.x, wy - self.y
+            dx, dy = wx - ox, wy - oy
             return dx * ch + dy * sh, -dx * sh + dy * ch
 
         # ① LFD 이상 떨어진 첫 '앞쪽' 점. 없으면(종점 근처) 마지막 점을 쓴다.
@@ -5293,6 +5575,17 @@ class DrivingNode(Node):
             #     넘어선 것이다(구간을 더 짧게 끊거나 더 곧은 곳으로 옮길 것).
             1.0 if self._lidar_zone else 0.0,         # lidar_zone
             1.0 if self._rejoin else 0.0,             # rejoin
+            # ── [2026-09-30] 조향 사슬 분해 + TODO-1 검증용 4종 ──
+            #   발행된 pot(cmd_steer_deg) = 역모델(도로휠) + ★트림★ + ★백래시 방향×b★ 다.
+            #   이 넷이 없으면 로그에서 그 셋을 가를 수 없다 — 특히 트림은 지금까지 이벤트
+            #   문자열로만 남아 표로 볼 수 없었다.
+            #   읽는 법 : steer_bl_dir 가 바뀌는 행 = 백래시 선보상이 지령을 2b 튀긴 순간.
+            #     yaw_damp_deg 는 순수추종 뒤 도로휠각에 더한 값(적분 전).
+            #     corner_ay_cap_ms 가 gps_kmh/3.6 보다 작은 구간 = 횡가속 상한이 속도를 정한 곳.
+            float(self.steer_trim),                   # steer_trim_deg [pot deg]
+            float(self._bl_dir),                      # steer_bl_dir −1/0/+1 (끄면 0)
+            float(self._diag_yd),                     # yaw_damp_deg [도로휠 deg]
+            float(self._diag_ay_cap),                 # corner_ay_cap_ms (끔·곧은 길 nan)
         ]
         self.pub_diag.publish(diag)
 

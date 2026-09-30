@@ -15,7 +15,8 @@
 > | GPS 헤딩 초기화 실측 | `gold_ws/src/white1/GPS_HEADING.md` |
 > | 정지선/신호등 시험 | `gold_ws/src/white1/STOPLINE_TEST.md` |
 > | 변경 이력·실차 로그 근거 | `gold_ws/src/white1/CHANGELOG.md` |
-> | ★**앞으로 할 일 (TO DO LIST)**★ — 흔들림 감소·10펄스 증속의 원인·설계·모의 [2026-09-29] | `gold_ws/src/white1/CHANGELOG.md` **최상단** · 모의 도구 `gold_ws/src/white1/sim/` |
+> | ★**앞으로 할 일 (TO DO LIST)**★ | `gold_ws/src/white1/CHANGELOG.md` **최상단** |
+> | 흔들림 감소 · 10펄스 증속 (A~E) — 원인·설계·모의·구현 [2026-09-30] | 요약 4.1e · 근거 CHANGELOG 2026-09-30 항목 · 모의 도구 `gold_ws/src/white1/sim/` |
 > | 아두이노 계층 구조·안전장치 | `gold_ws/src/nxde/README.md` |
 > | 라이다 패키지 | `gold_ws/src/lidar/README.md` |
 > | 단위 환산 (C++ 쪽 단일 소유자) | `gold_ws/src/lidar/include/lidar/kasa_units.hpp` |
@@ -363,7 +364,8 @@ gold_ws/src/
       camera_model.py / camera_launch.py / ports.py / paths.py
     launch/one_launch.py    통합 런치
     sim/follow_sim.py · follow_design.py   ★driving 폐루프 모의★ [2026-09-29] — DrivingNode 를
-                     그대로 돌린다(ROS_DOMAIN_ID 77). 빌드 대상 아님. CHANGELOG TODO-1 의 수치를 재현
+                     그대로 돌린다(ROS_DOMAIN_ID 77). 빌드 대상 아님. CHANGELOG 2026-09-30 ④ 의 수치를
+                     재현 — [2026-09-30] 부터 패치가 아니라 driving 의 ★실제 파라미터★ 를 넘긴다
     gps_data/  ros2bag/  video/  sound/  calibration/
     BOARD_B.md  BRAKING.md  GPS_HEADING.md  STOPLINE_TEST.md  CHANGELOG.md
 
@@ -648,6 +650,9 @@ pot    = 1.26·|δ| + 5.17·v_eff²·tan|δ|/L,  ±40 클램프  ← 부호는 �
 | **7** | 6.19 | **0.780** | **11.22 m** | **2.20** | 종전 9.02 m → **+24%** |
 | 10 | 8.84 | 0.780 | 11.30 m (상한) | 2.20 | 실효 ω_n 1.41 |
 
+> ★[2026-09-30] 상한은 이제 런치 `lfd_max_m`(기본 11.3)이다★ — 10펄스는 `lfd_max_m:=14.0` 으로
+> 14 m(실효 ω_n 0.89). 11.3 이면 `corner_speed` (b2) 결속 때문에 직선에서도 9펄스까지만 나온다(4.1e).
+
 ### 4.1b-2 ⚠️ ★아직 안 고친 것 — LFD 상한이 저속 구간까지 적용된다★ [2026-09-13 저녁 확인]
 
 **LFD 는 실제 속도가 아니라 `drive_pulse`(고정 파라미터)로 계산된다** —
@@ -694,8 +699,8 @@ pot    = 1.26·|δ| + 5.17·v_eff²·tan|δ|/L,  ±40 클램프  ← 부호는 �
 > ⚠️ **L 구간이 없는 경로에서는 재수렴 자체가 일어나지 않는다** — `terrain` 에
 > `L` 이 없으면 이 항목은 이번 주행에서 관측되지 않는다.
 >
-> ⚠️ **[2026-09-29] 10펄스 증속 설계(CHANGELOG TO DO LIST — TODO-1 의 E)는 `LFD_MAX_M` 을
-> 14 m 로 올린다** — 그러면 이 잔류가 ≈1.9 m 로 커진다. L 구간이 있는 경로는 **위 ② 를 먼저** 한다.
+> ⚠️ **10펄스 증속(4.1e 의 E)은 `lfd_max_m:=14.0` 으로 LFD 상한을 14 m 로 올린다** — 그러면 이
+> 잔류가 ≈1.9 m 로 커진다. L 구간이 있는 경로는 **위 ② 를 먼저** 한다(CHANGELOG TODO-5).
 
 ### 4.1d ★조향 트림 자동 추정 — '직진을 만드는 pot' 이 0 이 아니다★ [2026-09-13 저녁]
 
@@ -951,6 +956,41 @@ pot→요레이트 지연 0.10 s 에서 상관 최대 `r`=0.95):
 > ⚠️ **고속·큰각 표본(5~7 m/s, |δ|>7°)이 아직 없다** — 순수추종이 그 조합을 안 내기
 > 때문이다. 생기면 이 클램프부터 다시 볼 것. **'언더스티어가 없다'는 주장이 아니라
 > 실측되지 않는 구간까지 외삽하지 않는다는 것이다.**
+
+### 4.1e ★흔들림 감소 + 10펄스 증속 — A·B·C 조향 성형 · D 코너 횡가속 · E LFD 상한★ [2026-09-30]
+
+**기본값은 전부 '현행과 같음(꺼짐)'** 이다(모의 궤적 해시가 수정 전과 비트 단위로 같다). 실차에서
+런치 인자로 한 단계씩 켠다. 원인·모의·강건성의 정본은 `white1/CHANGELOG.md` 2026-09-30 항목 ④.
+
+**원인 한 줄씩** — ① '기우뚱' 은 조향 서보 불감대(B보드 6카운트)가 백래시로 동작해 생기는 한계순환이다
+(식별 0.8~1.2° pot → LFD 11.2 m 에서 횡 유격 ±0.55 m, **같은 LFD 로 속도만 올리면 횡가속 ∝ v²**)
+② 코너 안쪽 파고듦(9/13 네 주행 +0.19~+0.30 m)은 뒷차축용 순수추종 식에 앞차축(안테나) 좌표를 넣어서
+③ `drive_pulse:=10` 은 LFD 상한 11.3 m 의 (b2) 결속에 묶여 9펄스 ④ 코너 속도가 `drive_pulse` 에 비례.
+
+| | 런치 인자 (기본 → 설계값) | 무엇 | 코드 |
+|---|---|---|---|
+| A | `steer_backlash_deg` 0.0 → **0.8** (`steer_backlash_hyst_deg` 0.3) | 최종 pot 에 '움직이는 방향 × b' | `_backlash_comp()` |
+| B | `pp_rear_axle` false → **true**, `gps_ant_x_m` 1.25 ⚠️ 미실측 | 순수추종을 뒷차축에서 겨눈다 (CTE·포인터·종점은 안테나 그대로) | `pure_pursuit_steer()` |
+| C | `yaw_damp_k` 0.0 → **0.15** | 도로휠 += k·LPF(r − v·κ경로) | `apply_yaw_damp()` · `wp_kappa` |
+| D | `corner_ay_max` 0.0 → **2.0**, `curve_preview_far_m` 24 → **40** | 코너 속도 √(a·R), 켜면 코너 하한 ≤ 3펄스 | `corner_speed()` · `_ay_speed()` |
+| E | `lfd_max_m` 11.3 → **14.0** | 10펄스가 실제로 나오게 | `lookahead_m()` · `cap_far` |
+
+```bash
+ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15       # 1단계 (7펄스)
+#  2단계 + pp_rear_axle:=true gps_ant_x_m:=<실측>          ★B 는 C 없이 켜지 말 것★
+#  3단계 + corner_ay_max:=2.0 curve_preview_far_m:=40.0
+#  4단계 + lfd_max_m:=14.0 drive_pulse:=8 → 9 → 10          ★A·C 없이 E 만 올리지 말 것 (유격 ∝ LFD²)★
+```
+
+- **모의(3경로 × 3시드)** : 10펄스 흔들림 5.1~7.8 → **1.5~2.1 °/s**(오늘 7펄스 1.9~2.8 보다 작다),
+  코너 최대 CTE 0.90~1.06 → **0.24~0.25 m**, 횡가속 p99 2.3~2.8 → 1.0~1.2. 차량 모델 오차 13종에서
+  현행 10펄스는 5종이 경로이탈 정지, A~E 는 모두 완주.
+- **시작할 때 말한다** — `🧪 TODO-1 켜짐 : …`, `drive_pulse` 가 LFD 상한에 묶이면 `⚠️ … 9펄스까지만`,
+  B 만 켜면 `⚠️ … 직선 흔들림이 다시 는다`.
+- **로그로 검증** — `/drive_diag` 에 `steer_trim_deg` · `steer_bl_dir` · `yaw_damp_deg` · `corner_ay_cap_ms`
+  (record 열). 같은 잣대의 지표는 `python3 sim/follow_design.py log <record.csv> <route.csv>`.
+- ⚠️ **실차 미검증** · ⚠️ **라이다 구간은 모의에서 뺐다**(사용자 지시) — L 경로는 4단계 전에 따로 본다.
+  남은 결정·할 일은 CHANGELOG 최상단 TO DO LIST(트림 초기값 · 10펄스 종점 접근 · 안테나 실측 · 재수렴 LFD).
 
 ### 4.2 곡률 선행제동 (속도)
 
@@ -1251,7 +1291,9 @@ tl_record_video:=true  ← ★인지 디버그 화면을 주행 내내 mp4 로 (
 tl_show_window:=true   ← 화면 없는 SSH 면 false (5.2절)
 drive_pulse:=7     heading_pulse:=3  wheelbase_m:=1.25
 lidar_pulse:=2     ← ★L 구간 순항 [펄스]. 이것 하나만 고치면 된다 (6.4②)★
-lfd_omega_n:=0.97  lfd_omega_n_fast:=0.78  lfd_min_m:=2.3   ← ★ω_n 속도 스케줄 (4.1)★
+lfd_omega_n:=0.97  lfd_omega_n_fast:=0.78  lfd_min_m:=4.04  ← ★ω_n 속도 스케줄 (4.1)★
+steer_backlash_deg:=0.0  yaw_damp_k:=0.0  pp_rear_axle:=false  gps_ant_x_m:=1.25  ← ★4.1e A·C·B★
+corner_ay_max:=0.0  curve_preview_far_m:=24.0  lfd_max_m:=11.3                   ← ★4.1e D·E (8펄스 이상)★
 steer_plant_gain:=1.26  steer_understeer:=5.17  cte_ki:=0.30
 understeer_v_clamp_pulse:=4   ← ★언더스티어 항의 v 를 여기서 묶는다 (4.1b)★
 goal_brake_m:=20.0  goal_brake1_ms2:=1.30  goal_brake2_backstop:=true
@@ -1275,7 +1317,8 @@ PWM 이 91.6 에 묶인다. 2026-09-12 로그 실측 :
 
 > ⚠️ **상한 10 은 '여유'지 '목표'가 아니다.** 파생 상수(`LFD_MAX_M` **11.3**
 > [2026-09-13 갱신] · `CURVE_PREVIEW_FAR_MAX 24.0`)는 **7펄스 기준**으로 맞췄다 —
-> 8 이상을 상시로 쓰려면 그 둘을 다시 계산할 것.
+> ★[2026-09-30] 8 이상은 그 둘을 런치 `lfd_max_m`·`curve_preview_far_m` 로 올리고 `corner_ay_max`
+> 를 함께 켠다(4.1e 4단계)★.
 >
 > ⚠️ **7펄스의 2단 정지거리는 `8.70 m` (+지연 1.86 = `10.56 m`)** 로 4펄스(3.90 m)의
 > 2.7배다. 경로이탈 감지·신호등 정지선·종점이 전부 그만큼 늦게 선다. 특히 종점은
@@ -1758,6 +1801,8 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
 | **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
+| **흔들림 감소 + 10펄스 증속 A~E — 전부 기본 꺼짐 (4.1e) [2026-09-30]** | `driving.py _backlash_comp` · `pure_pursuit_steer`(기준점 ox,oy) · `apply_yaw_damp` · `build_curve_profile wp_kappa` · `corner_speed` (a2)(b) · `_ay_speed` · `lfd_max`·`curve_far` · `_announce_speed_setup` · `reset_steer_shaping` · 상수절 'CHANGELOG TODO-1' · `one_launch.py` 인자 8개 · `sim/follow_design.py`(실제 파라미터로 모의) |
+| **record `/drive_diag` 두 열 누락 수정 + 조향 사슬 4열 [2026-09-30]** | `record.py DRIVE_DIAG_COLUMNS`(길이 유도) · `_stash`(원래 길이로 경고) · `driving.publish_state_topics` |
 | **콘 옆 여유 +30 cm · 안테나 보정 · 적분 조건 (4.9) [2026-09-29]** | `params.yaml avoid.pass_gap_m 0.75` · `handover.gps_antenna_x_m 0.6` · 노드 `imuCallback` · `path_tracker.hpp steadyTracking` |
 | **라바콘 회피 블록 계획기 · ±3 m · 인계 전 미리보기 (4.9) [2026-09-28]** | `mppi_local_planner/src/frenet_planner.cpp` · `cone_detector.cpp` · `path_tracker.hpp` · 노드 `runPreview` · `params.yaml` 회피 절 |
 | IMU 중력축 투영 (4.7절) [2026-09-09] | `driving.py cb_imu` · `solve_imu_axis` |
@@ -2867,7 +2912,9 @@ ping -c2 192.168.6.11
 | **조이스틱 프로토콜** [2026-09-16] | `~/Arduino/joyled.ino` **+** `nxde/joyread.py`(파싱·영점·환산) **+** `nxde/arduino.py`(포트·게이트·LCD 송신) — **필드를 늘리면 세 곳을 함께 고친다.** 지금은 `J,x1,y1,k1,x2,y2,k2,swa,swb`(9토큰) 이고 구 `joy.ino`(12토큰)도 받는다. `nxde/joystick.py`(점검 도구)도 **같은 `joyread` 를 쓴다** — 그래서 "점검에서는 맞는데 실차에서 다르다" 가 생기지 않는다. LCD 줄 `D,<on>,<pulse>,<steer>,<kmh>` 는 `arduino` 와 `joystick` 두 곳이 쓰지만 **둘은 동시에 띄우지 않는다**(포트가 하나다) |
 | **회피 폭** [2026-09-28] | mppi `avoid.max_offset_m`(3.0) **+** `mppi.max_lateral_offset`(3.2)·`lateral_hard`(3.5) — **벽은 계획 폭보다 바깥이어야 한다.** 같으면 계획과 벽이 같은 자리에서 싸운다 |
 | **회피 추종·정지** [2026-09-28] | `mppi_local_planner/include/.../path_tracker.hpp` 하나를 노드와 모의실험(`test/avoid_sim.cpp`)이 같이 쓴다 — 노드에 식을 따로 적지 말 것. 계획기·추종기를 고치면 그 모의실험과 `test/ros_smoke.py` 를 다시 돌린다(빌드 명령은 각 파일 머리말) |
-| **GPS 안테나 위치** [2026-09-29] | driving 의 CTE(`/lidar_ref[0]`)는 **안테나 자리** **+** mppi `handover.gps_antenna_x_m`(안테나 ↔ 라이다 원점) — **안테나나 라이다를 옮기면 이 값을 다시 잰다.** driving 이 언젠가 CTE 를 뒤차축으로 투영하게 되면 **이 값을 0 으로** 내려야 한다(두 번 빼게 된다) |
+| **GPS 안테나 위치** [2026-09-29] | driving 의 CTE(`/lidar_ref[0]`)는 **안테나 자리** **+** mppi `handover.gps_antenna_x_m`(안테나 ↔ 라이다 원점) — **안테나나 라이다를 옮기면 이 값을 다시 잰다.** driving 이 언젠가 CTE 를 뒤차축으로 투영하게 되면 **이 값을 0 으로** 내려야 한다(두 번 빼게 된다). ★[2026-09-30] driving `gps_ant_x_m`(4.1e B)은 **뒷차축 ↔ 안테나** 라 기준이 다르다★ — B 는 순수추종 조준만 옮기고 CTE 는 투영하지 않으므로 mppi 값은 그대로 둔다 |
+| **`/drive_diag` 배열** [2026-09-30] | `driving.publish_state_topics()` 배열 **끝에** 붙이고 `record.py DRIVE_DIAG_COLUMNS` **끝에** 이름 — 길이는 튜플에서 유도한다(종전 `_array(23)` 이 25개 중 두 열을 조용히 버렸다). `hud.py` 는 앞쪽 인덱스(0·1·4)를 읽으므로 ★중간에 끼우지 말 것★ |
+| **TODO-1 파라미터** [2026-09-30] | `driving.py` 상수절(기본값) **+** `one_launch.py` 런치 인자(같은 기본값) **+** `sim/follow_design.py` 의 A~E 표(설계값) — 어긋나면 모의가 실차와 다른 것을 잰다. `lfd_max_m` 은 `LFD_MAX_M` 을 대신하므로 **상수만 고치면 런치 기본값(11.3)이 이긴다** |
 | **미리보기 ↔ `/lidar_ref[3]`** [2026-09-28] | mppi 미리보기는 driving 의 `zone_left`(다음 L 구간까지 호길이)로 켜진다. **그 열의 뜻을 바꾸면 미리보기가 조용히 꺼진다** |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
