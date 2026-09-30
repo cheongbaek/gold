@@ -60,7 +60,8 @@ git ls-tree -r --name-only origin/main -- <바꾼 경로>   # ★눈으로 확�
 
 > ⚠️ **그래서 `mapping` 이 새로 딴 경로도 자동으로 추적 대상이 된다.**
 > **`git add -A` 를 경로 없이 쓰지 말 것.** 시험 삼아 딴 것은 커밋 전에 뺀다.
-> `white806/gps_data` 와 `ros2bag/` 은 그대로 막혀 있다.
+> **`ros2bag/*.csv` 도 [2026-09-13] 부터 예외로 추적한다**(`.gitignore` 예외 2 — 판단 근거라서).
+> 그 밖의 CSV 는 그대로 막혀 있다.
 
 ### 0.4 빌드 — ★`--symlink-install` 금지★
 
@@ -79,9 +80,17 @@ source install/setup.bash
 갱신되지 않는다. `--symlink-install` 시절의 "고치고 노드만 재시작" 습관이 남아
 있으면 **고친 적 없는 코드를 계속 돌리게 된다.**
 
-빌드 대상 8개 : `white1` `nxde` `lidar` `mppi_local_planner` `ouster_ros`
-`ouster_sensor_msgs` `white` `white806`
-(`white0901` 은 `COLCON_IGNORE`. `white`·`white806` 은 이전 세대 스냅샷 — 손대지 않는다.)
+빌드 대상 6개 : `white1` `nxde` `lidar` `mppi_local_planner` `ouster_ros` `ouster_sensor_msgs`
+(`ouster-ros` 폴더 하나에 패키지가 둘이다 — `src/` 에는 폴더 5개만 있다.)
+
+> **[2026-09-30] `src/` 에는 쓰는 것만 남겼다** — 이전 세대 스냅샷 `white` · `white806` ·
+> `white0901` 과 백업·임시물 `white2` · `white1 0910` · `rosbag2_2026_09_12-*` 2개 · `sliver.zip` 을
+> **이 기계의 `~/Documents/` 로 옮기고 저장소에서 지웠다**(추적하던 셋은 git 이력에 남아 있다 —
+> 되살리려면 `git checkout 3c435c8 -- gold_ws/src/white`). 남은 다섯은 그 폴더들을 import·런치·
+> `package.xml` 어디에서도 쓰지 않는다(전수 확인).
+> ⚠️ **옛 빌드 산출물 `install/white` · `install/white806` 은 지우기 전까지 남는다** — `source
+> install/setup.bash` 뒤에는 `ros2 launch white …` 가 옛 스택을 그대로 띄운다. 정리하려면
+> `rm -rf gold_ws/{install,build}/{white,white806}`.
 
 `ouster-ros` 는 서브모듈이다 — 새로 clone 하면:
 ```bash
@@ -118,7 +127,8 @@ git submodule update --init gold_ws/src/ouster-ros
 > **0.65 는 `lidar` 패키지 두 곳에만 남은 1/5카 잔재**다.
 >
 > ⚠️ **코드가 쓰는 값은 1.10 이라 정본보다 20 mm 크다**
-> (`white/white/kasa_units.py:103` 의 `TRACK_WIDTH_M = 1.10`, mppi 도 그것을 따른다).
+> (출처는 구 `white/white/kasa_units.py:103` 의 `TRACK_WIDTH_M = 1.10` — [2026-09-30] 저장소에서
+> 빠졌다(`~/Documents/white`). mppi·hud 는 그 값을 옮겨 적은 것이라 그대로 남아 있다).
 > 반폭으로는 10 mm 차이라 충돌 판정에 유의미한 영향은 없고, 차를 실제보다 조금
 > **넓게** 보므로 틀리는 방향도 안전한 쪽이다. 급하지 않지만 맞춰 두는 편이 좋다.
 >
@@ -152,7 +162,7 @@ git submodule update --init gold_ws/src/ouster-ros
 > 띄우지 않는다(그 런치 주석: *"drive_gps_node·drive_lidar_node 도 띄우지 않는다"*).
 > `ros2 launch lidar drive_lidar.launch.py` 를 **단독으로** 쓸 때만 문제가 된다.
 >
-> **→ 할 일 : `lidar` 두 곳의 0.65 를 1.08 로 고친다** (겸사겸사 kasa_units.py 의
+> **→ 할 일 : `lidar` 두 곳의 0.65 를 1.08 로 고친다** (겸사겸사 mppi·hud 의
 > 1.10 도 1.08 로). 이번 커밋에는 넣지 않았다 —
 > 그 노드는 라바콘 코리도 잠금 로직이 그 폭에 맞춰 튜닝돼 있을 수 있어
 > (`path_corridor_half_width` 등과 함께 봐야 한다) 단독 검증이 필요하다.
@@ -343,7 +353,7 @@ gold_ws/src/
     white1/
       driving.py       ★3592줄 — 헤딩 + 상태기계 + 경로추종 + 제동정책★
       gps.py           /fix + /imu → /gps_fused (품질판정·게이트·DR)
-      iahrs.py         iAHRS 드라이버 → /imu   ⚠️ from white import ports (0.1절)
+      iahrs.py         iAHRS 드라이버 → /imu
       speed.py         /imu 적분 → /speed [km/h]  ★보조 속도원★
       mapping.py       /fix 원값만 보고 경로 수집 → gps_data/route_*.csv
       prompt.py        CLI 메인화면 (매핑/주행/종료) — ★시작은 여기뿐★
@@ -399,7 +409,7 @@ gold_ws/src/
     src/ego_costmap.cpp
     config/params.yaml   ★최상단 cruise_pulse 하나로 순항속도를 정한다★
 
-  white · white806 · white0901   이전 세대 스냅샷 (참고용, ★손대지 않는다★)
+  (white · white806 · white0901 — 이전 세대 스냅샷. [2026-09-30] ~/Documents 로 옮겼다, 0.4절)
   ouster-ros/                    외부 드라이버 (서브모듈)
 
   lidar/      C++ 라이다 인지·주행 (ament_cmake)
