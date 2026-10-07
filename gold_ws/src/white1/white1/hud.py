@@ -12,7 +12,8 @@ hud.py ― kasa 차량 상태 HUD  [white1]
 명령이 겹치지 않는다. 떠 있는 스택(white1 · lidar AEB · joy) 위에 그냥 얹는다.
 
 화면 (F1 계기판을 이 차 토픽에 맞춘 것):
-    상단   모드 · E-STOP · AEB · 신호등 · GPS · A/B 보드 · /drive_state
+    상단   ★AS 상태★(AS-ON·RUN / AS-EMERGENCY·PAUSE / AS-OFF) · AEB · 신호등 · GPS
+           · A/B 보드 · /drive_state                       [2026-10-07 — as_state()]
     중앙   상면도 차체 + 앞바퀴 조향 + 모서리 원형 게이지 4개
              차 앞 = 라이다 AEB 범위(cone_lidar ROI). 거리 없으면 안 그림
              FL 스로틀%   FR PWM%   RL 브레이크   RR 펄스 라벨
@@ -239,6 +240,45 @@ def _kept_indices(n, zone, wp_idx, limit=NAV_DRAW_MAX):
             if i > 0:
                 keep.add(i - 1)
     return sorted(keep)
+
+
+AS_UNKNOWN = 'AS —'
+AS_ON = 'AS-ON'
+AS_EMERGENCY = 'AS-EMERGENCY'
+AS_OFF = 'AS-OFF'
+
+
+def _b_link(board_status):
+    """/board_status 의 B 칸. True 연결 / False 단절 / None 모름(토픽 없음·형식 다름)."""
+    if not board_status:
+        return None
+    for part in str(board_status).split(','):
+        if part.startswith('B:'):
+            return part[2:] == '1'
+    return None
+
+
+def as_state(mode, estop, b_link):
+    """★AS 상태 (대회 규정 2.16.1 <표 4>·<표 5>)★ [2026-10-07]
+
+        AS-ON        · RUN   : D5 자율, E-STOP 해제
+        AS-EMERGENCY · PAUSE : D5 자율, E-STOP 체결 — B보드가 리니어 2단
+        AS-OFF               : D5 수동 — ★E-STOP 을 보지 않는다★, 리니어도 안 쓴다
+
+    입력은 arduino 가 내는 /vehicle_mode · /estop · /board_status 그대로다(새 토픽 없음).
+    ★/estop 은 이미 '효력' 이다★ — kasa_1007_B 는 수동에서 E-STOP 을 보지 않아 "STOP" 을
+    안 내고, arduino 는 STOP 을 받으면 모드를 자율로 둔다. 그래서 estop 이면 모드와
+    무관하게 AS-EMERGENCY 다(구 펌웨어 0909 를 꽂아 수동에서 STOP 이 와도, 그 펌웨어는
+    실제로 리니어 2단을 무니 이 표시가 맞다).
+
+    ★B보드 단절은 '모름' 이다★ arduino 는 보드가 빠져도 /vehicle_mode·/estop 을 ★마지막
+    값으로 계속 발행★ 한다 — 토픽 신선도만으로는 못 거른다. 모르면 낮게 본다.
+    """
+    if b_link is False or mode is None or estop is None:
+        return AS_UNKNOWN
+    if estop:
+        return AS_EMERGENCY
+    return AS_ON if mode else AS_OFF
 
 
 def _brake_reason_text(estop, aeb, tl_brake, lstatus, goal_phase, cb_state,
@@ -1153,8 +1193,7 @@ class HudApp:
                       font=self.font(11))
 
         x = 140
-        x = self._pill(c, x, 10, *self._mode_pill(stale))
-        x = self._pill(c, x, 10, *self._estop_pill(stale))
+        x = self._pill(c, x, 10, *self._as_pill(stale))
         x = self._pill(c, x, 10, *self._aeb_pill(stale))
         x = self._pill(c, x, 10, *self._tl_pill(stale))
         x = self._pill(c, x, 10, *self._drive_by_pill(stale))
@@ -1179,23 +1218,20 @@ class HudApp:
             c.create_text(w - 18, 42, text=str(wait), fill=ORANGE, anchor='e',
                           font=self.font(8))
 
-    def _mode_pill(self, stale):
-        m = self.n.mode.get(stale)
-        if m is None:
-            return 'MODE —', PANEL2, DIM
-        if m:
-            return 'AUTO', '#12331f', GREEN
-        return 'MANUAL', '#33280c', GOLD
-
-    def _estop_pill(self, stale):
-        e = self.n.estop.get(stale)
-        if e is None:
-            return 'E-STOP —', PANEL2, DIM
-        if e:
+    def _as_pill(self, stale):
+        """★AS 상태 필★ [2026-10-07] — 종전 AUTO/MANUAL 필과 E-STOP 필을 하나로 합쳤다
+        (AS 상태가 모드를 이미 담고 있다). 판정은 모듈 함수 as_state() 하나다."""
+        n = self.n
+        s = as_state(n.mode.get(stale), n.estop.get(stale),
+                     _b_link(n.boards.get(stale)))
+        if s == AS_ON:
+            return 'AS-ON · RUN', '#12331f', GREEN
+        if s == AS_EMERGENCY:
             flash = int(time.monotonic() * 4) % 2
-            bg = RED if flash else '#5a1020'
-            return 'E-STOP', bg, '#ffffff'
-        return 'E-STOP', '#1a2420', DIM
+            return 'AS-EMERGENCY · PAUSE', RED if flash else '#5a1020', '#ffffff'
+        if s == AS_OFF:
+            return 'AS-OFF', '#33280c', GOLD
+        return AS_UNKNOWN, PANEL2, DIM
 
     def _drive_by_pill(self, stale):
         """지금 /cmd_vel_raw 를 누가 내고 있나. ★GPS / 라이다 / 라이다 없음★

@@ -1257,6 +1257,8 @@ MODE_SETTLE_S     = 0.7      # 스위치 엣지 직후 이만큼은 굴리지 �
 #        0단 복귀에 1000ms 를 쓴다(kasa_0821_B.ino BRAKE_HOME_MS). 그 전에 구동을
 #        걸면 브레이크를 밟은 채로 미는 꼴이고, A보드 기동 블랭킹까지 재트리거된다.
 #   그래서 MODE_SETTLE_S(0.7) 보다 길게, 리니어 복귀시간보다 넉넉하게 잡았다.
+#   ★[2026-10-07] 출발에도 쓴다★ 대회 출발 절차(규정 2.16.1 사)가 AS-Emergency →
+#   RUN(해제) → 출발이라, 해제 직후의 DRIVE_START 도 같은 유예를 받는다(_estop_release_t).
 ESTOP_RESUME_GRACE_S = 1.5
 
 # ── GPS/IMU 융합 ──
@@ -2141,6 +2143,12 @@ class DrivingNode(Node):
         # ★[2026-08-21] E-STOP 해제 후 이 시각까지는 펄스 0 으로 붙잡는다★
         #   0.0 = 유예 없음(=한 번도 일시정지한 적 없거나 이미 지났다).
         self._estop_resume_t = 0.0
+        # ★[2026-10-07] 마지막 E-STOP 해제 시각 — 상태와 무관하게 늘 적는다★
+        #   대회 출발 절차(규정 2.16.1 사)는 AS-Emergency → RUN(해제) → 출발이다. 그때
+        #   prompt 가 해제 0.4 s 안에 DRIVE_START 를 보내면 헤딩 초기화가 곧바로 3펄스로
+        #   미는데, B보드는 아직 리니어를 0단으로 빼는 중(1000 ms)이다. 그래서 출발에도
+        #   주행 중 재개와 같은 유예를 건다(cb_drive_cmd DRIVE_START).
+        self._estop_release_t = 0.0
 
         # ── /speed (speed.py 의 IMU 적분 속도, km/h) ──
         #   ★[2026-08-12] 1순위에서 내려왔다★ 지금은 GPS 가 끊겼을 때의 대체값이다
@@ -3302,6 +3310,7 @@ class DrivingNode(Node):
             else:
                 self.event("🚨 E-STOP — 새 시작만 막힌다(진행 중인 매핑·정리는 그대로)")
         else:
+            self._estop_release_t = time.time()     # [2026-10-07] 출발 유예의 기준
             if driving:
                 self._estop_resume_t = time.time() + ESTOP_RESUME_GRACE_S
                 self.event(f"✅ E-STOP 해제 — {ESTOP_RESUME_GRACE_S:.1f}s 뒤 그 자리에서 재개")
@@ -3421,6 +3430,15 @@ class DrivingNode(Node):
                 self.event(self.lidar_wait_reason())
             else:
                 self.enter(S_DRIVE_HEADING, f"▶ 주행 시작(prompt) [{self.route_name}]")
+                # ★[2026-10-07] E-STOP 해제(RUN) 직후의 출발도 붙잡는다 (규정 2.16.1 사)★
+                #   B보드가 리니어를 0단으로 빼는 1000 ms 동안 3펄스로 밀지 않게, 주행 중
+                #   재개와 같은 유예를 loop 의 일시정지 게이트가 그대로 건다.
+                #   해제한 지 오래면 이미 지난 시각이라 아무 일도 없다.
+                grace_end = self._estop_release_t + ESTOP_RESUME_GRACE_S
+                if self.state == S_DRIVE_HEADING and grace_end > time.time():
+                    self._estop_resume_t = max(self._estop_resume_t, grace_end)
+                    self.event(f"⏳ E-STOP 해제 직후 — 리니어가 빠질 때까지 "
+                               f"{grace_end - time.time():.1f}s 뒤 출발")
                 self._announce_gps_quality()
             return
         self.select_route(cmd)
