@@ -87,6 +87,13 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-07 (밤) — ★진단 토픽 `/tl/boxes`★ (`traffic_light.py` · 동작 변경 없음)
+
+white2 의 #400 교차로 측정용으로 넣은 발행 전용 토픽을 짝 규약대로 여기에도 넣었다 — 매 프레임 판단에 쓴 박스
+목록 JSON(`[[x1,y1,x2,y2,색,conf,모델색], …]`, 보정 후 원본 좌표). 제동·상태 판단에는 쓰지 않는다. 상세는 white2/CHANGELOG.md 같은 날 항목.
+
+---
+
 ## 2026-10-07 — ★신호등 인지를 white2 판으로 이식★ (`traffic_light.py` · `camera_launch.py` · `tools/`)
 
 **배경** — USB 의 white1(9/30 `c5657cd` 에서 갈라져 10/5~10/6 에 신호등 인지를 고친 판)을 오늘

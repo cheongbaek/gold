@@ -50,6 +50,7 @@ traffic_light.py ― 신호등 인지·정지 [white2]
   /tl/stop_line_y     Float32  정지선 최하단 y / 프레임 높이. −1 = 미검출 (기록용)
   /tl/stop_line_wait  Bool     RED 확정인데 아직 0단으로 기다리는 중인가
   /tl/debug_image     Image    디버그 화면 (tl_publish_debug)
+  /tl/boxes           String   [진단] 이 프레임 판단에 쓴 박스 JSON — [[x1,y1,x2,y2,색,conf,모델색],…] 원본 좌표
 구독:
   /image_raw  /drive_state  /tl_enable  /tl_permit  /tl_zone  /tl/fake_box_h(시험용)
 
@@ -664,6 +665,8 @@ class TrafficLight(Node):
         self.pub_req   = self.create_publisher(Int32,  '/tl_brake_req', qos)
         self.pub_cmd   = self.create_publisher(Twist,  '/cmd_vel_raw', qos)
         self.pub_state = self.create_publisher(String, '/tl/state',    qos)
+        # [진단 2026-10-07] 판단에 쓴 박스 목록 — 테스트베드 채점용, 동작에는 쓰지 않는다.
+        self.pub_boxes = self.create_publisher(String, '/tl/boxes',    qos)
         self.pub_debug_img = self.create_publisher(Image, '/tl/debug_image', qos_img)
         # 아래는 기록 전용(record 가 CSV 로 적는다) — 제어에는 쓰지 않는다.
         self.pub_near    = self.create_publisher(Float32, '/tl/near_metric', qos)
@@ -1113,6 +1116,12 @@ class TrafficLight(Node):
             boxes = [self._fake_red_box(self.fake_box_h)]
             self.last_boxes = boxes
 
+        # [진단] 이 프레임 판단에 쓴 박스(원본 좌표). ★/tl/state 보다 먼저★ — 테스트베드는 그것을
+        #   동기 신호로 다음 프레임을 민다. 주입 박스(fake)는 좌표가 HUD 용이라 그대로 낸다.
+        self.pub_boxes.publish(String(data=json.dumps(
+            [[b['box'][0] + xmin, b['box'][1] + ymin, b['box'][2] + xmin, b['box'][3] + ymin,
+              b['label'], round(float(b['conf']), 3), b.get('cls_label', '')] for b in boxes],
+            separators=(',', ':'))))
         state = self._resolve_tl_state(boxes)
         self.pub_state.publish(String(data=state))
         self.pub_near.publish(Float32(data=float(self._near_metric(boxes))))
