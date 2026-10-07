@@ -24,7 +24,9 @@ driving(DrivingNode) 와 traffic_timer(TrafficTimerNode) 를 ★한 프로세스
   ③ 정지 신호 동안 명령펄스 0 (코스트·1단 구간)
   ④ 감속 중 녹색이면 다시 가속했다 (감속 해제 이벤트 뒤 펄스가 돌아온다)
   ⑤ 진행 신호로 들어와 끝까지 진행이면 감속하지 않았다 (구간 안 최저속도 ≥ 진입속도 − 여유)
-  ⑥ T2 는 아무것도 안 한다 · 0초 오차 · 카메라 제동 허락은 항상 꺼짐 · 끝까지 갔는가
+  ⑥ 0초 오차 · 카메라 제동 허락은 항상 꺼짐 · 끝까지 갔는가
+  ⑦ [2026-10-07] 0초는 T1(처음부터 녹색이면 T2)에서 — T2 정지선을 0초 전에 넘으면 실패.
+     T1 은 0초 없이 넘어도 되지만(처음부터 녹색) 그때는 진짜 녹색이어야 한다(①)
 
 실행 (ROS 환경만 source 하면 된다 — 빌드 불필요):
     source /opt/ros/humble/setup.bash
@@ -32,6 +34,8 @@ driving(DrivingNode) 와 traffic_timer(TrafficTimerNode) 를 ★한 프로세스
     python3 sim/signal_sim.py --route subcourse.csv
     python3 sim/signal_sim.py --offsets 3,48 --pulse 4 -v
     python3 sim/signal_sim.py --offsets 0 --estop T3:1:3 -v   # T3 대기 중 E-STOP
+    python3 sim/signal_sim.py --offsets 0 --estop '@T1 녹색으로 통과:2:62' -v
+                                     # T1 녹색 통과 뒤 E-STOP 으로 늦춰 T2 감속 중 전환을 본다
 """
 import argparse
 import csv
@@ -161,7 +165,9 @@ class SignalSim(fs.Sim):
             return
         lab, delay, dur = self.estop
         if self._estop_on is None:
-            hit = self.ev(f'🚦 {lab} 신호 대기')
+            #  '@문구' 면 그 이벤트 뒤에 누른다 [2026-10-07] — 예 '@T1 녹색으로 통과' 로
+            #  T1 을 녹색에 지난 뒤 멈춰 세워, T2 에 적색 끝 무렵 닿게 한다.
+            hit = self.ev(lab[1:] if lab.startswith('@') else f'🚦 {lab} 신호 대기')
             if hit:
                 self._estop_on = hit[0][0] + delay
                 self._estop_off = self._estop_on + dur
@@ -214,11 +220,11 @@ class SignalSim(fs.Sim):
         t0 = self.timer.t0
         if self.main:
             if t0 is None:
-                fails.append('T1: 타이머가 초기화되지 않았다')
+                fails.append('T1·T2: 타이머가 초기화되지 않았다')
             else:
                 k = round((t0 - self.T0) / tt.CYCLE_S)
                 err = t0 - (self.T0 + k * tt.CYCLE_S)
-                parts.append(f"0초오차 {err * 1000:+4.0f}ms")
+                parts.append(f"0초={self.timer.init_by} 오차 {err * 1000:+4.0f}ms")
                 #  ★늦게만 잡힌다★ 첫 녹색 '프레임' 시각이라 카메라 주기만큼, 그 프레임이
                 #  빠지면(UNKNOWN) 몇 프레임 더 늦는다.
                 if not (0.0 <= err <= ZERO_ERR_MAX_S):
@@ -230,7 +236,7 @@ class SignalSim(fs.Sim):
             if not inz:
                 fails.append(f'{lab}: 구간에 못 들어갔다')
                 continue
-            if kind is None:                   # T2 — 아무것도 안 해야 한다
+            if kind is None:                   # 판단하지 않는 신호 — 아무것도 안 해야 한다
                 if self.ev(f'🚦 {lab} ') or any(r[5] or r[6] for r in inz):
                     fails.append(f'{lab}: 무시해야 하는데 판단했다')
                 continue
@@ -245,7 +251,8 @@ class SignalSim(fs.Sim):
             if cross is not None:
                 g = self.true_green(k, cross[0])
                 ph_x = self.true_phase(cross[0])
-                if lab == tt.INIT_SIGNAL and self.main:
+                if lab in tt.INIT_SIGNALS[1:] and self.main:
+                    #  ⑦ T1 은 처음부터 녹색이면 0초 없이 지나간다(진짜 녹색인지는 아래 ①)
                     first_init = self.ev('🚦 신호 타이머 초기화')
                     if not first_init or first_init[0][0] > cross[0]:
                         fails.append(f'{lab}: 타이머 초기화 전에 정지선을 넘었다')
@@ -307,13 +314,14 @@ def main():
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('-v', '--verbose', action='store_true', help='이벤트를 다 찍는다')
     ap.add_argument('--estop', default='',
-                    help="LABEL:지연:길이 — 그 신호 대기 뒤 E-STOP 을 누른다 (예 T3:1:3)")
+                    help="LABEL:지연:길이 — 그 신호 대기 뒤 E-STOP 을 누른다 (예 T3:1:3). "
+                         "LABEL 이 '@문구' 면 그 문구의 이벤트 뒤")
     a = ap.parse_args()
     n_fail = n_warn = 0
     for off in [float(x) for x in a.offsets.split(',') if x.strip()]:
         es = None
         if a.estop:
-            lab, d, du = a.estop.split(':')
+            lab, d, du = a.estop.rsplit(':', 2)
             es = (lab, float(d), float(du))
         sim = SignalSim(a.route, off, drive_pulse=a.pulse, seed=a.seed, estop=es).run()
         line, fails, warns = sim.judge()

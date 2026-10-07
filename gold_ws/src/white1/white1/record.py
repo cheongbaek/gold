@@ -194,6 +194,7 @@ DRIVE_DIAG_COLUMNS: Tuple[str, ...] = (
 TRAFFIC_TIMER_COLUMNS: Tuple[str, ...] = (
     'tt_armed', 'tt_init', 'tt_phase_s', 'tt_go_t1', 'tt_go_t3', 'tt_go_t4',
     'tt_watch', 'tt_t0',
+    'tt_go_t2', 'tt_init_by',        # [2026-10-07] 끝에 붙였다 — init_by 0 아직 / 1 T1 / 2 T2
 )
 assert len(TRAFFIC_TIMER_COLUMNS) == tt.N_FIELDS, \
     "record.TRAFFIC_TIMER_COLUMNS 와 traffic_timer 배열 길이가 다르다"
@@ -397,7 +398,7 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
     TopicSpec(tt.ZONE_TOPIC, String, ('tl_zone',), _scalar,
               note="driving 이 낸 '지금 상대하는 신호' 라벨 — T 구간 안이거나 시작 "
                    f"{tt.WATCH_PRE_M:.0f} m 앞이면 그 라벨(T·T1~T5), 아니면 빈칸. "
-                   "traffic_timer 는 'T1' 인 동안만 적색→녹색 전환을 본다"),
+                   "traffic_timer 는 'T1' 인 동안(0초가 없으면 'T2' 도) 적색→녹색 전환을 본다"),
     TopicSpec(tt.TOPIC, Float64MultiArray, TRAFFIC_TIMER_COLUMNS,
               _array(len(TRAFFIC_TIMER_COLUMNS)),
               note='본선 코스에서만 나온다(prompt 가 켠다). tt_phase_s = T1 녹색 시작을 '

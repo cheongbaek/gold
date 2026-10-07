@@ -1548,14 +1548,19 @@ TL_ZONE_CHARS = ('T', 't')
 #  있어도 'T' 로 접어 ★종전 그대로(카메라)★ 돈다. 파일 이름과 시각표의 소유자는
 #  traffic_timer.py 다.
 #
-#      T1  ★타이머 0초의 기준★ — 카메라가 적색→녹색 전환을 보기 전이면 ★정지 신호★ 로
-#          본다(녹색이어도 — 사용자 지시). 전환을 봤고 T1 녹색(0~32초)이면 진행 신호.
-#      T2  마킹만 있다 — ★아무것도 안 한다★ (T1 과 같은 시각표라서)
+#      T1  ★타이머 0초의 기준★ — 적색을 보고 서는 중·서 있는 중에 녹색으로 바뀌면 그 순간이
+#          0초이고 그 순간 감속을 풀고 지나간다. 0초가 잡힌 뒤엔 T1 녹색(0~32초)이면 진행.
+#          ★[2026-10-07] 0초 전에 카메라가 녹색을 확정하면 그냥 지나간다★(사용자 지시 —
+#          '처음부터 녹색' 이면 전환 시각을 모른다 → 0초는 T2 에서). 적색을 다시 보면 정지 신호.
+#          신호등이 안 보이면(카메라 판정 없음·UNKNOWN) ★정지 신호★ — 종전 그대로(모르면 적색).
+#      T2  [2026-10-07] ★T1 에서 0초를 못 잡았으면 여기서 잡는다★ — 종전 T1 규칙 그대로
+#          (전환을 보기 전이면 녹색이어도 정지 신호 · 서는 도중 전환이면 그 순간 재가속).
+#          T1 에서 잡았으면 타이머(0~32초)로 판단한다(사용자 결정 — 종전에는 무시했다).
 #      T3·T4  ★카메라 없이 타이머만★ — 타이머상 녹색이면 진행, 아니면 정지 신호
 #      T5  카메라 — 빨간불을 확정했으면 정지 신호 (아래 '신호 접근' 의 카메라 구간)
 #  ★정지·감속의 방법은 아래 '신호 접근' 절이 소유한다★ [2026-10-01] (구간 끝 = 정지선)
 #
-#  ★T1 을 안 지나고 T3·T4 에 오는 일은 없다★ (사용자 지시 — 본선 코스의 순서다).
+#  ★T1·T2 를 안 지나고 T3·T4 에 오는 일은 없다★ (사용자 지시 — 본선 코스의 순서다).
 #  그래서 '타이머가 없을 때' 의 대체 경로를 두지 않았다 — 타이머가 초기화 전이거나
 #  끊겼으면 go 가 0 이라 그냥 서서 기다린다(신호위반보다 정지가 낫다). CSV 의 순서가
 #  어긋나 있으면 select_route 가 그 자리에서 말한다(_warn_tl_zones).
@@ -2247,6 +2252,7 @@ class DrivingNode(Node):
         # ── 신호 접근 [2026-10-01] ── 상수절 '신호 접근' 참고
         self._light = tt.LightFilter()   # 카메라 프레임 판정 → 적색·녹색 확정
         self._cam_latch = None        # 카메라 빨간불을 확정한 구간의 i0 (녹색을 봐야 풀린다)
+        self._cam_green_latch = None  # [2026-10-07] 카메라 녹색을 확정한 구간의 i0 (T1 0초 전 통과)
         self._sa_phase = SA_NONE      # 신호 접근 단계 (코스트 / 1단)
         self._sa_i0 = -1              # 접근 중인 구간
         self._sa_t1 = 0.0             # 1단을 문 시각 (최소 물림)
@@ -2664,7 +2670,8 @@ class DrivingNode(Node):
     def signal_kind(self, label):
         """이 신호를 누가 판단하나 → 'timer' | 'camera' | None(아무것도 안 한다). [2026-10-01]
 
-        본선 코스 : T1·T3·T4 타이머 · T5 와 번호 없는 T 카메라 · T2·모르는 번호 None.
+        본선 코스 : T1~T4 타이머 · T5 와 번호 없는 T 카메라 · 모르는 번호 None.
+        ([2026-10-07] T2 도 타이머다 — T1 0초 전의 '카메라 녹색이면 통과' 는 signal_stop_wanted.)
         그 밖 경로 : T 전부 카메라(종전 그대로 — 번호는 select_route 가 이미 접었다).
         ★TRAFFIC_LIGHT_ENABLE 이 False 면 카메라 구간도 None★ — 카메라 없이 종전처럼 돈다.
         """
@@ -2699,11 +2706,36 @@ class DrivingNode(Node):
             self._cam_latch = i0
         return self._cam_latch == i0
 
+    def cam_green(self, i0):
+        """구간 i0 에서 ★녹색을 확정했고 그 뒤 적색을 못 봤는가★. [2026-10-07]
+
+        T1 의 '0초 전 처음부터 녹색이면 통과' 가 쓴다. cam_red 의 거울이지만 ★모르면 적색★
+        쪽이다 — 카메라가 죽으면(판정 2 s 끊김) 래치를 버린다(= 정지 신호). 녹색 스트릭은
+        UNKNOWN 이 0.5 s 넘게 끼면 끊기므로 래치로 들고 있어야 접근 중에 정지·진행이 깜빡이지
+        않는다. 적색을 확정하면 버린다(접근 중에 32초가 지나 바뀐 경우)."""
+        now = time.time()
+        lf = self._light
+        if not lf.alive(now) or lf.red_confirmed(now):
+            self._cam_green_latch = None
+        elif lf.green_confirmed(now):
+            self._cam_green_latch = i0
+        return self._cam_green_latch == i0
+
+    def tt_initialized(self):
+        """이번 주행에서 타이머가 0초를 잡았는가(신선할 때만 — 모르면 아니다)."""
+        return self._tt_fresh() and self._tt[tt.F_INIT] > 0.5
+
     def signal_stop_wanted(self, label, i0):
         """구간 (label, i0) 이 지금 ★정지 신호★ 인가. 타이머 : 녹색이 아니면(모르면) 정지.
-        카메라 : 빨간불 확정 뒤 녹색 전. 판단하지 않는 신호는 항상 False."""
+        카메라 : 빨간불 확정 뒤 녹색 전. 판단하지 않는 신호는 항상 False.
+
+        ★[2026-10-07] T1 은 0초 전이면 카메라 색으로★ — 녹색 확정이면 통과(0초는 T2 에서 잡는다),
+        적색·안 보임이면 정지. 적색→녹색 전환이면 타이머도 같은 순간 0초를 잡는다(둘 다
+        녹색 GREEN_MIN_S 확정을 기다린다). T2 는 0초 전이면 tl_go 가 0 이라 녹색이어도 선다."""
         kind = self.signal_kind(label)
         if kind == 'timer':
+            if label == tt.INIT_SIGNALS[0] and not self.tt_initialized():
+                return not self.cam_green(i0)
             return not self.tl_go(label)
         if kind == 'camera':
             return self.cam_red(i0)
@@ -2834,6 +2866,12 @@ class DrivingNode(Node):
                                   f"감속을 풀고 다시 가속 (정지선까지 {d + SIG_STOP_BEFORE_M:.1f}m)")
             if d <= 0.0:
                 self._tl_done.add(i0)          # 진행 신호로 정지 지점을 지났다 — 이 구간은 끝
+                if (self.signal_kind(label) == 'timer' and label == tt.INIT_SIGNALS[0]
+                        and not self.tt_initialized()):
+                    #  [2026-10-07] T1 이 처음부터 녹색 — 0초를 못 잡고 지나간다(사용자 지시)
+                    self.event(f"🟢 {label} 녹색으로 통과 [{self.cam_why()}] — 전환을 못 봐 "
+                               f"타이머 0초를 못 잡았다. ★{tt.INIT_SIGNALS[1]} 에서 반드시 서서★ "
+                               f"적색→녹색 전환을 본다")
             return False
 
         # ── 정지 신호 ──
@@ -2852,8 +2890,12 @@ class DrivingNode(Node):
                        f"{d:.1f}m ({vk}). "
                        + ("곧바로 펄스 0" if d <= dc else f"{dc:.1f}m 앞부터 펄스 0"))
 
-        coasting = self._sa_phase in (SA_COAST, SA_BRAKE1)
-        stopped = (coasting and self.enc_pulse <= ENC_STOP_EPS
+        #  ★이미 서 있으면 그 자리에서 대기로★ [2026-10-07] 종전에는 코스트·1단 중에만 봤다 —
+        #  그래서 E-STOP 이 대기를 지우고 재개하면(ARMED, 속도 0 → 코스트 거리 0) 평소 펄스로
+        #  다시 가속해 정지 지점까지 굴러갔고, 남은 거리가 2~3 m 면 2단을 앞당겨도 정지선을
+        #  넘었다(모의 : T2 — 구간이 짧아 정지선 2.8 m 앞에 서는 곳). 정상 접근은 움직이며 들어오니
+        #  이 줄을 타지 않는다 — 선 차에게 정지 신호면 거기서 녹색을 기다린다(조금 뒤에 서도 안전하다).
+        stopped = (self.enc_pulse <= ENC_STOP_EPS
                    and (v is None or v * 3.6 < SIG_STOPPED_KMH))
         if d <= 0.0 or stopped:
             self.begin_signal_stop(label, i0, "정지선 1 m 앞 도달" if d <= 0.0
@@ -2898,7 +2940,14 @@ class DrivingNode(Node):
     def signal_why(self, label):
         """이벤트 문구용 — 무엇이 그렇게 판단했나."""
         if self.signal_kind(label) == 'timer':
+            if label == tt.INIT_SIGNALS[0] and not self.tt_initialized():
+                #  [2026-10-07] T1 의 0초 전 판단은 카메라 색이다
+                return f"{self.cam_why()} · {self.tt_phase_txt()}"
             return self.tt_phase_txt()
+        return self.cam_why()
+
+    def cam_why(self):
+        """카메라가 지금 무엇을 보고 있나(문구) — LightFilter 의 확정 상태."""
         lf, now = self._light, time.time()
         if not lf.alive(now):
             return "카메라 판정 없음"
@@ -2918,7 +2967,8 @@ class DrivingNode(Node):
         if not math.isfinite(t0) or t0 == self._tt_t0_said:
             return
         self._tt_t0_said = t0
-        self.event(f"🚦 신호 타이머 초기화 — T1 적색→녹색 "
+        by = tt.init_by_label(self._tt[tt.F_INIT_BY]) or tt.INIT_SIGNALS[0]
+        self.event(f"🚦 신호 타이머 초기화 — {by} 적색→녹색 "
                    f"{time.strftime('%H:%M:%S', time.localtime(t0))} = 0초 "
                    f"(지금 {self.tt_phase_txt()})")
 
@@ -3156,9 +3206,13 @@ class DrivingNode(Node):
         self._sa_phase = SA_NONE
         self._sp_kind = label
         self._sp_begin(i0)
-        if self.signal_kind(label) == 'timer' and label == tt.INIT_SIGNAL \
-                and not (self._tt_fresh() and self._tt[tt.F_INIT] > 0.5):
-            wait = "적색→녹색 전환을 볼 때까지 선다 (그 순간이 타이머 0초)"
+        timer0 = (self.signal_kind(label) == 'timer' and label in tt.INIT_SIGNALS
+                  and not self.tt_initialized())
+        if timer0 and label == tt.INIT_SIGNALS[0]:
+            wait = ("녹색을 보면 출발 — 적색→녹색 전환이면 그 순간이 타이머 0초, "
+                    f"전환을 못 봤으면 0초는 {tt.INIT_SIGNALS[1]} 에서")
+        elif timer0:
+            wait = "적색→녹색 전환을 볼 때까지 선다 (녹색이어도 — 그 순간이 타이머 0초)"
         elif self.signal_kind(label) == 'timer':
             wait = f"타이머상 녹색({tt.window_txt(label)})이 되면 출발"
         else:
@@ -3179,17 +3233,40 @@ class DrivingNode(Node):
         self._publish_brake(force=True)
         self.publish_lstatus(LSTATUS_STOP)       # 한 틱 먼저 알린다
 
+    def _sp_release(self, now, why):
+        """S·신호 대기 공통 — 리니어를 0단으로 놓고 RELEASE 로 넘어간다(그 뒤 1 s 는 펄스 0)."""
+        self._sp_state = SP_RELEASE
+        self._sp_t = now
+        self.set_brake(BRAKE_NONE)
+        self._publish_brake(force=True)   # ★0 은 평소 재확인하지 않는다★
+        self.event(why)
+
     def run_stop_zone(self, steer):
         """S 서브페이즈 한 틱. ★조향은 계속 내고 펄스만 0 이다★
 
         BRAKING ─(양 펄스 0 이 0.5초)─▶ WAIT ─(3.5초)─▶ RELEASE ─(1.0초)─▶ RESUME ─▶ NONE
         [2026-09-30] 신호 대기(_sp_kind='T1'·'T3'·'T4')는 WAIT 를 ★타이머가 녹색이라고
         할 때★ 끝낸다. 나머지 단계는 한 글자도 다르지 않다.
+        [2026-10-07] 본선 코스 T1·T2 는 ★BRAKING(서는 도중)에서도★ 진행 신호가 되면 곧바로
+        RELEASE 로 간다(최소 물림 뒤) — '정지하던 도중 녹색 전환이면 그 시점에서 재가속'.
         """
         now = time.time()
 
         if self._sp_state == SP_BRAKING:
             self.send(0, steer, control=True)
+            #  ★[2026-10-07] T1·T2 — 서는 도중 녹색으로 바뀌면 그 순간 푼다★ (사용자 지시 —
+            #  '정지하던 도중 녹색 전환이면 전환 시점에서 재가속과 초기화'). 완전정지 확인을
+            #  기다리지 않는다. 단 ★최소 물림(SIG_BRAKE1_MIN_S) 뒤에★ — 물자마자 풀면 리니어가
+            #  왕복만 한다(1.4절 불변식 4). 그 밖의 신호·S 는 종전 그대로(선 뒤에 본다).
+            if (self._sp_kind in tt.INIT_SIGNALS and self._maincourse
+                    and now - self._sp_t >= SIG_BRAKE1_MIN_S
+                    and not self.signal_stop_wanted(self._sp_kind, self._sp_idx)):
+                kmh = self.measured_kmh()
+                self._sp_release(now, f"🟢 {self._sp_kind} 진행 신호 — ★서는 도중★ "
+                                      f"[{self.signal_why(self._sp_kind)}]"
+                                      + (f" ({kmh:.1f}km/h)" if kmh is not None else "")
+                                      + " — 리니어 0단, 다시 간다")
+                return
             #  ★'A보드 양 펄스가 모두 0' = /encoder 합 0★ (상수절 참고).
             if self.enc_pulse > ENC_STOP_EPS:
                 self._sp_zero_t = 0.0
@@ -3224,11 +3301,7 @@ class DrivingNode(Node):
                 why = f"🟢 {STOP_HOLD_AFTER_ZERO_S:.1f}초 경과 — 리니어 0단"
             else:
                 return
-            self._sp_state = SP_RELEASE
-            self._sp_t = now
-            self.set_brake(BRAKE_NONE)
-            self._publish_brake(force=True)   # ★0 은 평소 재확인하지 않는다★
-            self.event(why)
+            self._sp_release(now, why)
             return
 
         if self._sp_state == SP_RELEASE:
@@ -3365,6 +3438,9 @@ class DrivingNode(Node):
         #  ★[2026-10-01] 신호 접근도 지운다 — 재개한 첫 틱에 다시 판단한다★
         #  ★카메라 빨간불 래치(_cam_latch)는 지우지 않는다★ 정지선 앞에 서 있는 동안
         #  등기구가 안 보이면(UNKNOWN) 래치가 다시 서지 않아 빨간불에 굴러간다.
+        #  ★녹색 래치(_cam_green_latch)는 지운다★ [2026-10-07] 반대 이유다 — 서 있는 동안 신호가
+        #  바뀌었을 수 있으니, 낡은 '녹색' 으로 출발하지 않고 녹색을 다시 봐야 간다(모르면 적색).
+        self._cam_green_latch = None
         self._sa_phase = SA_NONE
         self.set_brake(BRAKE_NONE)
 
@@ -3547,8 +3623,8 @@ class DrivingNode(Node):
         self.event(f"🚦 신호등 구간 {len(segs)}곳 / WP {n_tl}개 "
                    f"({', '.join(f'{lab} {i0}~{i1}' for lab, i0, i1 in segs)}) — "
                    f"{LIDAR_ZONE_COLUMN} 열의 'T'"
-                   + (". 본선 코스 — T1 전환으로 타이머 0초 · T2 무시 · T3·T4 타이머 · "
-                      "T5 카메라" if self._maincourse
+                   + (". 본선 코스 — T1 전환으로 타이머 0초(T1 이 처음부터 녹색이면 T2 에서) · "
+                      "T2~T4 타이머 · T5 카메라" if self._maincourse
                       else ". 이 구간에서만 빨간불 2단이 유효하다"))
         if self._maincourse:
             self._warn_maincourse_order(segs)
@@ -3582,20 +3658,29 @@ class DrivingNode(Node):
     def _warn_maincourse_order(self, segs):
         """본선 코스의 T 라벨이 ★타이머가 돌 수 있는 순서★ 인가.  [2026-09-30]
 
-        타이머는 T1 의 전환으로만 0초를 잡으므로, T1 보다 앞에 T3·T4 가 있으면 그
-        자리에서 영영 녹색이 안 된다(= 거기서 서서 끝난다). 사람이 손으로 적는
+        타이머는 T1(못 잡으면 T2 — [2026-10-07])의 전환으로만 0초를 잡으므로, 그보다 앞에
+        T3·T4 가 있으면 그 자리에서 영영 녹색이 안 될 수 있다(= 거기서 서서 끝난다). 사람이 손으로 적는
         열이라 여기서 말해 둔다 — ★고치지는 않는다★ (무엇이 맞는지는 사람이 안다).
         """
         labels = [lab for lab, _, _ in segs]
-        first_t1 = labels.index(tt.INIT_SIGNAL) if tt.INIT_SIGNAL in labels else None
-        if first_t1 is None:
-            self.event(f"❌ 본선 코스인데 {tt.INIT_SIGNAL} 이 없다 — 타이머가 0초를 못 잡아 "
+        t1, t2 = tt.INIT_SIGNALS
+        first = {lab: labels.index(lab) for lab in tt.INIT_SIGNALS if lab in labels}
+        if not first:
+            self.event(f"❌ 본선 코스인데 {t1}·{t2} 가 없다 — 타이머가 0초를 못 잡아 "
                        f"T3·T4 에서 ★영영 출발하지 못한다★")
+        elif t2 not in first:
+            #  [2026-10-07] T1 이 처음부터 녹색이면 T2 에서 잡는다 — 그 자리가 없다
+            self.event(f"⚠️ 본선 코스에 {t2} 가 없다 — {t1} 이 처음부터 녹색이면 0초를 잡을 곳이 "
+                       f"없어 T3·T4 에서 ★영영 출발하지 못한다★")
+        elif t1 in first and first[t2] < first[t1]:
+            self.event(f"❌ {t2}(WP {segs[first[t2]][1]}) 가 {t1} 보다 앞이다 — "
+                       f"0초는 {t1} → {t2} 순서로 잡는다")
+        last_init = max(first.values()) if first else None
         for k, lab in enumerate(labels):
-            if lab in tt.TIMER_SIGNALS and lab != tt.INIT_SIGNAL \
-                    and (first_t1 is None or k < first_t1):
-                self.event(f"❌ {lab}(WP {segs[k][1]}) 가 {tt.INIT_SIGNAL} 보다 앞이다 — "
-                           f"그 자리에서는 타이머가 아직 0초를 모른다")
+            if lab in tt.TIMER_SIGNALS and lab not in tt.INIT_SIGNALS \
+                    and (last_init is None or k < last_init):
+                self.event(f"❌ {lab}(WP {segs[k][1]}) 가 {'·'.join(first) or t1} 보다 앞이다 — "
+                           f"그 자리에서는 타이머가 아직 0초를 모를 수 있다")
         dup = sorted({lab for lab in labels if labels.count(lab) > 1})
         if dup:
             self.event(f"⚠️ 같은 라벨이 여러 토막이다: {', '.join(dup)} — "
@@ -3685,6 +3770,7 @@ class DrivingNode(Node):
         self._tl_segs = self._tl_segments(self.wp_zone)
         self._tl_done = set()
         self._cam_latch = None
+        self._cam_green_latch = None
         self._sa_phase = SA_NONE
         self._wp_idx_prev = 0
         self._sp_state = SP_NONE
