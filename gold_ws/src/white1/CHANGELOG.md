@@ -87,6 +87,13 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-07 (밤 2) — `traffic_light.py` 에 #400 버스 신호 몸체 찾기 (white2 구간 'B' 전용 · 여기서는 안 돈다)
+
+짝 규약대로 white2 와 같은 줄을 넣었다(`find_bus_body`·`_find_bus`·파라미터 `tl_bus_*`). `/tl_zone` 이 'B' 일 때만 돌고
+white1 driving 은 'B' 를 내지 않으므로 이 판에서는 동작이 바뀌지 않는다. 상세는 white2/CHANGELOG.md 같은 날 항목.
+
+---
+
 ## 2026-10-07 (밤) — ★진단 토픽 `/tl/boxes`★ (`traffic_light.py` · 동작 변경 없음)
 
 white2 의 #400 교차로 측정용으로 넣은 발행 전용 토픽을 짝 규약대로 여기에도 넣었다 — 매 프레임 판단에 쓴 박스

@@ -386,6 +386,127 @@ def dim_outside(view, rect, factor):
             band = view[a:b, c:d]
             cv2.addWeighted(band, factor, band, 0.0, 0.0, dst=band)
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★#400 버스 신호 몸체 찾기★ [2026-10-07] — 구간 'B' 에서만 돈다 (모델 없는 영상처리)
+# ══════════════════════════════════════════════════════════════════════════════
+#  #400 교차로 신호 팔에는 왼쪽 = 버스 신호(버스 그림 등화), 오른쪽 = 차량 신호(가로 4구) 가 나란하다.
+#  모델이 버스 신호를 거의 못 찾는다(차량 박스 ≥15px 프레임 중 36.3%, 144031 은 1.4%) — 학습 데이터에
+#  둥근 등화만 있어서다. 그래서 차량 박스를 기준으로 버스가 있어야 할 자리(중심 dx −4.75h, dy −0.45h)에서
+#  ★하늘보다 어두운 직사각형 몸체★ 를 찾는다(오프라인 97.8% — 근거는 CHANGELOG 2026-10-07 밤 '#400 두 박스' 항목).
+#    기준 밝기 : 몸체 = 차량 박스 안쪽 30 백분위, 하늘 = 탐색창 70 백분위 → 그 사이 dark_t 에서 자른다
+#    켜진 등화색(HSV)을 몸체에 더한다 → 닫힘 0.15h → 열림 open_k·h(신호 팔·전선·기둥을 지운다)
+#    연결요소 → 모양(높이비·가로세로비·채움·자리) → 넓으면 세로 투영으로 '키 큰 열' 만 다시 본다
+#    고립도 : 몸체 아래·왼쪽이 하늘이어야 한다(전주 위 변압기·기기함을 거른다)
+#  ⚠️ 낮·흐린 하늘에서만 검증했다 — '몸체가 하늘보다 어둡다' 에 기대므로 역광·야간·건물 배경은 미검증.
+#  ⚠️ 모양·자리만으로는 다른 교차로의 나란한 신호(k-city 2:04~2:12)와 못 가른다 — ★구간 'B' 밖에서 쓰지 않는다★.
+BUS_BODY = dict(
+    dark_t=0.5, close_k=0.15, open_k=0.40,
+    hr=(0.60, 1.30), ar=(1.25, 2.50), fill=0.62,
+    exp_dx=-4.75, exp_dy=-0.45, win_dx=-7.3, win_dy=(-2.3, 1.7),
+    max_dx_dev=1.6, dy_rng=(-1.6, 0.8),
+    iso_below=0.12, iso_left=0.20, min_contrast=25.0,
+)
+
+
+def bus_slot(box, veh, tol_dx=1.6, dy_rng=(-1.6, 0.8)):
+    """box 의 중심이 veh(차량 박스) 기준 버스 자리 안에 있는가 — 둘 다 [x1,y1,x2,y2] 같은 좌표계."""
+    h = max(1.0, veh[3] - veh[1])
+    dx = ((box[0] + box[2]) / 2 - (veh[0] + veh[2]) / 2) / h
+    dy = ((box[1] + box[3]) / 2 - (veh[1] + veh[3]) / 2) / h
+    return abs(dx - BUS_BODY['exp_dx']) <= tol_dx and dy_rng[0] <= dy <= dy_rng[1]
+
+
+def find_bus_body(img, veh, hsv_ranges, P=BUS_BODY):
+    """img: 보정된 원본 BGR, veh: 차량 박스 [x1,y1,x2,y2](같은 좌표). → 버스 몸체 (x1,y1,x2,y2) 또는 None."""
+    vx1, vy1, vx2, vy2 = veh
+    h = max(1.0, vy2 - vy1); cx = (vx1 + vx2) / 2; cy = (vy1 + vy2) / 2
+    H, W = img.shape[:2]
+    wx1 = int(max(0, np.floor(cx + P['win_dx'] * h))); wx2 = int(min(W, np.ceil(vx1 - 0.4 * h)))
+    wy1 = int(max(0, np.floor(cy + P['win_dy'][0] * h))); wy2 = int(min(H, np.ceil(cy + P['win_dy'][1] * h)))
+    if wx2 - wx1 < 0.8 * h or wy2 - wy1 < 0.8 * h:
+        return None
+    crop = img[wy1:wy2, wx1:wx2]
+    win = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    ix1, iy1 = int(round(vx1 + 0.1 * h)), int(round(vy1 + 0.15 * h))
+    ix2, iy2 = int(round(vx2 - 0.1 * h)), int(round(vy2 - 0.15 * h))
+    cb = img[max(0, iy1):max(iy1 + 1, iy2), max(0, ix1):max(ix1 + 1, ix2)]
+    body = (float(np.percentile(cv2.cvtColor(cb, cv2.COLOR_BGR2GRAY), 30)) if cb.size
+            else float(np.percentile(win, 5)))
+    sky = float(np.percentile(win, 70))
+    if sky - body < P['min_contrast']:
+        return None
+    m = (win < body + P['dark_t'] * (sky - body)).astype(np.uint8) * 255
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    for lo, hi in hsv_ranges:                      # 켜진 등화가 몸체에 구멍을 내지 않게
+        m |= cv2.inRange(hsv, np.array(lo, np.uint8), np.array(hi, np.uint8))
+    m0 = m.copy()
+    for op, k in ((cv2.MORPH_CLOSE, P['close_k']), (cv2.MORPH_OPEN, P['open_k'])):
+        k = max(1, int(round(k * h)))
+        if k > 1:
+            m = cv2.morphologyEx(m, op, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    cands = []
+    for i in range(1, n):
+        x, y, w, hh, a = st[i]
+        cands += _bus_judge(x + wx1, y + wy1, w, hh, a, cx, cy, h, P)
+        if hh >= P['hr'][0] * h and w / max(1, hh) > P['ar'][1]:      # 팔·이웃과 붙은 넓은 덩어리
+            cands += _bus_split(lab[y:y + hh, x:x + w] == i, x + wx1, y + wy1, cx, cy, h, P)
+    best = None
+    for c in sorted(cands):
+        _, x, y, w, hh = c
+        below, left = _bus_isolation(m0, x - wx1, y - wy1, w, hh, h)
+        if below <= P['iso_below'] and left <= P['iso_left']:
+            best = c
+            break
+    if best is None:
+        return None
+    _, x, y, w, hh = best
+    return (int(x), int(y), int(x + w), int(y + hh))
+
+
+def _bus_isolation(m0, x, y, w, hh, h):
+    H, W = m0.shape
+    def frac(ya, yb, xa, xb):
+        ya, yb, xa, xb = max(0, int(ya)), min(H, int(yb)), max(0, int(xa)), min(W, int(xb))
+        return float((m0[ya:yb, xa:xb] > 0).mean()) if (yb > ya and xb > xa) else 0.0
+    return (frac(y + hh + 0.2 * h, y + hh + 1.0 * h, x, x + w),
+            frac(y, y + hh, x - 0.8 * h, x - 0.2 * h))
+
+
+def _bus_judge(x, y, w, hh, area, cx, cy, h, P):
+    if hh <= 0 or w <= 0:
+        return []
+    hr, ar, fill = hh / h, w / hh, area / float(w * hh)
+    if not (P['hr'][0] <= hr <= P['hr'][1] and P['ar'][0] <= ar <= P['ar'][1] and fill >= P['fill']):
+        return []
+    dx, dy = (x + w / 2 - cx) / h, (y + hh / 2 - cy) / h
+    if abs(dx - P['exp_dx']) > P['max_dx_dev'] or not (P['dy_rng'][0] <= dy <= P['dy_rng'][1]):
+        return []
+    cost = ((dx - P['exp_dx']) ** 2 + ((dy - P['exp_dy']) / 0.8) ** 2 + ((hr - 0.9) / 0.3) ** 2
+            + ((ar - 1.8) / 0.5) ** 2 + (1 - fill) * 2)
+    return [(cost, x, y, w, hh)]
+
+
+def _bus_split(mask, x0, y0, cx, cy, h, P):
+    col = mask.sum(0)
+    tall = col >= 0.6 * h
+    out, i, n = [], 0, len(tall)
+    while i < n:
+        if not tall[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and tall[j]:
+            j += 1
+        sub = mask[:, i:j]
+        rows = np.where(sub.sum(1) >= 0.5 * (j - i))[0]
+        if len(rows):
+            r1, r2 = rows[0], rows[-1] + 1
+            out += _bus_judge(x0 + i, y0 + r1, j - i, r2 - r1, int(sub[r1:r2].sum()), cx, cy, h, P)
+        i = j
+    return out
+
+
 class TrafficLight(Node):
     def __init__(self):
         super().__init__('traffic_light')
@@ -505,6 +626,14 @@ class TrafficLight(Node):
         #  9 = 본선 정지선 앞 맞은편 신호 9~12px. 0 이면 구간 신호를 무시한다.
         self.declare_parameter('tl_zone_red_min_height', 9)
         self.declare_parameter('tl_zone_stale_s', 1.0)
+        #    'B' #400 교차로 구간 — 위와 같고, 차량 박스 왼쪽의 ★버스 신호 몸체★ 를 찾아 표시한다
+        #        ([2026-10-07] 1단계: /tl/boxes·디버그 화면에만 낸다. 정지·진행 판단은 아직 그대로 'T' 다)
+        self.declare_parameter('tl_bus_detect', True)        # 끄면 'B' 도 'T' 와 똑같다
+        self.declare_parameter('tl_bus_min_veh_h', 10.0)     # 이보다 작은 차량 박스는 기준으로 안 쓴다 [px]
+        self.declare_parameter('tl_bus_dark_t', BUS_BODY['dark_t'])
+        self.declare_parameter('tl_bus_open_k', BUS_BODY['open_k'])
+        self.declare_parameter('tl_bus_iso_below', BUS_BODY['iso_below'])
+        self.declare_parameter('tl_bus_iso_left', BUS_BODY['iso_left'])
         # ① 정지선 폴리곤이 BEV 중심열 ± 이 거리[m]를 모두 덮어야 인정(길가 노면표시 거름).
         #    0.5 는 중앙선에 붙어 달릴 때 진짜 정지선을 버렸다. 0 = 끔.
         self.declare_parameter('sl_lane_half_m', 0.1)
@@ -530,6 +659,11 @@ class TrafficLight(Node):
         self.fake_box_h = max(0.0, float(g('tl_fake_box_h')))
         self.tl_zone_red_min_height = max(0, int(g('tl_zone_red_min_height')))
         self.tl_zone_stale_s   = max(0.1, float(g('tl_zone_stale_s')))
+        self.bus_detect   = bool(g('tl_bus_detect'))
+        self.bus_min_veh_h = float(g('tl_bus_min_veh_h'))
+        self.bus_P = dict(BUS_BODY, dark_t=float(g('tl_bus_dark_t')), open_k=float(g('tl_bus_open_k')),
+                          iso_below=float(g('tl_bus_iso_below')), iso_left=float(g('tl_bus_iso_left')))
+        self.last_bus = []            # 이번 프레임 버스 신호 [{'box':원본좌표,'src':'model'|'cv','color':…}]
         self.sl_lane_half_m    = max(0.0, float(g('sl_lane_half_m')))
         self.sl_lost_min_bev_y = float(g('sl_lost_min_bev_y'))
         self.tl_min_aspect = float(g('tl_min_aspect'))
@@ -935,6 +1069,43 @@ class TrafficLight(Node):
             })
         return out
 
+    def _find_bus(self, frame, boxes, xmin, ymin):
+        """구간 'B' 에서만 — 차량 박스 왼쪽의 버스 신호를 찾는다. 결과는 표시·진단용이다(판단에 안 쓴다).
+        기준(차량 박스) = 높이 ≥ tl_bus_min_veh_h 인 박스 중 큰 것부터, ★남의 버스 자리에 있지 않은★ 첫 것.
+        그 버스 자리에 모델 박스가 이미 있으면 그것이 버스, 없으면 몸체를 영상처리로 찾는다(≈1 ms)."""
+        self.last_bus = []
+        if not (self.bus_detect and self._zone_active() and self.tl_zone == 'B') or not boxes:
+            return []
+        g = [(b, (b['box'][0] + xmin, b['box'][1] + ymin, b['box'][2] + xmin, b['box'][3] + ymin))
+             for b in boxes]
+        veh = None
+        for b, gb in sorted(g, key=lambda t: -t[0].get('box_h', 0)):
+            if b.get('box_h', 0) < self.bus_min_veh_h:
+                break
+            if not any(o is not b and bus_slot(gb, go) for o, go in g):
+                veh = gb
+                break
+        if veh is None:
+            return []
+        for b, gb in g:
+            if bus_slot(gb, veh):
+                self.last_bus = [{'box': gb, 'src': 'model', 'color': b['label'], '_ref': b}]
+                return self.last_bus
+        try:
+            body = find_bus_body(frame, veh, (
+                ((self.hsv_red_h1_low, self.hsv_sat_low, self.hsv_val_low), (self.hsv_red_h1_high, 255, 255)),
+                ((self.hsv_red_h2_low, self.hsv_sat_low, self.hsv_val_low), (self.hsv_red_h2_high, 255, 255)),
+                ((self.hsv_green_h_low, self.hsv_sat_low, self.hsv_val_low), (self.hsv_green_h_high, 255, 255))),
+                self.bus_P)
+        except Exception as e:                       # 표시용이다 — 실패해도 판단 경로는 그대로
+            self.get_logger().error(f"버스 몸체 찾기 실패: {e}", throttle_duration_sec=5.0)
+            return []
+        if body is None:
+            return []
+        color = self._hsv_state(frame[body[1]:body[3], body[0]:body[2]])[0]
+        self.last_bus = [{'box': body, 'src': 'cv', 'color': color}]
+        return self.last_bus
+
     def _near_metric(self, boxes):
         """빨간 박스 높이의 최대 [px]. 없으면 0. 단독 문턱 비교와 기록에 쓴다."""
         red = [b for b in boxes if b['label'] == 'RED']
@@ -953,7 +1124,7 @@ class TrafficLight(Node):
         __init__ 의 경고 검사가 상태 변수보다 먼저 부르므로 getattr 로 받는다."""
         if getattr(self, 'tl_zone_red_min_height', 0) <= 0:
             return False
-        if getattr(self, 'tl_zone', '') not in ('T', 'A'):
+        if getattr(self, 'tl_zone', '') not in ('T', 'A', 'B'):
             return False
         return (time.time() - self.tl_zone_t) <= self.tl_zone_stale_s
 
@@ -1128,9 +1299,14 @@ class TrafficLight(Node):
 
         # [진단] 이 프레임 판단에 쓴 박스(원본 좌표). ★/tl/state 보다 먼저★ — 테스트베드는 그것을
         #   동기 신호로 다음 프레임을 민다. 주입 박스(fake)는 좌표가 HUD 용이라 그대로 낸다.
+        #   8번째 칸 = 역할('' | 'BUS'). 'BUS' 는 구간 'B' 에서만 붙는다 — ★판단에는 아직 안 쓴다★.
+        bus = self._find_bus(frame, boxes, xmin, ymin)
+        bus_model = {id(b['_ref']) for b in bus if b['src'] == 'model'}
         self.pub_boxes.publish(String(data=json.dumps(
             [[b['box'][0] + xmin, b['box'][1] + ymin, b['box'][2] + xmin, b['box'][3] + ymin,
-              b['label'], round(float(b['conf']), 3), b.get('cls_label', '')] for b in boxes],
+              b['label'], round(float(b['conf']), 3), b.get('cls_label', ''),
+              'BUS' if id(b) in bus_model else ''] for b in boxes]
+            + [[*b['box'], b['color'], 0.0, 'cv', 'BUS'] for b in bus if b['src'] == 'cv'],
             separators=(',', ':'))))
         state = self._resolve_tl_state(boxes)
         self.pub_state.publish(String(data=state))
@@ -1148,7 +1324,7 @@ class TrafficLight(Node):
 
         if self.show_window or self.publish_debug:
             with self._draw_lock:       # 그리기 스레드에 넘기기만 한다(_draw_loop)
-                self._draw_job = (frame, boxes, state, (xmin, ymin, xmax, ymax))
+                self._draw_job = (frame, boxes, state, (xmin, ymin, xmax, ymax), bus)
             self._draw_evt.set()
 
     def _draw_loop(self):
@@ -1182,7 +1358,7 @@ class TrafficLight(Node):
     ZOOM_W = 480
     ZOOM_TILES = 4
 
-    def _draw(self, frame, boxes, state, roi):
+    def _draw(self, frame, boxes, state, roi, bus=()):
         now = time.time()
         sl_live = self.sl_enable and self.sl_model is not None
         sl_fresh = self._sl_present(now)
@@ -1232,6 +1408,13 @@ class TrafficLight(Node):
             cv2.rectangle(view, (bx1, by1), (bx2, by2), col, 2)
             chip(view, bx1, (by1 - 16) if by1 > 17 else by2,
                      f"{it['label']} {it['conf']:.2f} {it.get('box_h', 0)}px", col)
+
+        # ── 버스 신호(구간 'B') — 회색 점선 느낌의 얇은 박스. 판단에 안 쓰는 것이라 색을 빼 둔다 ──
+        for it in bus:
+            bx1, by1, bx2, by2 = (int(round(v * sc)) for v in it['box'])
+            cv2.rectangle(view, (bx1 - 2, by1 - 2), (bx2 + 2, by2 + 2), C_GRAY, 1)
+            chip(view, bx1, (by1 - 16) if by1 > 17 else by2,
+                 f"BUS {it['color'][0]} {'cv' if it['src'] == 'cv' else 'yolo'}", C_GRAY)
 
         # ── 물고 있으면 빨간 테두리 — 곁눈으로도 보이게 ────────────────
         if self.stopping:
@@ -1636,10 +1819,10 @@ class TrafficLight(Node):
         self.tl_permit_t = time.time()
 
     def cb_tl_zone(self, msg: String):
-        """driving 의 신호 구간. 대문자로 접어 'T'/'A' 외는 전부 '' (구간 밖).
+        """driving 의 신호 구간. 대문자로 접어 'T'/'A'/'B' 외는 전부 '' (구간 밖).
         ★첫 글자만 본다★ — white1 의 본선 코스 라벨 'T1'~'T5' 도 'T' 가 된다."""
         z = str(msg.data).strip().upper()[:1]
-        z = z if z in ('T', 'A') else ''
+        z = z if z in ('T', 'A', 'B') else ''
         if z != self.tl_zone:
             self.get_logger().info(f"🗺 신호 구간 {self.tl_zone or '-'} → {z or '-'}")
         self.tl_zone   = z

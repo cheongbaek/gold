@@ -1532,13 +1532,17 @@ STOP_ZONE_CHARS = ('S', 's')
 #  하나라 한 행이 T 이면서 동시에 L 일 수 없고, 자율주행 경로에서 교차로와 라바콘
 #  구간이 겹칠 일이 없다. 검사 로직을 두지 않는다 — 검사하지 않는 것을 검사하는
 #  코드가 남아 있으면 그것 자체가 '겹칠 수 있다' 는 잘못된 신호가 된다.
-TL_ZONE_CHARS = ('T', 't', 'A', 'a')
+TL_ZONE_CHARS = ('T', 't', 'A', 'a', 'B', 'b')
 #  ★[2026-10-05] 'A' = 좌회전 신호 구간 (사용자 지시)★ T 와 똑같이 개입을 허락하되,
 #  traffic_light 에게 ★좌회전한다★ 는 것도 알린다(/tl_zone='A'). 그쪽은 빨강+좌회전
 #  화살표를 진행 신호로 읽고, 순수 빨강에서만 선다. 'T' 와 'A' 는 연속으로 이어 적어도
 #  된다(하나의 신호 구간으로 센다).
 TL_LEFT_CHARS = ('A', 'a')
-#  ★/tl_zone (String) — traffic_light 로 보내는 구간 문자★ 'T' / 'A' / ''(구간 밖·허락 없음).
+#  ★[2026-10-07] 'B' = #400 교차로 구간 (버스 신호 + 차량 신호, 좌회전)★ T 와 똑같이 개입을 허락하고
+#  /tl_zone='B' 를 낸다. traffic_light 는 차량 박스 왼쪽의 버스 신호 몸체를 찾아 ★표시만★ 한다
+#  (1단계 — 정지·진행 판단은 아직 'T' 와 같다. 버스 무시·화살표 읽기는 다음 단계).
+TL_BUS_CHARS = ('B', 'b')
+#  ★/tl_zone (String) — traffic_light 로 보내는 구간 문자★ 'T' / 'A' / 'B' / ''(구간 밖·허락 없음).
 #  /tl_permit 과 같은 순간에 같은 조건으로 낸다(20Hz) — traffic_light 는 이것이
 #  신선할 때만 구간 안의 낮은 근접 게이트(tl_zone_red_min_height)를 쓴다.
 TL_ZONE_TOPIC = '/tl_zone'
@@ -3113,6 +3117,11 @@ class DrivingNode(Node):
                        f"그 구간은 mppi 가 몰기 때문에 ★일시정지가 발동하지 않는다★. "
                        f"L 구간 밖으로 옮길 것")
 
+    @staticmethod
+    def _tl_zone_char(z):
+        """terrain 한 칸 → /tl_zone 문자 'B'(#400) / 'A'(좌회전) / 'T'."""
+        return 'B' if z in TL_BUS_CHARS else 'A' if z in TL_LEFT_CHARS else 'T'
+
     def _warn_tl_zones(self, zone):
         """terrain 'T'(신호등 인지 구간)를 세고 ★사람이 적은 열의 실수★ 를 말한다.
         [2026-09-10 신설]
@@ -3131,11 +3140,14 @@ class DrivingNode(Node):
             return
         n_tl = sum(1 for z in zone if z in TL_ZONE_CHARS)
         n_left = sum(1 for z in zone if z in TL_LEFT_CHARS)
+        n_bus = sum(1 for z in zone if z in TL_BUS_CHARS)
         self.event(f"🚦 신호등 구간 {len(segs)}곳 / WP {n_tl}개 "
                    f"({', '.join(f'{i0}~{i1}' for i0, i1 in segs)}) — "
-                   f"{LIDAR_ZONE_COLUMN} 열의 'T'/'A'. 이 구간에서만 빨간불 2단이 유효하다"
+                   f"{LIDAR_ZONE_COLUMN} 열의 'T'/'A'/'B'. 이 구간에서만 빨간불 2단이 유효하다"
                    + (f" · 그중 좌회전(A) WP {n_left}개 — 빨강+좌회전 화살표는 진행"
-                      if n_left else ""))
+                      if n_left else "")
+                   + (f" · 그중 #400(B) WP {n_bus}개 — 버스 신호를 찾아 표시(판단은 T 와 같다)"
+                      if n_bus else ""))
 
         #  ★구간이 정지거리를 담는가★ — 이 결정(구간 밖 즉시 해제)의 유일한 위험이다.
         #     ★WP 간격을 가정하지 않고 실제 경로에서 잰다★ 지금 매핑은 0.25m 고정이지만
@@ -5515,7 +5527,7 @@ class DrivingNode(Node):
         self.pub_tl_permit.publish(Bool(data=permit))
         # 허락이 없으면 구간도 없다('') — 두 토픽이 서로 다른 말을 하지 않게 한다.
         self.pub_tl_zone.publish(String(data=(
-            ('A' if self.zone_at(self.wp_idx) in TL_LEFT_CHARS else 'T') if permit else '')))
+            self._tl_zone_char(self.zone_at(self.wp_idx)) if permit else '')))
         #  ★GPS 기준선 [2026-09-11]★ mppi 의 추측항법을 대체한다.
         self.publish_lidar_ref()
         # ★라이다 허락 [2026-09-01]★ /tl_permit 과 같은 규약이다 — True/False 를 매 틱
