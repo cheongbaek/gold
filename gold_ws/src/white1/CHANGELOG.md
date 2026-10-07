@@ -87,6 +87,14 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-08 — `traffic_light.py` 에 #400 구간 'B' 판단(버스 제외 · 좌회전 화살표만 진행) (white2 전용 · 여기서는 안 돈다)
+
+짝 규약대로 white2 와 같은 줄을 넣었다(`arrow_frac`·`_decision_boxes`·`_b_active`, 파라미터 `tl_b_*`). 판단 박스는 구간 'B' 밖에서
+원본 박스 그 자체라 이 판의 동작은 바뀌지 않는다(white1 driving 은 'B' 를 내지 않는다). 바뀐 것은 `/tl/boxes` 에 9번째 칸(화살표 비율,
+여기서는 늘 −1)이 붙은 것뿐이다. 상세는 white2/CHANGELOG.md 같은 날 항목.
+
+---
+
 ## 2026-10-07 (밤 2) — `traffic_light.py` 에 #400 버스 신호 몸체 찾기 (white2 구간 'B' 전용 · 여기서는 안 돈다)
 
 짝 규약대로 white2 와 같은 줄을 넣었다(`find_bus_body`·`_find_bus`·파라미터 `tl_bus_*`). `/tl_zone` 이 'B' 일 때만 돌고
