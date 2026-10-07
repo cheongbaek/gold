@@ -1,0 +1,2 @@
+latitude,longitude,heading,speed,steer,direction,pitch,terrain,throttle_pulse,wheel_pulse,wheel_speed,steer_measured,throttle_raw,auto_mode,estop
+36.96767290,127.87358656,0.00,0.000,1,1,0.00,0,0,0.0,0.000,1,172,1,0

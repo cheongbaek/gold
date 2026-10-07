@@ -39,6 +39,13 @@ Thumbs.db
 #   ⚠️ 한 파일이 100MB 를 넘으면 GitHub 가 거부한다. 긴 주행은 확인하고 올릴 것.
 !gold_ws/src/white1/ros2bag/*.csv
 
+# ★예외 3 : white2 도 같은 두 폴더를 추적한다★ [2026-10-07]
+#   white2 = 신호 타이머 없이 경로 CSV 의 태그(T·A·S·L)로 달리는 판 — white1 과 투트랙
+#   (CLAUDE.md 3.1). gps_data 가 주행 입력이고 ros2bag 이 판단 근거라는 이유는 위와 같다.
+#   처음 들어간 ros2bag 223개는 white1 의 것과 바이트가 같아 git 이 blob 을 공유한다(용량 0).
+!gold_ws/src/white2/gps_data/*.csv
+!gold_ws/src/white2/ros2bag/*.csv
+
 # ★사무용 프로그램의 임시·락 파일★ [2026-09-13]
 #   CSV 를 LibreOffice 로 열어 두면 같은 폴더에 `.~lock.<이름>#` 이 생긴다.
 #   위 예외 두 줄이 그것까지 추적 대상으로 끌어올리므로 여기서 되막는다.

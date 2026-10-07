@@ -19,6 +19,8 @@
 > | 흔들림 감소 · 10펄스 증속 (A~E) — 원인·설계·모의·구현 [2026-09-30] | 요약 4.1e · 근거 CHANGELOG 2026-09-30 항목 · 모의 도구 `gold_ws/src/white1/sim/` |
 > | ★신호 구간 (T) — 본선 코스 타이머 T1~T5 [2026-09-30] · 신호 접근(정지선 1 m 앞) [2026-10-01]★ | 요약 4.10 · 신호 시각표·`/traffic_timer` 배열·`LightFilter` `gold_ws/src/white1/white1/traffic_timer.py` 헤더 · 정지 방법 `driving.py` 상수절 '신호 접근' · 모의 `sim/signal_sim.py` |
 > | ★**대회 규정 (2026 자작자율차 부문) · 점검 결과 · AS 상태** [2026-10-07]★ | 원문 = 저장소 최상단 PDF · 점검 = **8절** · AS 상태 구현 = **8.0** · 펌웨어 `../mad-code/kasa_1007_B.ino` 헤더 `[1007-1]`·`[1007-2]` |
+> | ★**white2 — 투트랙의 다른 한쪽** (타이머 없이 CSV 태그 · 카메라가 세운다) [2026-10-07]★ | **3.1 의 '투트랙' 문단** · `gold_ws/src/white2/CHANGELOG.md` 머리 |
+> | 카메라 인지 시험 (cam_testbed · 스킬 `cam-test`) [2026-10-07] | `~/cam_testbed`(별도 저장소 Anjabom/cam_testbed) · 이 기계용 계약 `contracts/gold_white{1,2}_stopline.yaml` · ⚠️ `RMW_IMPLEMENTATION=rmw_fastrtps_cpp` 를 붙여 돌린다(3.1) |
 > | 아두이노 계층 구조·안전장치 | `gold_ws/src/nxde/README.md` |
 > | 라이다 패키지 | `gold_ws/src/lidar/README.md` |
 > | 단위 환산 (C++ 쪽 단일 소유자) | `gold_ws/src/lidar/include/lidar/kasa_units.hpp` |
@@ -71,6 +73,7 @@ git ls-tree -r --name-only origin/main -- <바꾼 경로>   # ★눈으로 확�
 > ⚠️ **그래서 `mapping` 이 새로 딴 경로도 자동으로 추적 대상이 된다.**
 > **`git add -A` 를 경로 없이 쓰지 말 것.** 시험 삼아 딴 것은 커밋 전에 뺀다.
 > **`ros2bag/*.csv` 도 [2026-09-13] 부터 예외로 추적한다**(`.gitignore` 예외 2 — 판단 근거라서).
+> **[2026-10-07] `white2` 의 `gps_data`·`ros2bag` 도 같은 규칙으로 추적한다**(`.gitignore` 예외 3).
 > 그 밖의 CSV 는 그대로 막혀 있다.
 
 ### 0.4 빌드 — ★`--symlink-install` 금지★
@@ -90,8 +93,8 @@ source install/setup.bash
 갱신되지 않는다. `--symlink-install` 시절의 "고치고 노드만 재시작" 습관이 남아
 있으면 **고친 적 없는 코드를 계속 돌리게 된다.**
 
-빌드 대상 6개 : `white1` `nxde` `lidar` `mppi_local_planner` `ouster_ros` `ouster_sensor_msgs`
-(`ouster-ros` 폴더 하나에 패키지가 둘이다 — `src/` 에는 폴더 5개만 있다.)
+빌드 대상 7개 : `white1` `white2` `nxde` `lidar` `mppi_local_planner` `ouster_ros` `ouster_sensor_msgs`
+(`ouster-ros` 폴더 하나에 패키지가 둘이다. `white1_0929` 는 백업이라 패키지가 아니다.) — `white2` 는 [2026-10-07] 추가(3.1 투트랙).
 
 > **[2026-09-30] `src/` 에는 쓰는 것만 남겼다** — 이전 세대 스냅샷 `white` · `white806` ·
 > `white0901` 과 백업·임시물 `white2` · `white1 0910` · `rosbag2_2026_09_12-*` 2개 · `sliver.zip` 을
@@ -393,6 +396,8 @@ gold_ws/src/
     gps_data/  ros2bag/  video/  sound/  calibration/
     BOARD_B.md  BRAKING.md  GPS_HEADING.md  STOPLINE_TEST.md  CHANGELOG.md
 
+  white2/     ★투트랙의 다른 한쪽★ [2026-10-07] (ament_python) — 구조·파일은 white1 과 같다(아래 '투트랙')
+
   nxde/       아두이노 계층 (런치파일 없음, 전부 ros2 run)
     arduino.py   ★차량 구동의 필수 노드★ A/B/★J★ 3보드 시리얼 브리지
                  [2026-09-16] 조이스틱("J,")까지 이 노드가 잡고 ★직접 몬다★ (4.8절)
@@ -449,6 +454,24 @@ gold_ws/src/
     drive_gps_node     GPS 직선 매핑 + 스탠리 추종 ⚠️ driving.py 와 정면으로 겹친다
     include/lidar/kasa_units.hpp   ★C++ 쪽 단위·게이트 단일 소유자★
 ```
+
+> ### ★투트랙 — white1 과 white2 [2026-10-07]★
+>
+> | | **white1** (main 의 주력) | **white2** |
+> |---|---|---|
+> | 신호 판단 | 본선 코스 **타이머 T1~T5** + 카메라 색 — **driving 이 정지선 1 m 앞에 선다**(4.10) | 경로 CSV 태그 **`T`·`A`(좌회전)** — **traffic_light 가 `/tl_permit` 구간에서 직접 2단**으로 세운다 |
+> | `/tl_zone` | `T`·`T1`~`T5` (구간 시작 40 m 앞부터) | `T`·`A` (`/tl_permit` 과 같은 조건) |
+> | 출신 | 9/30 `c5657cd` 이후 main | 같은 `c5657cd` 에서 갈라진 USB 판(10/5~10/6 신호등 인지 개선) |
+>
+> - **traffic_light.py 는 두 판이 같다**(머리말·import 만 다르다 — [2026-10-07] white2 의 인지 개선을 white1 에 이식).
+>   인지(ROI·엔진·게이트)를 고치면 **둘 다** 고친다. 제동 판단은 white2 에서만 쓰인다(white1 은 `/tl_permit` 이 늘 False).
+> - **타이머와 무관한 공통 수정은 양쪽에 넣는다** — 예: AS 필(hud)·E-STOP 해제 직후 출발 유예(driving)는 [2026-10-07] 둘 다 있다.
+> - ⚠️ **두 스택을 동시에 띄우지 말 것** — 노드 이름·토픽이 같다(`ros2 launch white2 one_launch.py` · `ros2 run white2 prompt`).
+>   경로·기록 폴더와 환경변수는 갈라져 있다(`src/white2/{gps_data,ros2bag,video,sound}`, `WHITE2_*_DIR`).
+> - 신호등 1280 엔진(`/home/mad1/runs/detect/combined_light/weights_1280/best.engine`)은 이 PC 에서 [2026-10-07] 빌드했다
+>   (`tools/export_tl_1280.sh`). 엔진은 GPU·드라이버에 묶이므로 다른 기계에서는 거기서 다시 돌린다.
+> - **cam_testbed** — 이 기계의 `~/.bashrc` 는 CycloneDDS 다. 1080p 프레임이 안 넘어가 `/image_raw 수신 대기` 로 멈추므로
+>   `RMW_IMPLEMENTATION=rmw_fastrtps_cpp python3 -m tb.run …` 으로 돌리고, 도메인은 실차(7)와 다른 번호로 준다.
 
 > **`drive_gps_node` 와 `white1/driving` 을 동시에 띄우지 말 것** — `/cmd_vel_raw`
 > 발행자가 겹친다. 실주행은 `white1`, 저쪽은 라이다 AEB 시험용이다.
@@ -1417,6 +1440,7 @@ ros2 launch white1 one_launch.py       # 1) 센서 + arduino + 자율주행 + �
 ros2 run white1 prompt                 # 2) CLI 메뉴 (별 터미널) — ★본선 코스 신호 타이머도 함께 뜬다★
                                        #    목록 맨 위 = maincourse.csv · subcourse.csv
 ros2 run white1 hud                    # 2') 상면도 HUD (구독 전용, 선택)
+#  white2 로 달릴 때는 위 white1 을 전부 white2 로 (둘을 같이 띄우지 않는다 — 3.1 투트랙)
 ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때
 ```
 
@@ -3070,6 +3094,7 @@ ping -c2 192.168.6.11
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
 | **`STOP` 의 뜻 = 자율주행 + E-STOP** [2026-10-07] | `../mad-code/kasa_1007_B.ino` `[1007-1]`(효력 = D12 AND D5 자율) **+** `nxde/arduino.py` `poll_port`(STOP → 모드 자율, `_set_switch_mode`) — **짝이다.** 구 펌웨어(0909 이하)를 꽂은 채 두면 수동+E-STOP 이 '자율' 로 보인다. 펌웨어가 STOP 에 다른 뜻을 싣게 되면 그 줄도 함께 고친다 |
+| **신호등 인지 · 공통 수정** [2026-10-07] | `white1/white1/traffic_light.py` **+** `white2/white2/traffic_light.py` — 두 파일은 머리말·import 만 다르다(`diff <(sed s/white2/white1/g white2/…) white1/…`). 타이머와 무관한 수정(hud AS 필 · driving 출발 유예 같은 것)도 **양쪽에** 넣는다 — 3.1 투트랙 |
 | **AS 상태 판정** [2026-10-07] | `white1/hud.py as_state()` 하나 — 입력은 `/vehicle_mode`·`/estop`·`/board_status` 의 B 칸. `/estop` 이 '효력' 이라는 전제(위 짝)에 기대므로 펌웨어의 E-STOP 게이트를 바꾸면 이 함수도 본다. 다른 화면·기록이 AS 상태를 쓰게 되면 이 함수를 가져간다 — 베끼지 말 것 |
 
 ### 설계 원칙 (코드 전반에서 반복되는 것)

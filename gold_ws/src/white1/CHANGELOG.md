@@ -87,6 +87,42 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-07 — ★신호등 인지를 white2 판으로 이식★ (`traffic_light.py` · `camera_launch.py` · `tools/`)
+
+**배경** — USB 의 white1(9/30 `c5657cd` 에서 갈라져 10/5~10/6 에 신호등 인지를 고친 판)을 오늘
+`src/white2` 로 들였다(CLAUDE.md 3.1 투트랙). 그 판의 인지 개선은 white1 에도 그대로 이득이다 —
+white1 은 traffic_light 의 ★`/tl/state` 색만★ 읽어 T1 전환·T5·서브 코스를 판단하기 때문이다(4.10).
+
+**옮긴 것** (근거·실측은 white2/CHANGELOG.md 2026-10-05 · 10-06 항목)
+- `traffic_light.py` ← white2 판 그대로(머리말·import 만 다르다) — ROI `(640,0,1270,400)` → **`(640,0,1280,560)`** ·
+  **1280 엔진**(`weights_1280/best.engine`, 없으면 640 으로 자동 대체 · 엔진 고정 입력에 `tl_imgsz` 를 맞춤) ·
+  신호 구간 근접 게이트 9px · 정지선 오검출 방패 · 디버그 화면 한글 빨강이 파랑으로 그려지던 것·'단독' 글자 깨짐 ·
+  제동 확정 타이밍(gap 0.15 / release 0.7 / arm 1.0) · 쓰이지 않던 파라미터 정리(2534 → 1905줄).
+- `camera_launch.py` `tl_solo_stop_min_height` 30 → **25**(10/5 사용자 결정) — white1 에서는 수동조종(master) 경로에만 영향.
+- `tools/export_tl_1280.sh` — ★이 PC(실차)에서 오늘 돌렸다★ `/home/mad1/runs/detect/combined_light/weights_1280/best.engine`
+  (TensorRT 10.15 · RTX 5070 Laptop, 빌드 11 s, 검사 통과).
+
+**옮기지 않은 것** — `A`(좌회전) 구간(사용자 결정) · white2 driving 의 `/tl_zone`('T'/'A') 발행. white1 의 `/tl_zone` 은
+이미 다른 뜻(`T`·`T1`~`T5`, 구간 시작 40 m 앞부터)이다 — 새 traffic_light 의 `cb_tl_zone` 이 ★첫 글자만★ 봐서 `T` 로
+접으므로 로직은 손대지 않았다(그래서 9px 게이트가 white1 에서는 구간 40 m 앞부터 켜진다 — RED/RED_FAR 구분만 바뀌고
+driving 의 `LightFilter` 는 둘 다 빨강으로 본다).
+
+**검증** (cam_testbed `gold_white1_stopline` · lockstep · `cam-20260912_105807` 프레임 3000~3899 = 1:57~2:32, 맞은편 신호 교차로)
+
+| | 교체 전 (640) | 교체 후 (640) | 교체 후 (1280) |
+|---|---|---|---|
+| 빨강(RED·RED_FAR) 첫 프레임 | 2:25.2 | **2:19.1** | **2:12.4** |
+| 빨강 프레임 수 / 900 | 78 | 161 | 278 |
+| GREEN · UNKNOWN | 96 · 726 | 101 · 638 | 92 · 530 |
+| 처리 지연 p50 / p95 [ms] | 25.5 / 40.3 | 26.0 / 41.0 | 30.4 / 45.8 |
+
+런 : `~/cam_testbed/runs/1007_215909_run` · `1007_220024_run` · `1007_220151_run` (결과 사본 `gold_ws/testbed_results/`).
+⚠️ 이 기계는 `~/.bashrc` 가 CycloneDDS 라 cam_testbed 는 **`RMW_IMPLEMENTATION=rmw_fastrtps_cpp`** 를 붙여야 1080p 가 넘어간다.
+⚠️ **실차 미검증** — 실차에서 볼 것: `traffic_light` 기동 로그의 엔진 줄(1280 인가) · 본선 T1 에서 적색→녹색 전환을 몇 m 앞에서
+잡는가 · T5·서브 코스 정지선 앞에서 녹색을 보는가(TODO-8).
+
+---
+
 ## 2026-10-07 — ★본선 코스 0초를 T1, 못 잡으면 T2 에서 · 서는 도중 녹색이면 그 순간 재가속★
 
 > 사용자 지시 : ① T2 에서도 '정지 → 녹색 인지 → 출발 + 타이머 초기화' 가 되게 ② T1 이 **처음부터 녹색**이면 T2 에서 반드시 서서
