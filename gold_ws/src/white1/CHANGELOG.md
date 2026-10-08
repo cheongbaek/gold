@@ -87,6 +87,13 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-08 (밤 2) — `traffic_light.py` 죽은 코드·낡은 주석 정리 (동작 불변, white2 와 같은 줄)
+
+`last_boxes`·`drive_state_t` 삭제, '정지선 놓침'(기본값에서 도달 불가) 주석, 낡은 주석 6곳. 시험용 주입(`tl_fake_box_h`)은 cam_testbed 가 써서 보류.
+상세·검증은 white2/CHANGELOG.md 같은 날 (밤 3).
+
+---
+
 ## 2026-10-08 (밤) — `traffic_light.py` 해제 보류 진단 로그 · GREEN 아랫변 관문 (white2 와 같은 줄)
 
 `tl_hold_log_ratio` 0.5(로그만) · `tl_green_max_y2` 520(지평선 아래 GREEN = 길가 수풀·사람 오검출을 버린다, RED 는 그대로).

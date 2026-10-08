@@ -19,7 +19,7 @@ traffic_light.py ― 신호등 인지·정지 [white1]
      'T' 로 접힌다. 'A'(좌회전)는 white1 driving 이 내지 않는다.
 
 개입은 허락받은 구간에서만 한다:
-  · 자율주행 : /tl_permit (driving 이 DRIVE_RUN 에서 낸다). 놓으면 driving 의 목표펄스가
+  · 자율주행 : /tl_permit (driving 이 DRIVE_RUN 이고 신호 구간 T·A·B 안일 때 낸다 — 타이머로 서는 판은 항상 False). 놓으면 driving 의 목표펄스가
                그대로 다시 통해 스스로 재출발한다(이 노드는 펄스를 기억하지 않는다).
   · 수동 조종 : /tl_enable (nxde master 의 '신호등 인지' 체크박스).
 
@@ -38,7 +38,7 @@ traffic_light.py ― 신호등 인지·정지 [white1]
   RED 확정 = 근접 RED 가 tl_hold_s 이어짐(tl_gap_grace_s 이내 끊김은 봐준다).
   확정 뒤에는 마지막 RED 로부터 tl_arm_hold_s 동안 확정이 이어진 것으로 본다(_red_armed).
      ├ 정지선이 확정됐고 BEV 행 ≥ sl_trigger_bev_y          → 2단 [정지선 앞]
-     ├ 확정했던 정지선을 놓쳤다(sl_lost_min_bev_y 까지 온 것) → 2단 [정지선 놓침]
+     ├ 확정했던 정지선을 놓쳤다(sl_lost_min_bev_y 까지 온 것) → 2단 [정지선 놓침]  ※ 기본값(40 = 발화선)에서는 도달 불가
      ├ 빨간 박스 높이 ≥ tl_solo_stop_min_height            → 2단 [신호등 단독]
      └ 그 밖                                                  → 무개입 (기다린다)
   두 근거는 OR 다 — 가까워지면 등기구가 ROI 위로 벗어나 정지선보다 먼저 사라지기 때문이다.
@@ -61,7 +61,8 @@ traffic_light.py ― 신호등 인지·정지 [white1]
   /tl/stop_line_y     Float32  정지선 최하단 y / 프레임 높이. −1 = 미검출 (기록용)
   /tl/stop_line_wait  Bool     RED 확정인데 아직 0단으로 기다리는 중인가
   /tl/debug_image     Image    디버그 화면 (tl_publish_debug)
-  /tl/boxes           String   [진단] 이 프레임 판단에 쓴 박스 JSON — [[x1,y1,x2,y2,색,conf,모델색],…] 원본 좌표
+  /tl/boxes           String   [진단] 이 프레임 박스 JSON — [[x1,y1,x2,y2,색,conf,모델색,역할,화살표],…] 보정 원본 좌표
+                               역할 ''|'BUS'|'VEH'('B' 구간만) · 화살표 = 셋째 칸 녹색 비율(안 읽었으면 -1)
 구독:
   /image_raw  /drive_state  /tl_enable  /tl_permit  /tl_zone  /tl/fake_box_h(시험용)
 
@@ -105,7 +106,7 @@ from ultralytics import YOLO
 from white1 import camera_model
 
 # HSV 가 YOLO 라벨을 ★위험한 방향(RED→GREEN)★ 으로 뒤집는 것을 허용하는 conf 상한.
-# 이보다 자신 있는 박스는 색 몇 픽셀로 뒤집지 않는다. (perception.py 와 같은 값)
+# 이보다 자신 있는 박스는 색 몇 픽셀로 뒤집지 않는다. (구 white 스택에서 이어받은 값 — 실측 근거는 없다)
 HSV_FALLBACK_CONF = 0.55
 
 # 정지선 미검출 표식(BEV 행). −1 은 못 쓴다 — 먼 정지선은 BEV 행이 실제로 음수다(−185 까지 실측).
@@ -559,7 +560,8 @@ class TrafficLight(Node):
         #   박스(ROI 의 85~99%)가 RED 로 읽혀 급정지하던 것을 막는다. 0 = 끔.
         self.declare_parameter('tl_max_height_frac', 0.5)
         self.declare_parameter('tl_min_aspect', 0.2)
-        self.declare_parameter('tl_max_aspect', 6.0)   # 가로형 4구 ≈3.5~4.5, 위가 잘리면 더 크다
+        # 가로세로비 상한 — 실측: #400 차량 가로 4구 1.79~2.41 · 버스 신호 1.47~1.80 · 먼 가로형 신호는 위가 잘리면 더 크다.
+        self.declare_parameter('tl_max_aspect', 6.0)
         # [2026-10-08] ★GREEN 아랫변 관문★ — 보정 영상 기준 박스 아랫변 y 가 이 값 이상인 GREEN 은 버린다. 0 = 끔.
         #   신호등 머리는 지평선 위에 있다. 녹화 4개 + #400 런 2개 GREEN 3,136개 : 진짜 신호 y2 ≤ 503(대부분 ≤ 484) ·
         #   오검출 20개(길가 수풀 52~99px · 검은 옷 사람 102~125px · 기둥) y2 ≥ 539 → 그 사이 520.
@@ -598,7 +600,7 @@ class TrafficLight(Node):
         #   매번 리셋돼 제동이 0.8초 늦었다 — CHANGELOG 2026-10-06).
         self.declare_parameter('tl_gap_grace_s',   0.15)
         self.declare_parameter('tl_state_max_age', 3.0)   # 이보다 낡은 판정은 무시(fail-open)
-        self.declare_parameter('green_hold_s',     0.4)   # stop_latch 일 때 GREEN 확정 시간
+        self.declare_parameter('green_hold_s',     0.4)   # GREEN 확정 시간 — 해제(_release_ready)와 stop_latch 해제에 쓴다
         # 빨간불을 이만큼 못 봐야 놓는다(무는 쪽은 그대로) — 검출이 흔들려 리니어가 왕복하지
         #   않게. 0.55초 공백에 풀렸다 다시 물린 실측 때문에 0.7. 전체 해제 지연은 여기 +
         #   arduino BRAKE_RELEASE_HOLD_S(0.5).
@@ -648,8 +650,8 @@ class TrafficLight(Node):
         # 카메라 뷰 폭(우측 패널·HUD 는 밖에 붙는다). 960 = 1920 의 절반이라 리사이즈가
         #   0.28ms(임의 배율은 2.5ms). 0 이면 원본 크기.
         self.declare_parameter('window_width', 960)
-        # [2026-10-08] 디버그 화면은 '최소 자원·판단에 필요한 것만'(사용자) — BEV 패널·ROI 확대 열은 기본 끔.
-        #   본화면(박스·정지선·판단 박스 확대 1장) + HUD 2줄 = 960x584(종전 1728x616 의 53%).
+        # [2026-10-08] BEV 패널·ROI 확대 열은 기본 켬(사용자 — '그림은 두고 글자만 필수로') → 캔버스 1728x590.
+        #   끄면(show_bev:=false tl_roi_zoom:=false) 본화면 + HUD 2줄 960x590 이고, HUD 가 근접·정지선 숫자를 함께 싣는다.
         self.declare_parameter('show_bev', True)      # 우측 BEV 패널(발화선 썸네일 + 근접·정지선 게이지)
         # ROI 밖 밝기. 너무 낮추면 ROI 밖 노면의 정지선 마스크를 눈으로 못 본다.
         self.declare_parameter('roi_dim', 0.6)
@@ -686,7 +688,9 @@ class TrafficLight(Node):
         # ① 정지선 폴리곤이 BEV 중심열 ± 이 거리[m]를 모두 덮어야 인정(길가 노면표시 거름).
         #    0.5 는 중앙선에 붙어 달릴 때 진짜 정지선을 버렸다. 0 = 끔.
         self.declare_parameter('sl_lane_half_m', 0.1)
-        # ② '정지선 놓침 → 즉시 정지' 는 이 BEV 행까지 내려온 적이 있는 정지선만. 음수 = 끔.
+        # ② '정지선 놓침 → 즉시 정지' 는 이 BEV 행까지 내려온 적이 있는 정지선만. 음수 = 문턱 없음(확정했던 선이면 모두).
+        #    ⚠️ [2026-10-08] 기본값 40 은 발화선(sl_trigger_bev_y 40)과 같아 ★이 분기는 도달하지 않는다★ — 행 40 에 닿는
+        #    순간 '정지선 앞' 이 먼저 문다. 발화선을 40 보다 크게(더 가까이) 다시 잡을 때를 위한 안전망으로 남겨 둔다.
         self.declare_parameter('sl_lost_min_bev_y', 40.0)
 
         # ── 카메라 기하 (어안 왜곡보정·BEV) ─────────────────────────────────
@@ -817,14 +821,12 @@ class TrafficLight(Node):
         #   → 이 값이 None 이면 0단도 내지 않는다(남의 브레이크를 풀지 않기 위해).
         self.brake_now  = None
         self.drive_state   = ''
-        self.drive_state_t = 0.0
         self.tl_enable     = False    # master 의 '신호등 인지' 체크박스
         self.tl_enable_t   = 0.0
         self.tl_permit     = False    # driving 의 허락(TRAFFIC_LIGHT_ENABLE + DRIVE_RUN)
         self.tl_permit_t   = 0.0
         self.img_time      = 0.0
         self.frame_count   = 0
-        self.last_boxes    = []
         self.last_raw      = 0        # 필터 전 박스 수 (-1 = 추론 예외)
         self.last_red_drop = 0        # HSV 적색 관문에 걸려 버려진 RED 수
         self.last_green_drop = 0      # GREEN 아랫변 관문(tl_green_max_y2)에 걸려 버려진 GREEN 수
@@ -1407,12 +1409,10 @@ class TrafficLight(Node):
                                          imgsz=self.tl_imgsz, device=self.device,
                                          verbose=False)[0]
                 boxes = self._all_tl_boxes(res, roi_img, ymin)
-                self.last_boxes = boxes
                 # "YOLO 가 못 봤다" vs "필터가 먹었다" 를 사후에 가르기 위한 값.
                 self.last_raw = 0 if res.boxes is None else len(res.boxes)
             except Exception as e:
                 self.get_logger().error(f"YOLO TL error: {e}", throttle_duration_sec=5.0)
-                self.last_boxes = []
                 self.last_raw = -1
                 self.last_red_drop = 0
                 self.last_green_drop = 0
@@ -1420,7 +1420,6 @@ class TrafficLight(Node):
         # 시험용 주입 — 추론은 그대로 돌리고(지연 통계가 실제와 같게) 결론만 바꾼다.
         if self.fake_box_h > 0.0:
             boxes = [self._fake_red_box(self.fake_box_h)]
-            self.last_boxes = boxes
 
         # 구간 'B' — 버스·차량 박스를 가르고(_find_bus), 판단에 쓸 박스를 따로 만든다(_decision_boxes).
         #   'B' 밖에서는 dec 가 boxes 그 자체라 판단이 종전과 같다.
@@ -1929,6 +1928,7 @@ class TrafficLight(Node):
                   and (self.sl_lost_min_bev_y < 0.0
                        or self.sl_engaged_max_y >= self.sl_lost_min_bev_y)):
                 # 확정했던 정지선이 사라졌다 = 이미 선 위다 → 즉시.
+                #   ⚠️ 기본값(sl_lost_min_bev_y = sl_trigger_bev_y = 40)에서는 도달하지 않는다 — 파라미터 주석 참고.
                 self.get_logger().info(f"🛑 정지선을 놓쳤다 — 이미 선 위다, 즉시 {full}단")
                 return full, '정지선 놓침'
         # OR — 정지선을 보고 있든 아니든 신호등이 단독 문턱을 넘으면 선다.
@@ -1949,7 +1949,6 @@ class TrafficLight(Node):
     # ══════════════════════════════════════════════════════════════════════════
     def cb_drive_state(self, msg: String):
         self.drive_state   = str(msg.data).strip()
-        self.drive_state_t = time.time()
 
     def cb_tl_enable(self, msg: Bool):
         """master 의 '신호등 인지' 체크박스. ★사람이 직접 켠 허락★ 이다."""

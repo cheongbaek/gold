@@ -92,6 +92,22 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-08 (밤 3) — `traffic_light.py` 죽은 코드·낡은 주석 정리 (동작 불변, white1 같은 줄)
+
+사용자 확인(A·B(가)·C)대로. 전수 검사 — 선언 파라미터 76개 전부 읽힌다, 안 쓰는 상수·함수·import 없음.
+- **지움** : 값만 넣고 읽지 않던 `self.last_boxes`(오늘 패널 게이지를 판단 박스 기준으로 바꾸며 마지막 사용처가 사라졌다) · `self.drive_state_t`.
+- **남기고 주석** : '정지선 놓침' 분기 — `sl_lost_min_bev_y` 40 = 발화선 40 이라 기본값에서는 도달하지 않는다(행 40 에 닿으면 '정지선 앞' 이 먼저 문다).
+  발화선을 더 가까이 다시 잡을 때의 안전망. 그 파라미터 주석의 '음수 = 끔' 은 반대였다 → '음수 = 문턱 없음(확정했던 선이면 모두)'.
+- **주석 고침** : `show_bev` (기본 켬·1728x590) · `green_hold_s`(해제에도 쓴다) · 머리말 `/tl/boxes` 9칸 · `HSV_FALLBACK_CONF`(없는 perception.py 참조 →
+  구 white 에서 이어받은 값, 실측 근거 없음) · `tl_max_aspect`(실측 #400 차량 1.79~2.41 · 버스 1.47~1.80) · 머리말 `/tl_permit`(DRIVE_RUN + T·A·B 구간, 타이머 판은 항상 False).
+- **보류** : 시험용 빨간불 주입(`tl_fake_box_h` · `/tl/fake_box_h`) — 지우기로 했으나 cam_testbed 의 정지선 야간 프리셋 3개
+  (`stopline_night_a/b` · `stopline_approach_night_a`)와 두 계약(`gold_white{1,2}_stopline.yaml` aux 토픽·`boot_inject` 잠금)이 쓴다 → 사용자에게 다시 확인.
+- 검증(cam-test, `gold_ws/testbed_results/1008_16*_CL*/tl_debug_image.mp4`) : 직전 HG 런 대비 `tl_state` 차이 105807·144031·140401·#400 두 런 0,
+  k-city 실시간 1(5910 — 실시간 처리 누락 프레임, HG 런에서 빠졌던 것). 정지 105807 4/4 · 144031 2/2 · 140401 1/3(종전과 같음) · #400 진행 오판 0 · 첫 GREEN 2833.
+  제동 전이 ±1프레임(30 Hz 틱). 짝 diff 13줄. 백업 `~/tl_eval/_backup/white{1,2}_1008_preClean/`.
+
+---
+
 ## 2026-10-08 (밤 2) — `traffic_light.py` : 해제 보류 진단 로그 · GREEN 아랫변 관문 (white1 같은 줄)
 
 ### ① 해제 보류 진단 로그 `tl_hold_log_ratio` 0.5 (판단 불변) — 해제 위험 조사의 안 1 (사용자 선택)
