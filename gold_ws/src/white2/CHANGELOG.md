@@ -92,6 +92,20 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-08 (밤 4) — 시험용 빨간불 주입 삭제 · 문서 `TRAFFIC_LIGHT.md`(질문과 답) · `TL_TUNING.md`(튜닝 가이드)
+
+- **삭제(사용자 지시)** : `tl_fake_box_h` 파라미터 · `/tl/fake_box_h` 구독 · `cb_fake_box_h` · `_fake_red_box` · 부팅 배너·5 s 경고 · 'B' 의 주입 예외.
+  이 기계의 테스트베드 계약 `gold_white{1,2}_stopline.yaml`(cam_testbed 에서 추적 안 하는 로컬 파일)에서도 `/tl/fake_box_h` aux 토픽과
+  `boot_inject` 신호를 뺐다(백업 `~/tl_eval/_backup/cam_testbed_1008_preNoFake/`).
+  ⚠️ cam_testbed 저장소의 `presets/stopline_night_a·b` · `stopline_approach_night_a` 는 다른 기계 계약(`contracts/white1_stopline.yaml`,
+  `/home/anjabom/…`)으로 이 주입을 쓴다 — 남의 저장소라 손대지 않았다. 그 기계가 이 커밋을 받으면 그 세 프리셋의 정지선 시험은 빨간불 없이 돈다.
+- 검증(cam-test, `gold_ws/testbed_results/1008_1{85,90}*_NF*/tl_debug_image.mp4`) : 직전 CL 런 대비 `tl_state` 차이 140401 0 · 144031 0 · #400 0,
+  정지 144031 2/2 · 140401 1/3(같음), 제동 전이 ±1~2프레임. 짝 diff 13줄.
+- 문서 : 이 세션의 질문(인지·판단 알고리즘, ROI 확대, conf, HSV 교정, 정지 판단 층, '서 있는 동안 문턱', 해제 위험, A·B, 수풀 오검출,
+  디버그 화면, 검증)에 현재 코드 기준으로 답한 `TRAFFIC_LIGHT.md`(그림 `doc/tl_debug_view.jpg`) · 파라미터 표·짝·튜닝 순서·회귀 세트 `TL_TUNING.md`.
+
+---
+
 ## 2026-10-08 (밤 3) — `traffic_light.py` 죽은 코드·낡은 주석 정리 (동작 불변, white1 같은 줄)
 
 사용자 확인(A·B(가)·C)대로. 전수 검사 — 선언 파라미터 76개 전부 읽힌다, 안 쓰는 상수·함수·import 없음.

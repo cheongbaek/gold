@@ -54,7 +54,7 @@ traffic_light.py ― 신호등 인지·정지 [white2]
   /tl/boxes           String   [진단] 이 프레임 박스 JSON — [[x1,y1,x2,y2,색,conf,모델색,역할,화살표],…] 보정 원본 좌표
                                역할 ''|'BUS'|'VEH'('B' 구간만) · 화살표 = 셋째 칸 녹색 비율(안 읽었으면 -1)
 구독:
-  /image_raw  /drive_state  /tl_enable  /tl_permit  /tl_zone  /tl/fake_box_h(시험용)
+  /image_raw  /drive_state  /tl_enable  /tl_permit  /tl_zone
 
 ════════════════════════════════════════════════════════════════════════════════
  안전 규약
@@ -648,12 +648,6 @@ class TrafficLight(Node):
         self.declare_parameter('tl_roi_zoom', True)   # 원본에서 자른 ROI 확대 열 + 박스 타일 4장(판단 박스부터)
         self.declare_parameter('hud_font', '')        # 빈 값 = FONT_CANDIDATES 순서대로
 
-        # ── 시험용 신호등 주입 — ★실차에서는 반드시 0★ ─────────────────────
-        #  0 보다 크면 그 높이(px)의 빨간 박스를 봤다고 친다(YOLO 결과를 통째로 대신한다).
-        #  신호등이 안 찍힌 영상으로 정지선을 시험하려고 둔다(15 = RED_FAR, 40 = RED).
-        #  켜져 있으면 배너와 status_tick 이 계속 경고하고, cam_testbed 계약이 그 로그로 막는다.
-        self.declare_parameter('tl_fake_box_h', 0.0)
-
         # ── 신호 구간 · 작은 맞은편 신호 대응 ───────────────────────────────
         #  /tl_zone (driving 이 경로 CSV terrain 에서 낸다):
         #    'T' 신호 정지 구간 — RED 게이트가 tl_zone_red_min_height 로 내려간다
@@ -698,8 +692,6 @@ class TrafficLight(Node):
                        int(g('tl_roi_xmax')), int(g('tl_roi_ymax')))
         self.tl_min_area   = int(g('tl_min_area'))
         self.tl_max_h_frac = max(0.0, float(g('tl_max_height_frac')))
-        #  시험용 주입. /tl/fake_box_h 가 오면 그쪽이 이긴다(런 중에 바꾸기 위해서다).
-        self.fake_box_h = max(0.0, float(g('tl_fake_box_h')))
         self.tl_zone_red_min_height = max(0, int(g('tl_zone_red_min_height')))
         self.tl_zone_stale_s   = max(0.1, float(g('tl_zone_stale_s')))
         self.bus_detect   = bool(g('tl_bus_detect'))
@@ -886,9 +878,6 @@ class TrafficLight(Node):
                                  callback_group=self.cg_ctrl)
         self.create_subscription(Bool, '/tl_permit', self.cb_tl_permit, qos,
                                  callback_group=self.cg_ctrl)
-        # 시험용 주입을 런 도중에 바꾸는 통로(실차에서는 아무도 안 낸다).
-        self.create_subscription(Float32, '/tl/fake_box_h', self.cb_fake_box_h, qos,
-                                 callback_group=self.cg_ctrl)
         self.create_subscription(String, '/tl_zone', self.cb_tl_zone, qos,
                                  callback_group=self.cg_ctrl)
 
@@ -925,10 +914,7 @@ class TrafficLight(Node):
                   f"셋째 칸 녹색 ≥{self.b_arrow_frac:.2f} — 못 읽으면 정지)"
                   if self.b_need_arrow else "원등에도 진행(화살표를 읽지 않는다)")
                if self.bus_detect else "\n   🚌 구간 'B': ★꺼져 있다★ — 'T' 와 같다")
-            + "\n   " + self.cam.describe()
-            + (f"\n   🧪 ★신호등 주입 모드★ 박스높이 {self.fake_box_h:.0f}px 를 봤다고 "
-               f"친다 — ★신호등 인지는 시험되지 않는다★ (실차 금지)"
-               if self.fake_box_h > 0.0 else ""))
+            + "\n   " + self.cam.describe())
 
     def _load_model(self, weights):
         """가중치를 읽고 라벨 표를 세운다. 실패해도 노드는 살아 있는다(fail-open).
@@ -1176,13 +1162,13 @@ class TrafficLight(Node):
         return self.last_bus
 
     def _decision_boxes(self, frame, boxes, bus, xmin, ymin):
-        """★판단에 쓸 박스★ — 구간 'B' 밖(그리고 주입 중)이면 boxes 그대로다(종전과 한 글자도 같은 판단).
+        """★판단에 쓸 박스★ — 구간 'B' 밖이면 boxes 그대로다(종전과 한 글자도 같은 판단).
         'B' 에서는 ① 버스 신호(모델 박스)를 뺀다 ② tl_b_need_arrow 면 차량 박스(last_veh) 하나만 남겨
         좌회전 화살표로 읽는다 — 켜짐 = GREEN, 그 밖(원등만·빨강·황색·작아서 못 읽음·버스 모양) = RED.
         RED 는 높이로 RED/RED_FAR 가 갈리고(_resolve_tl_state) 근접 높이·정지선 추론도 이 박스를 본다.
         ★원본 박스는 건드리지 않고 사본을 낸다★ — 그림과 /tl/boxes 의 라벨은 모델·HSV 가 본 그대로다."""
         self.last_arrow = None
-        if not self._b_active() or self.fake_box_h > 0.0:
+        if not self._b_active():
             return boxes
         drop = {id(b['_ref']) for b in bus if b['src'] == 'model'}
         rest = [b for b in boxes if id(b) not in drop]
@@ -1407,17 +1393,13 @@ class TrafficLight(Node):
                 self.last_red_drop = 0
                 self.last_green_drop = 0
 
-        # 시험용 주입 — 추론은 그대로 돌리고(지연 통계가 실제와 같게) 결론만 바꾼다.
-        if self.fake_box_h > 0.0:
-            boxes = [self._fake_red_box(self.fake_box_h)]
-
         # 구간 'B' — 버스·차량 박스를 가르고(_find_bus), 판단에 쓸 박스를 따로 만든다(_decision_boxes).
         #   'B' 밖에서는 dec 가 boxes 그 자체라 판단이 종전과 같다.
         bus = self._find_bus(frame, boxes, xmin, ymin)
         dec = self._decision_boxes(frame, boxes, bus, xmin, ymin)
         self.last_dec = dec
         # [진단] 이 프레임 박스(원본 좌표). ★/tl/state 보다 먼저★ — 테스트베드는 그것을
-        #   동기 신호로 다음 프레임을 민다. 주입 박스(fake)는 좌표가 HUD 용이라 그대로 낸다.
+        #   동기 신호로 다음 프레임을 민다.
         #   8번째 칸 = 역할('' | 'BUS' | 'VEH'), 9번째 = 화살표 판독(셋째 칸 녹색 비율, 안 읽었으면 -1).
         #   'BUS'·'VEH' 는 구간 'B' 에서만 붙는다 — BUS 는 판단에서 빠지고 VEH 하나가 판단한다.
         bus_model = {id(b['_ref']) for b in bus if b['src'] == 'model'}
@@ -1962,23 +1944,6 @@ class TrafficLight(Node):
         self.tl_zone   = z
         self.tl_zone_t = time.time()
 
-    def cb_fake_box_h(self, msg: Float32):
-        """★시험용★ 빨간 박스 높이를 바깥에서 준다. 0 이면 주입을 끈다."""
-        new = max(0.0, float(msg.data))
-        if (new > 0.0) != (self.fake_box_h > 0.0):
-            self.get_logger().warn(
-                f"🧪 신호등 주입 {'ON' if new > 0.0 else 'OFF'} "
-                f"(박스높이 {new:.0f}px) — ★인지는 시험되지 않는다★")
-        self.fake_box_h = new
-
-    def _fake_red_box(self, bh):
-        """주입용 빨간 박스 — _all_tl_boxes 가 내는 것과 같은 모양(좌표는 HUD 용)."""
-        bh = max(1, int(round(bh)))
-        bw = max(1, bh * 4)
-        x1, y1 = 40, 20
-        return {'label': 'RED', 'conf': 1.0, 'box': (x1, y1, x1 + bw, y1 + bh),
-                'box_h': bh, 'hsv_red': 9999, 'hsv_green': 0}
-
     def _permitted(self, now):
         """지금 손을 대도 되는가(안전 규약 ②) — /tl_enable 또는 /tl_permit 이 ★신선한★ True.
         신선도를 보는 이유: 발행 노드가 죽어 마지막 True 가 굳으면 차가 영영 물려 있게 된다."""
@@ -2143,11 +2108,6 @@ class TrafficLight(Node):
 
     def status_tick(self):
         now = time.time()
-        #  ★주입이 켜져 있으면 계속 떠든다★ 조용히 켜져 있는 것이 제일 위험하다.
-        if self.fake_box_h > 0.0:
-            self.get_logger().warn(
-                f"🧪 신호등 주입 모드 ON ({self.fake_box_h:.0f}px) — 실차 금지",
-                throttle_duration_sec=5.0)
         if self.model is None:
             self.get_logger().error("⛔ 신호등 모델이 없다 — 이 노드는 정지를 걸지 않는다",
                                     throttle_duration_sec=10.0)

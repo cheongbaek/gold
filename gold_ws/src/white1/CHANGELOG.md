@@ -87,6 +87,12 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-08 (밤 3) — `traffic_light.py` 시험용 빨간불 주입(`tl_fake_box_h`) 삭제 (white2 와 같은 줄)
+
+사용자 지시. 알고리즘 문서·튜닝 가이드는 white2 쪽 `TRAFFIC_LIGHT.md` · `TL_TUNING.md`(두 판 공통). 상세는 white2/CHANGELOG.md 같은 날 (밤 4).
+
+---
+
 ## 2026-10-08 (밤 2) — `traffic_light.py` 죽은 코드·낡은 주석 정리 (동작 불변, white2 와 같은 줄)
 
 `last_boxes`·`drive_state_t` 삭제, '정지선 놓침'(기본값에서 도달 불가) 주석, 낡은 주석 6곳. 시험용 주입(`tl_fake_box_h`)은 cam_testbed 가 써서 보류.
