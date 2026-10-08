@@ -27,7 +27,7 @@ traffic_light.py ― 신호등 인지·정지 [white1]
  인지 (프레임마다, cb_image)
 ════════════════════════════════════════════════════════════════════════════════
   보정(camera_model.undistort) → ROI → YOLO → 크기·종횡비·conf 필터 → HSV 색 교정
-  → RED 적색픽셀 관문 → RED / RED_FAR / GREEN / UNKNOWN
+  → RED 적색픽셀 관문 · GREEN 아랫변 관문(tl_green_max_y2, 지평선 아래 수풀·사람) → RED / RED_FAR / GREEN / UNKNOWN
   · RED 와 RED_FAR 는 박스 높이로 가른다 — tl_red_stop_min_height(25px), 신호 구간(/tl_zone
     'T'·'A')에서는 tl_zone_red_min_height(9px). 'A' 에서는 빨강+좌회전 화살표가 진행이다.
   · 정지선 seg 는 빨간 박스가 보이는 동안(sl_gate_red_s)만 같은 프레임에 한 번 더 돈다.
@@ -560,6 +560,12 @@ class TrafficLight(Node):
         self.declare_parameter('tl_max_height_frac', 0.5)
         self.declare_parameter('tl_min_aspect', 0.2)
         self.declare_parameter('tl_max_aspect', 6.0)   # 가로형 4구 ≈3.5~4.5, 위가 잘리면 더 크다
+        # [2026-10-08] ★GREEN 아랫변 관문★ — 보정 영상 기준 박스 아랫변 y 가 이 값 이상인 GREEN 은 버린다. 0 = 끔.
+        #   신호등 머리는 지평선 위에 있다. 녹화 4개 + #400 런 2개 GREEN 3,136개 : 진짜 신호 y2 ≤ 503(대부분 ≤ 484) ·
+        #   오검출 20개(길가 수풀 52~99px · 검은 옷 사람 102~125px · 기둥) y2 ≥ 539 → 그 사이 520.
+        #   높이·녹색 화소로는 못 가른다(진짜 근접 신호 51~60px · 흐린 날 가까운 녹색등은 청록으로 찍혀 녹색 화소 0).
+        #   RED 에는 걸지 않는다(버리면 위험 방향). 'B' 에서 수풀이 차량 박스로 뽑혀 단독 급정지하는 경로도 막는다.
+        self.declare_parameter('tl_green_max_y2', 520)
         # RED(정지 대상) / RED_FAR(아직 멀다) 를 가르는 근접 게이트 [박스 높이 px].
         self.declare_parameter('tl_red_stop_min_height',    25)
         # ★정지선 없이도 설 만큼 가까운가★ — 이 높이 이상이면 정지선과 무관하게 선다
@@ -569,6 +575,10 @@ class TrafficLight(Node):
         # 물고 있는 동안 근접 게이트를 이 비율로 낮춘다 — 박스가 몇 px 줄었다고
         #   RED_FAR 로 떨어져 해제 타이머가 도는 것을 막는다. 1.0 = 히스테리시스 없음.
         self.declare_parameter('tl_near_release_ratio',     0.7)
+        # [2026-10-08 진단] 서 있는데 초록이 보이고, 그 높이 × 이 비율 이하의 작은 빨강이 RED 로 해제를 막으면 로그를 남긴다
+        #   (판단은 바꾸지 않는다). 본선 T1 에 서면 다음 교차로(T2) 신호가 5~6px 빨강으로 보인다(144031 797~1730,
+        #   자기 36px · 비율 0.14~0.17 — 지금은 정지 중 문턱 6.3px 미만). 0 = 끔.
+        self.declare_parameter('tl_hold_log_ratio', 0.5)
         # HSV 색 교정. RED 박스는 적색 픽셀이 hsv_min_color_pixels 이상이어야 채택한다
         #   (붉지 않은 RED 오검출 관문). 램프 실측 최저 S=62·V=66, 적색 hue 는 160~169 까지 나온다.
         self.declare_parameter('hsv_min_color_pixels', 15)
@@ -717,6 +727,9 @@ class TrafficLight(Node):
         self.tl_max_aspect = float(g('tl_max_aspect'))
         self.tl_red_stop_min_height    = int(g('tl_red_stop_min_height'))
         self.tl_near_release_ratio = min(1.0, max(0.1, float(g('tl_near_release_ratio'))))
+        self.hold_log_ratio = min(1.0, max(0.0, float(g('tl_hold_log_ratio'))))
+        self.hold_log_n = 0           # [진단] '초록이 보이는데 작은 빨강이 해제를 막는다' 프레임 수 (누적)
+        self.green_max_y2 = max(0, int(g('tl_green_max_y2')))
         # 단독 문턱이 인지 게이트보다 작으면 'RED 확정 = 즉시 정지' 와 같아진다.
         self.tl_solo_stop_min_height = max(0.0, float(g('tl_solo_stop_min_height')))
         if 0.0 < self.tl_solo_stop_min_height < self._near_gate_base():
@@ -814,6 +827,7 @@ class TrafficLight(Node):
         self.last_boxes    = []
         self.last_raw      = 0        # 필터 전 박스 수 (-1 = 추론 예외)
         self.last_red_drop = 0        # HSV 적색 관문에 걸려 버려진 RED 수
+        self.last_green_drop = 0      # GREEN 아랫변 관문(tl_green_max_y2)에 걸려 버려진 GREEN 수
         self.fps           = 0.0
         self.fps_t         = time.monotonic()
 
@@ -1077,10 +1091,11 @@ class TrafficLight(Node):
             return 'GREEN', r, gr
         return 'UNKNOWN', r, gr
 
-    def _all_tl_boxes(self, result, roi_img):
-        """YOLO 결과 → 필터링·색보정된 신호등 박스 목록."""
+    def _all_tl_boxes(self, result, roi_img, ymin=0):
+        """YOLO 결과 → 필터링·색보정된 신호등 박스 목록. ymin = ROI 윗변(보정 영상 y) — GREEN 아랫변 관문용."""
         out = []
         self.last_red_drop = 0
+        self.last_green_drop = 0
         if result is None or result.boxes is None or len(result.boxes) == 0:
             return out
         # ROI 를 통째로 덮는 박스를 거르는 자 — ROI 높이 기준이라 ROI 를 바꿔도 산다.
@@ -1111,6 +1126,10 @@ class TrafficLight(Node):
             # RED 오탐 관문 — 붉지 않은 것이 RED 로 나가면 도로 한복판에서 선다.
             if label == 'RED' and hsv_red < self.hsv_min_color_pixels:
                 self.last_red_drop += 1
+                continue
+            # GREEN 아랫변 관문 — 지평선 아래(길가 수풀·사람)의 GREEN 은 신호등이 아니다.
+            if label == 'GREEN' and self.green_max_y2 > 0 and (y2 + ymin) >= self.green_max_y2:
+                self.last_green_drop += 1
                 continue
 
             out.append({
@@ -1218,6 +1237,25 @@ class TrafficLight(Node):
         """지금 '가깝다' 로 인정할 높이[px] — 물고 있는 동안은 낮춘다(히스테리시스)."""
         base = self._near_gate_base()
         return base * self.tl_near_release_ratio if self.stopping else base
+
+    def _log_release_hold(self, dec, state):
+        """[진단] 서 있는데 초록이 보이고, 그 높이 × tl_hold_log_ratio 이하의 작은 빨강이 RED 로 해제를 막는 프레임.
+        ★판단은 바꾸지 않는다★ — 실차 로그에서 '남의 빨강 때문에 안 풀린다' 를 찾는 표시다. 초록 오검출(수풀·사람)도 여기 걸린다."""
+        if self.hold_log_ratio <= 0.0 or not self.stopping or state != 'RED':
+            return
+        reds = [b for b in dec if b['label'] == 'RED']
+        greens = [b for b in dec if b['label'] == 'GREEN']
+        if not reds or not greens:
+            return
+        r = max(reds, key=lambda b: b.get('box_h', 0))
+        g = max(greens, key=lambda b: b.get('box_h', 0))
+        if r.get('box_h', 0) > self.hold_log_ratio * g.get('box_h', 0):
+            return
+        self.hold_log_n += 1
+        self.get_logger().info(
+            f"⏳ 해제 보류 — 초록 {g.get('box_h', 0)}px 이 보이는데 빨강 {r.get('box_h', 0)}px"
+            f"({r['box'][0]},{r['box'][1]}) 이 막는다 (누적 {self.hold_log_n}프레임 #{self.frame_count})",
+            throttle_duration_sec=1.0)
 
     def _resolve_tl_state(self, boxes):
         if not boxes:
@@ -1368,7 +1406,7 @@ class TrafficLight(Node):
                 res = self.model.predict(source=roi_img.copy(), conf=self.tl_conf,
                                          imgsz=self.tl_imgsz, device=self.device,
                                          verbose=False)[0]
-                boxes = self._all_tl_boxes(res, roi_img)
+                boxes = self._all_tl_boxes(res, roi_img, ymin)
                 self.last_boxes = boxes
                 # "YOLO 가 못 봤다" vs "필터가 먹었다" 를 사후에 가르기 위한 값.
                 self.last_raw = 0 if res.boxes is None else len(res.boxes)
@@ -1377,6 +1415,7 @@ class TrafficLight(Node):
                 self.last_boxes = []
                 self.last_raw = -1
                 self.last_red_drop = 0
+                self.last_green_drop = 0
 
         # 시험용 주입 — 추론은 그대로 돌리고(지연 통계가 실제와 같게) 결론만 바꾼다.
         if self.fake_box_h > 0.0:
@@ -1402,6 +1441,7 @@ class TrafficLight(Node):
             + [[*b['box'], b['color'], 0.0, 'cv', 'BUS', -1] for b in bus if b['src'] == 'cv'],
             separators=(',', ':'))))
         state = self._resolve_tl_state(dec)
+        self._log_release_hold(dec, state)
         self.pub_state.publish(String(data=state))
         self.pub_near.publish(Float32(data=float(self._near_metric(dec))))
         self.pub_red_far.publish(Bool(data=(state == 'RED_FAR')))
@@ -2136,7 +2176,7 @@ class TrafficLight(Node):
         if self.stopping:
             self.get_logger().info(
                 f"🛑 신호등 정지 유지 중 [{self.stop_why}] {self.stop_level}단 | tl={self.tl_state} "
-                f"raw={self.last_raw} drop={self.last_red_drop} fps={self.fps:.1f}"
+                f"raw={self.last_raw} drop={self.last_red_drop} gdrop={self.last_green_drop} fps={self.fps:.1f}"
                 + (f" sl={self._sl_px_txt()}" if self._sl_present(now) else " sl=없음"),
                 throttle_duration_sec=2.0)
 

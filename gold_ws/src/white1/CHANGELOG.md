@@ -87,6 +87,14 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-08 (밤) — `traffic_light.py` 해제 보류 진단 로그 · GREEN 아랫변 관문 (white2 와 같은 줄)
+
+`tl_hold_log_ratio` 0.5(로그만) · `tl_green_max_y2` 520(지평선 아래 GREEN = 길가 수풀·사람 오검출을 버린다, RED 는 그대로).
+white1 에서는 driving `LightFilter` 가 `/tl/state` GREEN 0.4 s 로 카메라 빨간불 래치를 풀고 T1 0초를 잡으므로, 수풀 GREEN 이
+그 근거가 되는 길이 닫힌다. 근거·검증은 white2/CHANGELOG.md 같은 날 (밤 2).
+
+---
+
 ## 2026-10-08 (저녁) — `traffic_light.py` 디버그 화면 : BEV 패널·ROI 확대 열 기본 켬, 글자만 줄임 (white2 와 같은 줄)
 
 사용자 지시('그림은 두고 글자만 필수로')로 (오후)의 화면 최소화를 고쳤다 — 캔버스 1728×590, 파라미터 요약·ROI 머리·'BEV'·'BUMPER' 글자 삭제,
