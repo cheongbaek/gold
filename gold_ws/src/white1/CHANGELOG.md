@@ -87,6 +87,13 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-08 (저녁) — `traffic_light.py` 디버그 화면 : BEV 패널·ROI 확대 열 기본 켬, 글자만 줄임 (white2 와 같은 줄)
+
+사용자 지시('그림은 두고 글자만 필수로')로 (오후)의 화면 최소화를 고쳤다 — 캔버스 1728×590, 파라미터 요약·ROI 머리·'BEV'·'BUMPER' 글자 삭제,
+판단 박스 확대 1장 삭제(타일과 중복), 패널이 있으면 HUD 에서 근접·정지선 숫자를 뺀다. 판단은 그대로. 상세는 white2/CHANGELOG.md 같은 날 (저녁).
+
+---
+
 ## 2026-10-08 (오후) — `traffic_light.py` 정지 후 해제 조건 · 디버그 화면 최소화 (white2 와 같은 줄)
 
 짝 규약대로 white2 와 같은 줄을 넣었다 — ① 서 있다가 놓기 = RED 0.7 s 없음 + 초록 확정, 또는 RED 1.5 s 없음(`red_release_hold_lost_s`)

@@ -640,10 +640,10 @@ class TrafficLight(Node):
         self.declare_parameter('window_width', 960)
         # [2026-10-08] 디버그 화면은 '최소 자원·판단에 필요한 것만'(사용자) — BEV 패널·ROI 확대 열은 기본 끔.
         #   본화면(박스·정지선·판단 박스 확대 1장) + HUD 2줄 = 960x584(종전 1728x616 의 53%).
-        self.declare_parameter('show_bev', False)     # 우측 BEV 패널(발화선·범퍼선·파라미터) — 정지선 사다리꼴을 맞출 때만
+        self.declare_parameter('show_bev', True)      # 우측 BEV 패널(발화선 썸네일 + 근접·정지선 게이지)
         # ROI 밖 밝기. 너무 낮추면 ROI 밖 노면의 정지선 마스크를 눈으로 못 본다.
         self.declare_parameter('roi_dim', 0.6)
-        self.declare_parameter('tl_roi_zoom', False)  # 원본에서 자른 ROI 확대 열 + 박스 타일 4장(본화면과 겹친다)
+        self.declare_parameter('tl_roi_zoom', True)   # 원본에서 자른 ROI 확대 열 + 박스 타일 4장(판단 박스부터)
         self.declare_parameter('hud_font', '')        # 빈 값 = FONT_CANDIDATES 순서대로
 
         # ── 시험용 신호등 주입 — ★실차에서는 반드시 0★ ─────────────────────
@@ -787,7 +787,6 @@ class TrafficLight(Node):
                                font_path=str(g('hud_font')))
         self._pool = CanvasPool()          # 표시 캔버스 두 장(더블버퍼)
         self._hud_strip = StripCache(self.tr)   # 하단 HUD — 글자가 바뀔 때만 다시 그린다
-        self._par_strip = None             # 패널의 파라미터 요약 — 정적이라 한 번만
         self._bev_m = None                 # 썸네일 크기로 바로 펴는 호모그래피
         self._bev_m_key = None
 
@@ -1438,7 +1437,9 @@ class TrafficLight(Node):
                                          throttle_duration_sec=5.0)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  표시 — 계기판 (뷰 + 하단 HUD 2줄 · 선택: 우측 BEV 패널 show_bev · ROI 확대 열 tl_roi_zoom)
+    #  표시 — 계기판 (뷰 + 우측 BEV 패널 show_bev + ROI 확대 열 tl_roi_zoom + 하단 HUD 2줄)
+    #  [2026-10-08 오후] 그림은 그대로, 글자는 판단에 필요한 것만 — 고정 숫자(파라미터 요약·ROI 크기·'BEV'·'BUMPER')를 지웠고,
+    #  패널이 있으면 HUD 는 패널 게이지와 겹치는 숫자(근접·정지선)를 싣지 않는다.
     # ══════════════════════════════════════════════════════════════════════════
     #  먼저 표시 크기로 줄이고 그 좌표계에서 그린다(글자가 창 크기에 맞고 싸다).
     #  글자는 그림 위가 아니라 하단 띠·우측 패널에 둔다. 대부분의 프레임 2.4ms.
@@ -1446,8 +1447,6 @@ class TrafficLight(Node):
     #  하단 HUD 의 글자 크기·줄 수. 열 좌표는 이 크기의 '칸' 단위로 적는다.
     HUD_SIZE  = 14
     HUD_LINES = 2
-    #  본화면 오른쪽 위 ★판단 박스 확대 1장★ 한 변 [px] — ROI(가운데 1/3) 밖이라 박스를 가리지 않는다.
-    INSET = 120
     #  우측 패널이 뷰 폭에서 차지하는 비율. BEV 썸네일(4:3)이 이 폭을 채운다.
     PANEL_RATIO = 0.30
     #  ROI 확대 열 폭과 그 아래 박스 확대 타일 개수.
@@ -1487,8 +1486,6 @@ class TrafficLight(Node):
         if sl_live:
             cv2.polylines(view, [(self.cam.src_pts * sc).astype(np.int32)], True,
                           C_CYAN, 1)
-            atxt(view, self.cam.src_pts[0, 0] * sc + 4,
-                     self.cam.src_pts[0, 1] * sc + 13, 'BEV', C_CYAN, 0.38)
             if self.sl_poly is not None and sl_fresh:
                 poly = (self.sl_poly * sc).astype(np.int32)
                 cv2.polylines(view, [poly], True, C_MAGENTA, 2)
@@ -1524,17 +1521,17 @@ class TrafficLight(Node):
             bx1, by1, bx2, by2 = (int(round(v * sc)) for v in it['box'])
             cv2.rectangle(view, (bx1, by1), (bx2, by2), C_GRAY, 1)
             chip(view, bx1, by2 + 2, f"BUS {it['color'][0]} cv skip", C_GRAY)
-        self._draw_inset(view, frame, roi, dec, veh, vw)
 
         # ── 물고 있으면 빨간 테두리 — 곁눈으로도 보이게 ────────────────
         if self.stopping:
             cv2.rectangle(view, (0, 0), (vw - 1, vh - 1), C_RED, 6)
 
         if pw:
-            self._draw_panel(canvas, frame, vw, vh, pw, sl_fresh)
+            self._draw_panel(canvas, frame, vw, vh, pw, sl_fresh, dec)
         if zw:
-            self._draw_zoom(canvas, frame, boxes, roi, vw + pw, zw, vh)
-        self._draw_hud(canvas, vw + pw + zw, vh, hh, state, dec, now, sl_live, sl_fresh, arrow)
+            self._draw_zoom(canvas, frame, boxes, roi, vw + pw, zw, vh, bus_ids, dec, veh, arrow)
+        self._draw_hud(canvas, vw + pw + zw, vh, hh, state, dec, now, sl_live, sl_fresh, arrow,
+                       numbers=not pw)
 
         # imshow 는 여기서 부르지 않는다 — 워커 스레드에서 HighGUI 를 부르면 그 스레드가
         #   GTK 안에서 멎는다. 캔버스만 넘기고 표시는 메인 스레드가 한다(창이 켜졌을 때만).
@@ -1552,40 +1549,8 @@ class TrafficLight(Node):
                 self.get_logger().error(f"디버그 이미지 발행 실패: {e}",
                                          throttle_duration_sec=5.0)
 
-    def _draw_inset(self, view, frame, roi, dec, veh, vw):
-        """본화면 오른쪽 위 — ★판단 박스 하나★ 를 원본에서 잘라 키운다(NEAREST, 화소를 지어내지 않는다).
-        고르는 순서 : 'B' 차량 박스 → 가장 큰 RED → 가장 큰 박스. 'B' 면 4칸 경계와 화살표 판독 창(노랑)을 긋는다."""
-        if not dec:
-            return
-        tgt = veh if (veh is not None) else max(
-            dec, key=lambda b: ((b['label'] == 'RED'), b.get('box_h', 0)))
-        H, W = frame.shape[:2]
-        x1, y1, x2, y2 = (tgt['box'][0] + roi[0], tgt['box'][1] + roi[1],
-                          tgt['box'][2] + roi[0], tgt['box'][3] + roi[1])
-        T = self.INSET
-        s = min(H, W, max(16, int(1.3 * max(x2 - x1, y2 - y1))))
-        sx = max(0, min(W - s, (x1 + x2) // 2 - s // 2))
-        sy = max(0, min(H - s, (y1 + y2) // 2 - s // 2))
-        tx, ty = vw - T - 6, 6
-        if ty + T > view.shape[0] or tx < 0:
-            return
-        cv2.resize(frame[sy:sy + s, sx:sx + s], (T, T), dst=view[ty:ty + T, tx:tx + T],
-                   interpolation=cv2.INTER_NEAREST)
-        k = T / float(s)
-        X = lambda v: int(round(tx + (v - sx) * k))
-        Y = lambda v: int(round(ty + (v - sy) * k))
-        col = C_RED if dec[0]['label'] == 'RED' else C_GREEN if dec[0]['label'] == 'GREEN' else C_GRAY
-        if tgt is veh and 'b_arrow' in dec[0]:   # 'B' — 4칸(빨강·황색·화살표·원등) 경계 + 셋째 칸 판독 창
-            w = x2 - x1
-            for q in (0.25, 0.5, 0.75):
-                xq = X(x1 + q * w)
-                cv2.line(view, (xq, Y(y1)), (xq, Y(y2)), C_DIM, 1)
-            cv2.rectangle(view, (X(x1 + ARROW['x'][0] * w), Y(y1 + ARROW['y'][0] * (y2 - y1))),
-                          (X(x1 + ARROW['x'][1] * w), Y(y1 + ARROW['y'][1] * (y2 - y1))), C_AMBER, 1)
-        cv2.rectangle(view, (tx, ty), (tx + T - 1, ty + T - 1), col, 2)
-
-    def _draw_panel(self, canvas, frame, vw, vh, pw, sl_fresh):
-        """우측 패널 — BEV 썸네일(발화선·범퍼선) + 게이지 두 개 + 파라미터 요약.
+    def _draw_panel(self, canvas, frame, vw, vh, pw, sl_fresh, dec):
+        """우측 패널 — BEV 썸네일(발화선·범퍼선) + 게이지 두 개(근접 = ★판단에 쓴 박스★ dec 기준).
         발화선은 BEV 행이라 원본 화면만으로는 어디인지 알 수 없어 썸네일에 그린다."""
         px, tw = vw, pw - 12
         th = int(round(tw * self.cam.bev_h / float(self.cam.bev_w)))
@@ -1597,8 +1562,8 @@ class TrafficLight(Node):
         cv2.warpPerspective(frame, self._bev_m, (tw, th), dst=thumb)
 
         k = tw / float(self.cam.bev_w)
-        #  범퍼선은 기록값 sl_px 의 원점이라 남겨 둔다(판정에는 안 쓴다).
-        for row, col, lab in ((self.cam.bumper_y, C_GREEN, 'BUMPER'),
+        #  범퍼선은 기록값 sl_px 의 원점이라 선만 남긴다(판정에는 안 쓴다).
+        for row, col, lab in ((self.cam.bumper_y, C_GREEN, ''),
                               (self.sl_trigger_bev_y, C_RED,
                                f"STOP y{self.sl_trigger_bev_y:.0f}")):
             y = int(round(row * k))
@@ -1606,10 +1571,8 @@ class TrafficLight(Node):
                 continue
             y = max(0, min(th - 1, y))       # 범퍼행 = bev_h 여도 선이 보이게 클램프
             cv2.line(thumb, (0, y), (tw, y), col, 1)
-            # BUMPER 라벨만 오른쪽으로(폭은 재서 정한다).
-            lw = cv2.getTextSize(lab, cv2.FONT_HERSHEY_SIMPLEX, 0.33, 1)[0][0]
-            atxt(thumb, (tw - lw - 4) if col == C_GREEN else 3,
-                 max(10, y - 3), lab, col, 0.33)
+            if lab:
+                atxt(thumb, 3, max(10, y - 3), lab, col, 0.33)
         if self.sl_poly_bev is not None and sl_fresh:
             pts = (np.asarray(self.sl_poly_bev) * k).astype(np.int32)
             cv2.polylines(thumb, [pts], True, C_MAGENTA, 2)
@@ -1621,7 +1584,7 @@ class TrafficLight(Node):
         # ── 게이지 — 지금값을 문턱과 나란히 ───────────────────────────
         yy = 6 + th + 12
         cv2.rectangle(canvas, (px + 1, yy - 4), (px + pw, yy + 80), C_BG, -1)
-        gate, near = self._near_gate(), self._near_metric(self.last_boxes)
+        gate, near = self._near_gate(), self._near_metric(dec)
         base = max(1e-6, self._near_gate_base())
         solo = self.tl_solo_stop_min_height
         span = max(base, solo) * 1.3
@@ -1654,44 +1617,16 @@ class TrafficLight(Node):
                   max(0.0, cur / rng) if live else 0.0, C_RED if hit else C_MAGENTA,
                   ((self.sl_trigger_bev_y / rng, C_RED),))
 
-        # ── 파라미터 요약 — 정적이라 한 번만 그린다 ──────────────────
-        yy += 44
-        avail = max(1, vh - yy)
-        if self._par_strip is None or self._par_strip.shape[0] != avail:
-            sp = self.cam.src_pts
-            gate_txt = f"gate {self.tl_red_stop_min_height}px"
-            rows = [
-                (8, 2, '판정 파라미터', C_TXT, 12, True),
-                (8, 22, f"conf {self.tl_conf:.2f}  imgsz {self.tl_imgsz}",
-                 C_DIM, 12, False),
-                (8, 40, f"hold {self.tl_hold_s:.2f}s  grace {self.tl_gap_grace_s:.2f}s",
-                 C_DIM, 12, False),
-                (8, 58, f"{gate_txt}  release x{self.tl_near_release_ratio:.2f}",
-                 C_DIM, 12, False),
-                (8, 76, f"놓기유예 {self.red_release_hold_s:.2f}s"
-                        f"{'  래치' if self.stop_latch else ''}", C_DIM, 12, False),
-                (8, 100, f"sl conf {self.sl_conf:.2f}  hold {self.sl_hold_s:.2f}s",
-                 C_DIM, 12, False),
-                (8, 118, f"발화 y{self.sl_trigger_bev_y:.0f}"
-                         f"  단독 {self.tl_solo_stop_min_height:.0f}px",
-                 C_DIM, 12, False),
-                (8, 142, f"BEV {sp[0, 0]:.0f},{sp[0, 1]:.0f} {sp[1, 0]:.0f},{sp[1, 1]:.0f}",
-                 C_DIM, 12, False),
-                (8, 160, f"    {sp[2, 0]:.0f},{sp[2, 1]:.0f} {sp[3, 0]:.0f},{sp[3, 1]:.0f}",
-                 C_DIM, 12, False),
-            ]
-            # 자리가 없으면 아래쪽 줄을 버린다(중간에서 잘린 글자보다 낫다).
-            self._par_strip = self.tr.strip(
-                pw, avail, [r for r in rows if r[1] + r[4] + 2 <= avail], C_BG)
-        blit(canvas, self._par_strip, px + 1, yy)
 
-    def _draw_zoom(self, canvas, frame, boxes, roi, x0, zw, vh):
+    def _draw_zoom(self, canvas, frame, boxes, roi, x0, zw, vh, bus_ids=(), dec=None, veh=None, arrow=None):
         """ROI 확대 열 — 축소된 뷰가 아니라 원본에서 ROI 를 잘라 키운다.
 
         위: ROI 전체 + 박스(라벨·높이 px, 근접 게이트를 넘으면 '*').
-        아래: 박스 확대 타일(높이 큰 순, NEAREST — 픽셀을 지어내지 않는다). 화살표·
-        버스신호처럼 9~25px 짜리가 무엇인지 눈으로 가르는 용도다.
+        아래: 박스 확대 타일(★판단 박스 먼저★, 그다음 높이 큰 순, NEAREST — 픽셀을 지어내지 않는다).
+        구간 'B' 면 차량 박스는 판단 색·화살표 비율(VEH), 버스는 회색 'BUS skip', 차량 타일에는
+        4칸 경계와 셋째 칸 판독 창(노랑)을 긋는다.
         """
+        dec = boxes if dec is None else dec
         col_area = canvas[0:vh, x0:x0 + zw]
         col_area[:] = C_BG                      # 타일 수가 바뀌므로 매번 지운다
         cv2.line(canvas, (x0, 0), (x0, vh), C_FRAME, 1)
@@ -1701,24 +1636,32 @@ class TrafficLight(Node):
             return
         n = self.ZOOM_TILES
         t = (zw - 6 * (n + 1)) // n                         # 타일 한 변
-        k = min((zw - 12) / float(rw), (vh - t - 34) / float(rh))
+        k = min((zw - 12) / float(rw), (vh - t - 20) / float(rh))
         w, h = int(rw * k), int(rh * k)
-        x, y = x0 + 6, 20
+        x, y = x0 + 6, 6
         cv2.resize(frame[ymin:ymax, xmin:xmax], (w, h), dst=canvas[y:y + h, x:x + w],
                    interpolation=cv2.INTER_LINEAR)
         cv2.rectangle(canvas, (x - 1, y - 1), (x + w, y + h), C_FRAME, 1)
-        atxt(canvas, x, 14, f"ROI {rw}x{rh}  view x{k:.2f}"
-                            f"  YOLO x{self.tl_imgsz / float(max(rw, rh)):.2f}", C_DIM, 0.40)
 
         gate = self._near_gate()
-        boxes = sorted(boxes, key=lambda b: -b.get('box_h', 0))
+        b_veh = veh is not None and len(dec) == 1 and 'b_arrow' in dec[0]
+        dec_ids = {id(b) for b in dec}
+        is_dec = lambda b: id(b) in dec_ids or (b_veh and b is veh)
+        boxes = sorted(boxes, key=lambda b: (not is_dec(b), -b.get('box_h', 0)))
         H, W = frame.shape[:2]
         for i, it in enumerate(boxes):
             x1, y1, x2, y2 = it['box']
-            col = (C_RED if it['label'] == 'RED'
-                   else C_GREEN if it['label'] == 'GREEN' else C_GRAY)
-            hit = it['label'] == 'RED' and self._near_metric([it]) >= gate
-            lab = f"{it['label'][0]} {it.get('box_h', 0)}px{'*' if hit else ''}"
+            if id(it) in bus_ids:
+                lab_c, lab = 'BUS', f"BUS {it['label'][0]} skip"
+            elif b_veh and it is veh:
+                lab_c = dec[0]['label']
+                a = f" <{arrow[0]:.2f}" if (arrow and arrow[0] is not None) else " <--"
+                lab = f"VEH {lab_c[0]} {it.get('box_h', 0)}px{a}"
+            else:
+                lab_c, lab = it['label'], f"{it['label'][0]} {it.get('box_h', 0)}px"
+            col = (C_RED if lab_c == 'RED' else C_GREEN if lab_c == 'GREEN' else C_GRAY)
+            hit = lab_c == 'RED' and is_dec(it) and it.get('box_h', 0) >= gate
+            lab += '*' if hit else ''
             bx1, by1 = x + int(x1 * k), y + int(y1 * k)
             bx2, by2 = x + int(x2 * k), y + int(y2 * k)
             cv2.rectangle(canvas, (bx1, by1), (bx2, by2), col, 2 if hit else 1)
@@ -1733,6 +1676,15 @@ class TrafficLight(Node):
             tx, ty = x0 + 6 + i * (t + 6), vh - t - 6
             cv2.resize(frame[sy:sy + s, sx:sx + s], (t, t),
                        dst=canvas[ty:ty + t, tx:tx + t], interpolation=cv2.INTER_NEAREST)
+            if b_veh and it is veh:              # 'B' — 4칸(빨강·황색·화살표·원등) 경계 + 셋째 칸 판독 창
+                q = t / float(s)
+                X = lambda v: int(round(tx + (v + xmin - sx) * q))
+                Y = lambda v: int(round(ty + (v + ymin - sy) * q))
+                bw, bh = x2 - x1, y2 - y1
+                for f in (0.25, 0.5, 0.75):
+                    cv2.line(canvas, (X(x1 + f * bw), Y(y1)), (X(x1 + f * bw), Y(y2)), C_DIM, 1)
+                cv2.rectangle(canvas, (X(x1 + ARROW['x'][0] * bw), Y(y1 + ARROW['y'][0] * bh)),
+                              (X(x1 + ARROW['x'][1] * bw), Y(y1 + ARROW['y'][1] * bh)), C_AMBER, 1)
             cv2.rectangle(canvas, (tx, ty), (tx + t - 1, ty + t - 1), col, 2 if hit else 1)
             chip(canvas, tx + 2, ty + 2, lab, col)
 
@@ -1746,8 +1698,9 @@ class TrafficLight(Node):
             return f"주행({self.drive_state or '?'})"
         return ''
 
-    def _draw_hud(self, canvas, cw, vh, hh, state, boxes, now, sl_live, sl_fresh, arrow=None):
+    def _draw_hud(self, canvas, cw, vh, hh, state, boxes, now, sl_live, sl_fresh, arrow=None, numbers=True):
         """하단 HUD ★2줄★ [2026-10-08] — 판단과 그 근거만. boxes = ★판단에 쓴 박스★(근접 높이가 실제 판단과 같다).
+        numbers=False(BEV 패널이 떠 있다)면 근접·정지선 숫자는 패널 게이지에 있으므로 싣지 않는다.
         ★열은 고정폭 '칸' 으로 적는다★ — 줄이 달라도 열이 맞는다.
 
         한 줄의 원소 = (칸, 글자, 색[, 굵게]). 앞 원소와 겹치려 하면 밀어 낸다
@@ -1790,12 +1743,12 @@ class TrafficLight(Node):
         lines = [
             [(0, state, scol, True),
              (10, ztxt, zcol),
-             (38, near_txt, C_RED if near >= gate else C_TXT),
+             (38, near_txt if numbers else '', C_RED if near >= gate else C_TXT),
              (66, f"FPS {self.fps:.0f}", C_DIM)],
             [(0, lvl_txt, C_RED if lvl else C_DIM, True),
              (10, (f"{self.stop_why}" if (self.stop_why and lvl) else
                    (f"대기 {waited:.1f}s" if self.sl_wait else '')), C_AMBER if self.sl_wait and not lvl else C_TXT),
-             (38, sl_txt, sl_col),
+             (38, sl_txt if numbers else '', sl_col),
              (66, f"허락 {permit or '없음'}", C_GREEN if permit else C_RED)],
         ]
         items = []
