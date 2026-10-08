@@ -272,7 +272,7 @@ def declare_args(cam_dev):
                         '이유★ 1920 의 정확히 절반이라 리사이즈가 0.28ms 인데, 640 같은 '
                         '임의 배율은 같은 보간으로 2.50ms 다(실측). 그리고 640 이면 HUD '
                         '글자를 그만큼 작게 잡아야 해서 판독성이 다시 나빠진다. '
-                        '패널을 끄려면 -p show_bev:=false, ROI 어둡기는 -p roi_dim:=1.0'),
+                        '패널은 기본 꺼짐 — 켜려면 -p show_bev:=true, ROI 어둡기는 -p roi_dim:=1.0'),
         DeclareLaunchArgument(
             'tl_stop_latch', default_value='false',
             description='★기본 false★ = 빨간불을 보는 동안만 잡는다(사라지거나 초록불이면 '

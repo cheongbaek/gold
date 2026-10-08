@@ -4,7 +4,8 @@
 traffic_light.py ― 신호등 인지·정지 [white2]
 ════════════════════════════════════════════════════════════════════════════════
 카메라로 신호등을 보고 ★빨간불이 확정되면 리니어 2단(/brake_level=2)★ 으로 세운다.
-빨간불이 red_release_hold_s 동안 안 보이면 놓는다(stop_latch:=true 면 초록 확정까지 문다).
+빨간불이 red_release_hold_s 동안 안 보이고 초록이 확정되면 놓는다 — 초록도 못 보면 red_release_hold_lost_s 까지
+기다린다 [2026-10-08](stop_latch:=true 면 초록 확정까지 문다).
 변경 이력과 각 값의 실측 근거는 white2/CHANGELOG.md 에 있다.
 
 개입은 허락받은 구간에서만 한다:
@@ -61,7 +62,7 @@ traffic_light.py ― 신호등 인지·정지 [white2]
  ② 허락받은 구간에서만 문다(위). 수동조종(D5)에서는 arduino 가 브레이크를 0 으로 보낸다.
  ③ 남의 브레이크는 풀지 않는다 — 0단은 이 노드가 2단을 건 적이 있을 때만 내고,
     driving 이 DRIVE_DONE 으로 물고 있으면 해제를 내지 않는다.
- ⚠️ 신호등이 시야를 완전히 벗어나면 red_release_hold_s 뒤 차는 다시 굴러간다 —
+ ⚠️ 신호등이 시야를 완전히 벗어나면 red_release_hold_lost_s 뒤 차는 다시 굴러간다 —
     더 가까이 세우려면 근접 게이트가 아니라 카메라를 위로 틸트한다.
 """
 
@@ -582,6 +583,11 @@ class TrafficLight(Node):
         #   않게. 0.55초 공백에 풀렸다 다시 물린 실측 때문에 0.7. 전체 해제 지연은 여기 +
         #   arduino BRAKE_RELEASE_HOLD_S(0.5).
         self.declare_parameter('red_release_hold_s', 0.7)
+        # [2026-10-08] 그런데 ★초록도 못 봤다면★ 이만큼 더 기다린다 — 서 있는 동안 작은 RED 가 1.0 s 끊겨
+        #   0.7 s 에 풀렸다 0.6 s 뒤 다시 물린 실측(k-city 1280 실시간, 인계 미결 1). lockstep 회귀 3영상·k-city 에서
+        #   RED 끊김 최장 0.42 s. 초록을 보면 종전처럼 red_release_hold_s 에 놓는다(출발 지연 없음).
+        #   red_release_hold_s 이하면 종전과 같다(끔).
+        self.declare_parameter('red_release_hold_lost_s', 1.5)
         # 이번 접근에서 확정했으면 마지막 RED 로부터 이만큼은 정지선 계획을 잇는다(_red_armed).
         #   0 = 끔.
         self.declare_parameter('tl_arm_hold_s', 1.0)
@@ -622,10 +628,12 @@ class TrafficLight(Node):
         # 카메라 뷰 폭(우측 패널·HUD 는 밖에 붙는다). 960 = 1920 의 절반이라 리사이즈가
         #   0.28ms(임의 배율은 2.5ms). 0 이면 원본 크기.
         self.declare_parameter('window_width', 960)
-        self.declare_parameter('show_bev', True)      # 우측 BEV 패널(발화선·범퍼선)
+        # [2026-10-08] 디버그 화면은 '최소 자원·판단에 필요한 것만'(사용자) — BEV 패널·ROI 확대 열은 기본 끔.
+        #   본화면(박스·정지선·판단 박스 확대 1장) + HUD 2줄 = 960x584(종전 1728x616 의 53%).
+        self.declare_parameter('show_bev', False)     # 우측 BEV 패널(발화선·범퍼선·파라미터) — 정지선 사다리꼴을 맞출 때만
         # ROI 밖 밝기. 너무 낮추면 ROI 밖 노면의 정지선 마스크를 눈으로 못 본다.
         self.declare_parameter('roi_dim', 0.6)
-        self.declare_parameter('tl_roi_zoom', True)   # 원본에서 자른 ROI 확대 열 + 박스 타일
+        self.declare_parameter('tl_roi_zoom', False)  # 원본에서 자른 ROI 확대 열 + 박스 타일 4장(본화면과 겹친다)
         self.declare_parameter('hud_font', '')        # 빈 값 = FONT_CANDIDATES 순서대로
 
         # ── 시험용 신호등 주입 — ★실차에서는 반드시 0★ ─────────────────────
@@ -721,6 +729,7 @@ class TrafficLight(Node):
         self.tl_state_max_age = float(g('tl_state_max_age'))
         self.green_hold_s     = float(g('green_hold_s'))
         self.red_release_hold_s = max(0.0, float(g('red_release_hold_s')))
+        self.red_release_hold_lost_s = max(self.red_release_hold_s, float(g('red_release_hold_lost_s')))
         self.tl_arm_hold_s = max(0.0, float(g('tl_arm_hold_s')))
         self.sl_enable  = bool(g('sl_enable'))
         self.sl_conf    = float(g('sl_conf'))
@@ -1399,7 +1408,7 @@ class TrafficLight(Node):
 
         if self.show_window or self.publish_debug:
             with self._draw_lock:       # 그리기 스레드에 넘기기만 한다(_draw_loop)
-                self._draw_job = (frame, boxes, state, (xmin, ymin, xmax, ymax), bus)
+                self._draw_job = (frame, boxes, state, (xmin, ymin, xmax, ymax), bus, dec, veh, arrow)
             self._draw_evt.set()
 
     def _draw_loop(self):
@@ -1419,21 +1428,25 @@ class TrafficLight(Node):
                                          throttle_duration_sec=5.0)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  표시 — 계기판 (뷰 + 우측 BEV 패널 + ROI 확대 열 + 하단 HUD)
+    #  표시 — 계기판 (뷰 + 하단 HUD 2줄 · 선택: 우측 BEV 패널 show_bev · ROI 확대 열 tl_roi_zoom)
     # ══════════════════════════════════════════════════════════════════════════
     #  먼저 표시 크기로 줄이고 그 좌표계에서 그린다(글자가 창 크기에 맞고 싸다).
     #  글자는 그림 위가 아니라 하단 띠·우측 패널에 둔다. 대부분의 프레임 2.4ms.
 
     #  하단 HUD 의 글자 크기·줄 수. 열 좌표는 이 크기의 '칸' 단위로 적는다.
     HUD_SIZE  = 14
-    HUD_LINES = 3
+    HUD_LINES = 2
+    #  본화면 오른쪽 위 ★판단 박스 확대 1장★ 한 변 [px] — ROI(가운데 1/3) 밖이라 박스를 가리지 않는다.
+    INSET = 120
     #  우측 패널이 뷰 폭에서 차지하는 비율. BEV 썸네일(4:3)이 이 폭을 채운다.
     PANEL_RATIO = 0.30
     #  ROI 확대 열 폭과 그 아래 박스 확대 타일 개수.
     ZOOM_W = 480
     ZOOM_TILES = 4
 
-    def _draw(self, frame, boxes, state, roi, bus=()):
+    def _draw(self, frame, boxes, state, roi, bus=(), dec=None, veh=None, arrow=None):
+        """dec = 판단에 쓴 박스(구간 'B' 면 차량 박스 사본 하나) · veh = 'B' 의 차량 박스 · arrow = (비율|None, 켜짐)."""
+        dec = boxes if dec is None else dec
         now = time.time()
         sl_live = self.sl_enable and self.sl_model is not None
         sl_fresh = self._sl_present(now)
@@ -1473,23 +1486,35 @@ class TrafficLight(Node):
                 cv2.circle(view, (int(poly[bi, 0]), int(poly[bi, 1])), 4,
                            C_MAGENTA, -1)
 
-        # ── 박스 ───────────────────────────────────────────────────────
+        # ── 박스 [2026-10-08] — 판단에 쓴 박스만 굵게. 칩은 '색 conf 높이' 만.
+        #   구간 'B' : 차량 박스(VEH)는 ★판단 색★(화살표 켜짐 = 녹, 그 밖 = 적), 버스는 회색 얇게 'skip'.
+        bus_ids = {id(b['_ref']) for b in bus if b['src'] == 'model'}
+        dec_ids = {id(b) for b in dec}
+        col_of = lambda lab: C_RED if lab == 'RED' else C_GREEN if lab == 'GREEN' else C_GRAY
         for it in boxes:
             x1, y1, x2, y2 = it['box']
             bx1, by1 = int(round((x1 + roi[0]) * sc)), int(round((y1 + roi[1]) * sc))
             bx2, by2 = int(round((x2 + roi[0]) * sc)), int(round((y2 + roi[1]) * sc))
-            col = (C_RED if it['label'] == 'RED'
-                   else C_GREEN if it['label'] == 'GREEN' else C_GRAY)
-            cv2.rectangle(view, (bx1, by1), (bx2, by2), col, 2)
-            chip(view, bx1, (by1 - 16) if by1 > 17 else by2,
-                     f"{it['label']} {it['conf']:.2f} {it.get('box_h', 0)}px", col)
-
-        # ── 버스 신호(구간 'B') — 회색 점선 느낌의 얇은 박스. 판단에 안 쓰는 것이라 색을 빼 둔다 ──
-        for it in bus:
+            ty = (by1 - 16) if by1 > 17 else by2
+            if id(it) in bus_ids:
+                cv2.rectangle(view, (bx1, by1), (bx2, by2), C_GRAY, 1)
+                chip(view, bx1, by2 + 2, f"BUS {it['label'][0]} skip", C_GRAY)   # 아래 — 차량 칩을 덮지 않게
+            elif it is veh and len(dec) == 1 and 'b_arrow' in dec[0]:
+                col = col_of(dec[0]['label'])
+                cv2.rectangle(view, (bx1, by1), (bx2, by2), col, 3)
+                a = (f" <{arrow[0]:.2f}" if (arrow and arrow[0] is not None) else " <--")
+                chip(view, bx1, ty, f"VEH {dec[0]['label'][0]} {it.get('box_h', 0)}px{a}", col)
+            else:
+                col = col_of(it['label'])
+                cv2.rectangle(view, (bx1, by1), (bx2, by2), col, 2 if id(it) in dec_ids else 1)
+                chip(view, bx1, ty, f"{it['label'][0]} {it['conf']:.2f} {it.get('box_h', 0)}px", col)
+        for it in bus:                                    # 영상처리로 찾은 버스 몸체
+            if it['src'] != 'cv':
+                continue
             bx1, by1, bx2, by2 = (int(round(v * sc)) for v in it['box'])
-            cv2.rectangle(view, (bx1 - 2, by1 - 2), (bx2 + 2, by2 + 2), C_GRAY, 1)
-            chip(view, bx1, (by1 - 16) if by1 > 17 else by2,
-                 f"BUS {it['color'][0]} {'cv' if it['src'] == 'cv' else 'yolo'}", C_GRAY)
+            cv2.rectangle(view, (bx1, by1), (bx2, by2), C_GRAY, 1)
+            chip(view, bx1, by2 + 2, f"BUS {it['color'][0]} cv skip", C_GRAY)
+        self._draw_inset(view, frame, roi, dec, veh, vw)
 
         # ── 물고 있으면 빨간 테두리 — 곁눈으로도 보이게 ────────────────
         if self.stopping:
@@ -1499,7 +1524,7 @@ class TrafficLight(Node):
             self._draw_panel(canvas, frame, vw, vh, pw, sl_fresh)
         if zw:
             self._draw_zoom(canvas, frame, boxes, roi, vw + pw, zw, vh)
-        self._draw_hud(canvas, vw + pw + zw, vh, hh, state, boxes, now, sl_live, sl_fresh)
+        self._draw_hud(canvas, vw + pw + zw, vh, hh, state, dec, now, sl_live, sl_fresh, arrow)
 
         # imshow 는 여기서 부르지 않는다 — 워커 스레드에서 HighGUI 를 부르면 그 스레드가
         #   GTK 안에서 멎는다. 캔버스만 넘기고 표시는 메인 스레드가 한다(창이 켜졌을 때만).
@@ -1516,6 +1541,38 @@ class TrafficLight(Node):
             except Exception as e:
                 self.get_logger().error(f"디버그 이미지 발행 실패: {e}",
                                          throttle_duration_sec=5.0)
+
+    def _draw_inset(self, view, frame, roi, dec, veh, vw):
+        """본화면 오른쪽 위 — ★판단 박스 하나★ 를 원본에서 잘라 키운다(NEAREST, 화소를 지어내지 않는다).
+        고르는 순서 : 'B' 차량 박스 → 가장 큰 RED → 가장 큰 박스. 'B' 면 4칸 경계와 화살표 판독 창(노랑)을 긋는다."""
+        if not dec:
+            return
+        tgt = veh if (veh is not None) else max(
+            dec, key=lambda b: ((b['label'] == 'RED'), b.get('box_h', 0)))
+        H, W = frame.shape[:2]
+        x1, y1, x2, y2 = (tgt['box'][0] + roi[0], tgt['box'][1] + roi[1],
+                          tgt['box'][2] + roi[0], tgt['box'][3] + roi[1])
+        T = self.INSET
+        s = min(H, W, max(16, int(1.3 * max(x2 - x1, y2 - y1))))
+        sx = max(0, min(W - s, (x1 + x2) // 2 - s // 2))
+        sy = max(0, min(H - s, (y1 + y2) // 2 - s // 2))
+        tx, ty = vw - T - 6, 6
+        if ty + T > view.shape[0] or tx < 0:
+            return
+        cv2.resize(frame[sy:sy + s, sx:sx + s], (T, T), dst=view[ty:ty + T, tx:tx + T],
+                   interpolation=cv2.INTER_NEAREST)
+        k = T / float(s)
+        X = lambda v: int(round(tx + (v - sx) * k))
+        Y = lambda v: int(round(ty + (v - sy) * k))
+        col = C_RED if dec[0]['label'] == 'RED' else C_GREEN if dec[0]['label'] == 'GREEN' else C_GRAY
+        if tgt is veh and 'b_arrow' in dec[0]:   # 'B' — 4칸(빨강·황색·화살표·원등) 경계 + 셋째 칸 판독 창
+            w = x2 - x1
+            for q in (0.25, 0.5, 0.75):
+                xq = X(x1 + q * w)
+                cv2.line(view, (xq, Y(y1)), (xq, Y(y2)), C_DIM, 1)
+            cv2.rectangle(view, (X(x1 + ARROW['x'][0] * w), Y(y1 + ARROW['y'][0] * (y2 - y1))),
+                          (X(x1 + ARROW['x'][1] * w), Y(y1 + ARROW['y'][1] * (y2 - y1))), C_AMBER, 1)
+        cv2.rectangle(view, (tx, ty), (tx + T - 1, ty + T - 1), col, 2)
 
     def _draw_panel(self, canvas, frame, vw, vh, pw, sl_fresh):
         """우측 패널 — BEV 썸네일(발화선·범퍼선) + 게이지 두 개 + 파라미터 요약.
@@ -1679,8 +1736,9 @@ class TrafficLight(Node):
             return f"주행({self.drive_state or '?'})"
         return ''
 
-    def _draw_hud(self, canvas, cw, vh, hh, state, boxes, now, sl_live, sl_fresh):
-        """하단 HUD 3줄. ★열은 고정폭 '칸' 으로 적는다★ — 줄이 달라도 열이 맞는다.
+    def _draw_hud(self, canvas, cw, vh, hh, state, boxes, now, sl_live, sl_fresh, arrow=None):
+        """하단 HUD ★2줄★ [2026-10-08] — 판단과 그 근거만. boxes = ★판단에 쓴 박스★(근접 높이가 실제 판단과 같다).
+        ★열은 고정폭 '칸' 으로 적는다★ — 줄이 달라도 열이 맞는다.
 
         한 줄의 원소 = (칸, 글자, 색[, 굵게]). 앞 원소와 겹치려 하면 밀어 낸다
         (겹쳐 찍혀 못 읽는 것보다 열이 조금 어긋나는 편이 낫다).
@@ -1688,48 +1746,47 @@ class TrafficLight(Node):
         sz, cell = self.HUD_SIZE, self.tr.cell(self.HUD_SIZE)
         scol = (C_RED if 'RED' in state
                 else C_GREEN if state == 'GREEN' else C_DIM)
-        # RED 확정까지 얼마나 찼는가.
-        held = 0.0 if self.red_since is None else max(0.0, now - self.red_since)
         permit = self._permit_txt(now)
         lvl = self.stop_level if self.stopping else 0
-        lvl_txt = f"제동 {lvl}단 STOP" if lvl else '제동 없음'
-        lvl_col = C_RED if lvl else C_DIM
+        lvl_txt = f"제동 {lvl}단" if lvl else '제동 없음'
         gate, near = self._near_gate(), self._near_metric(boxes)
         solo = self.tl_solo_stop_min_height
-        #  RED 게이트('빨간불이 맞는가')와 단독 문턱('정지선 없이도 설 만큼 가까운가').
-        near_txt = f"근접 {near:.0f} RED{gate:.0f} 단독{solo:.0f}px"
+        near_txt = f"근접 {near:.0f}  RED≥{gate:.0f} 단독≥{solo:.0f}px"
+        # 구간 — 'B' 면 화살표 판독이 곧 근거다.
+        z = self.tl_zone if self._zone_active() else ''
+        zcol = C_TXT
+        if z == 'B' and self.bus_detect and self.b_need_arrow:
+            if not arrow:
+                ztxt, zcol = 'B 차량박스 없음', C_DIM
+            elif arrow[0] is None:
+                ztxt, zcol = f"B 화살표 판독 전(<{self.b_arrow_min_h:.0f}px) 정지", C_AMBER
+            else:
+                ztxt = f"B 화살표 {arrow[0]:.2f}/{self.b_arrow_frac:.2f} {'진행' if arrow[1] else '없음'}"
+                zcol = C_GREEN if arrow[1] else C_RED
+        else:
+            ztxt = f"구간 {z or '-'}"
         cur = self.sl_bev_y if sl_fresh else SL_NONE
         if not sl_live:
             sl_txt, sl_col = '정지선 OFF', C_DIM
         elif cur <= SL_NONE:
-            sl_txt, sl_col = '정지선 미검출', C_DIM
+            sl_txt, sl_col = '정지선 --', C_DIM
         else:
             sl_txt = (f"정지선 y{cur:.0f}/{self.sl_trigger_bev_y:.0f}"
-                      f" ({self.sl_px:.0f}px{self.cam.m_txt(self.sl_px)})"
+                      f" {self.cam.m_txt(self.sl_px)}".rstrip()
                       + (' 확정' if self._sl_confirmed(now) else ''))
             sl_col = C_RED if cur >= self.sl_trigger_bev_y else C_MAGENTA
         waited = (0.0 if self.red_conf_t is None else max(0.0, now - self.red_conf_t))
 
         lines = [
             [(0, state, scol, True),
-             (12, f"확정 {held:.2f}/{self.tl_hold_s:.2f}s", C_TXT),
-             (32, near_txt, C_RED if near >= gate else C_TXT),
-             (54, f"raw {self.last_raw} drop {self.last_red_drop}", C_DIM),
-             (72, f"FPS {self.fps:.0f}", C_DIM),
-             (84, f"보정 {'ON' if self.cam.enabled else 'OFF'}",
-              C_DIM if self.cam.enabled else C_AMBER)],
-            [(0, lvl_txt, lvl_col, True),
-             (14, (f"- {self.stop_why}" if (self.stop_why and permit) else ''), C_TXT),
-             (34, f"허락 {permit or '없음'}",
-              C_GREEN if permit else C_RED),
-             (56, (f"대기 {waited:.1f}s (상한 없음)" if self.sl_wait else ''),
-              C_AMBER)],
-            [(0, sl_txt, sl_col),
-             (26, (f"발화 y≥{self.sl_trigger_bev_y:.0f}" if sl_live else ''), C_DIM),
-             (44, (f"범퍼행 {self.cam.bumper_y:.0f}"
-                   f"  BEV {self.cam.bev_w}x{self.cam.bev_h}" if sl_live else ''),
-              C_DIM),
-             (72, ('★래치' if (self.stop_latch and self.stopping) else ''), C_AMBER)],
+             (10, ztxt, zcol),
+             (38, near_txt, C_RED if near >= gate else C_TXT),
+             (66, f"FPS {self.fps:.0f}", C_DIM)],
+            [(0, lvl_txt, C_RED if lvl else C_DIM, True),
+             (10, (f"{self.stop_why}" if (self.stop_why and lvl) else
+                   (f"대기 {waited:.1f}s" if self.sl_wait else '')), C_AMBER if self.sl_wait and not lvl else C_TXT),
+             (38, sl_txt, sl_col),
+             (66, f"허락 {permit or '없음'}", C_GREEN if permit else C_RED)],
         ]
         items = []
         for li, segs in enumerate(lines):
@@ -1816,12 +1873,20 @@ class TrafficLight(Node):
                 and self.red_last_seen is not None and self._fresh(now)
                 and (now - self.red_last_seen) <= self.tl_arm_hold_s)
 
-    def _red_gone(self, now):
-        """근접 RED 를 red_release_hold_s 이상 못 봤는가 = 놓아도 되는가.
+    def _red_gone(self, now, hold=None):
+        """근접 RED 를 hold(기본 red_release_hold_s) 이상 못 봤는가.
         놓는 쪽에만 유예를 둔다 — 검출이 흔들릴 때 리니어가 왕복하지 않게(무는 쪽은 그대로)."""
         if self.red_last_seen is None:
             return True
-        return (now - self.red_last_seen) >= self.red_release_hold_s
+        return (now - self.red_last_seen) >= (self.red_release_hold_s if hold is None else hold)
+
+    def _release_ready(self, now):
+        """서 있다가 놓아도 되는가 [2026-10-08] — RED 가 red_release_hold_s 사라졌고 ★초록이 확정됐거나★,
+        초록도 못 본 채 RED 가 red_release_hold_lost_s 사라졌다(신호가 시야를 벗어남·검출 끊김).
+        초록은 'RED 가 이미 사라진 뒤' 에만 보므로 RED·GREEN 이 번갈아 잡혀도 2↔0 왕복이 생기지 않는다(08-14 사례)."""
+        if not self._red_gone(now):
+            return False
+        return self._green_confirmed(now) or self._red_gone(now, self.red_release_hold_lost_s)
 
     def _green_confirmed(self, now):
         if self.green_since is None or not self._fresh(now):
@@ -1959,7 +2024,7 @@ class TrafficLight(Node):
                 if self._green_confirmed(now):
                     self.get_logger().info("🟢 초록불 확정 — 리니어 해제, 주행 재개")
                     self._set_stop_level(0, '초록불')
-            elif self._red_gone(now):
+            elif self._release_ready(now):
                 self._release_on_red_gone(now)
 
         # ② 계획 — 물기 전까지 매 틱 다시 본다(정지선이 발화선으로, 신호등이 단독 문턱으로 다가온다).
@@ -1999,13 +2064,14 @@ class TrafficLight(Node):
             self._apply_brake(0)
 
     def _release_on_red_gone(self, now):
-        """빨간불을 보는 동안만 잡는다 — 해제 근거는 'RED 를 유예 동안 못 봄' 하나뿐이다.
-        GREEN 확정을 해제 근거로 같이 쓰면 RED·GREEN 이 번갈아 잡힐 때 두 스트릭이 함께 살아
+        """빨간불을 보는 동안만 잡는다 — 해제는 _release_ready(RED 가 사라진 뒤의 초록, 또는 더 긴 미감지).
+        GREEN 확정 ★하나만★ 해제 근거로 쓰면 RED·GREEN 이 번갈아 잡힐 때 두 스트릭이 함께 살아
         틱 주기로 2↔0 을 왕복한다(2026-08-14 로스백 50회). 놓은 뒤는 원래 명령의 주인이 잇는다.
         """
+        green = self._green_confirmed(now)
         self.get_logger().info(
-            f"⚪ 빨간불 {self.red_release_hold_s:.1f}초 미감지 — 리니어 해제"
-            + ("  (초록불 확정 상태)" if self._green_confirmed(now) else ""))
+            (f"⚪ 빨간불 {self.red_release_hold_s:.1f}초 미감지 + 초록불 확정 — 리니어 해제" if green else
+             f"⚪ 빨간불 {self.red_release_hold_lost_s:.1f}초 미감지(초록도 못 봄) — 리니어 해제"))
         self._set_stop_level(0, '빨간불 사라짐')
 
     def _reset_stop_line_wait(self):

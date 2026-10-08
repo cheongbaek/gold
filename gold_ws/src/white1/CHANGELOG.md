@@ -87,6 +87,14 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-08 (오후) — `traffic_light.py` 정지 후 해제 조건 · 디버그 화면 최소화 (white2 와 같은 줄)
+
+짝 규약대로 white2 와 같은 줄을 넣었다 — ① 서 있다가 놓기 = RED 0.7 s 없음 + 초록 확정, 또는 RED 1.5 s 없음(`red_release_hold_lost_s`)
+② 디버그 캔버스 960×590(BEV 패널·ROI 확대 열 기본 끔, HUD 2줄, 판단 박스 확대 1장). white1 자율주행에서는 이 노드가 제동하지 않으므로(/tl_permit 항상 False)
+①은 master 체크박스(/tl_enable) 쪽에서만 효과가 있다. /tl/state 는 바뀌지 않았다. 상세는 white2/CHANGELOG.md 같은 날 (오후) 항목.
+
+---
+
 ## 2026-10-08 — `traffic_light.py` 에 #400 구간 'B' 판단(버스 제외 · 좌회전 화살표만 진행) (white2 전용 · 여기서는 안 돈다)
 
 짝 규약대로 white2 와 같은 줄을 넣었다(`arrow_frac`·`_decision_boxes`·`_b_active`, 파라미터 `tl_b_*`). 판단 박스는 구간 'B' 밖에서
