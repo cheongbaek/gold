@@ -21,6 +21,7 @@
 > | ★**대회 규정 (2026 자작자율차 부문) · 점검 결과 · AS 상태** [2026-10-07]★ | 원문 = 저장소 최상단 PDF · 점검 = **8절** · AS 상태 구현 = **8.0** · 펌웨어 `../mad-code/kasa_1007_B.ino` 헤더 `[1007-1]`·`[1007-2]` |
 > | ★**white2 — 투트랙의 다른 한쪽** (타이머 없이 CSV 태그 · 카메라가 세운다) [2026-10-07]★ | **3.1 의 '투트랙' 문단** · `gold_ws/src/white2/CHANGELOG.md` 머리 |
 > | ★**신호등 인지·판단 설명 (질문과 답) · 파라미터 튜닝 가이드**★ [2026-10-08] | `gold_ws/src/white2/TRAFFIC_LIGHT.md` · `gold_ws/src/white2/TL_TUNING.md` (white1·white2 공통) |
+> | ★**K-City 맵·신호 현시·예선/본선 미션 신호등 — 대회 기준 문서**★ [2026-10-09 사용자 제공] | `docs/kcity/` — `260831_Mapdata_K-City.pdf`(교차로 기준점·SG↔차로·차로 노드) · `260331_신호현시정보.pdf`(주기 100 s 현시표) · `예선본선_미션신호등.xlsx` · ★값을 옮겨 적은 `README.md`★ — 경로 CSV·타이머와 어긋나면 이쪽이 정본 |
 > | 카메라 인지 시험 (cam_testbed · 스킬 `cam-test`) [2026-10-07] | `~/cam_testbed`(별도 저장소 Anjabom/cam_testbed) · 이 기계용 계약 `contracts/gold_white{1,2}_stopline.yaml` · ⚠️ `RMW_IMPLEMENTATION=rmw_fastrtps_cpp` 를 붙여 돌린다(3.1) |
 > | 아두이노 계층 구조·안전장치 | `gold_ws/src/nxde/README.md` |
 > | 라이다 패키지 | `gold_ws/src/lidar/README.md` |
