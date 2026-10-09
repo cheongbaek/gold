@@ -19,7 +19,8 @@ traffic_light.py ― 신호등 인지·정지 [white2]
   보정(camera_model.undistort) → ROI → YOLO → 크기·종횡비·conf 필터 → HSV 색 교정
   → RED 적색픽셀 관문 · GREEN 아랫변 관문(tl_green_max_y2, 지평선 아래 수풀·사람) → RED / RED_FAR / GREEN / UNKNOWN
   · RED 와 RED_FAR 는 박스 높이로 가른다 — tl_red_stop_min_height(25px), 신호 구간(/tl_zone
-    'T'·'A')에서는 tl_zone_red_min_height(9px). 'A' 에서는 빨강+좌회전 화살표가 진행이다.
+    'T'·'A')에서는 tl_zone_red_min_height(9px). 'A' 에서는 빨강+좌회전 화살표가 진행이다
+    — 화살표는 박스 안 녹색 픽셀로 직접 읽는다(tl_a_arrow_min_px · tl_a_arrow_min_h, [2026-10-09]).
   · 정지선 seg 는 빨간 박스가 보이는 동안(sl_gate_red_s)만 같은 프레임에 한 번 더 돈다.
 
 ════════════════════════════════════════════════════════════════════════════════
@@ -51,7 +52,7 @@ traffic_light.py ― 신호등 인지·정지 [white2]
   /tl/stop_line_y     Float32  정지선 최하단 y / 프레임 높이. −1 = 미검출 (기록용)
   /tl/stop_line_wait  Bool     RED 확정인데 아직 0단으로 기다리는 중인가
   /tl/debug_image     Image    디버그 화면 (tl_publish_debug)
-  /tl/boxes           String   [진단] 이 프레임 박스 JSON — [[x1,y1,x2,y2,색,conf,모델색,역할,화살표],…] 보정 원본 좌표
+  /tl/boxes           String   [진단] 이 프레임 박스 JSON — [[x1,y1,x2,y2,색,conf,모델색,역할,화살표,녹색px],…] 보정 원본 좌표
                                역할 ''|'BUS'|'VEH'('B' 구간만) · 화살표 = 셋째 칸 녹색 비율(안 읽었으면 -1)
 구독:
   /image_raw  /drive_state  /tl_enable  /tl_permit  /tl_zone
@@ -651,11 +652,17 @@ class TrafficLight(Node):
         # ── 신호 구간 · 작은 맞은편 신호 대응 ───────────────────────────────
         #  /tl_zone (driving 이 경로 CSV terrain 에서 낸다):
         #    'T' 신호 정지 구간 — RED 게이트가 tl_zone_red_min_height 로 내려간다
-        #    'A' 좌회전 구간   — 위와 같고, 모델이 GREEN 으로 본 등기구(빨강+좌회전 화살표)는 진행
+        #    'A' 좌회전 구간   — 위와 같고, 빨강 등기구 안에 ★녹색 화살표가 보이면★ 진행(빨강+좌회전 화살표)
         #    그 밖·끊김(tl_zone_stale_s) = tl_red_stop_min_height
         #  9 = 본선 정지선 앞 맞은편 신호 9~12px. 0 이면 구간 신호를 무시한다.
         self.declare_parameter('tl_zone_red_min_height', 9)
         self.declare_parameter('tl_zone_stale_s', 1.0)
+        #  [2026-10-09] 'A' 화살표 판독 — 모델 클래스가 아니라 ★박스 안 녹색 픽셀★ 로 읽는다.
+        #    근거(docs/kcity) : 본선 4번 #1100 동좌 접근의 '진행' 표시는 적색 원등 + 좌회전 화살표뿐이다.
+        #    실측(노드와 같은 보정·HSV) : 순수 빨강 약 570박스 녹색 0px(모델이 GREEN 이라 한 예선 #100 등 포함) /
+        #    빨강+화살표 ≥10px 에서 94~95% 가 ≥3px, 8~9px 는 46% 뿐 → 10px 밑은 녹색이 없어도 종전 규칙(모델 GREEN)으로 본다.
+        self.declare_parameter('tl_a_arrow_min_px', 3)      # 빨강 박스 안 녹색 픽셀이 이 이상이면 화살표 켜짐(크기 무관)
+        self.declare_parameter('tl_a_arrow_min_h', 10.0)    # 이보다 작은 빨강 박스는 녹색이 안 보여도 모델 GREEN 이면 화살표로 본다 [px]
         #    'B' #400 교차로 구간(좌회전) — 위와 같고, 차량 박스 왼쪽의 ★버스 신호★ 를 찾아(1단계, [2026-10-07])
         #        ★판단에서 뺀다★ — 그리고 차량 박스 하나만 좌회전 화살표로 읽는다(2단계, [2026-10-08]):
         #        화살표 켜짐 = GREEN · 그 밖(원등만·빨강·황색·못 읽음) = RED(높이로 RED/RED_FAR) — _decision_boxes
@@ -698,6 +705,8 @@ class TrafficLight(Node):
         self.bus_min_veh_h = float(g('tl_bus_min_veh_h'))
         self.bus_P = dict(BUS_BODY, dark_t=float(g('tl_bus_dark_t')), open_k=float(g('tl_bus_open_k')),
                           iso_below=float(g('tl_bus_iso_below')), iso_left=float(g('tl_bus_iso_left')))
+        self.a_arrow_min_px = int(g('tl_a_arrow_min_px'))
+        self.a_arrow_min_h  = float(g('tl_a_arrow_min_h'))
         self.b_need_arrow  = bool(g('tl_b_need_arrow'))
         self.b_arrow_min_h = float(g('tl_b_arrow_min_h'))
         self.b_arrow_frac  = float(g('tl_b_arrow_frac'))
@@ -1240,10 +1249,17 @@ class TrafficLight(Node):
             return 'UNKNOWN'
         red_boxes = [b for b in boxes if b['label'] == 'RED']
         if red_boxes and self._zone_active() and self.tl_zone == 'A':
-            # ★좌회전 구간★ 모델이 GREEN 이라 했는데 HSV 가 붉다고 교정한 등기구 =
-            #   빨강 + 좌회전 화살표(2026-09-13 144031 실측: 모델이 101/103 GREEN).
-            #   좌회전하는 차에게 그건 진행 신호다. 모델도 RED 라 한 것(순수 빨강)은 그대로 선다.
-            red_boxes = [b for b in red_boxes if b.get('cls_label') != 'GREEN']
+            # ★좌회전 구간★ 빨강 박스 안에 녹색 화살표가 보이면 빨강 + 좌회전 화살표 = 진행 [2026-10-09].
+            #   tl_a_arrow_min_h 이상에서는 모델 클래스를 보지 않는다 — 같은 등기구에 GREEN·RED 박스가 겹쳐 나와 깜빡였고(144031 #1100),
+            #   화살표 없는 순수 빨강을 모델이 GREEN 으로 낸 적도 있다(예선 #100). 같은 자리의 겹친 박스는
+            #   같은 녹색 픽셀을 세므로 함께 빠진다.
+            #   tl_a_arrow_min_h 밑은 화살표가 녹색 픽셀로 잘 안 남는다(8~9px 46%) — 거기서만 종전 규칙
+            #   (모델 GREEN + HSV 빨강 = 화살표)을 쓴다. 판단을 미루면 안 된다: #1100 등은 정지선 앞에서도
+            #   9~10px 라 미루면 순수 빨강에 안 선다(k-city 3993, 2026-10-09 검증에서 잡았다).
+            red_boxes = [b for b in red_boxes
+                         if not (b.get('hsv_green', 0) >= self.a_arrow_min_px
+                                 or (b.get('box_h', 0) < self.a_arrow_min_h
+                                     and b.get('cls_label') == 'GREEN'))]
             if not red_boxes:
                 return 'GREEN'
         if red_boxes:
@@ -1400,7 +1416,8 @@ class TrafficLight(Node):
         self.last_dec = dec
         # [진단] 이 프레임 박스(원본 좌표). ★/tl/state 보다 먼저★ — 테스트베드는 그것을
         #   동기 신호로 다음 프레임을 민다.
-        #   8번째 칸 = 역할('' | 'BUS' | 'VEH'), 9번째 = 화살표 판독(셋째 칸 녹색 비율, 안 읽었으면 -1).
+        #   8번째 칸 = 역할('' | 'BUS' | 'VEH'), 9번째 = 화살표 판독(셋째 칸 녹색 비율, 안 읽었으면 -1),
+        #   10번째 = 박스 안 녹색 픽셀(HSV, 'A' 화살표 판독 근거 — [2026-10-09]).
         #   'BUS'·'VEH' 는 구간 'B' 에서만 붙는다 — BUS 는 판단에서 빠지고 VEH 하나가 판단한다.
         bus_model = {id(b['_ref']) for b in bus if b['src'] == 'model'}
         veh, arrow = self.last_veh, self.last_arrow
@@ -1408,8 +1425,9 @@ class TrafficLight(Node):
             [[b['box'][0] + xmin, b['box'][1] + ymin, b['box'][2] + xmin, b['box'][3] + ymin,
               b['label'], round(float(b['conf']), 3), b.get('cls_label', ''),
               'BUS' if id(b) in bus_model else ('VEH' if b is veh else ''),
-              round(arrow[0], 3) if (b is veh and arrow and arrow[0] is not None) else -1] for b in boxes]
-            + [[*b['box'], b['color'], 0.0, 'cv', 'BUS', -1] for b in bus if b['src'] == 'cv'],
+              round(arrow[0], 3) if (b is veh and arrow and arrow[0] is not None) else -1,
+              int(b.get('hsv_green', 0))] for b in boxes]
+            + [[*b['box'], b['color'], 0.0, 'cv', 'BUS', -1, 0] for b in bus if b['src'] == 'cv'],
             separators=(',', ':'))))
         state = self._resolve_tl_state(dec)
         self._log_release_hold(dec, state)
@@ -1939,7 +1957,9 @@ class TrafficLight(Node):
         if z != self.tl_zone:
             self.get_logger().info(f"🗺 신호 구간 {self.tl_zone or '-'} → {z or '-'}"
                                    + ("  (🚌 버스 신호 빼고 ⬅️ 좌회전 화살표만 진행)"
-                                      if z == 'B' and self.bus_detect and self.b_need_arrow else ""))
+                                      if z == 'B' and self.bus_detect and self.b_need_arrow else "")
+                                   + (f"  (⬅️ 빨강 안 녹색 ≥{self.a_arrow_min_px}px 면 진행 · {self.a_arrow_min_h:.0f}px 밑은 모델 판정)"
+                                      if z == 'A' else ""))
             self.arrow_lit_prev = None
         self.tl_zone   = z
         self.tl_zone_t = time.time()

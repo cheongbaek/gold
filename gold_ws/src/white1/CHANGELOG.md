@@ -87,6 +87,13 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-09 — `traffic_light.py` 'A'(좌회전) 화살표를 박스 안 녹색 픽셀로 직접 판독 (white2 와 같은 줄)
+
+white2 CHANGELOG 같은 날 항목이 근거·검증이다. white1 은 driving 이 'A' 를 내지 않아(본선 T4 는 타이머) 이 분기를 쓰지 않는다 —
+짝을 맞춰 두려고 같은 줄로 넣었다. 새 파라미터 `tl_a_arrow_min_px`(3) · `tl_a_arrow_min_h`(10), `/tl/boxes` 10번째 칸 = 녹색 px.
+
+---
+
 ## 2026-10-08 (밤 3) — `traffic_light.py` 시험용 빨간불 주입(`tl_fake_box_h`) 삭제 (white2 와 같은 줄)
 
 사용자 지시. 알고리즘 문서·튜닝 가이드는 white2 쪽 `TRAFFIC_LIGHT.md` · `TL_TUNING.md`(두 판 공통). 상세는 white2/CHANGELOG.md 같은 날 (밤 4).

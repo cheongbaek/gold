@@ -27,6 +27,7 @@
 | 초록인데 늦게 출발한다 | `green_hold_s` · `red_release_hold_s` · 로그 `⏳ 해제 보류` | 유예를 줄이면 떨림 위험 |
 | 수풀·사람을 초록으로 본다 | `tl_green_max_y2` | 2절 |
 | #400 화살표를 못 읽거나 잘못 읽는다 | `tl_b_arrow_frac` · `tl_b_arrow_min_h` · 코드 상수 `ARROW` | 2절 'B' |
+| 'A'(본선 4번 좌회전) 화살표를 못 읽거나 잘못 읽는다 | `tl_a_arrow_min_px` · `tl_a_arrow_min_h` · `/tl/boxes` 10번째 칸(녹색 px) | 2절 'A' |
 | 인지가 느리다(FPS) | `tl_imgsz`(엔진과 짝) · `sl_gate_red_s` · 디버그 패널 | 3절 |
 
 ## 2. 파라미터 표
@@ -93,6 +94,13 @@
 | `stop_latch` | false (false) | true 면 초록 확정까지 문다 | | 정지선에 바짝 붙어 신호가 화면을 벗어나는 코스 |
 | `tl_hold_log_ratio` | 0.5 | `⏳ 해제 보류` 로그 기준 | | 로그만. 0 = 끔 |
 
+### 구간 'A' (좌회전 — 본선 4번 #1100) [2026-10-09]
+
+| 파라미터 | 기본 | 뜻 | 근거·주의 |
+|---|---|---|---|
+| `tl_a_arrow_min_px` | 3 | 빨강 박스 안 녹색 픽셀이 이 이상이면 화살표 켜짐(진행, 크기 무관) | 순수 빨강 약 570박스 전부 0px · 빨강+화살표 ≥10px 에서 94~95% 가 ≥3px. 올리면 화살표를 놓친다(정지 쪽), 내리면 잡음에 진행(위험 쪽) |
+| `tl_a_arrow_min_h` | 10 | 이보다 작은 빨강 박스는 녹색이 안 보여도 모델 GREEN 이면 화살표로 본다(종전 규칙) | 8~9px 는 화살표가 46% 만 보인다. ★판단을 미루는 문턱으로 쓰지 말 것★ — #1100 등은 정지선 앞에서도 9~10px 다 |
+
 ### 구간 'B' (#400)
 
 | 파라미터 | 기본 | 뜻 | 근거·주의 |
@@ -143,18 +151,26 @@
 source /opt/ros/humble/setup.bash; export RMW_IMPLEMENTATION=rmw_fastrtps_cpp; cd ~/cam_testbed
 C=contracts/gold_white2_stopline.yaml; OUT=/home/mad1/gold/gold_ws
 python3 -m tb.run doctor --contract $C --video /home/mad1/tl_eval_videos/cam-20260913_144031.mp4
-# q · v1f · v2f 전체 (T·A 구간)
+# q(예선) · v1f · v2f(본선) 전체 — GPS 구간·허락
 python3 -m tb.run run --contract $C --domain 91 --video /home/mad1/tl_eval_videos/cam-20260913_140401.mp4 --preset ~/tl_eval/zone_q.yaml   --start 0 --limit 0 --name X-q   --note "…" --out $OUT
 python3 -m tb.run run --contract $C --domain 91 --video /home/mad1/tl_eval_videos/cam-20260912_105807.mp4 --preset ~/tl_eval/zone_v1f.yaml --start 0 --limit 0 --name X-v1f --note "…" --out $OUT
 python3 -m tb.run run --contract $C --domain 91 --video /home/mad1/tl_eval_videos/cam-20260913_144031.mp4 --preset ~/tl_eval/zone_v2f.yaml --start 0 --limit 0 --name X-v2f --note "…" --out $OUT
 # #400 'B'
 python3 -m tb.run run --contract $C --domain 91 --video /home/mad1/tl_eval_videos/cam-20260912_105807.mp4 --preset ~/tl_eval/zone400B.yaml --start 2689 --limit 400 --name XB-v1f --note "…" --out $OUT
 python3 -m tb.run run --contract $C --domain 91 --video /home/mad1/tl_eval_videos/cam-20260913_144031.mp4 --preset ~/tl_eval/zone400B.yaml --start 2545 --limit 395 --name XB-v2f --note "…" --out $OUT
-# k-city 실시간 (해제 타이밍)
-python3 -m tb.run run --preset presets/tl_azone_kcity.yaml --mode realtime --domain 91 --start 5150 --limit 1700 --name X-kcity --note "…" --out $OUT
+# k-city 본선 (GPS 구간 — T1 T2 B A T5)
+python3 -m tb.run run --preset ~/tl_eval/zone_kcity.yaml --domain 91 --start 1400 --limit 3900 --name X-kcity --note "…" --out $OUT
+# 'A' 일부러 씌운 시험 (실제 구간 아님) — 화살표 판독
+python3 -m tb.run run --contract $C --domain 91 --video /home/mad1/tl_eval_videos/cam-20260913_140401.mp4 --preset ~/tl_eval/zone_q_aforce.yaml --name XQA-q --note "…" --out $OUT
+python3 -m tb.run run --contract $C --domain 91 --video /home/mad1/tl_eval_videos/cam-20260913_144031.mp4 --preset ~/tl_eval/zone_v2f_aold.yaml --start 3150 --limit 500 --name XAOLD-v2f --note "…" --out $OUT
 # 채점
 python3 ~/tl_eval/ev.py X q,v1f,v2f ; python3 ~/tl_eval/b400/s2_eval.py XB
 ```
 
-**현재 기준값** — 105807 4/4 · 144031 2/2 · 140401 1/3(lockstep, 실시간 3/3) · #400 진행 오판 0 · 화살표 미판독 0 · 첫 GREEN 144031 2833 ·
-k-city 체결 6155·해제 ≈6397. 판단 타이머 흔들림으로 제동 전이 ±1~3프레임은 정상.
+★[2026-10-09] 구간 프리셋 `zone_{q,v1f,v2f,kcity}.yaml` 은 GPS 기준이다★ — 같은 주행의 record 위치를 경로 CSV terrain 에 대응시켰다
+(도구 `~/tl_eval/zone_gps/`, 시각 오차 ±0.5 s). **허락도 구간 안에서만** 준다(`/tl_enable` 끄고 `/tl_permit` = 구간) — 실차 white2 와 같다.
+옛 손 구간은 `~/tl_eval/_backup/zone_hand_1009/`. 정답표 `ev.py` 는 미션 신호 기준(S 자리 뺌, #400 넣음 — `docs/kcity`).
+
+**현재 기준값** [2026-10-09] — 105807 5/5 · 144031 1/1 · 140401 2/2 (모두 오정지 0) · #400 진행 오판 0 · 화살표 미판독 0 · 첫 GREEN 144031 2833 ·
+k-city 정지 T2 2217 · B 3354 · A(순수 빨강) 3993 · T5 5061 · 144031 실제 A 구간 GREEN 167/200(RED 1프레임) ·
+`zone_q_aforce` 순수 빨강 251·302·358 정지, 화살표 켜짐(310) 뒤 324 해제. 판단 타이머 흔들림으로 제동 전이 ±1~3프레임은 정상.
