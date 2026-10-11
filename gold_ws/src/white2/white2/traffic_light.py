@@ -19,7 +19,7 @@ traffic_light.py ― 신호등 인지·정지 [white2]
   보정(camera_model.undistort) → ROI → YOLO → 크기·종횡비·conf 필터 → HSV 색 교정
   → RED 적색픽셀 관문 · GREEN 아랫변 관문(tl_green_max_y2, 지평선 아래 수풀·사람) → RED / RED_FAR / GREEN / UNKNOWN
   · RED 와 RED_FAR 는 박스 높이로 가른다 — tl_red_stop_min_height(25px), 신호 구간(/tl_zone
-    'T'·'A')에서는 tl_zone_red_min_height(9px). 'A' 에서는 빨강+좌회전 화살표가 진행이다
+    'T'·'A'·'B')에서는 tl_zone_red_min_height(9px). 'A' 에서는 빨강+좌회전 화살표가 진행이다
     — 화살표는 박스 안 녹색 픽셀로 직접 읽는다(tl_a_arrow_min_px · tl_a_arrow_min_h, [2026-10-09]).
   · 정지선 seg 는 빨간 박스가 보이는 동안(sl_gate_red_s)만 같은 프레임에 한 번 더 돈다.
 
@@ -653,6 +653,7 @@ class TrafficLight(Node):
         #  /tl_zone (driving 이 경로 CSV terrain 에서 낸다):
         #    'T' 신호 정지 구간 — RED 게이트가 tl_zone_red_min_height 로 내려간다
         #    'A' 좌회전 구간   — 위와 같고, 빨강 등기구 안에 ★녹색 화살표가 보이면★ 진행(빨강+좌회전 화살표)
+        #    'B' #400 구간     — 위와 같고, 버스 신호를 빼고 차량 박스의 좌회전 화살표가 켜져야 진행(_decision_boxes)
         #    그 밖·끊김(tl_zone_stale_s) = tl_red_stop_min_height
         #  9 = 본선 정지선 앞 맞은편 신호 9~12px. 0 이면 구간 신호를 무시한다.
         self.declare_parameter('tl_zone_red_min_height', 9)
@@ -832,7 +833,7 @@ class TrafficLight(Node):
         self.sl_since   = None        # 연속 목격 스트릭의 시작 시각(확정 판정용)
         self.sl_engaged = False       # 이번 접근에서 정지선을 ★확정한 적★ 이 있는가
         self.sl_engaged_max_y = SL_NONE  # 확정한 정지선이 내려온 최대 BEV 행(sl_lost_min_bev_y)
-        self.tl_zone   = ''           # driving 이 알려 준 지금 구간('T'/'A'/'')
+        self.tl_zone   = ''           # driving 이 알려 준 지금 구간('T'/'A'/'B'/'')
         self.tl_zone_t = 0.0
         self.sl_wait    = False       # 지금 정지선 때문에 브레이크를 참고 있는가(아직 0단)
         self.sl_poly    = None        # HUD 용 마스크 폴리곤(보정된 원본 좌표)
@@ -1212,7 +1213,7 @@ class TrafficLight(Node):
         return float(self.tl_red_stop_min_height)
 
     def _zone_active(self):
-        """driving 이 '지금 신호 정지 구간(T/A)' 이라고 ★신선하게★ 알려 주고 있는가.
+        """driving 이 '지금 신호 정지 구간(T/A/B)' 이라고 ★신선하게★ 알려 주고 있는가.
         __init__ 의 경고 검사가 상태 변수보다 먼저 부르므로 getattr 로 받는다."""
         if getattr(self, 'tl_zone_red_min_height', 0) <= 0:
             return False
