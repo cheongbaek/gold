@@ -184,9 +184,19 @@ from white1.gps import GPS_FUSED_TOPIC, Q_LABEL, Q_NONE
 #  세우지 않았다면) ★그 즉시 리니어 2단★ 이다.
 #    · 0.0 을 그대로 두면 ★출발하지 않는다★ (아래 resolve_goal 이 사유를 말한다).
 #    · 런치 인자 goal_lat / goal_lon 이 이 값을 덮는다.
-#    · 둘 다 비어 있고 route 가 주어지면 ★그 CSV 의 마지막 점★ 을 목표로 쓴다.
+#    · ★아래 ROUTE(또는 런치 route:=) 가 채워져 있으면 그쪽이 이긴다★ [2026-10-16]
 GOAL_LAT = 37.23900890    # ★★ 여기에 목표 위도 ★★  [2026-09-13 설정]
 GOAL_LON = 126.77539272   # ★★ 여기에 목표 경도 ★★  [2026-09-13 설정]
+#  ★[2026-10-16] 경로 CSV 로 목표를 정한다★ — 파일 이름을 적으면 ★그 CSV 의 마지막 점★
+#  이 목표 좌표가 되고 위의 GOAL_LAT/GOAL_LON 은 쓰지 않는다. 비우면('') 위 좌표를 쓴다.
+#    · 이름만 적으면 gps_data/ 에서 찾는다(절대경로도 된다). 기록 파일명도 이 이름이 된다.
+#    · ★경로 모양은 따라가지 않는다★ — 출발 위치 → 마지막 점 ★직선 한 줄★ 이다.
+#      그래서 차를 그 마지막 점을 일직선으로 바라보게 세운다(GOAL 좌표와 같은 전제).
+#    · 정지는 종전 그대로 ★라이다 라바콘 → arduino AEB★, 못 보면 마지막 점에서 2단.
+#    · ★파일을 못 읽으면 출발하지 않는다★ — 위 GOAL 좌표로 조용히 넘어가면 엉뚱한
+#      방향으로 질주한다.
+#    · 우선순위 : 런치 goal_lat/goal_lon > 런치 route:= > 여기 ROUTE > GOAL_LAT/GOAL_LON
+ROUTE = ''                # ★★ 예: 'route_20260916_211406.csv' ★★
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-13 저녁] 순항 10 → 9 펄스 — 33.9 km/h 는 ROI 15 m 의 한계였다 ★★
@@ -249,8 +259,6 @@ LAUNCH_SWITCH_ENC_PULSE = 10.0  # 엔코더(바퀴 기준) 이 펄스를 넘어�
 #  GPS 는 허수 펄스와 무관하고, 애초에 그쪽이 사용자가 지시한 판정이다.
 LAUNCH_ENC_BLANK_S      = 3.0   # [s] 이 시간 전에는 엔코더 폴백을 보지 않는다
 LAUNCH_MAX_S            = 12.0  # [s] 이 시간이 지나면 무조건 순항으로 내린다
-#  ★목표 좌표를 CSV 에서 빌릴 때만 쓴다★ (GOAL_LAT/LON 이 0 일 때의 폴백)
-ROUTE = ''
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-13 저녁] 기준선을 옆으로 평행이동한다 ★★
 # ══════════════════════════════════════════════════════════════════════════════
@@ -262,7 +270,7 @@ ROUTE = ''
 #  ⚠️ 중단 방벽(cte_abort)도 ★옮긴 선 기준★ 으로 잰다 — 그게 맞다. 새 선이
 #     추종 대상이므로, 그 선에서 벗어난 양이 판정 대상이어야 한다.
 LATERAL_OFFSET_M = 0.20   # [m] ★왼쪽으로 20 cm★ (런치 인자 lateral_offset_m 이 이긴다)
-#   ※ 넷 다 런치 인자로도 덮을 수 있다:
+#   ※ 전부 런치 인자로도 덮을 수 있다:
 #      goal_lat:=37.1 goal_lon:=127.1 / drive_pulse:=8 / drive_pwm:=140 / route:=...
 
 # ── 그 밖의 상수 ──
@@ -696,26 +704,36 @@ class BrakeTestNode(Node):
     #  목표 좌표
     # ══════════════════════════════════════════════════════════════════════════
     def resolve_goal(self):
-        """목표 좌표를 정한다. ★런치 인자 > 파일 상단 상수 > route CSV 마지막 점★"""
+        """목표 좌표를 정한다.
+        ★런치 goal_lat/lon > 런치 route:= > 파일 상단 ROUTE > 파일 상단 GOAL_LAT/LON★
+
+        [2026-10-16] 종전에는 GOAL_LAT 상수가 route 보다 앞이라, 상수가 채워져 있는
+        한 route:= 를 줘도 ★조용히 무시★ 됐다. 경로를 적었다는 것은 그 경로로 하겠다는
+        뜻이므로 이제 경로가 상수를 이긴다. 경로를 못 읽으면 상수로 넘어가지 않고
+        출발을 거부한다(다른 방향으로 질주하는 것보다 서 있는 편이 낫다).
+        """
         p_lat = float(self.get_parameter('goal_lat').value)
         p_lon = float(self.get_parameter('goal_lon').value)
+        route = self.route_param()
         if goal_is_set(p_lat, p_lon):
             self.goal_lat, self.goal_lon, self.goal_src = p_lat, p_lon, '런치 인자'
+        elif route:
+            ll = self.goal_from_route(route)
+            if ll is None:
+                self.event(f"❌ ★경로 CSV '{route}' 에서 목표를 못 정했다★ — "
+                           f"GOAL_LAT/GOAL_LON 으로 넘어가지 않는다. ★출발하지 않는다★")
+                return False
+            self.goal_lat, self.goal_lon = ll
+            self.goal_src = f'경로 CSV 마지막 점 [{self.route_name}]'
         elif goal_is_set(GOAL_LAT, GOAL_LON):
             self.goal_lat, self.goal_lon = GOAL_LAT, GOAL_LON
             self.goal_src = '파일 상단 상수'
         else:
-            ll = self.goal_from_route()
-            if ll is None:
-                self.event(
-                    "❌ ★목표 좌표가 없다★ — braketest.py 상단의 "
-                    "GOAL_LAT / GOAL_LON 을 채우거나, 런치 인자 "
-                    "goal_lat:=<위도> goal_lon:=<경도> 로 주거나, "
-                    "route:=<파일>.csv 로 경로의 마지막 점을 쓰게 할 것. "
-                    "★출발하지 않는다★")
-                return False
-            self.goal_lat, self.goal_lon = ll
-            self.goal_src = f'경로 CSV 마지막 점 [{self.route_name}]'
+            self.event(
+                "❌ ★목표 좌표가 없다★ — braketest.py 상단의 ROUTE 나 "
+                "GOAL_LAT / GOAL_LON 을 채우거나, 런치 인자 route:=<파일>.csv 또는 "
+                "goal_lat:=<위도> goal_lon:=<경도> 로 줄 것. ★출발하지 않는다★")
+            return False
         if not self.route_name:
             #  record 가 붙들 수 있는 이름을 만들어 준다('.csv' 로 끝나야 한다).
             self.route_name = (f"goal_{self.goal_lat:.7f}_{self.goal_lon:.7f}.csv")
@@ -725,13 +743,14 @@ class BrakeTestNode(Node):
                    f"({self.goal_lat:.7f}, {self.goal_lon:.7f}) — {self.goal_src}")
         return True
 
-    def goal_from_route(self):
-        """폴백 — route CSV 의 ★마지막 점★ 을 목표로 쓴다. 없으면 None."""
+    def route_param(self):
+        """경로 CSV 이름. ★런치 route:= 가 상단 ROUTE 를 이긴다★ 둘 다 비면 ''."""
+        name = str(self.get_parameter('route').value or '').strip()
+        return name or str(ROUTE or '').strip()
+
+    def goal_from_route(self, name):
+        """route CSV 의 ★마지막 점★ 을 목표로 쓴다. 못 읽으면 None."""
         import csv as _csv
-        name = str(self.get_parameter('route').value or '').strip() or str(ROUTE or '')
-        name = name.strip()
-        if not name:
-            return None
         path = os.path.join(self.data_dir, name)
         if not os.path.isfile(path):
             self.event(f"❌ 경로 파일 없음: {path}")

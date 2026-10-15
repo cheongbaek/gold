@@ -5,6 +5,7 @@ braketest.launch.py ― ★제동검차 전용 런치★ [white1 / 2026-09-12 �
 ════════════════════════════════════════════════════════════════════════════════
     ros2 launch white1 braketest.launch.py
     ros2 launch white1 braketest.launch.py goal_lat:=37.1234567 goal_lon:=127.1234567
+    ros2 launch white1 braketest.launch.py route:=subcourse.csv  # ★그 CSV 의 마지막 점으로★
     ros2 launch white1 braketest.launch.py drive_pulse:=8
     ros2 launch white1 braketest.launch.py launch_pulse:=12       # ★출발만 낮춘다★
     ros2 launch white1 braketest.launch.py lateral_offset_m:=0.0  # ★선을 안 옮긴다★
@@ -302,8 +303,10 @@ def generate_launch_description():
             description='★목표 경도★ 0 이면 braketest.py 상단 GOAL_LON 을 쓴다'),
         DeclareLaunchArgument(
             'route', default_value='',
-            description='★폴백 전용★ 목표 좌표가 비어 있을 때 이 CSV 의 '
-                        '★마지막 점★ 을 목표로 쓴다(기록 파일명도 이 이름이 된다). '
+            description='★경로 CSV★ 이 CSV 의 ★마지막 점★ 을 목표로 쓴다 — '
+                        'braketest.py 상단 ROUTE·GOAL_LAT/GOAL_LON 을 이긴다(goal_lat/'
+                        'goal_lon 인자만 이보다 앞). 이름만 주면 gps_data/ 에서 찾는다. '
+                        '기록 파일명도 이 이름이 된다. 못 읽으면 출발하지 않는다. '
                         '경로를 추종하지는 않는다 — 이 노드는 ★직선 한 줄★ 만 본다'),
         DeclareLaunchArgument(
             'drive_pulse', default_value='9',
