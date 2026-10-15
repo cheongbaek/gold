@@ -6,6 +6,15 @@ braketest.launch.py ― ★제동검차 전용 런치★ [white1 / 2026-09-12 �
     ros2 launch white1 braketest.launch.py
     ros2 launch white1 braketest.launch.py goal_lat:=37.1234567 goal_lon:=127.1234567
     ros2 launch white1 braketest.launch.py route:=subcourse.csv  # ★그 CSV 의 마지막 점으로★
+    ros2 launch white1 braketest.launch.py pick_route:=false     # ★선택 창 없이★ 상단 상수로
+
+  ★[2026-10-16] 런치를 띄우면 먼저 '경로 CSV 선택' 창이 뜬다★ — 고른 CSV 의 ★마지막 점★
+  이 목표 좌표가 된다(경로 모양은 따라가지 않는다 — 출발 위치에서 그 점까지 직선).
+  파일 이름은 보지 않는다 : ★.csv 면 어느 폴더의 무엇이든★ 고를 수 있고, 위도·경도 열
+  (latitude/longitude 또는 lat/lon)이 없으면 이유를 보여 주고 창을 다시 띄운다.
+  ★취소하면 아무 노드도 띄우지 않고 런치가 내려간다★ (하드웨어는 고른 뒤에 뜬다).
+  창이 뜨지 않는 경우 — route:= 나 goal_lat/goal_lon 을 줬을 때(그쪽이 이긴다),
+  pick_route:=false, 화면이 없는 SSH(경고를 찍고 braketest.py 상단 ROUTE·GOAL 로 간다).
     ros2 launch white1 braketest.launch.py drive_pulse:=8
     ros2 launch white1 braketest.launch.py launch_pulse:=12       # ★출발만 낮춘다★
     ros2 launch white1 braketest.launch.py lateral_offset_m:=0.0  # ★선을 안 옮긴다★
@@ -96,24 +105,44 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from white1 import ports
+from white1 import paths, ports, routepick
 
 PACKAGE = 'white1'
 NODE_ENV = {'PYTHONUNBUFFERED': '1', 'RCUTILS_COLORIZED_OUTPUT': '1'}
 RESPAWN_DELAY = 2.0
 
 
+def _pick_route(context, cfg, num):
+    """★경로 CSV 선택 창★ [2026-10-16] → (route 파라미터 값, 그만둘 사유 or None).
+
+    노드를 하나도 띄우기 ★전에★ 부른다 — 고르기 전에 arduino 가 붙지 않고, 취소하면
+    아무것도 움직이지 않는다. 고른 파일은 ★절대경로★ 로 넘긴다(gps_data 밖이어도 된다).
+    """
+    route = str(cfg('route').perform(context)).strip()
+    pick = str(cfg('pick_route').perform(context)).strip().lower() in ('true', '1', 'yes')
+    goal_arg = (num('goal_lat') != 0.0 and num('goal_lon') != 0.0)
+    if route or goal_arg or not pick:
+        return route, None
+    start = paths.data_dir(str(cfg('data_dir').perform(context)).strip())
+    try:
+        got = routepick.pick_csv(
+            start, title='제동검차 — 목표 경로 CSV 선택 (★마지막 점 = 목표★)',
+            log=print)
+    except RuntimeError as e:
+        print(f"    [경로] ⚠️ 선택 창을 못 띄운다({e}) — braketest.py 상단 "
+              f"ROUTE·GOAL_LAT/GOAL_LON 으로 간다. 고르려면 route:=<파일>.csv")
+        return '', None
+    if got is None:
+        return '', '경로 CSV 선택을 취소했다 — 출발하지 않는다'
+    path, (lat, lon), n = got
+    print(f"    [경로] ✅ {path}")
+    print(f"    [경로]    좌표 {n}행 · ★목표 = 마지막 점 ({lat:.7f}, {lon:.7f})★ — "
+          f"차를 이 점을 일직선으로 바라보게 세울 것")
+    return path, None
+
+
 def _setup(context, *args, **kwargs):
     """장치 경로를 확정한 뒤 노드를 만든다 (one_launch.py 와 같은 방식)."""
-    #  udev 링크 → VID/PID → (없으면) 링크 경로 그대로. one_launch.py 와 같은 방식이다.
-    used = set()
-    gps_dev = ports.resolve_device(ports.SYMLINK_GPS, ports.GPS_VIDPID,
-                                   exclude=used, log=lambda m: print(f"    [GPS] {m}"))
-    used.add(gps_dev)
-    imu_dev = ports.resolve_device(ports.SYMLINK_IMU, ports.IMU_VIDPID,
-                                   exclude=used, log=lambda m: print(f"    [IMU] {m}"))
-    used.add(imu_dev)
-
     def cfg(name):
         return LaunchConfiguration(name)
 
@@ -131,6 +160,21 @@ def _setup(context, *args, **kwargs):
         except (ValueError, TypeError):
             print(f"    [braketest] ⚠️ {name} 값을 실수로 읽지 못했다 — {default} 로 둔다")
             return float(default)
+
+    #  ★경로 CSV 선택 창★ — 장치를 찾기 전에 고른다(위 _pick_route).
+    route, quit_why = _pick_route(context, cfg, num)
+    if quit_why:
+        print(f"    [경로] ⏹️ {quit_why}")
+        return [EmitEvent(event=Shutdown(reason=quit_why))]
+
+    #  udev 링크 → VID/PID → (없으면) 링크 경로 그대로. one_launch.py 와 같은 방식이다.
+    used = set()
+    gps_dev = ports.resolve_device(ports.SYMLINK_GPS, ports.GPS_VIDPID,
+                                   exclude=used, log=lambda m: print(f"    [GPS] {m}"))
+    used.add(gps_dev)
+    imu_dev = ports.resolve_device(ports.SYMLINK_IMU, ports.IMU_VIDPID,
+                                   exclude=used, log=lambda m: print(f"    [IMU] {m}"))
+    used.add(imu_dev)
 
     # ═══════════════════════════════════════════════════════════════════
     #  [하드웨어] 아두이노 A/B
@@ -194,7 +238,7 @@ def _setup(context, *args, **kwargs):
         output='screen', additional_env=NODE_ENV,
         parameters=[{
             'data_dir':      cfg('data_dir'),
-            'route':         cfg('route'),
+            'route':         route,        # ★선택 창이 고른 절대경로 (또는 route:=)★
             #  ★목표 좌표★ 비우면(0) braketest.py 상단 GOAL_LAT/GOAL_LON 을 쓴다
             'goal_lat':      num('goal_lat'),
             'goal_lon':      num('goal_lon'),
@@ -308,6 +352,12 @@ def generate_launch_description():
                         'goal_lon 인자만 이보다 앞). 이름만 주면 gps_data/ 에서 찾는다. '
                         '기록 파일명도 이 이름이 된다. 못 읽으면 출발하지 않는다. '
                         '경로를 추종하지는 않는다 — 이 노드는 ★직선 한 줄★ 만 본다'),
+        DeclareLaunchArgument(
+            'pick_route', default_value='true',
+            description='★런치 때 경로 CSV 선택 창을 띄운다★ 고른 CSV 의 마지막 점이 목표. '
+                        '파일 이름 무관 — .csv 면 무엇이든. 취소하면 출발하지 않는다. '
+                        'route:= 나 goal_lat/goal_lon 을 주면 창을 띄우지 않는다. '
+                        'false 면 braketest.py 상단 ROUTE·GOAL_LAT/GOAL_LON 을 쓴다'),
         DeclareLaunchArgument(
             'drive_pulse', default_value='9',
             description='★순항 목표펄스 0~15★ 기본 9 → ★실측 ≈31.8 km/h★ '

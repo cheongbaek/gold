@@ -173,7 +173,7 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
 
-from white1 import paths
+from white1 import paths, routepick
 from white1.gps import GPS_FUSED_TOPIC, Q_LABEL, Q_NONE
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -749,27 +749,23 @@ class BrakeTestNode(Node):
         return name or str(ROUTE or '').strip()
 
     def goal_from_route(self, name):
-        """route CSV 의 ★마지막 점★ 을 목표로 쓴다. 못 읽으면 None."""
-        import csv as _csv
+        """route CSV 의 ★마지막 점★ 을 목표로 쓴다. 못 읽으면 None.
+
+        [2026-10-16] 읽는 규칙은 routepick.last_point 하나다 — 런치의 GUI 선택 창이
+        검사한 것과 여기서 읽는 것이 같다. 절대경로면 그대로, 이름만이면 gps_data/.
+        """
         path = os.path.join(self.data_dir, name)
         if not os.path.isfile(path):
             self.event(f"❌ 경로 파일 없음: {path}")
             return None
-        last = None
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                for row in _csv.DictReader(f):
-                    try:
-                        last = (float(row['latitude']), float(row['longitude']))
-                    except (KeyError, ValueError, TypeError):
-                        continue
+            last, n = routepick.last_point(path)
         except Exception as e:            # noqa: BLE001
-            self.event(f"❌ 경로 읽기 실패: {e}")
+            self.event(f"❌ 경로를 쓸 수 없다 [{os.path.basename(path)}]: {e}")
             return None
-        if last is None:
-            self.event(f"❌ 경로에 좌표가 없다: {name}")
-            return None
-        self.route_name = os.path.basename(name)
+        self.route_name = os.path.basename(path)
+        self.event(f"🗂️ 경로 CSV {path} — 좌표 {n}행, ★마지막 점을 목표로 쓴다★ "
+                   f"(경로 모양은 따라가지 않는다 — 출발 위치에서 직선)")
         return last
 
     def build_line(self):

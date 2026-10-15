@@ -1507,12 +1507,19 @@ ros2 topic hz /lidar_active                    # mppi 가 살아 있다고 신�
 ### 5.1 제동검차 — 목표 좌표 한 점을 향한 직선 질주 [2026-09-09 신설 / **2026-09-12 전면 개편**]
 
 ```bash
-ros2 launch white1 braketest.launch.py                       # ★상단 상수의 목표로★
+ros2 launch white1 braketest.launch.py                       # ★경로 CSV 선택 창 → 그 CSV 의 마지막 점이 목표★ [2026-10-16]
+ros2 launch white1 braketest.launch.py pick_route:=false     # 창 없이 상단 ROUTE·GOAL_LAT/LON 으로
+ros2 launch white1 braketest.launch.py route:=subcourse.csv  # 창 없이 그 CSV 끝점으로
 ros2 launch white1 braketest.launch.py goal_lat:=37.1 goal_lon:=127.1
 ros2 launch white1 braketest.launch.py drive_pulse:=8
 ros2 launch white1 braketest.launch.py t_preview:=1.2        # ★좁은 차로★
 ros2 launch white1 braketest.launch.py drive_pwm:=140        # ★직접 PWM★
 ```
+
+> **[2026-10-16] 목표 = 고른 경로 CSV 의 마지막 점** — 런치가 노드를 띄우기 **전에** 선택 창(`white1/routepick.py`,
+> zenity → 실패하면 tkinter)을 띄운다. 파일 이름 무관 · `.csv` 면 어느 폴더든 · 위도·경도 열이 없으면 이유를 보여 주고
+> 다시 고르게 한다. **취소하면 아무 노드도 안 띄우고 내려간다.** 우선순위 `goal_lat/lon` > `route:=` > 창 > 상단 `ROUTE` > `GOAL_LAT/LON`.
+> 경로 모양은 따라가지 않는다(출발 위치 → 끝점 직선). 정지는 그대로(라이다 AEB · 끝점 2단).
 
 **이 노드의 존재의의는 제동검차 통과(30 km/h 이상에서 급제동) 하나다.** 그래서
 저속 예행 없이 **처음부터 고속으로 달리고**, 조향은 '고속 직선에서 안 흔들리는 것'
