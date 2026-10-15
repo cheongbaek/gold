@@ -49,6 +49,23 @@ prompt.py ― CLI 메인화면 [white2]
   한다(그쪽 cb_estop 참고). 이 화면을 안 띄우면 토픽이 없으므로 종전대로 해제음이
   나온다 — 그때는 겹칠 시작 안내가 없으니 그게 맞다.
 
+════════════════════════════════════════════════════════════════════════════════
+ ★★ [2026-10-15] START 명령은 driving 이 받을 때까지 지킨다 — E-STOP 해제 경합 ★★
+════════════════════════════════════════════════════════════════════════════════
+  이 화면과 driving 은 /estop 을 ★따로★ 구독한다. 해제 순간 이 화면이 먼저 알고
+  DRIVE_START 를 보냈는데 driving 이 아직 같은 해제를 처리하지 않았으면, driving 은
+  '🚨 주행 시작 실패 — E-STOP 체결 중' 으로 거절한다. 종전에는 보낸 즉시 대기를
+  지워서 ★차는 IDLE 에 남고 화면은 메뉴로 돌아갔다★ — 경로를 다시 골라야 했다.
+  지금은 (main 의 START_* 상수):
+    · 게이트가 START_SETTLE_S 동안 ★이어서★ 열려 있어야 처음 보낸다
+    · driving 이 IDLE 을 벗어날 때까지 대기를 지우지 않고 START_RETRY_S 마다 다시 보낸다
+    · START_GIVEUP_S 가 지나도 안 받으면 그만두고 driving 의 마지막 사건을 띄운다
+  ★게이트는 여전히 driving 이다★ 다시 보내는 것은 같은 명령이고, 거절 조건(E-STOP·
+  스위치·경로·라이다)은 driving 이 매번 다시 본다. 대기 중에 게이트가 다시 닫히면
+  (E-STOP 을 또 눌렀다) 보낸 기록을 지우고 종전처럼 기다린다.
+  driving 의 출발 유예(E-STOP 해제 + 1.5 s)는 해제 시각 기준이라 이 지연과 겹친다 —
+  실제 출발 시각은 바뀌지 않는다.
+
   ┌ 조작 요령 ────────────────────────────────────────────────────────────────┐
   │  1) 매핑 : ★스위치는 어느 쪽이어도 된다★ E-STOP 만 해제되면 즉시 시작.     │
   │            수동조종이면 페달·핸들로, 자율주행이면 ★조이스틱★ 으로 몬다      │
@@ -132,6 +149,13 @@ GATE_ESTOP  = 'ESTOP'     # E-STOP 이 물려 있다
 #  ★진짜 게이트는 driving.cb_drive_cmd 다★ 이 화면은 그보다 먼저 기다려 줄 뿐이고,
 #  화면을 안 띄우고 DRIVE_START 를 직접 쏴도 그쪽에서 막힌다.
 GATE_LIDAR  = 'LIDAR'     # 라이다가 아직 안 켜졌다 (주행만)
+
+#  ★START 명령의 확인·재전송 [2026-10-15]★ (파일 헤더 'E-STOP 해제 경합')
+#  driving 이 같은 /estop 해제를 처리할 틈을 주고(SETTLE), 그래도 거절되면 다시 보낸다.
+#  루프 한 바퀴가 최대 0.4 s(select)라 실제 첫 송신은 해제 뒤 0.3~0.8 s 다.
+START_SETTLE_S = 0.3      # 게이트가 이만큼 이어서 열려 있어야 처음 보낸다
+START_RETRY_S = 1.0       # driving 이 IDLE 을 안 벗어나면 이 간격으로 다시 보낸다
+START_GIVEUP_S = 5.0      # 처음 보낸 뒤 이만큼 지나도 안 받으면 그만두고 이유를 띄운다
 
 
 class PromptNode(Node):
@@ -278,9 +302,11 @@ class PromptNode(Node):
             self.play(SND_ESTOP_HOLD)
 
     def publish_wait(self, pending, gate):
-        """대기 상태를 sound.py 에 알린다. 'MAP_ESTOP' 처럼 두 축을 붙여 보낸다."""
+        """대기 상태를 sound.py 에 알린다. 'MAP_ESTOP' 처럼 두 축을 붙여 보낸다.
+        ★게이트가 열렸는데 driving 이 아직 안 받은 동안은 'DRIVE_START'★ [2026-10-15]
+        — 그 사이도 대기다(해제음 억제가 그대로 이어지고 HUD 에도 보인다)."""
         self.pub_wait.publish(String(
-            data=f"{pending}_{gate}" if (pending and gate) else ''))
+            data=f"{pending}_{gate or 'START'}" if pending else ''))
 
     # ── 화면 ───────────────────────────────────────────────────────────────────
     def routes(self):
@@ -353,7 +379,13 @@ class PromptNode(Node):
         #  ★[2026-09-16] 매핑은 E-STOP 한 단계뿐이다★ 스위치를 보지 않으므로
         #  ①스위치 단계가 통째로 사라졌다(gate_for 참고).
         nstep = 3 if pending == 'DRIVE' else 1
-        if gate == GATE_SWITCH:
+        if gate is None:
+            #  ★[2026-10-15] 게이트는 다 열렸다 — driving 이 START 를 받기를 기다린다★
+            head = f" ▶ {label} 시작 — 조건 충족, driving 에 시작 명령을 보내는 중"
+            rest = ("   driving 이 받으면 곧바로 시작합니다"
+                    f" (안 받으면 {START_RETRY_S:.0f}초마다 다시 보내고"
+                    f" {START_GIVEUP_S:.0f}초 뒤 그만둔다)")
+        elif gate == GATE_SWITCH:
             head = (f" ⏳ {label} 대기 ①/{nstep} — 스위치를 ★{need}★ 로 전환하세요 "
                     f"(현재: {cur})")
             rest = ("   다음 단계: ②E-STOP 해제 (지금 체결 중)" if self.estop
@@ -428,8 +460,13 @@ def main(args=None):
     spin.start()
 
     ui = UI_MENU
-    pending = None          # None | 'MAP' | 'DRIVE' — 두 게이트를 다 통과할 때까지 대기 중
+    pending = None          # None | 'MAP' | 'DRIVE' — driving 이 START 를 받을 때까지 대기 중
     last_screen = None
+    #  ★[2026-10-15] START 확인·재전송★ (헤더 'E-STOP 해제 경합') — pending 이 없거나
+    #  게이트가 닫히면 셋 다 지운다.
+    start_clear_t = None    # 게이트가 열린 시각
+    start_first_t = None    # 처음 보낸 시각
+    start_last_t = 0.0      # 마지막으로 보낸 시각
 
     try:
         while rclpy.ok():
@@ -450,12 +487,31 @@ def main(args=None):
             #   더 기다림'이다 — 눌러 둔 사람의 의도를 버리지 않는다.
             gate = node.gate_for(pending)
             if pending and gate is None:
-                # 두 게이트를 다 통과했다 — 그 즉시 시작 명령을 보낸다.
-                node.pub_cmd.publish(String(
-                    data='MAP_START' if pending == 'MAP' else 'DRIVE_START'))
-                pending = None
-                ui = UI_MENU
-                last_screen = None
+                # 게이트를 다 통과했다 — ★driving 이 IDLE 을 벗어날 때까지★ 시작 명령을 지킨다.
+                #   [2026-10-15] 종전에는 한 번 보내고 대기를 지웠다. driving 이 같은 E-STOP
+                #   해제를 아직 처리하지 않았으면 거절되고, 시작이 조용히 사라졌다(헤더).
+                #   pending 은 루프 앞머리의 'IDLE 이 아니면 지운다' 가 지운다.
+                now = time.time()
+                if start_clear_t is None:
+                    start_clear_t = now
+                if (now - start_clear_t >= START_SETTLE_S
+                        and now - start_last_t >= START_RETRY_S):
+                    if start_first_t is not None and now - start_first_t > START_GIVEUP_S:
+                        why = node.events[-1] if node.events else '(driving 사건 없음)'
+                        print(f"\n⚠️ 시작 명령을 {START_GIVEUP_S:.0f}초 동안 driving 이 받지 않았다"
+                              f" — 마지막 사건: {why}\n   메뉴에서 다시 고르세요.", flush=True)
+                        pending = None
+                        ui = UI_MENU
+                        last_screen = None
+                    else:
+                        if start_first_t is None:
+                            start_first_t = now
+                        node.pub_cmd.publish(String(
+                            data='MAP_START' if pending == 'MAP' else 'DRIVE_START'))
+                        start_last_t = now
+            if not pending or gate is not None:
+                start_clear_t = start_first_t = None
+                start_last_t = 0.0
             # 안내음성(변화 시 한 번)과 대기상태 발행(매 틱)은 게이트 하나로 통일한다.
             node.announce_gate(pending, gate)
             node.publish_wait(pending, gate)
