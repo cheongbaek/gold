@@ -105,7 +105,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from white1 import paths, ports, routepick
+from white1 import paths, ports
+from white1.braketest import pick_csv
 
 PACKAGE = 'white1'
 NODE_ENV = {'PYTHONUNBUFFERED': '1', 'RCUTILS_COLORIZED_OUTPUT': '1'}
@@ -125,7 +126,7 @@ def _pick_route(context, cfg, num):
         return route, None
     start = paths.data_dir(str(cfg('data_dir').perform(context)).strip())
     try:
-        got = routepick.pick_csv(
+        got = pick_csv(
             start, title='제동검차 — 목표 경로 CSV 선택 (★마지막 점 = 목표★)',
             log=print)
     except RuntimeError as e:

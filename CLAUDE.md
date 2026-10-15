@@ -1516,7 +1516,7 @@ ros2 launch white1 braketest.launch.py t_preview:=1.2        # ★좁은 차로�
 ros2 launch white1 braketest.launch.py drive_pwm:=140        # ★직접 PWM★
 ```
 
-> **[2026-10-16] 목표 = 고른 경로 CSV 의 마지막 점** — 런치가 노드를 띄우기 **전에** 선택 창(`white1/routepick.py`,
+> **[2026-10-16] 목표 = 고른 경로 CSV 의 마지막 점** — 런치가 노드를 띄우기 **전에** 선택 창(`braketest.py` 의 `pick_csv`·`last_point`,
 > zenity → 실패하면 tkinter)을 띄운다. 파일 이름 무관 · `.csv` 면 어느 폴더든 · 위도·경도 열이 없으면 이유를 보여 주고
 > 다시 고르게 한다. **취소하면 아무 노드도 안 띄우고 내려간다.** 우선순위 `goal_lat/lon` > `route:=` > 창 > 상단 `ROUTE` > `GOAL_LAT/LON`.
 > 경로 모양은 따라가지 않는다(출발 위치 → 끝점 직선). 정지는 그대로(라이다 AEB · 끝점 2단).
