@@ -260,7 +260,17 @@ LAUNCH_SWITCH_ENC_PULSE = 10.0  # 엔코더(바퀴 기준) 이 펄스를 넘어�
 #  블랭킹의 타임아웃(LAUNCH_MAX_MS = 3000)과 같은 값이라, 그 구간이 끝난 뒤에만
 #  엔코더를 믿는다는 뜻이 된다. GPS 본선은 이 블랭킹을 받지 않는다 —
 #  GPS 는 허수 펄스와 무관하고, 애초에 그쪽이 사용자가 지시한 판정이다.
+#  ★[2026-10-16] 블랭킹으로도 모자랐다 — GPS 가 살아 있으면 엔코더를 아예 안 본다★
+#  ⚠️ 2026-10-16 두 주행(033740·034110)이 ★출발 3.0 초 만에★ 순항으로 내려갔다:
+#         t=3.04s  엔코더 ★25.5펄스★ → 순항 전환   그런데 GPS 는 11.4 km/h (≈3.6펄스)
+#         t=3.04s  엔코더 ★16.5펄스★ → 순항 전환   그런데 GPS 는 11.6 km/h
+#     허수 펄스가 3 초 뒤에도 이어졌다(t=2.5s 좌 22 · 우 9, GPS 10.9 km/h). 그 뒤 9펄스로
+#     7 초를 더 갔지만 라이다가 세운 순간 ★24.2 km/h★ — 30 을 한 번도 못 넘겼다.
+#  ★고친 방법★ GPS 속도가 신선하면(GPS_SPEED_FRESH_S) ★GPS 하나로만★ 내린다. 엔코더 폴백은
+#  ★GPS 속도를 모를 때만★ 본다(블랭킹도 그대로 받는다). GPS 가 GPS_TIMEOUT_S 넘게 끊기면
+#  loop 가 시험을 접으므로, 그 폴백이 실제로 쓰일 일은 거의 없다.
 LAUNCH_ENC_BLANK_S      = 3.0   # [s] 이 시간 전에는 엔코더 폴백을 보지 않는다
+GPS_SPEED_FRESH_S       = 0.5   # [s] /gps_fused 가 이 안에 왔으면 GPS 속도를 믿는다
 LAUNCH_MAX_S            = 12.0  # [s] 이 시간이 지나면 무조건 순항으로 내린다
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-13 저녁] 기준선을 옆으로 평행이동한다 ★★
@@ -1249,8 +1259,9 @@ class BrakeTestNode(Node):
         어느 것이 먼저 걸려도 위험해지지 않는다:
 
           ⓐ ★GPS 속도 ≥ cruise_switch_kmh★  — 사용자 지시의 본선
-          ⓑ 엔코더 ≥ LAUNCH_SWITCH_ENC_PULSE — GPS 가 안 올 때의 폴백. 엔코더는
-            기동 허수로 ★위로★ 튀므로(실측 중앙 16, 최대 34) 조금 일찍 내릴 뿐이다.
+          ⓑ 엔코더 ≥ LAUNCH_SWITCH_ENC_PULSE — ★GPS 속도를 모를 때만★ 보는 폴백.
+            [2026-10-16] GPS 가 살아 있는데 엔코더 허수로 3 초 만에 내려가, 30 km/h 를
+            한 번도 못 넘겼다(상수절 GPS_SPEED_FRESH_S). 이제 GPS 가 있으면 ⓐ 하나다.
           ⓒ 시간 ≥ launch_max_s              — 15펄스로 무한정 달리지 않게 하는 줄
 
         ★한 번 내려오면 다시 올리지 않는다★(_cruise_latched). 올렸다 내렸다 하면
@@ -1259,15 +1270,17 @@ class BrakeTestNode(Node):
         if self._cruise_latched:
             return self.cmd_value
         why = None
-        if self.gps_kmh is not None and self.gps_kmh >= self.cruise_switch_kmh:
+        gps_fresh = (self.gps_kmh is not None
+                     and now - self.fix_time <= GPS_SPEED_FRESH_S)
+        if gps_fresh and self.gps_kmh >= self.cruise_switch_kmh:
             why = f"GPS {self.gps_kmh:.1f} km/h ≥ {self.cruise_switch_kmh:.0f}"
-        elif (self._launch_t0 > 0.0
+        elif (not gps_fresh and self._launch_t0 > 0.0
               and (now - self._launch_t0) >= LAUNCH_ENC_BLANK_S
               and self.enc_pulse >= LAUNCH_SWITCH_ENC_PULSE):
             #  ★기동 블랭킹을 지난 뒤에만 엔코더를 믿는다★ 출발 직후의 허수 펄스
             #  (실측 중앙 16 · 최대 34)가 이 문턱을 그냥 넘긴다 — 상수절 참고.
             why = (f"엔코더 {self.enc_pulse:.1f}펄스 ≥ "
-                   f"{LAUNCH_SWITCH_ENC_PULSE:.0f} (GPS 폴백, "
+                   f"{LAUNCH_SWITCH_ENC_PULSE:.0f} (★GPS 속도 없음★ — 폴백, "
                    f"기동 블랭킹 {LAUNCH_ENC_BLANK_S:.0f}s 경과)")
         elif self._launch_t0 > 0.0 and (now - self._launch_t0) >= self.launch_max_s:
             why = f"출발 {now - self._launch_t0:.1f}s 경과 ≥ {self.launch_max_s:.0f}s"

@@ -1817,7 +1817,7 @@ ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
 > | 조건 | 상수 | 뜻 |
 > |---|---|---|
 > | **GPS 속도 ≥ 30 km/h** | `CRUISE_SWITCH_KMH` | **본선** |
-> | 엔코더 ≥ 10펄스 | `LAUNCH_SWITCH_ENC_PULSE` | GPS 폴백. 엔코더는 기동 허수로 **위로** 튀므로 조금 일찍 내릴 뿐 |
+> | 엔코더 ≥ 10펄스 | `LAUNCH_SWITCH_ENC_PULSE` | **GPS 속도를 모를 때만**(`GPS_SPEED_FRESH_S` 0.5 s) — [2026-10-16] GPS 가 살아 있는데 허수 펄스(25.5 · 16.5)로 출발 3 초 만에 내려가 30 km/h 를 못 넘겼다(24.2 km/h) |
 > | 경과 ≥ 12 s | `LAUNCH_MAX_S` | 15펄스로 무한정 달리지 않게 하는 마지막 줄 |
 >
 > **★한 번 내려오면 다시 올리지 않는다★**(래치). 올렸다 내렸다 하면 그것이 곧
