@@ -482,6 +482,10 @@ DONE_LINGER_S        = 2.0    # (목표를 못 정해 시작도 못 했을 때) 
 #  종료 정리(stop_and_close)가 B보드에 'x,0' 을 직접 써서 ★리니어가 0단★ 이 된다
 #  (SIGINT · SIGTERM 둘 다). 이 노드가 0 을 내는 것은 보조다 — arduino 도 같이 내려가는 중이다.
 HOLD_NOTE_S          = 10.0   # 유지 중 안내를 이 간격으로 찍는다
+#  ★[2026-10-16] E-STOP 을 풀면 이만큼 기다렸다 출발한다★ — 해제와 동시에 B보드가 리니어를
+#  0단으로 되돌린다(kasa_1016_B 0.5 s · 1007 이하 1.0 s). 종전에는 해제한 그 틱에 15펄스로
+#  밀어, 브레이크가 아직 빠지는 중인 차를 구동이 밀었다. driving.py ESTOP_RESUME_GRACE_S 와 같은 값.
+ESTOP_START_GRACE_S  = 1.5
 
 #  ★[2026-10-16] S 지점★ — 고른 경로 CSV 의 terrain 열이 S/s 인 ★첫 행★ 을 지나는 즉시 2단.
 #  white1 driving 의 'S' 일시정지와 같은 표시다(그쪽은 3.5 s 뒤 재출발, 여기는 계속 선다).
@@ -803,6 +807,7 @@ class BrakeTestNode(Node):
         self._enc_buf = []
         self.auto_mode = None
         self.estop = False
+        self._estop_release_t = 0.0        # E-STOP 을 푼 시각 (출발 유예 — ESTOP_START_GRACE_S)
         self.go = False
 
         #  라이다 사슬 관찰
@@ -1087,7 +1092,10 @@ class BrakeTestNode(Node):
         self.auto_mode = bool(msg.data)
 
     def cb_estop(self, msg: Bool):
-        self.estop = bool(msg.data)
+        now_on = bool(msg.data)
+        if self.estop and not now_on:
+            self._estop_release_t = time.time()
+        self.estop = now_on
 
     def cb_go(self, msg: Bool):
         if bool(msg.data):
@@ -1630,6 +1638,11 @@ class BrakeTestNode(Node):
         if not (self.auto_start or self.go):
             self.throttle("⏸️ 출발 대기 — `ros2 topic pub -1 /braketest_go "
                           "std_msgs/msg/Bool '{data: true}'` 로 시작")
+            return
+        #  ★E-STOP 을 막 풀었다 — 리니어가 빠질 때까지 기다린다★ (상수절 ESTOP_START_GRACE_S)
+        left = ESTOP_START_GRACE_S - (now - self._estop_release_t)
+        if left > 0.0:
+            self.throttle(f"⏳ E-STOP 해제 — 리니어가 빠지는 중, {left:.1f}s 뒤 출발", period=0.5)
             return
         if not self.fix_ok:
             self.throttle(
