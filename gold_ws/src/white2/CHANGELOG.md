@@ -92,6 +92,15 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-16 — 카메라 녹화 점검 · DDS 수신 버퍼 · 영상 길이 = 벽시계 · traffic_light 종료 정리 (white1 과 같은 줄)
+
+`camera_launch.py`(`dds_env` — 카메라 노드 3개에 `nxde/config/cyclonedds.xml`, 문서 정정) · `traffic_light.py`(main finally 신호 무시 +
+`executor.shutdown(2.0)`) · `paths.py`(캔버스 크기 문구)를 white1 과 같은 줄로 고쳤다. 원인·검증 수치는 ★white1 CHANGELOG 2026-10-16★.
+white2 의 디버그 녹화는 CycloneDDS 에서 3번 모두 비었고(traffic_light 가 /image_raw 를 못 받음) FastDDS 로는 30 fps 로 정상이었다 —
+기계마다 `sudo bash gold_ws/src/nxde/tools/setup_dds_buffer.sh` 가 필요하다(white1 TODO-14).
+
+---
+
 ## 2026-10-16 — `prompt.py --route <CSV>` (white1 같은 줄) · nxde/panel 에서 white2 를 띄운다
 
 `ros2 run white2 prompt --route maincourse_b400.csv` — 메뉴를 건너뛰고 그 경로로 '2) 주행'. driving 이 `/drive_cmd` 를

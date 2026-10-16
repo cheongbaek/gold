@@ -84,6 +84,30 @@ ros2 launch white1 one_launch.py \
 | **TODO-11** | ★AS 상태 (사용자 지시 2026-10-07, 규정 2.16.1 표 4·5)★ — ★B보드에 `kasa_1007_B.ino` 를 굽고 실차 확인★(CLAUDE.md 8.7 표 6줄) — 수동+E-STOP 무반응 · 그 상태에서 자율 전환 즉시 2단 · 수동 전환 즉시 0단 복귀 · HUD AS 필 · 해제 뒤 1.5 s 출발 | 코드 완료 [2026-10-07] (아래 항목) · ⚠️ 펌웨어 굽기 전에는 ROS 쪽만 바뀐 상태 |
 | **TODO-12** | 대회 규정 ⚠️ 확인 — 지정 배터리 사양 · 제동등 2개·15 W·전원 OFF 점등 · 비상정지버튼 2개 · ASMS 'AS' 표기·잠금 · 라이다 높이(롤후프 안) · 전장·전폭·무게·지상고 실측 · GPS 두절 시 긴급제동(규정 2.16.1 아) | 실차·질의 — CLAUDE.md 8.1 · 8.5 D3 |
 | **TODO-13** | 본선 코스 **T2 구간이 14.7 m 로 짧다** — 7펄스로 들어오면 1단으로 정지선 1 m 앞에 맞추는 데 ≈18.3 m 가 필요해 2단을 앞당겨 **정지선 2.8 m 앞**에 선다(넘지는 않는다). [2026-10-07] 부터 T2 가 실제로 서는 신호가 됐다(T1 이 처음부터 녹색이면 반드시) — `maincourse.csv` 의 T2 시작을 ≈3.6 m 앞당겨 적을지 | ★사용자 결정★ (정지선 = 구간 끝은 그대로) |
+| **TODO-14** | ★DDS 수신 버퍼 — 기계마다 한 번 `sudo bash gold_ws/src/nxde/tools/setup_dds_buffer.sh`★ (rmem_max 208 KB → 2 GB 상한). 안 하면 traffic_light 가 카메라 프레임을 받았다 못 받았다 한다(아래 2026-10-16) — `ros2 run nxde check` 의 [DDS 수신 버퍼] 줄로 확인 | 코드 완료 [2026-10-16] · 기계별 적용 대기 |
+
+---
+
+## 2026-10-16 — ★카메라 녹화 점검 · DDS 수신 버퍼 · 영상 길이 = 벽시계 · 종료 경로 정리★ (white2 와 같은 줄)
+
+**점검** — 디버그(`tl-*`)·원본(`cam-*`) 녹화를 도메인 77 에서 실제 카메라로 시험했다. 녹화 노드(`nxde/video`)는
+Ctrl+C·SIGTERM·`nxde kill` 모두 마지막 조각까지 정상으로 닫았다(SIGKILL 만 마지막 조각을 잃는다 — 설계대로).
+기존 `video/` 158개 중 깨진 것은 10/16 03:55 세션 마지막 조각 하나(강제 종료).
+
+| # | 문제 (실측) | 고친 것 |
+|---|---|---|
+| ① | ★traffic_light 가 /image_raw 를 못 받는다★ — 6번 중 5번 '⏳ 수신 대기', 그때 디버그 mp4 가 안 생긴다. 같은 토픽을 nxde video 는 30 fps 로 받았다. 원인 = 커널 `net.core.rmem_max` 208 KB 에서 CycloneDDS 가 4.1 MB 프레임의 조각을 잃는다(FastDDS 로는 매번 정상) | `nxde/config/cyclonedds.xml`(`SocketReceiveBufferSize max=32MB` — ★min 은 금지, rmem 을 안 올린 기계에서 노드가 안 뜬다★) 를 `camera_launch.dds_env()` 가 usb_cam·traffic_light·tl_video 에만 넘긴다(기존 `CYCLONEDDS_URI` 가 있으면 안 덮음) · `nxde/tools/setup_dds_buffer.sh`(sudo) · `nxde check` 경고 → TODO-14 |
+| ③ | ★디버그 영상이 1.4배 빨리 재생★ — 기동 직후 29.2 fps 로 잰 뒤 20.8 fps 로 들어와 48.5 s 녹화가 34.5 s 영상 | `video.py` 가 프레임을 ★시각 기준 칸★ 에 넣는다(늦으면 직전 프레임 반복, 빠르면 버림, 공백 5 s 까지) · 조각 경계도 시간축을 잇는다 |
+| ④ | Ctrl+C 가 SIGINT 를 두 번 준다(그룹 + launch 전달) — traffic_light 가 정리 중 두 번째를 맞아 `shutdown_release()`(리니어 해제)를 건너뛰고 exit 1 | `traffic_light.main` finally 에서 신호 무시 + `executor.shutdown(2.0)` · `panel` 이 무시로 물려받은 SIGINT·SIGTERM 을 되돌린다(`_unignore_signals`) |
+| ⑤ | `nxde kill`(SIGTERM) 때 녹화 노드가 파일은 닫고 Traceback + exit 1 — 신호 처리기의 SystemExit 이 pybind11 안에서 RuntimeError 로 바뀜 | 처리기는 닫고 표시만 세운다 · main 은 `spin_once(0.1)` 루프 |
+| ⑦ | 문서 — `tl_show_window` 기본은 9/13 부터 **false**(설명은 true 였다) · 캔버스 1248x610 → **1728x590** · 원본 녹화 위치는 복사설치라 **`~/nxde_video`** | camera_launch·paths·video.py·nxde/setup.py·CLAUDE.md |
+
+⚠️ 처음 시험의 'launch 가 Ctrl+C 로 안 내려가고 usb_cam 이 respawn' 은 ★시험 스크립트가 `&` 로 띄워 SIGINT 를 무시로 물려준 착시★ 였다
+(정상 조건에서 1.0 s 에 내려가고 respawn 없음 — launch 는 respawn 전에 종료를 2 s 기다린다).
+
+**검증 (도메인 77)** — ③ 가짜 카메라 30→10 fps→3 s 정지→30 fps : 영상 26.07 s = 벽시계 26.02 s, 프레임에 찍은 시각과 영상 시점 오차 ≈0.05 s ·
+실제 카메라(FastDDS) 디버그 48.02 s = 48.06 s, 원본 39.05 s = 39.06 s · ④ white1·white2 각 2회 traffic_light 'finished cleanly', launch 1.0 s ·
+⑤ SIGTERM 20회 전부 exit 0·Traceback 0 · 실제 카메라 `nxde kill` exit 0 · ① 은 sysctl 적용 뒤 CycloneDDS 로 재시험(TODO-14).
 
 ---
 

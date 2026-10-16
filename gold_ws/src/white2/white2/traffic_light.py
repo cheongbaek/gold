@@ -2202,7 +2202,15 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        executor.shutdown()
+        #  ★[2026-10-16] 정리하는 동안 신호를 더 받지 않는다★ 터미널 Ctrl+C·panel [x] 는
+        #  SIGINT 를 프로세스 그룹 전체에 보내고, 곧이어 launch 가 자식에게 한 번 더 보낸다.
+        #  그 두 번째가 executor.shutdown() 안에서 KeyboardInterrupt 로 터져 아래
+        #  shutdown_release()(리니어 해제 발행)를 건너뛰고 exit 1 로 죽었다(실측). 정리가
+        #  끝없이 걸려도 launch 가 sigterm·sigkill 유예 뒤 SIGKILL 하므로 막히지 않는다.
+        import signal
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, signal.SIG_IGN)
+        executor.shutdown(timeout_sec=2.0)
         node.shutdown_release()
         node.destroy_node()
         if rclpy.ok():

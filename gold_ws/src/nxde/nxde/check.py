@@ -473,6 +473,31 @@ def camera_pixel_formats(dev):
 # ══════════════════════════════════════════════════════════════════════════════
 #  본체
 # ══════════════════════════════════════════════════════════════════════════════
+#  ★[2026-10-16] 카메라 영상이 DDS 로 넘어가려면 이만큼은 있어야 한다★ (nxde/config/cyclonedds.xml)
+DDS_RMEM_MIN = 10 * 1024 * 1024
+
+
+def check_dds_buffer():
+    """커널 UDP 수신 버퍼 상한(net.core.rmem_max)을 본다 — ★경고만, 판정(rc)에는 안 넣는다★
+
+    기본 208 KB 면 CycloneDDS 가 1080p 영상(4.1 MB)을 받았다 못 받았다 한다 —
+    traffic_light 가 '⏳ /image_raw 수신 대기' 로 멈추고 인지 디버그 mp4 가 안 생긴다
+    (2026-10-16 시험: 6번 중 5번). 차는 굴러가므로 막지는 않는다."""
+    print("\n[DDS 수신 버퍼]  net.core.rmem_max")
+    try:
+        with open('/proc/sys/net/core/rmem_max') as f:
+            rmem = int(f.read().strip())
+    except (OSError, ValueError):
+        print("  ·  읽지 못했습니다 — 건너뜁니다")
+        return
+    if rmem >= DDS_RMEM_MIN:
+        print(f"  ✅ {rmem:,} 바이트 — 카메라 영상(1080p)이 DDS 로 넘어갈 수 있습니다")
+    else:
+        print(f"  ⚠️ {rmem:,} 바이트 (< {DDS_RMEM_MIN // (1024 * 1024)} MB) — ★신호등 인지가 카메라 "
+              f"프레임을 못 받을 수 있습니다★")
+        print("     이 기계에서 한 번 :  sudo bash <gold>/gold_ws/src/nxde/tools/setup_dds_buffer.sh")
+
+
 def run(args):
     print()
     print(_hr('═'))
@@ -622,6 +647,8 @@ def run(args):
     if args.quick:
         print("\n  ※ --quick 이라 A/B 역할·핸드셰이크와 GPS RTK 상태는 "
               "확인하지 않았습니다.")
+
+    check_dds_buffer()
 
     print()
     if missing_required:

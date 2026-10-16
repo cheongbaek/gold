@@ -441,6 +441,11 @@ gold_ws/src/
     loopify.py   외부 음원을 exhaust 용 심리스 루프 레이어로 가공하는 도구
     video.py     ★아무 Image 토픽이나 mp4 녹화★ (원본 /image_raw 도, 인지 디버그
                  화면 /tl/debug_image 도 — 후자를 one_launch 가 자동으로 띄운다)
+                 ★원본은 자동으로 녹화되지 않는다★ — `ros2 run nxde video` 를 따로 띄우면
+                 `~/nxde_video/cam-*.mp4`(복사설치라 홈으로 떨어진다). [2026-10-16] 프레임을
+                 시각 기준 칸에 넣어 ★영상 길이 = 벽시계★ (5.2)
+    config/cyclonedds.xml · tools/setup_dds_buffer.sh  ★카메라 영상의 DDS 수신 버퍼★
+                 [2026-10-16] — 3.1 투트랙 아래 'DDS' · 5.2
     check.py     ★런치 전 하드웨어 점검★ 보고하고 종료
     kill.py      돌고 있는 ROS2 를 한 번에 끝낸다 + 포트 초기화
     panel.py     ★터치 조작반★ [2026-10-16] tkinter, 키보드 없이 — [Check][Kill][Exit] ·
@@ -493,6 +498,13 @@ gold_ws/src/
 >   (`tools/export_tl_1280.sh`). 엔진은 GPU·드라이버에 묶이므로 다른 기계에서는 거기서 다시 돌린다.
 > - **cam_testbed** — 이 기계의 `~/.bashrc` 는 CycloneDDS 다. 1080p 프레임이 안 넘어가 `/image_raw 수신 대기` 로 멈추므로
 >   `RMW_IMPLEMENTATION=rmw_fastrtps_cpp python3 -m tb.run …` 으로 돌리고, 도메인은 실차(7)와 다른 번호로 준다.
+> - ★**DDS 수신 버퍼 — 실차 스택도 같은 문제다** [2026-10-16]★ 원인은 커널 `net.core.rmem_max`(기본 208 KB)다 —
+>   1080p 원본(4.1 MB)·디버그 캔버스(3.1 MB)의 조각을 잃어 프레임이 통째로 사라진다. 실측 : traffic_light 가 6번 중 5번
+>   `/image_raw` 를 한 장도 못 받았고(같은 토픽을 nxde video 는 30 fps), 그때 인지 디버그 mp4 가 안 생긴다. FastDDS 로는 매번 정상.
+>   고친 것 : `camera_launch.dds_env()` 가 usb_cam·traffic_light·tl_video 에만 `nxde/config/cyclonedds.xml`
+>   (`SocketReceiveBufferSize max=32MB`)을 넘긴다(기존 `CYCLONEDDS_URI` 가 있으면 안 덮음). ★효력은 기계마다 한 번
+>   `sudo bash gold_ws/src/nxde/tools/setup_dds_buffer.sh`★ 로 상한을 올려야 난다 — `ros2 run nxde check` 가 안 올린 기계를 경고한다.
+>   ⚠️ xml 에 ★`min=` 을 쓰지 말 것★ — 상한을 안 올린 기계에서 노드가 아예 안 뜬다(rmw handle invalid, 실측).
 
 > **`drive_gps_node` 와 `white1/driving` 을 동시에 띄우지 말 것** — `/cmd_vel_raw`
 > 발행자가 겹친다. 실주행은 `white1`, 저쪽은 라이다 AEB 시험용이다.
@@ -1473,7 +1485,7 @@ ros2 run nxde panel                    # ★터치 조작반★ 위 셋 + braket
 use_arduino:=true  use_record:=true  use_mapping:=true  use_sound:=true  use_hud:=true
 use_camera:=?      use_lidar:=true   use_lidar_rviz:=false  flip_lidar_xy:=true
 tl_record_video:=true  ← ★인지 디버그 화면을 주행 내내 mp4 로 (5.2절)★
-tl_show_window:=true   ← 화면 없는 SSH 면 false (5.2절)
+tl_show_window:=false  ← ★기본 false★ (9/13 부터) — 화면을 보며 튜닝할 때만 true (5.2절)
 drive_pulse:=7     heading_pulse:=3  wheelbase_m:=1.25
 lidar_pulse:=2     ← ★L 구간 순항 [펄스]. 이것 하나만 고치면 된다 (6.4②)★
 lfd_omega_n:=0.97  lfd_omega_n_fast:=0.78  lfd_min_m:=4.04  ← ★ω_n 속도 스케줄 (4.1)★
@@ -1909,18 +1921,17 @@ ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
 **★창과 녹화는 완전히 독립이다★**
 
 ```
-tl_show_window   창을 띄운다      ← ★기본 true★ (한때 false 였다가 2026-09-10 되돌렸다)
+tl_show_window   창을 띄운다      ← ★기본 false★ (9/10 false → 같은 날 true → 9/13 69f8766 에서 다시 false)
 tl_record_video  파일로 적는다    ← ★기본 true★
 ```
 
-**같은 캔버스다** — 창을 껐다고 정보가 줄지 않는다. 처음엔 "녹화가 있으니 창은
-필요 없다"고 보고 기본을 껐었는데, 화면이 있는 실차에서는 매번 `:=true` 를 붙이는
-쪽이 더 불편해서 **기본을 다시 켬으로 되돌렸다** — 둘 다 켜 둬도 서로 방해하지
-않는다. **화면 없는 터미널(SSH)일 때만 `tl_show_window:=false`** — 안 그러면 cv2
-가 창을 못 열어 에러를 남긴다.
+**같은 캔버스다** — 창을 껐다고 정보가 줄지 않는다. ★[2026-10-16] 이 문서와 camera_launch 설명은 오래
+'기본 true' 로 적혀 있었는데 코드는 9/13 부터 false 였다 — 코드에 맞췄다(사용자 결정).★ panel 도
+`tl_show_window:=false` 를 명시해 넘긴다. 화면을 보며 튜닝할 때만 `:=true` — 둘 다 켜 둬도 서로 방해하지 않는다.
+화면 없는 터미널(SSH)에서는 true 로 주지 말 것 — cv2 가 창을 못 열어 에러를 남긴다.
 
 ```bash
-ros2 launch white1 one_launch.py tl_show_window:=false     # 화면 없는 SSH
+ros2 launch white1 one_launch.py tl_show_window:=true      # 창을 보며 튜닝
 ros2 launch white1 one_launch.py tl_video_scale:=0.5       # 용량·CPU 를 1/4 로
 ros2 launch white1 one_launch.py tl_record_video:=false    # 녹화 끄기
 ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없는 원본
@@ -1931,6 +1942,17 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 > `/tl/debug_image` 를 내고, `nxde/video` 가 그것을 받아 적는다. 둘을 따로 열면
 > 짝이 어긋나 **"발행 안 하는 토픽을 녹화" = 0바이트 파일**이 나온다.
 > `tl_record_video` 한 인자가 **둘을 함께** 켠다(`camera_launch.py`).
+
+> ### ★[2026-10-16] 녹화 점검 결과와 고친 것★ (근거 = white1 CHANGELOG 2026-10-16)
+> - **영상 길이 = 벽시계** — fps 는 처음 30프레임으로 한 번 재지만, 그 뒤 프레임을 ★시각 기준 칸★ 에 넣는다
+>   (늦으면 직전 프레임 반복, 빠르면 버림, 공백은 5 s 까지 — `video.py MAX_FILL_S`). 종전에는 기동 직후 29.2 fps 로
+>   잰 뒤 20.8 fps 로 들어와 ★1.4배 빨리 재생★ 됐다(record CSV 와 시각이 안 맞는다). 첫 ≈1 s(실측 구간)는 여전히 파일에 없다.
+> - **끄는 방법별** — Ctrl+C·panel [x]·SIGTERM·`nxde kill`(녹화 노드에 SIGTERM 먼저, 2 s 유예) 모두 마지막 조각까지 정상.
+>   SIGKILL 만 그때 쓰던 조각을 잃는다(앞 조각은 산다 — 120 s 분할). 신호 처리기는 [2026-10-16] 부터 예외를 던지지 않는다
+>   (pybind11 안에서 RuntimeError → exit 1 이 났다).
+> - **파일이 아예 안 생기면** 대개 traffic_light 가 `/image_raw` 를 못 받은 것이다(로그 '⏳ 수신 대기') — 3.1 'DDS 수신 버퍼'.
+> - **traffic_light 종료** — Ctrl+C 는 SIGINT 를 두 번 준다(그룹 + launch 전달). 정리 중 두 번째에 죽어 리니어 해제 발행을
+>   건너뛰던 것을 [2026-10-16] 막았다(main finally 에서 신호 무시 + `executor.shutdown(2.0)`).
 
 > ⚠️ **새 녹화 코드를 쓰지 않았다.** `nxde/video.py` 가 이미 그 일의 단일 소유자다 —
 > fps 를 실측해서 열고(재생 속도가 맞아야 `record` CSV 와 시각을 맞출 수 있다),
@@ -2004,6 +2026,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
 | **B 상태 칸 0/1/2 · `STOP` 폐지 · 상태 1·2 = A 쓰로틀 0 · A 의 STOP 무시 [2026-10-16]** | `nxde/arduino.py` `B_STATE_*` · `parse_b` · `update_estop` · `compose`(→ `_compose_modes`) · `_drop_board` · `../mad-code/kasa_1016_{A,B}.ino` |
+| **카메라 녹화 — DDS 수신 버퍼 · 영상 길이 = 벽시계 · 종료 경로 (3.1·5.2) [2026-10-16]** | `nxde/config/cyclonedds.xml` · `nxde/tools/setup_dds_buffer.sh` · `nxde/check.py check_dds_buffer` · `camera_launch.dds_env`(white1·white2) · `nxde/video.py MAX_FILL_S`·`_write`·`exit_requested` · `traffic_light.main` finally(white1·white2) · `nxde/panel.py _unignore_signals` |
 | **prompt START 확인·재전송 — E-STOP 해제 경합으로 시작이 사라지던 것 (white1·white2) [2026-10-15]** | `prompt.py START_SETTLE_S`·`START_RETRY_S`·`START_GIVEUP_S` · main 루프 게이트 블록 · `publish_wait`(`DRIVE_START`) · `wait_screen`(gate None) |
 | **AS 상태 — 리니어는 자율주행에서만 · HUD AS 필 · 해제 직후 출발 유예 (8.0) [2026-10-07]** | `../mad-code/kasa_1007_B.ino` `[1007-1]`·`[1007-2]` · `nxde/arduino.py poll_port`·`_set_switch_mode` · `white1/hud.py as_state`·`_as_pill` · `driving.py _estop_release_t`·`cb_drive_cmd` DRIVE_START |
 | **본선 코스 0초 T1 → 못 잡으면 T2 · T1·T2 서는 도중 녹색이면 해제 · 선 차는 그 자리 대기 (4.10) [2026-10-07]** | `traffic_timer.py INIT_SIGNALS`·`_watching`·`init_by`·`/traffic_timer [8][9]` · `driving.py cam_green`·`tt_initialized`·`signal_stop_wanted`·`run_stop_zone` BRAKING·`_sp_release`·`signal_step` stopped · `record.py TRAFFIC_TIMER_COLUMNS` · `sim/signal_sim.py` |
@@ -3116,6 +3139,7 @@ ping -c2 192.168.6.11
 | **음량 — 가상 배기음** [2026-09-18] | **`nxde/vess.py` 상단의 `VOLUME`(1.0)·`LOUDNESS`(2.5) 가 소유자**이고, `exhaust.py` 의 `MASTER_GAIN`·`SOFTCLIP_DRIVE` 를 **생성자로** 덮는다(모듈 전역을 밖에서 바꾸지 않는다 — 같은 프로세스의 다른 엔진까지 따라 바뀐다). `VOLUME` 은 tanh 뒤라 **1.0 이 상한**이고, 더 키우는 손잡이는 `LOUDNESS` 다(피크를 안 올리고 평균만 올린다, 실질 상한 ≈4.0). ⚠️ **안내 음성보다 크게 두지 말 것** — 말이 묻힌다 |
 | **가상 배기음 스레드** [2026-09-30] | `nxde/vess.py` 는 arduino 와 **같은 프로세스**다 — ① **자기 `SingleThreadedExecutor` 로 spin** 한다(`rclpy.spin(node)` = 전역 실행기를 쓰면 arduino 메인 스레드와 대기 생성기를 동시에 돌려 `ValueError: generator already executing` — vess 가 거의 늘 죽고, 드물게 arduino 가 exit 1) ② **`Node('vess', use_global_arguments=False)`** — 런치의 `__node:=arduino` 가 프로세스 전체에 걸린다 ③ arduino `main()` 의 `import nxde.vess` 는 **spin 의 try 안**에 둔다(import 0.2 s 동안의 Ctrl+C 가 포트 정리를 건너뛰지 않게). 시험은 sounddevice 를 가짜로 바꿔 도메인 77 에서 돌린다(차 스피커로 소리를 내지 않게) |
 | 인지 디버그 녹화 | **`tl_record_video` 하나가 `traffic_light` 의 `tl_publish_debug`(발행) 와 `nxde/video` 노드(수신) 를 함께 켠다** — 따로 열면 0바이트 파일이 나온다(5.2절) |
+| **카메라 영상 DDS 수신 버퍼** [2026-10-16] | `nxde/config/cyclonedds.xml`(`max` 만 — ★`min` 금지★) **+** `white1`·`white2` `camera_launch.dds_env()`(세 노드에만, 기존 `CYCLONEDDS_URI` 우선) **+** 기계별 `nxde/tools/setup_dds_buffer.sh`(sysctl `rmem_max`) **+** `nxde/check.py DDS_RMEM_MIN` — xml 만 있고 sysctl 이 없으면 효력이 없고, xml 에 min 을 쓰면 sysctl 없는 기계에서 노드가 안 뜬다 |
 | `terrain` 규약 | `driving.py:963` **+** `one_launch.py` 헤더 **+** `lidar/README.md` **+** 이 문서 |
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |
 | **헤딩 출처** | **mppi = OS1 자체 IMU(`params.yaml` 의 `imu_topic`·`use_os1_imu`·`imu_yaw_sign`) / driving = 외장 iAHRS(`/imu`)** — ★섞지 않는다★. `one_launch.py` 는 mppi 에 IMU 를 **넘기지 않는다**(넘기면 `use_os1_imu` 가 무시하고 경고만 남는다). mppi 의 IMU 설정 단일 소유자는 `params.yaml` [2026-09-12] |

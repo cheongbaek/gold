@@ -29,15 +29,14 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
 그런데 인지 결과 창(cv2 imshow)은 실차에서 켜 두기 나쁘다 — 화면이 없는 터미널에서는
 아예 못 열고, 열리더라도 창 합성이 메인 스레드를 잡는다. 그래서 둘을 갈랐다:
 
-    tl_show_window   창을 띄운다 (★기본 true★ [2026-09-10 재조정] — 아래 참고)
+    tl_show_window   창을 띄운다 (★기본 false★ — 볼 때만 :=true. 아래 참고)
     tl_record_video  같은 그림을 파일로 적는다 (★기본 true★ — 항상 남긴다)
 
-    ⚠️ [2026-09-10] 처음엔 tl_show_window 기본을 false 로 내렸었다 — "녹화가 있으니
-    창은 필요 없다" 는 논리였다. 그런데 실제로 화면을 보며 튜닝하는 자리에서는
-    ★매번 :=true 를 붙이는 것 자체가 불편하고★, 창을 못 켜는 헤드리스 환경(SSH)만
-    false 로 내리면 되므로 ★기본은 다시 true 로 되돌렸다★. 녹화(tl_record_video)는
-    그와 무관하게 항상 켜져 있으니 둘 다 켜 두는 쪽이 아무것도 잃지 않는다 —
-    화면이 있는 실차에서는 창이 뜨는 것이 기본, 없으면 tl_show_window:=false.
+    ⚠️ ★기본값 이력★ 9/10 fcdce5e 에서 false → 같은 날 25f1469 에서 true 로 되돌렸다가,
+    ★9/13 69f8766 에서 다시 false★ 가 됐다(설명은 true 로 남아 있었다 — [2026-10-16]
+    문서를 코드에 맞췄다, 사용자 결정). 지금은 ★false★ 다 — panel 도 tl_show_window:=false
+    를 명시해 넘긴다. 녹화(tl_record_video)는 그와 무관하게 늘 켜져 있어 창을 꺼도
+    잃는 정보가 없다. 화면을 보며 튜닝할 때만 tl_show_window:=true.
 
 ★같은 캔버스다.★ traffic_light 의 _draw() 가 그린 한 장(YOLO 박스·ROI 음영·BEV
 사다리꼴·정지선·게이지 패널·한글 HUD 3줄)을 창에도 띄우고 토픽으로도 낸다 —
@@ -56,9 +55,12 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
 보내면 video 노드가 파일을 정상으로 닫는다(nxde/video.py 의 신호 처리).
 
 ⚠️ ★비용★ 캔버스는 원본(1920x1080)이 아니라 tl_window_width 기준이다 —
-   기본 960 이면 ★1248x610★ (2.28MB/프레임, 30fps 에서 68MB/s · 파일 분당 15~25MB).
-   /image_raw 가 이미 187MB/s 흐르고 있으므로 그 위에 +36% 다. 인지 FPS 가 눈에 띄게
-   떨어지면 tl_video_scale:=0.5 (용량·인코딩 비용 약 1/4) 로 내린다.
+   기본 960 이면 BEV 패널·ROI 확대 열을 붙여 ★1728x590★ (3.06MB/프레임 — [2026-10-16]
+   정정, 1248x610 은 패널 이전 값). 파일은 실주행 14 fps 에서 분당 4~8MB, 30 fps 면 ~15MB.
+   인지 FPS 가 눈에 띄게 떨어지면 tl_video_scale:=0.5 (용량·인코딩 비용 약 1/4) 로 내린다.
+⚠️ ★DDS★ 이 캔버스(3.1MB)와 /image_raw(4.1MB)는 CycloneDDS 수신 버퍼가 작으면 프레임째
+   사라진다 — 세 노드에 nxde/config/cyclonedds.xml 을 넘기고(dds_env), 기계마다 한 번
+   nxde/tools/setup_dds_buffer.sh 로 커널 상한을 올린다 [2026-10-16].
 ⚠️ ★디스크★ video 노드는 남은 용량이 500MB 밑이면 ★스스로 녹화를 끝낸다★(파일은
    정상으로 닫는다). 그래도 <src>/white2/video 는 주행할수록 쌓이므로 가끔 비운다.
    .gitignore 가 *.mp4 · *.avi 를 막고 있어 이력에는 안 들어간다.
@@ -83,6 +85,8 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
 ⚠️ ★카메라를 안 꽂은 채 use_camera:=true 로 띄우면 usb_cam 이 respawn 루프를 돈다★
    그 로그가 다른 노드 로그를 덮는다. 카메라를 쓸 일이 없는 날은 use_camera:=false.
 """
+
+import os
 
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.conditions import IfCondition
@@ -210,12 +214,11 @@ def declare_args(cam_dev):
                         '보고 싶으면 sl_gate_red_s:=99999 로 상시 추론시킨다(todo 9-1)'),
         DeclareLaunchArgument(
             'tl_show_window', default_value='false',
-            description='인지 결과 창(OpenCV)을 띄울지. ★기본 true★ [2026-09-10 재조정 — '
-                        '한때 false 였다가 되돌렸다]. 녹화(tl_record_video)가 같은 그림을 '
-                        '파일로도 남기므로 창을 꼭 켜야 하는 것은 아니지만, 화면이 있는 '
-                        '실차에서 매번 :=true 를 붙이는 것이 더 불편해 ★기본을 다시 켬으로 '
-                        '뒀다★ — 녹화와 완전히 독립이라 둘 다 켜 둬도 서로 방해하지 않는다. '
-                        '★화면 없는 터미널(SSH)이면 tl_show_window:=false★ — 안 그러면 '
+            description='인지 결과 창(OpenCV)을 띄울지. ★기본 false★ (9/13 부터 — '
+                        '[2026-10-16] 설명을 코드에 맞췄다). 녹화(tl_record_video)가 같은 '
+                        '그림을 파일로 남기므로 창을 꺼도 잃는 정보가 없다. 화면을 보며 '
+                        '튜닝할 때만 :=true — 녹화와 완전히 독립이라 둘 다 켜도 서로 '
+                        '방해하지 않는다. 화면 없는 터미널(SSH)에서는 true 로 주지 말 것 — '
                         'cv2 가 창을 못 열어 에러를 남긴다'),
         DeclareLaunchArgument(
             'tl_record_video', default_value='true',
@@ -245,7 +248,7 @@ def declare_args(cam_dev):
             description='녹화 배율(0.05~1.0). 1.0 = 캔버스 그대로. 0.5 면 가로세로 절반 '
                         '= 용량·인코딩 비용 약 1/4. ★판정은 이 값과 무관하다★ — 녹화만 '
                         '줄인다. 캔버스는 원본 1920x1080 이 아니라 tl_window_width 기준'
-                        '(960 → 1248x610)이므로 대개 1.0 으로 충분하다'),
+                        '(960 → 1728x590)이므로 대개 1.0 으로 충분하다'),
         #  ★[2026-09-13] 세그먼트 분할 — 녹화가 통째로 날아가지 않게★
         DeclareLaunchArgument(
             'tl_video_segment_s', default_value='120.0',
@@ -267,7 +270,7 @@ def declare_args(cam_dev):
             'tl_window_width', default_value='960',
             description='인지 결과 창의 ★카메라 뷰★ 가로폭[px]. 창은 이보다 크다 — '
                         '오른쪽에 BEV·게이지 패널이, 아래에 HUD 3줄이 붙는다'
-                        '(960 → 창 1248x610). 판정은 원본 해상도로 하므로 이 값은 '
+                        '(960 → 창 1728x590). 판정은 원본 해상도로 하므로 이 값은 '
                         '★보이는 크기만★ 바꾼다. 0 이면 원본 크기. ⚠️ ★960 이 기본인 '
                         '이유★ 1920 의 정확히 절반이라 리사이즈가 0.28ms 인데, 640 같은 '
                         '임의 배율은 같은 보간으로 2.50ms 다(실측). 그리고 640 이면 HUD '
@@ -316,6 +319,31 @@ def camera_params():
     }
 
 
+def dds_env(log=print):
+    """★카메라 노드에 줄 DDS 수신 버퍼 설정★ → {'CYCLONEDDS_URI': …} 또는 {} [2026-10-16]
+
+    1080p 원본(4.1 MB)·디버그 화면(3.1 MB)을 CycloneDDS 로 받으려면 UDP 수신 버퍼가 커야
+    한다 — 기본에서는 프레임을 받았다 못 받았다 한다(nxde/config/cyclonedds.xml 머리말).
+    ★usb_cam·traffic_light·tl_video 에만★ 준다(큰 영상을 주고받는 노드뿐이다).
+    ★이미 CYCLONEDDS_URI 가 있으면 덮지 않는다★ — 그 기계가 다른 이유(네트워크 설정 등)로
+    쓰고 있을 수 있다. 효력은 그 기계의 net.core.rmem_max 가 올라가 있어야 난다
+    (nxde/tools/setup_dds_buffer.sh — ros2 run nxde check 가 알려 준다).
+    """
+    if os.environ.get('CYCLONEDDS_URI', '').strip():
+        log("    [DDS] CYCLONEDDS_URI 가 이미 있다 — 카메라 노드에 그대로 둔다")
+        return {}
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        xml = os.path.join(get_package_share_directory('nxde'), 'config', 'cyclonedds.xml')
+    except Exception as e:                      # nxde 를 안 빌드했다 — 종전 그대로 돈다
+        log(f"    [DDS] ⚠️ nxde 의 cyclonedds.xml 을 못 찾았다({e}) — 수신 버퍼 기본값")
+        return {}
+    if not os.path.isfile(xml):
+        log(f"    [DDS] ⚠️ {xml} 없음 — 수신 버퍼 기본값 (colcon build 로 nxde 를 다시 빌드)")
+        return {}
+    return {'CYCLONEDDS_URI': 'file://' + xml}
+
+
 def actions(package_name, cam_format, node_env, respawn_delay):
     """usb_cam · v4l2 보정 · traffic_light · tl_video 네 액션.
 
@@ -327,6 +355,8 @@ def actions(package_name, cam_format, node_env, respawn_delay):
     video_device = LaunchConfiguration('video_device')
     cam_exposure = LaunchConfiguration('cam_exposure')
     rec_video    = LaunchConfiguration('tl_record_video')
+    #  ★[2026-10-16] 큰 영상을 주고받는 세 노드에만 DDS 수신 버퍼 설정을 더한다★ (dds_env)
+    cam_env = {**node_env, **dds_env()}
 
     # ── usb_cam → /image_raw ──
     #   ★camera_info_url 을 주지 않는다 [2026-08-19 근거 갱신]★ 왜곡보정을 안 해서가
@@ -338,7 +368,7 @@ def actions(package_name, cam_format, node_env, respawn_delay):
         executable='usb_cam_node_exe',
         name='usb_cam',
         output='screen',
-        additional_env=node_env,
+        additional_env=cam_env,
         respawn=True,
         respawn_delay=respawn_delay,
         parameters=[{
@@ -421,7 +451,7 @@ def actions(package_name, cam_format, node_env, respawn_delay):
         executable='traffic_light',
         name='traffic_light',
         output='screen',
-        additional_env=node_env,
+        additional_env=cam_env,
         parameters=[{
             'image_topic':            '/image_raw',
             'device':                 LaunchConfiguration('tl_device'),
@@ -467,7 +497,7 @@ def actions(package_name, cam_format, node_env, respawn_delay):
         executable='video',
         name='tl_video_node',
         output='screen',
-        additional_env=node_env,
+        additional_env=cam_env,
         parameters=[{
             'image_topic': LaunchConfiguration('tl_video_topic'),
             'output_dir':  LaunchConfiguration('tl_video_dir'),

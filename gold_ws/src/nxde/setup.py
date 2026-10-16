@@ -10,6 +10,10 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        # ★[2026-10-16] 카메라 노드의 DDS 수신 버퍼★ white1·white2 camera_launch 가
+        #   share/nxde/config/cyclonedds.xml 을 CYCLONEDDS_URI 로 넘긴다(그 파일 머리말).
+        #   커널 상한은 tools/setup_dds_buffer.sh(sudo, 기계마다 한 번)가 올린다.
+        ('share/' + package_name + '/config', ['config/cyclonedds.xml']),
         # ★ [2026-08-05] 런치파일이 없다 ★
         #   이 패키지는 '아두이노 A/B 보드와 통신하는 노드들'만 담는다. 실행은 전부
         #   ros2 run 이며, 자율주행을 할 때는 white 의 one_launch.py 가 arduino 노드를
@@ -48,7 +52,8 @@ setup(
             #   메가 A/B · 조이스틱 · GPS(NMEA GGA 의 RTK quality) · IMU · 카메라
             'check    = nxde.check:main',
             # ★영상 기록★ 인지가 보는 화면(/image_raw)을 파일로 적는다.
-            #   ros2 run nxde video    → <nxde 루트>/video/cam-<날짜>_<시각>.mp4
+            #   ros2 run nxde video    → ~/nxde_video/cam-<날짜>_<시각>.mp4
+            #   (복사설치라 <nxde 루트>/video 가 아니라 홈으로 떨어진다 — video.py 헤더)
             #   ★Ctrl-C 로 끝내면 그 시점까지 재생 가능한 상태로 닫힌다★
             #   구독만 하므로 제어에 끼어들지 않는다. 장치를 직접 열지 않아 usb_cam 과
             #   다투지 않는다(그쪽이 죽으면 신호등 인지가 죽는다 — video.py 헤더 참고).

@@ -418,8 +418,26 @@ class Panel:
         self.root.after(POLL_MS, self.tick)
 
 
+def _unignore_signals():
+    """★[2026-10-16] 무시(SIG_IGN) 로 물려받은 SIGINT·SIGTERM 을 되돌린다★
+
+    panel 을 백그라운드(`… &`)·자동 실행 스크립트처럼 비대화형 셸에서 띄우면 SIGINT 가
+    무시 상태로 들어온다. 무시는 exec 을 지나 ★자식에게 그대로 물려진다★ — 그러면 [x] 의
+    SIGINT 를 launch 도 파이썬 노드도 못 듣고, STOP_TERM_S(20 s) 뒤 SIGTERM 까지 버틴다
+    (2026-10-16 녹화 시험에서 이 상태의 launch 가 30 s 동안 안 내려가고 usb_cam 이 respawn 했다).
+    처리기를 설치하면 exec 에서 기본(SIG_DFL)으로 바뀌므로 자식은 정상으로 듣는다.
+    ★정상으로 띄웠으면(터미널·ros2 run) 아무것도 바뀌지 않는다.★
+    Popen(preexec_fn=…) 대신 여기서 하는 이유 — preexec_fn 은 스레드가 있으면 교착할 수 있다.
+    """
+    if signal.getsignal(signal.SIGINT) == signal.SIG_IGN:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+    if signal.getsignal(signal.SIGTERM) == signal.SIG_IGN:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 def main(args=None):
     import sys
+    _unignore_signals()
     argv = list(sys.argv[1:] if args is None else args)
     stack = DEFAULT_STACK
     if '--stack' in argv:

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  cyclonedds.xml — ★카메라 노드의 UDP 수신 버퍼★ [2026-10-16, nxde]
+
+  왜 : 1080p 원본(/image_raw, UYVY 4.1 MB)·인지 디버그 화면(/tl/debug_image, 3.1 MB)은
+       수백 조각으로 나뉘어 오는데, 커널 기본 수신 버퍼 상한(net.core.rmem_max 208 KB)에서는
+       조각을 잃어 프레임이 통째로 버려진다. 2026-10-16 시험에서 같은 /image_raw 를
+       nxde video 는 30 fps 로 받는데 traffic_light 는 0 장인 일이 6번 중 5번 났다.
+
+  누가 : white1·white2 의 camera_launch.actions() 가 usb_cam·traffic_light·tl_video 에만
+         CYCLONEDDS_URI 로 넘긴다(이미 환경변수가 있으면 덮지 않는다).
+
+  ★max 만 준다 — min 을 주지 말 것★
+     min="10MB" 처럼 하한을 강제하면 rmem_max 를 안 올린 기계에서 ★노드가 아예 안 뜬다★
+     ("rcl node's rmw handle is invalid" — 실측). max 는 요청일 뿐이라 커널이 상한에서
+     자르고 조용히 진행한다 — 그래서 효력이 나려면 그 기계에서 한 번
+     `sudo bash nxde/tools/setup_dds_buffer.sh` 로 rmem_max 를 올려야 한다
+     (ros2 run nxde check 가 안 올린 기계를 알려 준다).
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <Internal>
+      <SocketReceiveBufferSize max="32MB"/>
+    </Internal>
+  </Domain>
+</CycloneDDS>

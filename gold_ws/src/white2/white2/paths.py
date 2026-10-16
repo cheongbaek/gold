@@ -149,7 +149,7 @@ def video_dir(explicit: str = "") -> str:
 
     gps_data·ros2bag 과 나란히 두는 것이라 우선순위 규칙도 그 둘과 같다.
     ⚠️ 이 폴더는 커진다 — 1080p 는 분당 20~60MB 이고, 여기 적히는 디버그 캔버스
-    (1248x610)도 분당 15~25MB 다. .gitignore 가 *.mp4 · *.avi 를 막고 있으므로
+    (1728x590)도 분당 4~15MB 다. .gitignore 가 *.mp4 · *.avi 를 막고 있으므로
     이력에는 안 들어가지만, ★작업트리에는 그대로 쌓이므로 가끔 비워야 한다.★
     """
     return _resolve(explicit, 'WHITE2_VIDEO_DIR', 'video')

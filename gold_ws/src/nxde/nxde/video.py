@@ -8,8 +8,12 @@ video.py ― 인지 카메라 화면 녹화 [nxde]
 차선·신호등 인지가 보는 그 화면(`/image_raw`)을 노드가 도는 동안 파일로 적는다.
 ★Ctrl-C 로 끝내면 그 시점까지의 영상이 재생 가능한 상태로 닫힌다.★
 
-    저장 위치 : <nxde 패키지 루트(setup.py 가 있는 곳)>/video/
+    저장 위치 : output_dir 파라미터 → 없으면 <nxde 패키지 루트(setup.py 가 있는 곳)>/video/
+                ★단, 이 워크스페이스는 복사설치(--symlink-install 금지)라 ★언제나★
+                ~/nxde_video/ 로 떨어진다★ (resolve_output_dir). 인지 디버그 녹화는
+                camera_launch 가 output_dir 을 <src>/white{1,2}/video 로 넘긴다.
     파일 이름 : cam-<날짜>_<시각>.mp4      예) cam-20260818_174233.mp4
+                (조각으로 나뉘면 -02, -03 … 이 붙는다 — 아래 '세그먼트 분할')
 
 ────────────────────────────────────────────────────────────────────────────────
  ★무엇을 녹화하는가 — '기본 처리만 된 화면' 이 정확히 무엇인지★
@@ -69,6 +73,9 @@ camera_launch 는 usb_cam 에 `framerate: 30.0` 을 주지만 ★실제 도착�
        30장이면 190MB 다. 앞 1초와 190MB 를 맞바꾸지 않는다.
   · `fps:=30` 처럼 명시하면 실측을 건너뛰고 ★첫 프레임부터★ 적는다.
     시작 순간이 중요한 시험(출발 직후 등)에서는 이쪽을 쓴다.
+  · ★[2026-10-16] 그 뒤 도착률이 바뀌어도 영상 길이는 벽시계와 같다★ — 프레임을 시각
+    기준 칸에 넣는다(늦으면 직전 프레임 반복, 빠르면 버림). 상수절 MAX_FILL_S 참고.
+    종전에는 처음 잰 fps 와 실제 도착률이 다르면 영상이 그만큼 빠르거나 느리게 재생됐다.
 
 ────────────────────────────────────────────────────────────────────────────────
  ★디스크 — 이 노드가 시스템을 망가뜨리지 않게★
@@ -148,6 +155,19 @@ FPS_FALLBACK    = 30.0   # camera_launch 의 framerate 와 같은 값
 #  ⚠️ 0 으로 두면 분할하지 않는다(종전 거동) — 그때는 SIGKILL 에 전부 잃는다.
 SEGMENT_S = 120.0        # [s] 이 주기마다 파일을 닫고 새로 연다. 0 = 분할 안 함
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-10-16] 시각 기준으로 넣는다 — 영상 길이 = 벽시계 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  fps 는 처음 FPS_PROBE_N 프레임으로 한 번 재고 파일에 박힌다. 그런데 실제 도착률은
+#  그 뒤에 바뀐다 — 디버그 화면은 기동 직후 29.2 fps 로 쟀는데 평균 20.8 fps 로 들어와
+#  ★48.5초 녹화가 34.5초짜리 영상★ 이 됐다(1.4배 빨리 재생 — record CSV 와 시각이 안 맞는다).
+#  그래서 출력의 k 번째 프레임을 '조각 시작 + k/fps' 시점으로 정하고, 프레임이 오면
+#  그 시점의 칸에 넣는다: 늦게 오면 ★직전 프레임을 반복★ 해 빈 칸을 채우고, 빨리 오면
+#  이미 찬 칸이므로 버린다. 반복 프레임은 mpeg4 에서 거의 0 바이트다.
+#  공백이 MAX_FILL_S 를 넘으면(카메라 두절) 그만큼만 채우고 나머지는 경고로 남긴다 —
+#  한 번에 수천 장을 인코딩하느라 노드가 멈추지 않게.
+MAX_FILL_S = 5.0         # [s] 한 공백에서 반복으로 채우는 최대 길이
+
 LOG_PERIOD_S = 10.0      # 진행 상황 로그 주기
 NO_FRAME_WARN_S = 5.0    # 이 시간 동안 프레임이 없으면 경고(usb_cam 확인 안내)
 MIN_FREE_MB = 500.0      # 남은 디스크가 이 밑이면 스스로 종료
@@ -226,8 +246,13 @@ class VideoNode(Node):
         self.bridge = CvBridge()
         self.writer = None
         self.size   = None            # (w, h) 실제로 쓰는 크기
-        self.n_written = 0
+        self.n_written = 0            # 파일에 쓴 프레임(반복 포함) — 영상 길이 = 이것 ÷ fps
         self.n_dropped = 0            # 크기 불일치·인코딩 실패로 못 쓴 프레임
+        self.n_dup = 0                # 빈 칸을 채우려고 반복해 쓴 프레임 [2026-10-16]
+        self.n_skip = 0               # fps 보다 빨리 와서 버린 프레임 [2026-10-16]
+        self.lost_s = 0.0             # MAX_FILL_S 를 넘어 못 채운 공백 [s]
+        self._last_frame = None       # 반복에 쓸 직전 프레임
+        self.exit_requested = False   # 신호를 받았다 — main 이 이것을 보고 나간다 [2026-10-16]
         self.t_first = None           # 첫 ★기록된★ 프레임 시각
         self.t_last_frame = 0.0       # 마지막 수신 시각(두절 경고용)
         self.fps_used = None
@@ -288,10 +313,17 @@ class VideoNode(Node):
         atexit 까지 겹쳐 두는 이유는 sys.exit 경로로 빠질 때를 대비한 것이다
         (close() 는 몇 번 불려도 안전하다).
         """
+        #  ★[2026-10-16] 여기서 예외를 던지지 않는다★ 종전에는 close() 뒤 SystemExit 을
+        #  올렸는데, 신호가 rclpy 의 메시지 꺼내기(take_message — C++ 가 파이썬 객체를 만드는
+        #  중) 안에서 처리되면 그 예외가 pybind11 을 지나며 RuntimeError('Unable to convert
+        #  call argument') 로 바뀌어 ★파일은 멀쩡히 닫혔는데 트레이스백 + exit 1★ 로 끝났다
+        #  (`nxde kill` 실측). → 파일을 닫고 표시만 세운다. main 의 spin_once 루프가 0.1 s
+        #  안에 그것을 보고 정상으로 나간다. 콜백 도중에 닫혔어도 _write 가 writer None 을
+        #  보고 멈춘다.
         def _term(signum, _frame):
             self._say(f"신호 {signum} 수신 — 파일을 닫는다")
             self.close()
-            raise SystemExit(0)
+            self.exit_requested = True
         #  ★[2026-09-13] SIGINT 도 여기서 직접 잡는다★
         #  종전에는 "Ctrl-C 는 rclpy 가 KeyboardInterrupt 로 올려 주므로 finally 가
         #  받는다" 에 맡겼는데, 그 경로는 ★rclpy 가 스핀을 풀고 → 예외가 올라가고 →
@@ -300,6 +332,7 @@ class VideoNode(Node):
         #  release() 가 오래 걸릴수록 그 경계에 걸린다).
         #  → ★신호를 받은 그 자리에서 먼저 닫는다.★ close() 는 멱등이므로 뒤따르는
         #  finally·atexit 과 겹쳐도 안전하고, 이미 닫혔으면 즉시 돌아온다.
+        #  (그래서 Ctrl-C 가 KeyboardInterrupt 로 올라오지 않는다 — main 이 표시를 본다.)
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:
                 signal.signal(sig, _term)
@@ -372,14 +405,18 @@ class VideoNode(Node):
             f"{mb:.1f}MB / fps {self.fps_used:g}"
             + (f" / 버린 프레임 {self.n_dropped}" if self.n_dropped else "")
             + seg)
-        # ★둘이 다르면 그만큼 프레임이 안 온 것이다★ 그것 자체가 진단이므로 알려 준다
-        #   (usb_cam 이 중간에 죽었거나, 인코딩이 밀려 BEST_EFFORT 로 버려졌거나).
-        if wall_s > 0.5 and abs(wall_s - vid_s) > max(1.0, 0.1 * wall_s):
+        #  ★[2026-10-16] 시각 맞춤 결과★ 반복·버림은 정상 동작이다(수신률이 fps 와 다를 뿐).
+        #  수신률 = 실제로 받은 프레임 ÷ 벽시계 — 반복분을 빼야 '몇 fps 로 들어왔나' 가 된다.
+        got = self.n_written - self.n_dup
+        self._say(
+            f"   시각 맞춤 : 반복 {self.n_dup} / 버림 {self.n_skip} 프레임 "
+            f"(실수신 평균 {got / wall_s if wall_s > 0.5 else 0.0:.1f}fps)")
+        # ★영상이 벽시계보다 짧으면 MAX_FILL_S 를 넘는 공백이 있었다★ (카메라 두절 등)
+        if self.lost_s > 0.5 or (wall_s > 0.5 and abs(wall_s - vid_s) > max(1.0, 0.05 * wall_s)):
             self._say(
                 f"   ⚠️ 벽시계 {wall_s:.1f}초인데 영상은 {vid_s:.1f}초 — "
-                f"{wall_s - vid_s:.1f}초분의 프레임이 오지 않았다("
-                f"평균 {self.n_written / wall_s:.1f}fps 수신). usb_cam 두절이나 "
-                f"인코딩 지연을 의심할 것", warn=True)
+                f"{self.lost_s:.1f}초는 {MAX_FILL_S:g}초를 넘는 공백이라 채우지 않았다. "
+                f"usb_cam·발행 노드 두절을 의심할 것", warn=True)
         self._say(f"   {self.path}")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -420,15 +457,29 @@ class VideoNode(Node):
                     f"프레임 크기 변경 {w}x{h} → {self.size[0]}x{self.size[1]} 로 맞춘다",
                     throttle_duration_sec=10.0)
                 frame = cv2.resize(frame, self.size, interpolation=cv2.INTER_AREA)
-            try:
-                self.writer.write(frame)
-            except Exception as e:
-                self.n_dropped += 1
-                self.get_logger().error(f"프레임 기록 실패: {e}",
-                                        throttle_duration_sec=5.0)
+            # ★[2026-10-16] 시각 기준 칸★ 상수절 MAX_FILL_S 참고.
+            k = int((now - self._seg_t0) * self.fps_used)   # 이 프레임이 들어갈 칸
+            if k < self._seg_frames:
+                self.n_skip += 1            # 이 칸은 이미 찼다 — fps 보다 빨리 왔다
                 return
-            self.n_written += 1
-            self._seg_frames += 1
+            gap = k - self._seg_frames      # 직전 프레임 뒤로 비어 있는 칸 수
+            if gap > 0 and self._last_frame is not None:
+                fill = min(gap, int(MAX_FILL_S * self.fps_used))
+                for _ in range(fill):
+                    if not self._write(self._last_frame):
+                        return
+                    self.n_dup += 1
+                if gap > fill:
+                    # 못 채운 만큼 기준을 당긴다 — 이후 프레임이 끝없이 '늦은' 것으로 보이지 않게
+                    lost = (gap - fill) / self.fps_used
+                    self.lost_s += lost
+                    self._seg_t0 += lost
+                    self.get_logger().warn(
+                        f"⚠️ {gap / self.fps_used:.1f}초 공백 — {MAX_FILL_S:g}초만 채우고 "
+                        f"{lost:.1f}초는 건너뛴다(그만큼 영상이 벽시계보다 짧아진다)")
+            if not self._write(frame):
+                return
+            self._last_frame = frame
             if self.t_first is None:
                 self.t_first = now
             #  ★[2026-09-13] 세그먼트 롤오버★ 상수절 참고. 여기서 하는 이유는
@@ -436,6 +487,25 @@ class VideoNode(Node):
             #  (writer 가 반쯤 쓴 프레임을 들고 있지 않다). _lock 을 이미 쥐고 있다.
             if self.segment_s > 0.0 and (now - self._seg_t0) >= self.segment_s:
                 self._roll_segment(now)
+
+    def _write(self, frame) -> bool:
+        """한 칸 쓴다. ★_lock 을 잡은 채로 불린다.★ 못 썼으면 False.
+
+        ★self.writer 를 매번 다시 읽는다★ — 신호 핸들러가 콜백 도중(같은 스레드, 바이트코드
+        사이)에 close() 로 writer 를 떼어 갈 수 있다. 종전에는 핸들러가 예외를 던져 콜백을
+        끊었지만 [2026-10-16] 부터는 표시만 세우므로 여기서 멈춰야 한다."""
+        w = self.writer
+        if w is None or self._closed:
+            return False
+        try:
+            w.write(frame)
+        except Exception as e:
+            self.n_dropped += 1
+            self.get_logger().error(f"프레임 기록 실패: {e}", throttle_duration_sec=5.0)
+            return False
+        self.n_written += 1
+        self._seg_frames += 1
+        return True
 
     def _open_writer(self, frame, now) -> bool:
         """→ 열었으면 True. 실측이 아직 안 끝났으면 False(그 프레임은 버린다).
@@ -542,7 +612,10 @@ class VideoNode(Node):
             self._closed = True
             return
         self.writer = writer
-        self._seg_t0 = now
+        #  ★[2026-10-16] 시간축을 잇는다★ 다음 칸은 직전 조각의 마지막 칸 바로 뒤 시각이다.
+        #  now 로 다시 잡으면 조각마다 한 칸씩 시간이 빠진다(롤오버를 부른 프레임이 이미
+        #  직전 조각의 마지막 칸에 들어갔으므로).
+        self._seg_t0 += frames / self.fps_used
         self._seg_frames = 0
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -570,8 +643,8 @@ class VideoNode(Node):
             rate = (mb / vid_s * 60.0) if vid_s > 0.5 else 0.0
             self.get_logger().info(
                 f"🎥 {self.n_written}프레임 / 영상 {vid_s:.0f}초 / {mb:.1f}MB "
-                f"(영상 1분당 {rate:.0f}MB)"
-                + (f" / 버린 프레임 {self.n_dropped}" if self.n_dropped else ""))
+                f"(영상 1분당 {rate:.0f}MB) / 반복 {self.n_dup} · 버림 {self.n_skip}"
+                + (f" / 기록 실패 {self.n_dropped}" if self.n_dropped else ""))
 
         # ── 디스크 ── ★가득 채우면 주행 기록까지 못 쓴다 → 녹화를 포기한다★
         if now - self._t_free >= FREE_CHECK_PERIOD_S:
@@ -614,7 +687,11 @@ def main(args=None):
     rclpy.init(args=args)
     node = VideoNode()
     try:
-        rclpy.spin(node)
+        #  ★[2026-10-16] spin 대신 spin_once 루프★ 신호 핸들러는 파일을 닫고 exit_requested
+        #  만 세운다(예외를 던지면 pybind11 안에서 RuntimeError 로 바뀌어 exit 1 이 됐다).
+        #  여기서 0.1 s 안에 그 표시를 보고 나간다 — nxde kill 의 SIGTERM 유예(2 s)보다 짧다.
+        while rclpy.ok() and not node.exit_requested:
+            rclpy.spin_once(node, timeout_sec=0.1)
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
