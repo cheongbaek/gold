@@ -28,6 +28,14 @@
 > | 단위 환산 (C++ 쪽 단일 소유자) | `gold_ws/src/lidar/include/lidar/kasa_units.hpp` |
 > | 튜닝 상수 (Python 쪽 단일 소유자) | `gold_ws/src/white1/white1/driving.py` 상단 상수절 |
 
+> ### ⚠️ [2026-10-16] 펌웨어 1016 (A·B) — 보드 계약이 바뀌었다 (`kasa_1016_A.ino` · `kasa_1016_B.ino` 를 함께 굽는다)
+> - **B → ROS 는 늘 `P,<조향각>,<상태>,<모드>`** — `STOP` 줄이 없다. 상태 **2 = E-STOP · 1 = 제동등 조건 · 0**. 모드 칸은 실제 D5.
+> - **`arduino.py` : 상태 2 또는 1 이면 A보드 쓰로틀 0**(자율·수동 무관). `/estop` = 상태 2. `/brake_pot` 은 이름만 남고 **상태 값**을 싣는다.
+> - **A보드에는 E-STOP 이 없다**(D12 판정·`STOP` 삭제) — 쓰로틀 페달은 **A15**. E-STOP 때 구동을 끊는 것은 ROS 의 쓰로틀 0 이다.
+> - **B 리니어는 시간 제어**(가변저항 없음 — 0→1 0.2 s · 0→2 0.4 s · 1→2 0.3 s · →0 0.5 s · 2→1 = 0.5 s 들어갔다 0.2 s), 유지 구동 없음.
+>   **A5 = 제동등 스위치**(A5 ── 스위치 ── GND). 아래 1.4 의 pot raw·유지 구동·제동등 A5 ≥ 350 서술은 **1015 까지**다.
+> - 정본 : `gold_ws/src/white1/BOARD_B.md` 머리 · `../mad-code/CLAUDE.md` 19절.
+
 > ### ⚠️ [2026-10-07] 대회 규정 점검 — 다음 작업은 8절부터
 > 규정 PDF(`2026_대학생_AI_SW_모빌리티_경진대회_자작자율차_부문_규정.pdf`)를 저장소 최상단에 두었다.
 > ① **축거 1.25 m 가 규정 하한 1.3 m 에 못 미친다**(규정 2.3 라 ③ — 실측 확인부터, 8.1).
@@ -248,7 +256,7 @@ PWM 100 으로 되민다(위 불변식 0). 그래서 `/brake_pot` 이 지시 중
 **행정 지연** — 1단은 물린 뒤 **첫 0.55 s 동안 감속도가 0**(행정 램프 290카운트).
 2단은 행정이 길어도(540카운트) 제동력이 빨리 선다(0.30 s).
 
-**제동등** — 12 V 램프, **D11** `digitalWrite`(타이머 안 씀). 판정은
+**제동등** — 12 V 램프, **D11** `digitalWrite`(타이머 안 씀). ★[2026-10-16 / 1016] 판정 = **A5 스위치 닫힘 또는 1·2단 지령**(아래는 1015 까지)★ 판정은
 **A5 ≥ 350** 하나뿐(`kasa_1007_B.ino` `BRAKELIGHT_ON_RAW`, 0821 초판 400 → 실차에서 350).
 브레이크 단계도 주행모드도 E-stop 도 보지 않는다 — [2026-10-07] 1007 에서도 그대로다(수동에서 사람이 밟아도 켜진다).
 
@@ -279,6 +287,9 @@ PWM 100 으로 되민다(위 불변식 0). 그래서 `/brake_pot` 이 지시 중
 **Arduino Mega 2560 ×2**, 제어 루프 공통 주기 **20 ms**(`CONTROL_WINDOW_MS`),
 텔레메트리 50 ms. 시리얼 **115200 8N1**, 줄 단위.
 
+> ★**[2026-10-16] 1016 에서 아래 표가 바뀌었다**★ — A보드 E-STOP 코드 삭제(D12 안 읽음)·쓰로틀 A15 /
+> B 텔레메트리 `P,<조향각>,<상태 0·1·2>,<모드>`(`STOP` 없음). 표는 1007 기준 기록이다.
+
 | | A보드 (`kasa_0904_A.ino`) | B보드 (`kasa_1007_B.ino`) [2026-10-07] |
 |---|---|---|
 | 담당 | 인휠 좌우 독립 PID + 주행펄스 + 쓰로틀 페달(A0) | 조향 + 제동 + 모드스위치(D5) + 제동등(D11) |
@@ -297,7 +308,7 @@ PWM 100 으로 되민다(위 불변식 0). 그래서 `/brake_pot` 이 지시 중
 > `P,…,0` 이 계속 나간다. 그래서 **`STOP` = 자율주행 + E-STOP** 이고, `arduino.py` 는 `STOP` 을 받으면 모드를 자율로 둔다(짝 — 7절).
 > 0909 까지는 모드와 무관하게 리니어를 물고 `STOP` 만 내보냈다. 상세는 **8.0**.
 
-> **`STOP` 줄에 필드를 붙이지 말 것** — `arduino.py` 의 판정이 **문자열 완전일치**다.
+> **`STOP` 줄에 필드를 붙이지 말 것** — `arduino.py` 의 판정이 **문자열 완전일치**다. (1015 이하 B 에만 해당 — [2026-10-16] 1016 은 `STOP` 을 내지 않고 상태 2 를 낸다.)
 
 **A보드 인휠 PID** (`kp=0.4, ki=0.03, kd=0.2`, `PWM_MAX=170`, `PWM_SLEW_MAX=+4/cycle`):
 
@@ -1978,6 +1989,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
 | **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
+| **B 상태 칸 0/1/2 · `STOP` 폐지 · 상태 1·2 = A 쓰로틀 0 · A 의 STOP 무시 [2026-10-16]** | `nxde/arduino.py` `B_STATE_*` · `parse_b` · `update_estop` · `compose`(→ `_compose_modes`) · `_drop_board` · `../mad-code/kasa_1016_{A,B}.ino` |
 | **prompt START 확인·재전송 — E-STOP 해제 경합으로 시작이 사라지던 것 (white1·white2) [2026-10-15]** | `prompt.py START_SETTLE_S`·`START_RETRY_S`·`START_GIVEUP_S` · main 루프 게이트 블록 · `publish_wait`(`DRIVE_START`) · `wait_screen`(gate None) |
 | **AS 상태 — 리니어는 자율주행에서만 · HUD AS 필 · 해제 직후 출발 유예 (8.0) [2026-10-07]** | `../mad-code/kasa_1007_B.ino` `[1007-1]`·`[1007-2]` · `nxde/arduino.py poll_port`·`_set_switch_mode` · `white1/hud.py as_state`·`_as_pill` · `driving.py _estop_release_t`·`cb_drive_cmd` DRIVE_START |
 | **본선 코스 0초 T1 → 못 잡으면 T2 · T1·T2 서는 도중 녹색이면 해제 · 선 차는 그 자리 대기 (4.10) [2026-10-07]** | `traffic_timer.py INIT_SIGNALS`·`_watching`·`init_by`·`/traffic_timer [8][9]` · `driving.py cam_green`·`tt_initialized`·`signal_stop_wanted`·`run_stop_zone` BRAKING·`_sp_release`·`signal_step` stopped · `record.py TRAFFIC_TIMER_COLUMNS` · `sim/signal_sim.py` |
@@ -3109,7 +3121,8 @@ ping -c2 192.168.6.11
 | **미리보기 ↔ `/lidar_ref[3]`** [2026-09-28] | mppi 미리보기는 driving 의 `zone_left`(다음 L 구간까지 호길이)로 켜진다. **그 열의 뜻을 바꾸면 미리보기가 조용히 꺼진다** |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
-| **`STOP` 의 뜻 = 자율주행 + E-STOP** [2026-10-07] | `../mad-code/kasa_1007_B.ino` `[1007-1]`(효력 = D12 AND D5 자율) **+** `nxde/arduino.py` `poll_port`(STOP → 모드 자율, `_set_switch_mode`) — **짝이다.** 구 펌웨어(0909 이하)를 꽂은 채 두면 수동+E-STOP 이 '자율' 로 보인다. 펌웨어가 STOP 에 다른 뜻을 싣게 되면 그 줄도 함께 고친다 |
+| **B 텔레메트리 상태 칸 (0 평상 / 1 제동등 조건 / 2 E-STOP)** [2026-10-16] | `../mad-code/kasa_1016_B.ino` `sendOutput`(`[1016-C]`) **+** `nxde/arduino.py` `B_STATE_*`·`parse_b`·`update_estop`·`compose`(상태 1·2 → A 쓰로틀 0) — **짝이다.** 값을 바꾸면 둘을 함께 고친다. `/brake_pot` 은 이 상태를 싣는다(record·hud·master 는 옛 이름 그대로 표시만 한다) |
+| **`STOP` 의 뜻 = 자율주행 + E-STOP** [2026-10-07] — ★1015 이하 B 펌웨어 호환으로만 남았다★ | `../mad-code/kasa_1007_B.ino` `[1007-1]`(효력 = D12 AND D5 자율) **+** `nxde/arduino.py` `poll_port`(STOP → 모드 자율, `_set_switch_mode`) — **짝이다.** 구 펌웨어(0909 이하)를 꽂은 채 두면 수동+E-STOP 이 '자율' 로 보인다. 펌웨어가 STOP 에 다른 뜻을 싣게 되면 그 줄도 함께 고친다 |
 | **신호등 인지 · 공통 수정** [2026-10-07] | `white1/white1/traffic_light.py` **+** `white2/white2/traffic_light.py` — 두 파일은 머리말·import 만 다르다(`diff <(sed s/white2/white1/g white2/…) white1/…`). 타이머와 무관한 수정(hud AS 필 · driving 출발 유예 같은 것)도 **양쪽에** 넣는다 — 3.1 투트랙 |
 | **AS 상태 판정** [2026-10-07] | `white1/hud.py as_state()` 하나 — 입력은 `/vehicle_mode`·`/estop`·`/board_status` 의 B 칸. `/estop` 이 '효력' 이라는 전제(위 짝)에 기대므로 펌웨어의 E-STOP 게이트를 바꾸면 이 함수도 본다. 다른 화면·기록이 AS 상태를 쓰게 되면 이 함수를 가져간다 — 베끼지 말 것 |
 

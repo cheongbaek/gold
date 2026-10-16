@@ -4,7 +4,19 @@
 #   kasa_ws/src/nxde/nxde/arduino.py 에서 통신 로직만 가져와, 토픽 계약을 white 패키지
 #   규약으로 바꾼 것이다. **kasa_ws 쪽은 수정하지 않았다** — 저쪽은 /in·/out String
 #   프로토콜을 그대로 쓰고, 이쪽은 white 의 Twist/Bool/Int32 토픽을 직접 주고받는다.
-#   아두이노 펌웨어(★kasa_0904_A.ino / kasa_1007_B.ino★)도 무수정 전제다.
+#   아두이노 펌웨어(★kasa_1016_A.ino / kasa_1016_B.ino★)도 무수정 전제다.
+
+#   ★[2026-10-16] A·B 가 1016 으로 올라갔다 — "STOP" 줄이 없어지고 B 셋째 칸이 상태다★
+#     · B보드 텔레메트리 "P,<조향각>,<상태>,<모드>" — ★E-STOP 중에도 이 양식 하나★.
+#         상태 2 = E-STOP(효력) / 1 = 제동등 조건(A5 스위치 닫힘 또는 1·2단 지령) / 0 = 그 밖.
+#         모드 칸은 실제 D5 다(종전 "STOP" 에는 모드가 없어 '자율' 로 짐작했다).
+#     · ★상태 2 또는 1 이면 A보드 쓰로틀 0★ — 자율주행·수동조종 무관(compose).
+#       2 는 종전 E-STOP 경로((1) 분기 — /estop True), 1 은 compose 마지막의 덮어쓰기다.
+#     · ★A보드의 E-STOP 은 없다★ (kasa_1016_A 가 D12 판정·"STOP" 을 지웠다) — 이 파일도 A 의
+#       "STOP" 을 더 이상 E-STOP 으로 읽지 않는다(잡음 줄로 센다).
+#     · B 의 "STOP" 은 ★1015 이하 펌웨어용으로만★ 남겨 두었다(받으면 E-STOP + 모드 자율).
+#     · E-STOP 이 걸린 채로 띄워도 B 가 P, 를 내므로 ★바로 식별·핸드셰이크된다★.
+#     · /brake_pot 은 이제 ★B 상태 0/1/2★ 다(이름은 호환 때문에 그대로 — 가변저항 값이 아니다).
 #
 #   ★[2026-10-07] B보드가 1007 로 올라갔다 — 리니어는 자율주행 모드에서만 쓴다★
 #     (대회 규정 2.16.1 <표 4>·<표 5> AS 상태 — 상세는 gold CLAUDE.md 8절)
@@ -55,10 +67,13 @@
 #                                               (인휠 2개가 각자 PID 를 닫는다)
 #                 /steer_angle_measured (Int32) B보드 실측 조향각 (− 좌 / + 우, 그대로 중계)
 #                 /vehicle_mode (Bool)          B보드 D5 : True = 자율 / False = 수동조종
-#                                               ★[2026-10-07] B보드 "STOP" 도 True★
-#                                               (kasa_1007_B : STOP = 자율 + E-STOP)
+#                                               ([2026-10-16] B "P," 넷째 칸 — E-STOP 중에도.
+#                                                1015 이하 B 의 "STOP" 은 True 로 본다)
 #                 /throttle_pedal (Int32)       A보드 A0 쓰로틀 페달 raw 0~1023
-#                 /brake_pot (Int32)            ★B보드 A5 리니어 가변저항 raw 0~1023★
+#                 /brake_pot (Int32)            ★[2026-10-16] B보드 상태 0/1/2★ (0 평상 /
+#                                               1 제동등 조건 / 2 E-STOP — kasa_1016_B).
+#                                               이름은 호환 때문에 그대로다. 아래는 1015 까지의 뜻:
+#                                               ★B보드 A5 리니어 가변저항 raw 0~1023★
 #                                               [2026-08-21 / kasa_0821_B.ino] 브레이크
 #                                               페달의 ★실제 위치★ 다. 단계(0/1/2)가 아니라
 #                                               값 자체라서, '리니어가 시킨 대로 갔는가'와
@@ -204,6 +219,8 @@
 #     반대로 자율→수동은 B보드가 스스로 리니어를 0단으로 되돌린다(무엇이 물었든).
 #
 #  (1) E-stop 중        : A="0", B="x,0"
+#      ★[2026-10-16] kasa_1016_B 의 상태 2★ — E_STOP_TEST = true 면 수동에서도 온다. 모드 무관 A="0".
+#      (B 상태 1 = 제동등 조건도 A="0" 이다 — compose 의 마지막 덮어쓰기. 그 밖의 분기는 그대로 계산된다.)
 #      ★[2026-10-07] kasa_1007_B 에서는 '자율주행 + E-STOP' = AS-Emergency 일 때만 온다★
 #      (수동조종에서는 B보드가 E-STOP 을 보지 않는다). B보드가 리니어 2단·조향 힘빼기를
 #      스스로 하고, 이 분기는 ★인휠 구동을 끊는다★ (A보드는 D12 를 보지 않는다).
@@ -422,6 +439,14 @@ MANUAL_PWM_MAX = PWM_DIRECT_MAX
 # ── B보드 프로토콜 (kasa_1007_B.ino — 양식은 0821~0909 와 같다) ──
 STEER_DEG_MAX = 40           # 입력 조향각 클램프 (STEER_ANGLE_MAX 와 동일해야 한다)
 BRAKE_LEVEL_MAX = 2          # 0 = 놓음 / 1 = 약 / 2 = 풀
+
+# ★[2026-10-16] B보드 상태 — "P,<조향각>,<상태>,<모드>" 의 셋째 칸 (kasa_1016_B [1016-C])★
+#   2 = E-STOP(효력) → /estop True, A 쓰로틀 0 (compose (1))
+#   1 = 제동등 조건(A5 스위치 닫힘 또는 1·2단 지령) → A 쓰로틀 0 (compose 마지막) — 모드 무관
+#   0 = 그 밖. ★펌웨어와 짝이다★ — 값을 바꾸면 kasa_*_B 의 sendOutput 도 같이 바꾼다.
+B_STATE_NONE  = 0
+B_STATE_BRAKE = 1
+B_STATE_ESTOP = 2
 STEER_RELEASE_TOKEN = 'x'    # 조향 힘빼기 (B보드 isReleaseToken)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1148,8 +1173,10 @@ class Arduino(Node):
         self.pulse_r = 0
         self.angle_board = 0       # B보드 실측 조향각 (− 좌 / + 우 = ROS 규약과 동일)
         self.throttle_raw = 0
-        # ★[2026-08-21] B보드 A5 리니어 가변저항 raw★ 브레이크 페달의 실제 위치.
-        self.brake_pot = 0
+        # ★[2026-10-16] B보드 상태 (P, 셋째 칸)★ 0 평상 / 1 제동등 조건 / 2 E-STOP (kasa_1016_B).
+        #   /brake_pot 으로 그대로 발행한다. 1015 이하에서는 A5 raw 가 이 자리였다.
+        self.b_state = 0
+        self._b_brake_cut = False   # 상태 1 로 A 쓰로틀을 끊고 있는가 (로그 엣지용)
         # B보드 D5 주행모드. ★페일세이프로 수동(False)에서 시작한다★ — 첫 텔레메트리를
         # 받기 전에 '자율'로 오인해 자동 명령이 나가는 것보다 수동으로 보는 편이 안전하다.
         self.switch_mode = False   # ← B보드 D5 원값 (물리 스위치가 말하는 것)
@@ -1513,6 +1540,7 @@ class Arduino(Node):
             self.ser_b = None
             self.rx_buf_b = b''
             self.last_line_b = None
+            self.b_state = B_STATE_NONE     # [2026-10-16] 빠진 보드의 상태 2·1 을 들고 있지 않는다
         self.publish_status()
 
     def _ser(self, which):
@@ -1859,6 +1887,24 @@ class Arduino(Node):
         self._stop_brake_armed = False
 
     def compose(self):
+        """_compose_modes() 에 ★[2026-10-16] B 상태 1(제동등 조건) = A 쓰로틀 0★ 을 덮어쓴다.
+
+        모드 무관 — 자율이면 1·2단 지령이 곧 상태 1 이라 (4) 가 이미 0 을 내고, 수동이면
+        A5 브레이크 스위치가 닫힌 동안 페달 구동을 끊는다. 상태 2(E-STOP)는 (1) 분기가 맡는다.
+        B보드 리니어 지령(b_payload)은 건드리지 않는다."""
+        a_payload, b_payload, pulse = self._compose_modes()
+        cut = self.ser_b is not None and self.b_state == B_STATE_BRAKE
+        if cut != self._b_brake_cut:
+            self._b_brake_cut = cut
+            if cut:
+                self.get_logger().info("[제동등 조건] B보드 상태 1 — A보드 쓰로틀 0")
+            else:
+                self.get_logger().info("[제동등 조건 해제] B보드 상태 0 — 쓰로틀 복귀")
+        if cut:
+            return '0', b_payload, 0
+        return a_payload, b_payload, pulse
+
+    def _compose_modes(self):
         """현재 상태에서 A/B 보드로 보낼 페이로드 두 개 + 라벨용 목표펄스를 만든다.
 
         반환: (a_payload, b_payload, drive_pulse)
@@ -1874,6 +1920,8 @@ class Arduino(Node):
         우선순위는 파일 헤더의 '주행 상태 판단' 순서와 같다."""
 
         # (1) E-stop — B보드가 리니어 2단 체결과 0단 복귀를 스스로 한다([0804-3]).
+        #     ★[2026-10-16] estop_active = B 상태 2 (kasa_1016_B)★ — 모드 무관하게 A 쓰로틀 0.
+        #     아래 1007 설명의 "STOP" 은 1015 이하 펌웨어 이야기다.
         #     ★ 여기서 수동 래치를 건드리지 않는다 ★ 해제 시 B보드가 이미 HOME(0단)으로
         #     돌아가는데 우리가 2단을 다시 물리면 그 복귀와 싸운다.
         #     ★[2026-10-07] kasa_1007_B 에서는 이 분기 = AS-Emergency(자율 + E-STOP)★
@@ -2123,7 +2171,7 @@ class Arduino(Node):
         if self._last_s_t <= 0.0:
             self.get_logger().warn(
                 "A보드는 붙었는데 S, 텔레메트리(쓰로틀)를 아직 못 받았습니다 "
-                "— /throttle_pedal 이 0 으로 보입니다. 보드 부팅·E-STOP 을 확인하세요",
+                "— /throttle_pedal 이 0 으로 보입니다. 보드 부팅을 확인하세요",
                 throttle_duration_sec=5.0)
             return
         age = time.monotonic() - self._last_s_t
@@ -2131,7 +2179,7 @@ class Arduino(Node):
             self.get_logger().warn(
                 f"A보드 S, 텔레메트리가 {age:.1f}초째 없습니다 "
                 f"(마지막 줄={self.last_line_a!r}). 스로틀 raw 가 갱신되지 않습니다 "
-                f"— E-STOP 이 STOP 만 보내거나, TX 에코가 S, 를 가리고 있을 수 있습니다",
+                f"— TX 에코가 S, 를 가리고 있거나 A보드가 멎었을 수 있습니다",
                 throttle_duration_sec=5.0)
 
     def poll_joystick(self):
@@ -2210,7 +2258,10 @@ class Arduino(Node):
                 #   '-' 를 보내지 않는다). 잡음으로 세지 않고 그냥 흘린다 — 텔레메트리도
                 #   STOP 도 아니므로 아무 상태를 바꾸지 않는다.
                 continue
-            if t == 'STOP':
+            if t == 'STOP' and which == 'b':
+                # ★[2026-10-16] 1015 이하 B 펌웨어용으로만 남긴다★ kasa_1016_B 는 STOP 대신
+                #   P, 셋째 칸 2 를 낸다. A보드의 STOP 은 더 이상 E-STOP 이 아니다(kasa_1016_A
+                #   는 내지 않는다) — 와도 아래 잡음으로 센다.
                 last_is_stop = True
                 last_telem = None
             elif t.startswith(prefix):
@@ -2225,20 +2276,17 @@ class Arduino(Node):
                 f"(예: TX 에코). 스로틀/모드는 S,/P, 만 반영합니다",
                 throttle_duration_sec=10.0)
 
-        if last_is_stop:
-            if which == 'a':
-                self.last_line_a = 'STOP'
-            else:
-                self.last_line_b = 'STOP'
-                # ★[2026-10-07] kasa_1007_B : "STOP" = 자율주행 + E-STOP (AS-Emergency)★
-                #   수동조종에서는 B보드가 E-STOP 을 보지 않아 STOP 이 나오지 않는다. 그런데
-                #   STOP 줄에는 모드 필드가 없어(필드를 붙이면 안 된다 — update_estop 이
-                #   문자열 완전일치다) 그대로 두면 /vehicle_mode 가 마지막 P, 값에 얼어붙는다.
-                #   ★E-STOP 이 눌린 채 수동→자율로 올리면 P,…,1 이 한 줄도 안 나오고 곧장
-                #   STOP 이 된다★ — 그러면 ROS 는 계속 '수동' 으로 알고 prompt 가 '①스위치를
-                #   자율로' 를 잘못 안내하고 HUD 도 AS-OFF 로 남는다. 그래서 여기서 자율로 둔다.
-                #   ⚠️ 펌웨어와 짝이다 — 구 펌웨어(0909 이하)는 수동에서도 STOP 을 낸다.
-                self._set_switch_mode(True, "B보드 STOP = 자율주행 + E-STOP")
+        if last_is_stop:                    # B 뿐이다 (위 — 1015 이하 펌웨어)
+            self.last_line_b = 'STOP'
+            # ★[2026-10-07] kasa_1007_B : "STOP" = 자율주행 + E-STOP (AS-Emergency)★
+            #   수동조종에서는 B보드가 E-STOP 을 보지 않아 STOP 이 나오지 않는다. 그런데
+            #   STOP 줄에는 모드 필드가 없어(필드를 붙이면 안 된다 — update_estop 이
+            #   문자열 완전일치다) 그대로 두면 /vehicle_mode 가 마지막 P, 값에 얼어붙는다.
+            #   ★E-STOP 이 눌린 채 수동→자율로 올리면 P,…,1 이 한 줄도 안 나오고 곧장
+            #   STOP 이 된다★ — 그러면 ROS 는 계속 '수동' 으로 알고 prompt 가 '①스위치를
+            #   자율로' 를 잘못 안내하고 HUD 도 AS-OFF 로 남는다. 그래서 여기서 자율로 둔다.
+            #   ⚠️ 펌웨어와 짝이다 — 구 펌웨어(0909 이하)는 수동에서도 STOP 을 낸다.
+            self._set_switch_mode(True, "B보드 STOP = 자율주행 + E-STOP")
             return
         if last_telem is None:
             return                          # 에코만 온 주기 — 직전 S,/P, 를 유지
@@ -2268,8 +2316,11 @@ class Arduino(Node):
             pass
 
     def parse_b(self, text):
-        """"P,<조향각>,<A5원본>,<모드>" (kasa_1007_B.ino). 조향각 부호는 ★− 좌 / + 우★
-           로 ROS 규약과 같다(그대로 발행한다). STOP/형식오류 시 마지막 값 유지.
+        """"P,<조향각>,<상태>,<모드>" (kasa_1016_B.ino). 조향각 부호는 ★− 좌 / + 우★
+           로 ROS 규약과 같다(그대로 발행한다). 형식오류 시 마지막 값 유지.
+
+        ★[2026-10-16] 셋째 칸 = 상태★ 0 평상 / 1 제동등 조건 / 2 E-STOP. 0·1·2 밖의 값
+        (1015 이하의 A5 raw)은 0 으로 본다 — 그 펌웨어의 E-STOP 은 "STOP" 줄로 온다.
 
         ★지금 펌웨어 양식 하나만 받는다 [2026-08-21]★ 구버전 호환 분기를 두지
         않았다 — 보드는 한 대이고, 펌웨어를 바꾸면 이 함수도 같이 바꾸는 것이
@@ -2283,10 +2334,11 @@ class Arduino(Node):
             return
         try:
             self.angle_board = int(fields[1])
-            self.brake_pot = int(fields[2])
+            state = int(fields[2])
             new_mode = bool(int(fields[3]))       # ★1 = 자율주행 / 0 = 수동조종★
         except ValueError:
             return
+        self.b_state = state if state in (B_STATE_NONE, B_STATE_BRAKE, B_STATE_ESTOP) else B_STATE_NONE
         self._set_switch_mode(new_mode, "B보드 D5")
 
     def _set_switch_mode(self, new_mode, why):
@@ -2298,17 +2350,15 @@ class Arduino(Node):
                 f"[주행모드 전환] {'자율주행' if new_mode else '수동조종'} ({why})")
 
     def update_estop(self):
-        """A·B 중 한쪽이라도 최신 줄이 STOP 이면 e-stop (OR 판정). 전환 시점만 로그.
-
-        ★[2026-09-04] 실제로 STOP 을 내보내는 것은 B보드 하나다★ A보드는
-        ESTOP_ENABLED = false 라 D12 를 보지 않는다(kasa_0904_A.ino [0904-2]).
-        ★그래도 OR 판정을 그대로 둔다★ — A보드의 ESTOP_ENABLED 를 true 로 되돌리면
-        곧바로 다시 맞고, 판정이 한쪽에만 묶여 있으면 그때 조용히 틀리기 때문이다."""
-        active = (self.last_line_a == 'STOP') or (self.last_line_b == 'STOP')
+        """★[2026-10-16] E-STOP = B보드 상태 2★ (P, 셋째 칸, kasa_1016_B). 전환 시점만 로그.
+        A보드는 보지 않는다(kasa_1016_A 는 E-STOP 이 없다). 1015 이하 B 의 "STOP" 줄도 받는다.
+        B 가 빠지면 _drop_board 가 상태를 지워 E-STOP 이 풀린 것으로 본다(종전과 같다)."""
+        active = self.ser_b is not None and (
+            self.b_state == B_STATE_ESTOP or self.last_line_b == 'STOP')
         if active and not self.estop_active:
             self.get_logger().warn(
-                "[E-STOP 발동] A/B 보드 중 하나 이상이 STOP 신호를 보냄 "
-                "(B보드가 리니어 2단 체결, 인휠 정지)")
+                "[E-STOP 발동] B보드 상태 2 (1015 이하는 STOP) "
+                "— B보드가 리니어 2단 체결, A보드 쓰로틀 0")
         elif not active and self.estop_active:
             self.get_logger().info("[E-STOP 해제] 정상 텔레메트리 재개 (리니어 0단 복귀)")
         self.estop_active = active
@@ -2337,8 +2387,8 @@ class Arduino(Node):
 
         self.pub_mode.publish(Bool(data=bool(self.auto_mode)))
         self.pub_throttle.publish(Int32(data=int(self.throttle_raw)))
-        # ★[2026-08-21] B보드 A5 원본 (kasa_0821_B.ino)★
-        self.pub_brake_pot.publish(Int32(data=int(self.brake_pot)))
+        # ★[2026-10-16] B보드 상태 0/1/2 (kasa_1016_B)★ — 토픽 이름만 옛 그대로다
+        self.pub_brake_pot.publish(Int32(data=int(self.b_state)))
         self.pub_estop.publish(Bool(data=bool(self.estop_active)))
 
     def publish_status(self):
