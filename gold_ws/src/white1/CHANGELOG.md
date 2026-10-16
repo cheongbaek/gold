@@ -84,7 +84,7 @@ ros2 launch white1 one_launch.py \
 | **TODO-11** | ★AS 상태 (사용자 지시 2026-10-07, 규정 2.16.1 표 4·5)★ — ★B보드에 `kasa_1007_B.ino` 를 굽고 실차 확인★(CLAUDE.md 8.7 표 6줄) — 수동+E-STOP 무반응 · 그 상태에서 자율 전환 즉시 2단 · 수동 전환 즉시 0단 복귀 · HUD AS 필 · 해제 뒤 1.5 s 출발 | 코드 완료 [2026-10-07] (아래 항목) · ⚠️ 펌웨어 굽기 전에는 ROS 쪽만 바뀐 상태 |
 | **TODO-12** | 대회 규정 ⚠️ 확인 — 지정 배터리 사양 · 제동등 2개·15 W·전원 OFF 점등 · 비상정지버튼 2개 · ASMS 'AS' 표기·잠금 · 라이다 높이(롤후프 안) · 전장·전폭·무게·지상고 실측 · GPS 두절 시 긴급제동(규정 2.16.1 아) | 실차·질의 — CLAUDE.md 8.1 · 8.5 D3 |
 | **TODO-13** | 본선 코스 **T2 구간이 14.7 m 로 짧다** — 7펄스로 들어오면 1단으로 정지선 1 m 앞에 맞추는 데 ≈18.3 m 가 필요해 2단을 앞당겨 **정지선 2.8 m 앞**에 선다(넘지는 않는다). [2026-10-07] 부터 T2 가 실제로 서는 신호가 됐다(T1 이 처음부터 녹색이면 반드시) — `maincourse.csv` 의 T2 시작을 ≈3.6 m 앞당겨 적을지 | ★사용자 결정★ (정지선 = 구간 끝은 그대로) |
-| **TODO-14** | ★DDS 수신 버퍼 — 기계마다 한 번 `sudo bash gold_ws/src/nxde/tools/setup_dds_buffer.sh`★ (rmem_max 208 KB → 2 GB 상한). 안 하면 traffic_light 가 카메라 프레임을 받았다 못 받았다 한다(아래 2026-10-16) — `ros2 run nxde check` 의 [DDS 수신 버퍼] 줄로 확인 | 코드 완료 [2026-10-16] · 기계별 적용 대기 |
+| **TODO-14** | ★DDS 수신 버퍼 — 기계마다 한 번 `sudo bash gold_ws/src/nxde/tools/setup_dds_buffer.sh`★ (rmem_max 208 KB → 2 GB 상한). 안 하면 traffic_light 가 카메라 프레임을 받았다 못 받았다 한다(아래 2026-10-16) — `ros2 run nxde check` 의 [DDS 수신 버퍼] 줄로 확인 | 코드 완료 [2026-10-16] · ★mad1 PC 적용·검증 완료★(CycloneDDS 6/6 수신) · 다른 기계는 적용 대기 |
 
 ---
 
@@ -107,7 +107,9 @@ Ctrl+C·SIGTERM·`nxde kill` 모두 마지막 조각까지 정상으로 닫았�
 
 **검증 (도메인 77)** — ③ 가짜 카메라 30→10 fps→3 s 정지→30 fps : 영상 26.07 s = 벽시계 26.02 s, 프레임에 찍은 시각과 영상 시점 오차 ≈0.05 s ·
 실제 카메라(FastDDS) 디버그 48.02 s = 48.06 s, 원본 39.05 s = 39.06 s · ④ white1·white2 각 2회 traffic_light 'finished cleanly', launch 1.0 s ·
-⑤ SIGTERM 20회 전부 exit 0·Traceback 0 · 실제 카메라 `nxde kill` exit 0 · ① 은 sysctl 적용 뒤 CycloneDDS 로 재시험(TODO-14).
+⑤ SIGTERM 20회 전부 exit 0·Traceback 0 · 실제 카메라 `nxde kill` exit 0 ·
+① mad1 PC 에 sysctl 적용 뒤 CycloneDDS(실차 조건)로 white1·white2 각 3회 : ★6/6 디버그 mp4 생성★(수정 전 1/6) · '수신 대기' 0 ·
+디버그 수신 ≈30 fps · 영상 길이와 벽시계 차 ≤0.03 s · 파일 30개 디코드 오류 0 · traffic_light 6회 'finished cleanly' · launch 1.0 s.
 
 ---
 
