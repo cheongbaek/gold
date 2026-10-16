@@ -92,6 +92,18 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-16 — `prompt.py --route <CSV>` (white1 같은 줄) · nxde/panel 에서 white2 를 띄운다
+
+`ros2 run white2 prompt --route maincourse_b400.csv` — 메뉴를 건너뛰고 그 경로로 '2) 주행'. driving 이 `/drive_cmd` 를
+구독하고 `/vehicle_mode` 가 들어온 뒤에 고르고, 표준입력 EOF 면 키 입력을 더 보지 않는다(white1 `d242322` 와 같다).
+**white1 과 다른 한 가지** — 이름을 메뉴 목록(`route_*`)이 아니라 **경로 폴더에 .csv 가 있는지**로 본다.
+white2 메뉴는 `route_*` 만 보여 줘 `maincourse_b400.csv` 가 목록에 없기 때문이다(메뉴 자체는 그대로 뒀다).
+`nxde/panel` 에 [white1 ⇄ white2] 버튼이 생겼다 — white2 코스 = 서브 `route_20200202_222223.csv`(white1 subcourse.csv 와 같은 파일) ·
+본선 `maincourse_b400.csv`. 검증 — 도메인 77, 가짜 driving 을 3 s 늦게 띄워 0.34 s 에 경로 · 1.14 s 에 DRIVE_START · EOF 로 안 풀림 ·
+없는 이름이면 경고 후 메뉴. panel 은 창을 숨기고 명령만 기록하는 대역으로 전환·잠금·명령 확인. ⚠️ 실차 미검증.
+
+---
+
 ## 2026-10-16 — `braketest` 를 white1 과 같은 줄로 (white1 10/16 수정 7건 이식)
 
 `white2/braketest.py` · `launch/braketest.launch.py` 를 white1 현재본에서 `white1 → white2` 이름만 바꿔 옮겼다

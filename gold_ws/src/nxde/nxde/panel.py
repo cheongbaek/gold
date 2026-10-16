@@ -3,14 +3,20 @@
 """
 panel.py ― ★터치 조작반★ [nxde / 2026-10-16]
 ════════════════════════════════════════════════════════════════════════════════
-    ros2 run nxde panel          (또는 python3 panel.py — 표준 라이브러리만 쓴다)
+    ros2 run nxde panel                 (또는 python3 panel.py — 표준 라이브러리만 쓴다)
+    ros2 run nxde panel --stack white2  ★white2 로 시작★ (창에서도 바꾼다)
 
   키보드 없이 마우스(터치)만으로 스택을 띄우고 내린다. 터미널 창은 [Check] 만 띄운다.
 
-    [Check] [Kill] [Exit]
-    [white1 one_launch]       <상태> [x]   ros2 launch white1 one_launch.py (HUD·인지 창·RViz 없이)
-    [subcourse] [maincourse]  <상태> [x]   ros2 run white1 prompt --route <그 CSV>  (= 2) 주행 → 경로 선택)
-    [braketest] [nolidar]     <상태> [x]   ros2 launch white1 braketest.launch.py nolidar:=false/true
+    [Check] [Kill] [<스택>] [Exit]
+    [<스택> one_launch]       <상태> [x]   ros2 launch <스택> one_launch.py (HUD·인지 창·RViz 없이)
+    [subcourse] [maincourse]  <상태> [x]   ros2 run <스택> prompt --route <그 CSV>  (= 2) 주행 → 경로 선택)
+    [braketest] [nolidar]     <상태> [x]   ros2 launch <스택> braketest.launch.py nolidar:=false/true
+
+  ★[2026-10-16] <스택> = white1 / white2★ (3.1 투트랙) — [<스택>] 버튼이 둘을 오간다. 두 스택은
+  노드 이름·토픽이 같아 같이 띄우면 안 되므로 ★세 줄이 전부 쉬는 중일 때만★ 바꿀 수 있다.
+  코스 CSV 는 스택마다 다르다(STACKS) — white2 본선은 maincourse_b400.csv, 서브는
+  route_20200202_222223.csv(white1 subcourse.csv 와 같은 파일).
 
   <상태> = 쉬는 중 / 실행 중 / 종료 중.  [x] = 그 줄에 ★Ctrl+C★ (프로세스 그룹에 SIGINT —
   터미널에서 누른 것과 같다). STOP_TERM_S 안에 안 내려가면 SIGTERM, STOP_KILL_S 면 SIGKILL.
@@ -45,19 +51,29 @@ from tkinter import font as tkfont
 #  명령 — ★여기만 고치면 된다★
 # ══════════════════════════════════════════════════════════════════════════════
 #  one_launch 는 HUD·신호등 인지 창·라이다 RViz 를 끈다(사용자 지시 '추가 창을 띄우지 않는다').
-CMD_ONE_LAUNCH = ['ros2', 'launch', 'white1', 'one_launch.py',
-                  'use_hud:=false', 'tl_show_window:=false', 'use_lidar_rviz:=false']
 CMD_CHECK = ['ros2', 'run', 'nxde', 'check']
 CMD_KILL = ['ros2', 'run', 'nxde', 'kill']
 
+#  스택별 코스 CSV — [subcourse] [maincourse] 버튼이 넘기는 이름 (그 스택의 gps_data/ 안)
+STACKS = {
+    'white1': {'subcourse': 'subcourse.csv', 'maincourse': 'maincourse.csv'},
+    'white2': {'subcourse': 'route_20200202_222223.csv', 'maincourse': 'maincourse_b400.csv'},
+}
+DEFAULT_STACK = 'white1'
 
-def cmd_prompt(route):
-    """prompt 를 메뉴 없이 그 경로로 — '2) 주행 → 경로 선택' 바로가기 (white1 prompt --route)."""
-    return ['ros2', 'run', 'white1', 'prompt', '--route', route]
+
+def cmd_one_launch(stack):
+    return ['ros2', 'launch', stack, 'one_launch.py',
+            'use_hud:=false', 'tl_show_window:=false', 'use_lidar_rviz:=false']
 
 
-def cmd_braketest(nolidar):
-    return ['ros2', 'launch', 'white1', 'braketest.launch.py',
+def cmd_prompt(stack, course):
+    """prompt 를 메뉴 없이 그 경로로 — '2) 주행 → 경로 선택' 바로가기 (<스택> prompt --route)."""
+    return ['ros2', 'run', stack, 'prompt', '--route', STACKS[stack][course]]
+
+
+def cmd_braketest(stack, nolidar):
+    return ['ros2', 'launch', stack, 'braketest.launch.py',
             f"nolidar:={'true' if nolidar else 'false'}"]
 
 
@@ -204,8 +220,9 @@ class Slot:
 #  화면
 # ══════════════════════════════════════════════════════════════════════════════
 class Panel:
-    def __init__(self, root):
+    def __init__(self, root, stack=DEFAULT_STACK):
         self.root = root
+        self.stack = stack if stack in STACKS else DEFAULT_STACK
         self.busy = ''              # '' / 'kill' / 'exit' — 작업 중이면 버튼을 잠근다
         self.note = '준비'
         self.quit_now = False
@@ -237,19 +254,24 @@ class Panel:
         self.b_check = btn('Check', self.on_check)
         self.b_kill = btn('Kill', self.on_kill, bg='#6e2b2b')
         self.b_exit = btn('Exit', self.on_exit, bg='#6e2b2b')
+        self.b_stack = btn(self.stack, self.on_stack, bg='#1f3a5f')
         self.b_check.grid(row=0, column=0, **pad)
         self.b_kill.grid(row=0, column=1, **pad)
-        self.b_exit.grid(row=0, column=2, columnspan=2, **pad)
+        self.b_stack.grid(row=0, column=2, **pad)
+        self.b_exit.grid(row=0, column=3, **pad)
 
-        self.b_one = btn('white1 one_launch', lambda: self.start('one_launch', CMD_ONE_LAUNCH))
+        self.b_one = btn(f'{self.stack} one_launch',
+                         lambda: self.start('one_launch', cmd_one_launch(self.stack)))
         self.b_one.grid(row=1, column=0, columnspan=2, **pad)
         self.s_one = status()
         self.s_one.grid(row=1, column=2, **pad)
         self.x_one = btn('x', lambda: self.slots['one_launch'].stop(), bg='#8b1e1e')
         self.x_one.grid(row=1, column=3, **pad)
 
-        self.b_sub = btn('subcourse', lambda: self.start('prompt', cmd_prompt('subcourse.csv')))
-        self.b_main = btn('maincourse', lambda: self.start('prompt', cmd_prompt('maincourse.csv')))
+        self.b_sub = btn('subcourse',
+                         lambda: self.start('prompt', cmd_prompt(self.stack, 'subcourse')))
+        self.b_main = btn('maincourse',
+                          lambda: self.start('prompt', cmd_prompt(self.stack, 'maincourse')))
         self.b_sub.grid(row=2, column=0, **pad)
         self.b_main.grid(row=2, column=1, **pad)
         self.s_prompt = status()
@@ -257,8 +279,10 @@ class Panel:
         self.x_prompt = btn('x', lambda: self.slots['prompt'].stop(), bg='#8b1e1e')
         self.x_prompt.grid(row=2, column=3, **pad)
 
-        self.b_bt = btn('braketest', lambda: self.start('braketest', cmd_braketest(False)))
-        self.b_nl = btn('nolidar', lambda: self.start('braketest', cmd_braketest(True)))
+        self.b_bt = btn('braketest',
+                        lambda: self.start('braketest', cmd_braketest(self.stack, False)))
+        self.b_nl = btn('nolidar',
+                        lambda: self.start('braketest', cmd_braketest(self.stack, True)))
         self.b_bt.grid(row=3, column=0, **pad)
         self.b_nl.grid(row=3, column=1, **pad)
         self.s_bt = status()
@@ -286,6 +310,17 @@ class Panel:
             return
         self.slots[tag].start(argv)
         self.note = f"{tag} 시작 — 로그 {self.slots[tag].log.name}"
+
+    def on_stack(self):
+        """white1 ⇄ white2 — ★세 줄이 전부 쉬는 중일 때만★ (두 스택을 섞어 띄우지 않게)."""
+        if self.busy or any(s.state != ST_IDLE for s in self.slots.values()):
+            return
+        names = list(STACKS)
+        self.stack = names[(names.index(self.stack) + 1) % len(names)]
+        self.b_stack.configure(text=self.stack)
+        self.b_one.configure(text=f'{self.stack} one_launch')
+        self.note = (f"스택 {self.stack} — 코스 subcourse={STACKS[self.stack]['subcourse']} · "
+                     f"maincourse={STACKS[self.stack]['maincourse']}")
 
     def on_check(self):
         """ros2 run nxde check 를 터미널 창에서 — 결과가 나오면 CHECK_CLOSE_S 뒤 닫힌다."""
@@ -376,6 +411,7 @@ class Panel:
             en(b, not busy and st['braketest'] == ST_IDLE and st['one_launch'] == ST_IDLE)
         for x, k in ((self.x_one, 'one_launch'), (self.x_prompt, 'prompt'), (self.x_bt, 'braketest')):
             en(x, not busy and st[k] == ST_RUN)
+        en(self.b_stack, not busy and all(v == ST_IDLE for v in st.values()))
         en(self.b_kill, not busy)
         en(self.b_check, not busy)
         self.foot.configure(text=self.note)
@@ -383,8 +419,17 @@ class Panel:
 
 
 def main(args=None):
+    import sys
+    argv = list(sys.argv[1:] if args is None else args)
+    stack = DEFAULT_STACK
+    if '--stack' in argv:
+        i = argv.index('--stack')
+        stack = argv[i + 1] if i + 1 < len(argv) else ''
+        if stack not in STACKS:
+            print(f"⚠️ --stack '{stack}' 는 모른다 ({' / '.join(STACKS)}) — {DEFAULT_STACK} 로 띄운다")
+            stack = DEFAULT_STACK
     root = tk.Tk()
-    panel = Panel(root)
+    panel = Panel(root, stack)
     try:
         root.mainloop()
     except KeyboardInterrupt:

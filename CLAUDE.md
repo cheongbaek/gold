@@ -448,6 +448,8 @@ gold_ws/src/
                  braketest(nolidar) 를 버튼으로 띄우고 [x](= Ctrl+C, 프로세스 그룹 SIGINT)로 내린다.
                  ★[Kill]·[Exit] 는 먼저 자기가 띄운 것에 Ctrl+C★ — kill 은 SIGKILL 이라 arduino 의
                  종료 정리(리니어 0단)를 건너뛴다. 로그 ~/.ros/log/panel/. ROS 노드가 아니다(rclpy 없음)
+                 ★[2026-10-16] [white1 ⇄ white2] 버튼★(또는 `--stack white2`) — 세 줄이 다 쉬는 중일 때만
+                 바뀐다. 코스 CSV 는 `STACKS` 표 : white2 = route_20200202_222223.csv · maincourse_b400.csv
     tts.py       ★domichat 채팅방을 읽어 주는 TTS★ <PC명>_TTS_M(남성)·
                  <PC명>_TTS_W(여성) 두 방을 구독해 올라오는 말을 그대로
                  읽는다. 방 비밀번호는 PC 이름. GUI 없음(구독 전용)
@@ -1462,7 +1464,7 @@ ros2 run white1 prompt                 # 2) CLI 메뉴 (별 터미널) — ★�
 ros2 run white1 hud                    # 2') 상면도 HUD (구독 전용, 선택)
 #  white2 로 달릴 때는 위 white1 을 전부 white2 로 (둘을 같이 띄우지 않는다 — 3.1 투트랙)
 ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때
-ros2 run nxde panel                    # ★터치 조작반★ 위 셋 + braketest 를 버튼으로 [2026-10-16]
+ros2 run nxde panel                    # ★터치 조작반★ 위 셋 + braketest 를 버튼으로 [2026-10-16] (white1/white2 전환)
 ```
 
 **주요 런치 인자** (기본값):

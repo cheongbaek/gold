@@ -67,6 +67,7 @@ video      ★인지 화면 녹화★ /image_raw → video/cam-<시각>.mp4 (구
 check      ★런치 전 하드웨어 연결 점검★ 보고하고 종료
 kill       ★돌고 있는 ROS2 를 한 번에 끝낸다★ 전부 SIGKILL + 포트 초기화 (3절)
 panel      ★터치 조작반★ [2026-10-16] check·kill·one_launch·prompt(--route)·braketest 를 버튼으로
+           white1/white2 전환 버튼(또는 --stack white2) — 세 줄이 다 쉬는 중일 때만
            (tkinter, 키보드 없이 · python3 panel.py 로도 돈다 · 사용법은 panel.py 머리말)
 tts        대화형 TTS — 안내 음성 mp3 를 만드는 작업용 GUI (인터넷 필요)
 ```
