@@ -26,8 +26,8 @@ setup(
     entry_points={
         'console_scripts': [
             # ══════════════════════════════════════════════════════════════
-            #  실행 대상 8개 — 전부 ros2 run 으로 띄운다 (런치파일 없음)
-            #    ※ tts·kill 은 ROS 노드가 아닌 작업용 도구다
+            #  실행 대상 9개 — 전부 ros2 run 으로 띄운다 (런치파일 없음)
+            #    ※ tts·kill·panel 은 ROS 노드가 아닌 작업용 도구다
             # ══════════════════════════════════════════════════════════════
             # ★차량 구동의 필수 노드★ A/B 2보드 통신 전담. 이게 없으면 아무것도 안 움직인다.
             #   자율주행 시에는 white one_launch.py 가 이 노드를 함께 띄운다.
@@ -74,6 +74,10 @@ setup(
             #   ※ ★pygame 은 더 이상 쓰지 않는다★ — 오디오 장치를 붙들어
             #     nxde/sound 의 안내 음성과 서로 밀어냈다(tts.py 헤더 참고).
             'tts      = nxde.tts:main',
+            # ★터치 조작반★  ros2 run nxde panel  (또는 python3 panel.py) [2026-10-16]
+            #   [Check][Kill][Exit] + one_launch · prompt(subcourse/maincourse) · braketest(nolidar)
+            #   를 버튼으로 띄우고 [x](= Ctrl+C)로 내린다. 키보드 없이 쓴다. ROS 노드가 아니다.
+            'panel    = nxde.panel:main',
         ],
     },
 )

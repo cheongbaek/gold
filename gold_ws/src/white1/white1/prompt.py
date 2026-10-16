@@ -66,6 +66,13 @@ prompt.py ― CLI 메인화면 [white1]
   driving 의 출발 유예(E-STOP 해제 + 1.5 s)는 해제 시각 기준이라 이 지연과 겹친다 —
   실제 출발 시각은 바뀌지 않는다.
 
+  ★[2026-10-16] `--route <경로 CSV 이름>` — 메뉴를 건너뛰고 그 경로로 '2) 주행' 을 고른다★
+    ros2 run white1 prompt --route subcourse.csv
+  nxde/panel 의 [subcourse]·[maincourse] 버튼이 이것을 쓴다(터미널 없이). driving 이 /drive_cmd 를
+  구독하고 주행모드(/vehicle_mode)가 들어올 때까지 기다렸다가 고른다 — 그 전에 보낸 경로 이름은
+  사라지기 때문이다. 그 뒤는 손으로 고른 것과 같다(게이트 대기 → 주행 → 메뉴). 표준입력이
+  없으면(EOF) 키 입력을 더 보지 않는다 — '아무 키나 취소' 로 읽히지 않게.
+
   ┌ 조작 요령 ────────────────────────────────────────────────────────────────┐
   │  1) 매핑 : ★스위치는 어느 쪽이어도 된다★ E-STOP 만 해제되면 즉시 시작.     │
   │            수동조종이면 페달·핸들로, 자율주행이면 ★조이스틱★ 으로 몬다      │
@@ -92,6 +99,7 @@ import time
 
 import rclpy
 import rclpy.executors
+import rclpy.utilities
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
@@ -197,6 +205,7 @@ class PromptNode(Node):
         self.play(SND_PROMPT)          # "메인화면입니다" — 뜨자마자
 
         self.state = 'IDLE'
+        self.state_seen = False       # /drive_state 를 한 번이라도 받았는가 (--route 대기)
         self.auto_mode = None
         self.estop = False
         self._ouster_n = 0            # 라이다 센서 스트리밍 (상단 GATE_LIDAR)
@@ -229,6 +238,7 @@ class PromptNode(Node):
         if new == 'MAP_HEADING' and not self.state.startswith('MAP_'):
             self.last_point = None
         self.state = new
+        self.state_seen = True
 
     def cb_event(self, m):
         self.events.append(str(m.data))
@@ -480,7 +490,22 @@ class PromptNode(Node):
         return "\n".join(lines)
 
 
+def choose_route(node, name):
+    """경로를 고른다 — driving 에 이름을 보내고 신호 타이머를 맞춘다. ★손 선택·--route 공통★"""
+    node.selected = name
+    node.pub_cmd.publish(String(data=name))
+    #  ★본선 코스일 때만 신호 타이머가 켜진다★ (다른 경로면 꺼진다)
+    if node.timer:
+        node.timer.set_route(name)
+
+
 def main(args=None):
+    #  ★[2026-10-16] --route★ (헤더) — ROS 인자를 걷어낸 뒤에 본다.
+    argv = rclpy.utilities.remove_ros_args(sys.argv if args is None else args)[1:]
+    auto_route = None
+    if '--route' in argv:
+        i = argv.index('--route')
+        auto_route = argv[i + 1].strip() if i + 1 < len(argv) else ''
     rclpy.init(args=args)
     #  ★[2026-09-30] 신호 타이머를 같은 실행기에 얹는다 (사용자 지시 'prompt 와 함께')★
     #  스레드 하나가 두 노드를 다 돌린다 — 타이머 콜백은 문자열 비교와 배열 하나라
@@ -502,10 +527,31 @@ def main(args=None):
     start_clear_t = None    # 게이트가 열린 시각
     start_first_t = None    # 처음 보낸 시각
     start_last_t = 0.0      # 마지막으로 보낸 시각
+    stdin_open = True       # [2026-10-16] EOF(터미널 없이 띄움)면 키 입력을 더 보지 않는다
+    if auto_route is not None:
+        if auto_route not in node.routes():
+            print(f"⚠️ --route '{auto_route}' 가 경로 목록({node.data_dir})에 없다 — 메뉴로 간다",
+                  flush=True)
+            auto_route = None
+        else:
+            print(f"🗂️ --route {auto_route} — driving·arduino 가 뜨기를 기다렸다가 고른다",
+                  flush=True)
 
     try:
         while rclpy.ok():
             idle = node.state == 'IDLE'
+
+            #  ★[2026-10-16] --route 자동 선택★ driving 이 /drive_cmd 를 구독하고(이름이 사라지지
+            #  않게) 주행모드가 들어온 뒤에 한 번만 — 그 뒤는 손으로 고른 것과 같다.
+            if (auto_route and idle and not pending and node.state_seen
+                    and node.auto_mode is not None
+                    and node.pub_cmd.get_subscription_count() > 0):
+                choose_route(node, auto_route)
+                print(f"🗂️ {auto_route} 선택 — 주행 대기", flush=True)
+                auto_route = None
+                pending = 'DRIVE'
+                ui = UI_WAIT
+                last_screen = None
 
             # ★상태가 IDLE 을 벗어나면 이 화면의 대기/선택 흐름은 의미가 없어진다★
             #   (방금 보낸 MAP_START/DRIVE_START 가 먹혔거나, 다른 경로로 상태가
@@ -566,10 +612,19 @@ def main(args=None):
                 if ui == UI_MENU and idle:
                     print("> ", end="", flush=True)
 
+            if not stdin_open:
+                time.sleep(0.4)
+                continue
             ready, _, _ = select.select([sys.stdin], [], [], 0.4)
             if not ready:
                 continue
-            line = sys.stdin.readline().strip()
+            raw = sys.stdin.readline()
+            if raw == '':
+                #  ★EOF★ 표준입력이 없다(nxde/panel 이 터미널 없이 띄웠다) — 매 틱 '빈 입력'
+                #  으로 읽혀 대기가 '아무 키나 취소' 로 풀리지 않게 더 보지 않는다.
+                stdin_open = False
+                continue
+            line = raw.strip()
 
             # ── 대기 화면(스위치·E-STOP 대기) : 아무 키나 취소로 처리 ──
             if ui == UI_WAIT:
@@ -593,11 +648,7 @@ def main(args=None):
                 if line.isdigit():
                     i = int(line)
                     if 1 <= i <= min(len(routes), ROUTE_LIST_MAX):
-                        node.selected = routes[i - 1]
-                        node.pub_cmd.publish(String(data=node.selected))
-                        #  ★본선 코스일 때만 신호 타이머가 켜진다★ (다른 경로면 꺼진다)
-                        if node.timer:
-                            node.timer.set_route(node.selected)
+                        choose_route(node, routes[i - 1])
                         if node.auto_mode is None:
                             print("⚠️ 주행모드를 아직 알 수 없습니다 (nxde arduino 연결 확인)")
                             ui = UI_MENU

@@ -394,6 +394,7 @@ gold_ws/src/
       speed.py         /imu 적분 → /speed [km/h]  ★보조 속도원★
       mapping.py       /fix 원값만 보고 경로 수집 → gps_data/route_*.csv
       prompt.py        CLI 메인화면 (매핑/주행/종료) — ★시작은 여기뿐★
+                       [2026-10-16] `--route <CSV>` = 메뉴 없이 그 경로로 '2) 주행' (nxde/panel 이 쓴다)
       traffic_timer.py ★본선 코스 신호 타이머★ [2026-09-30] — prompt 와 ★한 프로세스★ 로 뜨고
                        maincourse.csv 를 골랐을 때만 켜진다 (4.10)
       record.py        주행 구간 토픽 → ros2bag/<경로이름>-<시각>.csv (120열, 20 Hz)
@@ -442,6 +443,11 @@ gold_ws/src/
                  화면 /tl/debug_image 도 — 후자를 one_launch 가 자동으로 띄운다)
     check.py     ★런치 전 하드웨어 점검★ 보고하고 종료
     kill.py      돌고 있는 ROS2 를 한 번에 끝낸다 + 포트 초기화
+    panel.py     ★터치 조작반★ [2026-10-16] tkinter, 키보드 없이 — [Check][Kill][Exit] ·
+                 white1 one_launch(HUD·인지 창 없이) · prompt --route subcourse/maincourse ·
+                 braketest(nolidar) 를 버튼으로 띄우고 [x](= Ctrl+C, 프로세스 그룹 SIGINT)로 내린다.
+                 ★[Kill]·[Exit] 는 먼저 자기가 띄운 것에 Ctrl+C★ — kill 은 SIGKILL 이라 arduino 의
+                 종료 정리(리니어 0단)를 건너뛴다. 로그 ~/.ros/log/panel/. ROS 노드가 아니다(rclpy 없음)
     tts.py       ★domichat 채팅방을 읽어 주는 TTS★ <PC명>_TTS_M(남성)·
                  <PC명>_TTS_W(여성) 두 방을 구독해 올라오는 말을 그대로
                  읽는다. 방 비밀번호는 PC 이름. GUI 없음(구독 전용)
@@ -1456,6 +1462,7 @@ ros2 run white1 prompt                 # 2) CLI 메뉴 (별 터미널) — ★�
 ros2 run white1 hud                    # 2') 상면도 HUD (구독 전용, 선택)
 #  white2 로 달릴 때는 위 white1 을 전부 white2 로 (둘을 같이 띄우지 않는다 — 3.1 투트랙)
 ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때
+ros2 run nxde panel                    # ★터치 조작반★ 위 셋 + braketest 를 버튼으로 [2026-10-16]
 ```
 
 **주요 런치 인자** (기본값):
