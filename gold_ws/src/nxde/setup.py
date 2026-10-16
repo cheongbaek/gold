@@ -59,6 +59,9 @@ setup(
             #   다투지 않는다(그쪽이 죽으면 신호등 인지가 죽는다 — video.py 헤더 참고).
             #   용량이 크다 : 1080p 기준 분당 20~60MB. 줄이려면 scale:=0.5
             'video    = nxde.video:main',
+            # ★[2026-10-16] 녹화 조각 → 최종본★ video 가 끝날 때 스스로 부른다. 손으로는
+            #   ros2 run nxde video_merge [폴더…] [--legacy] [--dry-run] — videomerge.py 머리말
+            'video_merge = nxde.videomerge:main',
             # ★음성 안내★ sound/*.mp3 를 사건에 맞춰 기본 스피커로 재생한다.
             #   구독만 하므로 제어에 끼어들지 않는다.  ros2 run nxde sound
             #   (white806 one_launch.py 가 use_sound:=true 로 함께 띄운다)

@@ -12,8 +12,11 @@ video.py ― 인지 카메라 화면 녹화 [nxde]
                 ★단, 이 워크스페이스는 복사설치(--symlink-install 금지)라 ★언제나★
                 ~/nxde_video/ 로 떨어진다★ (resolve_output_dir). 인지 디버그 녹화는
                 camera_launch 가 output_dir 을 <src>/white{1,2}/video 로 넘긴다.
-    파일 이름 : cam-<날짜>_<시각>.mp4      예) cam-20260818_174233.mp4
-                (조각으로 나뉘면 -02, -03 … 이 붙는다 — 아래 '세그먼트 분할')
+    파일 이름 : cam-<날짜>_<시각>.mp4      예) cam-20260818_174233.mp4   ← ★최종본(한 녹화 = 한 파일)★
+                [2026-10-16] 녹화 중에는 조각을 parts/<세션>/<세션>-01.mp4 … 에 쓰고, 끝나면
+                nxde/videomerge 가 위 이름 한 파일로 합친다(검증 뒤 조각 삭제). 그래서 폴더 맨 위에는
+                최종본만 있다. 강제 종료로 못 합친 세션은 다음 기동 때(또는 ros2 run nxde
+                video_merge) 합친다 — 아래 '세그먼트 분할', videomerge.py 머리말.
 
 ────────────────────────────────────────────────────────────────────────────────
  ★무엇을 녹화하는가 — '기본 처리만 된 화면' 이 정확히 무엇인지★
@@ -102,6 +105,8 @@ import atexit
 import os
 import shutil
 import signal
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
@@ -115,6 +120,9 @@ from sensor_msgs.msg import Image
 
 import cv2
 from cv_bridge import CvBridge
+
+#  ★[2026-10-16] 조각 → 최종본★ 폴더 이름·잠금의 단일 소유자는 videomerge 다(ROS 를 import 하지 않는 모듈).
+from nxde import videomerge
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -149,7 +157,8 @@ FPS_FALLBACK    = 30.0   # camera_launch 의 framerate 와 같은 값
 #      236M · 181M · 55M → moov 없음(재생 불가)   /   8.5M → 정상
 #  ★큰 파일만 깨졌다★ — 위 두 경로가 정확히 그렇게 작동한다는 증거다.
 #
-#  ★그래서 파일을 잘게 나눈다.★ 이 주기마다 닫고 다음 파일을 연다. 닫는 순간
+#  ★그래서 파일을 잘게 나눈다.★ 이 주기마다 닫고 다음 파일을 연다.
+#  ([2026-10-16] 조각은 parts/<세션>/ 에 쓰고 녹화가 끝나면 videomerge 가 한 파일로 합친다.) 닫는 순간
 #  그 조각은 ★완결된 mp4★ 이므로, 그 뒤에 SIGKILL 을 맞아도 잃는 것은 마지막
 #  조각(최대 SEGMENT_S 초)뿐이다. 분당 15~25MB 이므로 120초면 조각당 30~50MB 다.
 #  ⚠️ 0 으로 두면 분할하지 않는다(종전 거동) — 그때는 SIGKILL 에 전부 잃는다.
@@ -222,6 +231,10 @@ class VideoNode(Node):
         self.declare_parameter('prefix', 'cam')
         #  ★[2026-09-13] 세그먼트 분할★ 상수절 참고. 0 이면 종전처럼 한 파일에 쓴다.
         self.declare_parameter('segment_s', SEGMENT_S)
+        #  ★[2026-10-16] 끝나면 조각을 최종본 한 파일로 합친다★ (videomerge 머리말)
+        self.declare_parameter('merge', True)
+        #   True 면 합본 검증 뒤에도 parts/<세션>/ 의 조각을 지우지 않는다.
+        self.declare_parameter('keep_parts', False)
 
         self.topic  = str(self.get_parameter('image_topic').value)
         self.fps_p  = float(self.get_parameter('fps').value)
@@ -240,7 +253,16 @@ class VideoNode(Node):
         out_dir, why = resolve_output_dir(str(self.get_parameter('output_dir').value))
         os.makedirs(out_dir, exist_ok=True)
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')   # record.py 와 같은 규칙
-        self.path = os.path.join(out_dir, f"{prefix}-{stamp}{CODEC_EXT[self.codec]}")
+        #  ★[2026-10-16] 맨 위에는 최종본만★ 조각은 parts/<세션>/<세션>-NN 에 쓰고, 닫은 뒤
+        #  videomerge 가 <out_dir>/<세션>.mp4 한 파일로 합친다(그 모듈 머리말).
+        self.ext = CODEC_EXT[self.codec]
+        self.out_dir = out_dir
+        self.session = f"{prefix}-{stamp}"
+        self.parts_dir = os.path.join(out_dir, videomerge.PARTS_DIR, self.session)
+        self.final_path = os.path.join(out_dir, self.session + self.ext)
+        self.merge = bool(self.get_parameter('merge').value)
+        self.keep_parts = bool(self.get_parameter('keep_parts').value)
+        self.path = os.path.join(self.parts_dir, f"{self.session}-01{self.ext}")
 
         # ── 상태 ──
         self.bridge = CvBridge()
@@ -264,8 +286,7 @@ class VideoNode(Node):
         #   같은 락을 다시 잡으려 한다. Lock 이면 거기서 영구 정지하고 ★파일이 닫히지
         #   않는다★ — 정확히 막으려던 실패로 되돌아간다. RLock 은 같은 스레드의 재진입을
         #   허용해 그 경로가 성립하지 않는다.
-        #   (close() 뒤 핸들러가 SystemExit 을 올리므로 콜백이 죽은 writer 를 다시 쓰는
-        #    일도 없다 — 예외가 콜백을 그 자리에서 중단시킨다.)
+        #   (close() 뒤 콜백으로 돌아와도 _write 가 writer None 을 보고 멈춘다 [2026-10-16].)
         self._lock = threading.RLock()
         self._t_log = time.time()
         self._t_free = time.time()
@@ -273,7 +294,6 @@ class VideoNode(Node):
         self._stop_reason = None
         #  ── 세그먼트 상태 [2026-09-13] ──
         self.segment_s = max(0.0, float(self.get_parameter('segment_s').value))
-        self.path0 = self.path        # 첫 조각의 경로 — 이후 조각 이름의 뿌리
         self._seg_i = 1               # 지금 쓰고 있는 조각 번호(1 부터)
         self._seg_t0 = 0.0            # 이 조각을 연 시각
         self._seg_frames = 0          # 이 조각에 쓴 프레임 수
@@ -293,9 +313,18 @@ class VideoNode(Node):
         self._install_signal_handlers()
 
         self.get_logger().info(
-            f"🎥 nxde video 준비 — {self.topic} → {self.path}")
+            f"🎥 nxde video 준비 — {self.topic} → 최종본 {self.final_path}")
         self.get_logger().info(
-            f"   저장 위치 : {out_dir}  ({why})")
+            f"   저장 위치 : {out_dir}  ({why}) · 녹화 중 조각은 "
+            f"{videomerge.PARTS_DIR}/{self.session}/"
+            + (" — 끝나면 한 파일로 합친다" if self.merge else " — ★합치지 않는다(merge:=false)★"))
+        #  ★[2026-10-16] 지난번에 못 합친 세션(SIGKILL·전원 차단)을 마저 합친다★ — 별도 프로세스.
+        #  녹화 중인 세션(다른 녹화 노드)은 .recording 의 pid 로 가려 건드리지 않는다.
+        if self.merge and os.path.isdir(os.path.join(out_dir, videomerge.PARTS_DIR)):
+            if self._spawn_merge('--orphans', out_dir):
+                self.get_logger().info(
+                    f"   ♻️ {videomerge.PARTS_DIR}/ 에 남은 세션을 합치도록 맡겼다 "
+                    f"(로그 {videomerge.LOG_PATH})")
         self.get_logger().info(
             f"   코덱 {self.codec} / scale {self.scale:g} / fps "
             f"{'실측(첫 %d프레임은 파일에 안 들어간다)' % FPS_PROBE_N if self.fps_p <= 0 else f'{self.fps_p:g} 고정'}"
@@ -391,20 +420,11 @@ class VideoNode(Node):
         vid_s = self._video_seconds()
         wall_s = (time.time() - self.t_first) if self.t_first else 0.0
         mb = self._size_mb()
-        #  ★[2026-09-13] 조각으로 나눠 적었으면 그 사실을 같이 말한다★ — 사람이
-        #  파일을 하나만 찾다가 '뒷부분이 없다' 고 오해하지 않게.
-        seg = ""
-        if self._seg_done:
-            seg = (f"  ※ 앞서 {self._seg_done}조각을 따로 저장했다 — "
-                   f"{os.path.basename(self._segment_path(1))} … "
-                   f"{os.path.basename(self.path)} (총 {self._seg_i}개)")
+        #  ★[2026-10-16] 세션 전체로 보고한다★ 조각은 parts/<세션>/ 에 있고 곧 한 파일로 합쳐진다.
         self._say(
-            f"✅ 저장 완료 — {os.path.basename(self.path)}  "
-            f"{self._seg_frames if self._seg_done else self.n_written}프레임 / "
-            f"★영상 {(self._seg_frames / self.fps_used) if (self._seg_done and self.fps_used) else vid_s:.1f}초★ / "
-            f"{mb:.1f}MB / fps {self.fps_used:g}"
-            + (f" / 버린 프레임 {self.n_dropped}" if self.n_dropped else "")
-            + seg)
+            f"✅ 녹화 끝 — 조각 {self._seg_i}개 · {self.n_written}프레임 / ★영상 {vid_s:.1f}초★ / "
+            f"fps {self.fps_used:g} (마지막 조각 {mb:.1f}MB)"
+            + (f" / 기록 실패 {self.n_dropped}" if self.n_dropped else ""))
         #  ★[2026-10-16] 시각 맞춤 결과★ 반복·버림은 정상 동작이다(수신률이 fps 와 다를 뿐).
         #  수신률 = 실제로 받은 프레임 ÷ 벽시계 — 반복분을 빼야 '몇 fps 로 들어왔나' 가 된다.
         got = self.n_written - self.n_dup
@@ -417,7 +437,30 @@ class VideoNode(Node):
                 f"   ⚠️ 벽시계 {wall_s:.1f}초인데 영상은 {vid_s:.1f}초 — "
                 f"{self.lost_s:.1f}초는 {MAX_FILL_S:g}초를 넘는 공백이라 채우지 않았다. "
                 f"usb_cam·발행 노드 두절을 의심할 것", warn=True)
-        self._say(f"   {self.path}")
+        #  ★[2026-10-16] 잠금을 풀고 합본을 맡긴다★ 별도 프로세스라 이 노드의 종료가 늦어지지
+        #  않는다(nxde kill 의 2 s 유예 안). 합본이 죽어도 조각은 남고 다음 기동 때 다시 합친다.
+        try:
+            os.remove(os.path.join(self.parts_dir, videomerge.LOCK_RECORDING))
+        except OSError:
+            pass
+        if self.merge and self._spawn_merge(self.parts_dir, *(['--keep'] if self.keep_parts else [])):
+            self._say(f"   📦 최종본 → {self.final_path}  (합본은 백그라운드 — 로그 {videomerge.LOG_PATH})")
+        else:
+            self._say(f"   조각 → {self.parts_dir}  (합치려면 ros2 run nxde video_merge)")
+
+    def _spawn_merge(self, *args):
+        """videomerge 를 ★별도 프로세스★ 로 띄운다(자기 세션 — 런치의 Ctrl+C·nxde kill 이 닿지 않는다).
+        ★신호 핸들러 안에서도 불린다★ — 기다리지 않고 바로 돌아온다."""
+        try:
+            os.makedirs(os.path.dirname(videomerge.LOG_PATH), exist_ok=True)
+            with open(videomerge.LOG_PATH, 'a') as err:     # import 실패 같은 것도 로그에 남게
+                subprocess.Popen([sys.executable, '-m', 'nxde.videomerge', *args],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                                 start_new_session=True, close_fds=True)
+            return True
+        except Exception as e:
+            self._say(f"⚠️ 합본을 띄우지 못했다({e})", warn=True)
+            return False
 
     # ══════════════════════════════════════════════════════════════════════════
     #  수신 · 기록
@@ -537,7 +580,22 @@ class VideoNode(Node):
 
         h, w = frame.shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*self.codec)
-        writer = cv2.VideoWriter(self.path, fourcc, float(fps), (w, h))
+        #  ★[2026-10-16] 세션 폴더와 녹화 잠금★ 첫 프레임을 쓸 때 만든다(프레임이 없으면 폴더도 없다).
+        #  잠금(pid)이 살아 있는 동안 videomerge 의 orphan 정리가 이 세션을 건드리지 않는다.
+        try:
+            os.makedirs(self.parts_dir, exist_ok=True)
+            with open(os.path.join(self.parts_dir, videomerge.LOCK_RECORDING), 'w') as f:
+                f.write(str(os.getpid()))
+        except OSError as e:
+            self.get_logger().error(f"❌ 조각 폴더를 만들 수 없다: {self.parts_dir} ({e})")
+            self._closed = True
+            return False
+        #  ★[2026-10-16] 첫 조각부터 반올림한 같은 값으로 연다★ 종전에는 첫 조각만 원래 값(29.979…)
+        #  으로 열고 다음 조각부터 반올림(29.979)으로 열어, OpenCV 가 조각마다 다른 시간 단위
+        #  (1/11992 · 1/29979)를 골랐다 — 합치면 길이가 2.5배로 틀어진다(videomerge 가 맞춰 주지만
+        #  애초에 같게 쓴다).
+        fps = round(float(fps), 3)
+        writer = cv2.VideoWriter(self.path, fourcc, fps, (w, h))
         if not writer.isOpened():
             # ★여기서 죽지 않는다★ 코덱이 없는 환경일 수 있다. 사유를 정확히 알려 준다.
             self.get_logger().error(
@@ -564,12 +622,9 @@ class VideoNode(Node):
     #  세그먼트 분할 [2026-09-13]
     # ══════════════════════════════════════════════════════════════════════════
     def _segment_path(self, i):
-        """i 번째 조각의 경로. ★첫 조각은 종전 이름 그대로다★ — record CSV 와
-        시각을 맞추는 규칙(tl-<시각>.mp4)을 깨지 않기 위해서다."""
-        if i <= 1:
-            return self.path0
-        root, ext = os.path.splitext(self.path0)
-        return f"{root}-{i:02d}{ext}"
+        """i 번째 조각의 경로 = parts/<세션>/<세션>-NN [2026-10-16]. 최종본 이름(<세션>.mp4)은
+        종전 첫 조각 이름과 같아 record CSV 와 시각을 맞추는 규칙(tl-<시각>.mp4)이 그대로다."""
+        return os.path.join(self.parts_dir, f"{self.session}-{i:02d}{self.ext}")
 
     def _roll_segment(self, now):
         """지금 조각을 ★완결★ 하고 다음 조각을 연다. ★_lock 을 쥔 채로 불린다.★

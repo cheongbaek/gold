@@ -92,6 +92,13 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-16 (밤) — 녹화 조각 → 최종본 한 파일 (white1 과 같은 줄)
+
+`camera_launch.py` 설명만 바꿨다 — 동작은 nxde(`video.py`·`videomerge.py`)가 한다. 녹화 중 조각은 `white2/video/parts/<세션>/`,
+끝나면 `white2/video/tl-<시각>.mp4` 한 파일. 근거·검증은 ★white1 CHANGELOG 2026-10-16 (밤)★.
+
+---
+
 ## 2026-10-16 — 카메라 녹화 점검 · DDS 수신 버퍼 · 영상 길이 = 벽시계 · traffic_light 종료 정리 (white1 과 같은 줄)
 
 `camera_launch.py`(`dds_env` — 카메라 노드 3개에 `nxde/config/cyclonedds.xml`, 문서 정정) · `traffic_light.py`(main finally 신호 무시 +

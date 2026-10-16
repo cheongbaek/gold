@@ -45,6 +45,8 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
   · 발행 : traffic_light 의 tl_publish_debug → /tl/debug_image (BEST_EFFORT)
   · 녹화 : nxde 의 video 노드가 그 토픽을 구독해 mp4 로 적는다
   · 위치 : white2/paths.py 의 video_dir() = <src>/white2/video/tl-<날짜>_<시각>.mp4
+           ★[2026-10-16] 한 녹화 = 한 파일★ — 녹화 중 조각은 <src>/white2/video/parts/<세션>/, 끝나면
+           nxde/videomerge 가 합쳐 위 이름 한 파일로 만든다(ros2 run nxde video_merge 로 손으로도).
 
 ★스위치가 ★하나★ 인 이유 (tl_record_video)★ 발행과 녹화를 따로 열면 짝이 어긋나
 '발행 안 하는 토픽을 녹화' = ★0바이트 파일★ 이 나온다. 한 인자가 둘을 함께 켠다.
@@ -255,9 +257,10 @@ def declare_args(cam_dev):
             description='이 초마다 mp4 를 닫고 다음 조각을 연다(0 = 분할 안 함). '
                         '★mp4 는 인덱스를 파일 끝에 쓰므로 SIGKILL 을 맞으면 파일 '
                         '전체가 재생 불가가 된다★ — 조각으로 나눠 두면 잃는 것이 '
-                        '마지막 조각뿐이다. 첫 조각은 종전 이름 그대로이고 이후는 '
-                        'tl-<시각>-02.mp4 … 로 이어진다. 분당 15~25MB 이므로 '
-                        '120초면 조각당 30~50MB'),
+                        '마지막 조각뿐이다. ★[2026-10-16] 조각은 video/parts/<세션>/ 에 '
+                        '쓰고, 녹화가 끝나면 nxde/videomerge 가 video/tl-<시각>.mp4 한 '
+                        '파일로 합친다(검증 뒤 조각 삭제)★ — 폴더 맨 위에는 최종본만 있다. '
+                        '강제 종료로 못 합친 세션은 다음 기동 때 합친다'),
         DeclareLaunchArgument(
             'tl_video_topic', default_value='/tl/debug_image',
             description='녹화할 이미지 토픽. 기본은 인지 디버그 화면이다. '

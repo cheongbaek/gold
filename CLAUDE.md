@@ -444,6 +444,9 @@ gold_ws/src/
                  ★원본은 자동으로 녹화되지 않는다★ — `ros2 run nxde video` 를 따로 띄우면
                  `~/nxde_video/cam-*.mp4`(복사설치라 홈으로 떨어진다). [2026-10-16] 프레임을
                  시각 기준 칸에 넣어 ★영상 길이 = 벽시계★ (5.2)
+    videomerge.py ★녹화 조각 → 최종본 한 파일★ [2026-10-16] — video 가 끝날 때 별도 프로세스로
+                 부른다(ROS 를 import 하지 않아 nxde kill·런치 Ctrl+C 에 안 죽는다). 손으로는
+                 `ros2 run nxde video_merge [폴더…] [--legacy] [--dry-run]` (5.2)
     config/cyclonedds.xml · tools/setup_dds_buffer.sh  ★카메라 영상의 DDS 수신 버퍼★
                  [2026-10-16] — 3.1 투트랙 아래 'DDS' · 5.2
     check.py     ★런치 전 하드웨어 점검★ 보고하고 종료
@@ -1908,8 +1911,18 @@ ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
 켜고 끄는 것은 `tl_record_video`(기본 **켜짐**) 하나다.
 
 ```
-<src>/white1/video/tl-<YYYYMMDD>_<HHMMSS>.mp4      ← paths.video_dir()
+<src>/white1/video/tl-<YYYYMMDD>_<HHMMSS>.mp4      ← paths.video_dir()   ★최종본 — 한 녹화 = 한 파일★
+<src>/white1/video/parts/<세션>/<세션>-01.mp4 …    ← 녹화 중(또는 아직 못 합친) 세션의 조각만
 ```
+
+> ### ★[2026-10-16] 맨 위에는 최종본만 — 조각은 parts/ 에서 합쳐 한 파일로★
+> 120 s 분할(SIGKILL 대비)은 그대로지만 조각을 `parts/<세션>/` 에 쓰고, 녹화가 끝나면(Ctrl+C·panel [x]·
+> SIGTERM·`nxde kill`·디스크 부족) `nxde/videomerge` 가 ★다시 인코딩하지 않고★(ffmpeg concat `-c copy`) 이어
+> `tl-<시각>.mp4` 로 만든다. ★프레임 수가 조각 합과 같고 길이가 맞을 때만★ 조각을 지우고, 어긋나면 조각을
+> 남긴다. 깨진 마지막 조각(moov 없음)은 빼고, 조각마다 시간 단위가 다르면 최소공배수 단위로 다시 담아 잇는다.
+> 강제 종료로 못 합친 세션은 다음 녹화 노드 기동 때(녹화 중인 세션은 `.recording` pid 로 가려 건너뛴다) 또는
+> `ros2 run nxde video_merge` 로 합친다. 로그 `~/.ros/log/video_merge.log`. ⚠️ **ffmpeg 가 있어야 합친다**(없으면
+> 조각이 parts/ 에 남는다). 종전(10/16 이전) 영상 24세션은 `--legacy` 로 합쳤고 원래 조각은 휴지통으로 보냈다.
 
 | | |
 |---|---|
@@ -2026,6 +2039,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
 | **B 상태 칸 0/1/2 · `STOP` 폐지 · 상태 1·2 = A 쓰로틀 0 · A 의 STOP 무시 [2026-10-16]** | `nxde/arduino.py` `B_STATE_*` · `parse_b` · `update_estop` · `compose`(→ `_compose_modes`) · `_drop_board` · `../mad-code/kasa_1016_{A,B}.ino` |
+| **녹화 조각 → 최종본 한 파일 · parts/ · 끊긴 세션 자동 합본 · 옛 영상 정리 (5.2) [2026-10-16]** | `nxde/videomerge.py`(`merge_session`·`merge_orphans`·`migrate_legacy`·`part_end`·최소공배수 단위) · `nxde/video.py`(`parts_dir`·`_spawn_merge`·`.recording` · 첫 조각 fps 반올림) · `nxde/setup.py video_merge` · `camera_launch` 설명(white1·white2) |
 | **카메라 녹화 — DDS 수신 버퍼 · 영상 길이 = 벽시계 · 종료 경로 (3.1·5.2) [2026-10-16]** | `nxde/config/cyclonedds.xml` · `nxde/tools/setup_dds_buffer.sh` · `nxde/check.py check_dds_buffer` · `camera_launch.dds_env`(white1·white2) · `nxde/video.py MAX_FILL_S`·`_write`·`exit_requested` · `traffic_light.main` finally(white1·white2) · `nxde/panel.py _unignore_signals` |
 | **prompt START 확인·재전송 — E-STOP 해제 경합으로 시작이 사라지던 것 (white1·white2) [2026-10-15]** | `prompt.py START_SETTLE_S`·`START_RETRY_S`·`START_GIVEUP_S` · main 루프 게이트 블록 · `publish_wait`(`DRIVE_START`) · `wait_screen`(gate None) |
 | **AS 상태 — 리니어는 자율주행에서만 · HUD AS 필 · 해제 직후 출발 유예 (8.0) [2026-10-07]** | `../mad-code/kasa_1007_B.ino` `[1007-1]`·`[1007-2]` · `nxde/arduino.py poll_port`·`_set_switch_mode` · `white1/hud.py as_state`·`_as_pill` · `driving.py _estop_release_t`·`cb_drive_cmd` DRIVE_START |
@@ -3139,6 +3153,7 @@ ping -c2 192.168.6.11
 | **음량 — 가상 배기음** [2026-09-18] | **`nxde/vess.py` 상단의 `VOLUME`(1.0)·`LOUDNESS`(2.5) 가 소유자**이고, `exhaust.py` 의 `MASTER_GAIN`·`SOFTCLIP_DRIVE` 를 **생성자로** 덮는다(모듈 전역을 밖에서 바꾸지 않는다 — 같은 프로세스의 다른 엔진까지 따라 바뀐다). `VOLUME` 은 tanh 뒤라 **1.0 이 상한**이고, 더 키우는 손잡이는 `LOUDNESS` 다(피크를 안 올리고 평균만 올린다, 실질 상한 ≈4.0). ⚠️ **안내 음성보다 크게 두지 말 것** — 말이 묻힌다 |
 | **가상 배기음 스레드** [2026-09-30] | `nxde/vess.py` 는 arduino 와 **같은 프로세스**다 — ① **자기 `SingleThreadedExecutor` 로 spin** 한다(`rclpy.spin(node)` = 전역 실행기를 쓰면 arduino 메인 스레드와 대기 생성기를 동시에 돌려 `ValueError: generator already executing` — vess 가 거의 늘 죽고, 드물게 arduino 가 exit 1) ② **`Node('vess', use_global_arguments=False)`** — 런치의 `__node:=arduino` 가 프로세스 전체에 걸린다 ③ arduino `main()` 의 `import nxde.vess` 는 **spin 의 try 안**에 둔다(import 0.2 s 동안의 Ctrl+C 가 포트 정리를 건너뛰지 않게). 시험은 sounddevice 를 가짜로 바꿔 도메인 77 에서 돌린다(차 스피커로 소리를 내지 않게) |
 | 인지 디버그 녹화 | **`tl_record_video` 하나가 `traffic_light` 의 `tl_publish_debug`(발행) 와 `nxde/video` 노드(수신) 를 함께 켠다** — 따로 열면 0바이트 파일이 나온다(5.2절) |
+| **녹화 폴더 구조 · 조각 합본** [2026-10-16] | `nxde/videomerge.py` 의 `PARTS_DIR`·`LOCK_RECORDING`·`LOCK_MERGING` 이 단일 소유자 — `video.py` 가 import 한다. 조각 이름(`<세션>-NN`)·최종본 이름(`<세션>.mp4` = record CSV 와 시각 맞춤 규칙)을 바꾸면 둘을 함께 고친다. 합본 프로세스는 ★ROS 를 import 하지 말 것★ — 하면 `nxde kill` 의 maps 판정에 걸려 합본 도중 죽는다 |
 | **카메라 영상 DDS 수신 버퍼** [2026-10-16] | `nxde/config/cyclonedds.xml`(`max` 만 — ★`min` 금지★) **+** `white1`·`white2` `camera_launch.dds_env()`(세 노드에만, 기존 `CYCLONEDDS_URI` 우선) **+** 기계별 `nxde/tools/setup_dds_buffer.sh`(sysctl `rmem_max`) **+** `nxde/check.py DDS_RMEM_MIN` — xml 만 있고 sysctl 이 없으면 효력이 없고, xml 에 min 을 쓰면 sysctl 없는 기계에서 노드가 안 뜬다 |
 | `terrain` 규약 | `driving.py:963` **+** `one_launch.py` 헤더 **+** `lidar/README.md` **+** 이 문서 |
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |
