@@ -12,7 +12,10 @@ braketest.py ― ★브레이크 제동검차 전용 노드★ [white2 / 2026-09
       ① 사람이 차를 ★목표 좌표를 일직선으로 바라보는 자리★ 에 세운다
       ② 런치를 띄우면 그 자리에서 ★목표 좌표를 향한 직선★ 을 기준으로 질주한다
       ③ 라이다가 라바콘을 보면 arduino 가 ★즉시 리니어 2단★ (사슬 그대로)
+      ③-2 [2026-10-16] 경로 CSV terrain 열에 ★S★ 가 있으면 그 행을 지나는 즉시 2단
       ④ 라이다가 못 보고 ★목표 좌표에 도달하면 그 즉시 리니어 2단★ (FAIL-SAFE)
+      ⑤ [2026-10-16] 선 뒤에는 ★런치를 Ctrl-C 로 끌 때까지 2단 유지★ — 끄면 nxde/arduino 가
+         B보드에 'x,0' 을 써서 리니어 0단 (begin_hold)
 
   ★[2026-09-12] 경로 CSV 추종을 버렸다 — 기준은 '점'이 아니라 '선' 이다★
   종전에는 매핑 CSV 291점을 최근접 포인터로 좇았고, 그 층이 사행의 재료였다
@@ -161,8 +164,11 @@ braketest.py ― ★브레이크 제동검차 전용 노드★ [white2 / 2026-09
   요구한다.
 """
 
+import csv
 import math
 import os
+import shutil
+import subprocess
 import time
 
 import rclpy
@@ -184,9 +190,19 @@ from white2.gps import GPS_FUSED_TOPIC, Q_LABEL, Q_NONE
 #  세우지 않았다면) ★그 즉시 리니어 2단★ 이다.
 #    · 0.0 을 그대로 두면 ★출발하지 않는다★ (아래 resolve_goal 이 사유를 말한다).
 #    · 런치 인자 goal_lat / goal_lon 이 이 값을 덮는다.
-#    · 둘 다 비어 있고 route 가 주어지면 ★그 CSV 의 마지막 점★ 을 목표로 쓴다.
+#    · ★아래 ROUTE(또는 런치 route:=) 가 채워져 있으면 그쪽이 이긴다★ [2026-10-16]
 GOAL_LAT = 37.23900890    # ★★ 여기에 목표 위도 ★★  [2026-09-13 설정]
 GOAL_LON = 126.77539272   # ★★ 여기에 목표 경도 ★★  [2026-09-13 설정]
+#  ★[2026-10-16] 경로 CSV 로 목표를 정한다★ — 파일 이름을 적으면 ★그 CSV 의 마지막 점★
+#  이 목표 좌표가 되고 위의 GOAL_LAT/GOAL_LON 은 쓰지 않는다. 비우면('') 위 좌표를 쓴다.
+#    · 이름만 적으면 gps_data/ 에서 찾는다(절대경로도 된다). 기록 파일명도 이 이름이 된다.
+#    · ★경로 모양은 따라가지 않는다★ — 출발 위치 → 마지막 점 ★직선 한 줄★ 이다.
+#      그래서 차를 그 마지막 점을 일직선으로 바라보게 세운다(GOAL 좌표와 같은 전제).
+#    · 정지는 종전 그대로 ★라이다 라바콘 → arduino AEB★, 못 보면 마지막 점에서 2단.
+#    · ★파일을 못 읽으면 출발하지 않는다★ — 위 GOAL 좌표로 조용히 넘어가면 엉뚱한
+#      방향으로 질주한다.
+#    · 우선순위 : 런치 goal_lat/goal_lon > 런치 route:= > 여기 ROUTE > GOAL_LAT/GOAL_LON
+ROUTE = ''                # ★★ 예: 'route_20260916_211406.csv' ★★
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-13 저녁] 순항 10 → 9 펄스 — 33.9 km/h 는 ROI 15 m 의 한계였다 ★★
@@ -247,10 +263,18 @@ LAUNCH_SWITCH_ENC_PULSE = 10.0  # 엔코더(바퀴 기준) 이 펄스를 넘어�
 #  블랭킹의 타임아웃(LAUNCH_MAX_MS = 3000)과 같은 값이라, 그 구간이 끝난 뒤에만
 #  엔코더를 믿는다는 뜻이 된다. GPS 본선은 이 블랭킹을 받지 않는다 —
 #  GPS 는 허수 펄스와 무관하고, 애초에 그쪽이 사용자가 지시한 판정이다.
+#  ★[2026-10-16] 블랭킹으로도 모자랐다 — GPS 가 살아 있으면 엔코더를 아예 안 본다★
+#  ⚠️ 2026-10-16 두 주행(033740·034110)이 ★출발 3.0 초 만에★ 순항으로 내려갔다:
+#         t=3.04s  엔코더 ★25.5펄스★ → 순항 전환   그런데 GPS 는 11.4 km/h (≈3.6펄스)
+#         t=3.04s  엔코더 ★16.5펄스★ → 순항 전환   그런데 GPS 는 11.6 km/h
+#     허수 펄스가 3 초 뒤에도 이어졌다(t=2.5s 좌 22 · 우 9, GPS 10.9 km/h). 그 뒤 9펄스로
+#     7 초를 더 갔지만 라이다가 세운 순간 ★24.2 km/h★ — 30 을 한 번도 못 넘겼다.
+#  ★고친 방법★ GPS 속도가 신선하면(GPS_SPEED_FRESH_S) ★GPS 하나로만★ 내린다. 엔코더 폴백은
+#  ★GPS 속도를 모를 때만★ 본다(블랭킹도 그대로 받는다). GPS 가 GPS_TIMEOUT_S 넘게 끊기면
+#  loop 가 시험을 접으므로, 그 폴백이 실제로 쓰일 일은 거의 없다.
 LAUNCH_ENC_BLANK_S      = 3.0   # [s] 이 시간 전에는 엔코더 폴백을 보지 않는다
+GPS_SPEED_FRESH_S       = 0.5   # [s] /gps_fused 가 이 안에 왔으면 GPS 속도를 믿는다
 LAUNCH_MAX_S            = 12.0  # [s] 이 시간이 지나면 무조건 순항으로 내린다
-#  ★목표 좌표를 CSV 에서 빌릴 때만 쓴다★ (GOAL_LAT/LON 이 0 일 때의 폴백)
-ROUTE = ''
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-13 저녁] 기준선을 옆으로 평행이동한다 ★★
 # ══════════════════════════════════════════════════════════════════════════════
@@ -262,7 +286,7 @@ ROUTE = ''
 #  ⚠️ 중단 방벽(cte_abort)도 ★옮긴 선 기준★ 으로 잰다 — 그게 맞다. 새 선이
 #     추종 대상이므로, 그 선에서 벗어난 양이 판정 대상이어야 한다.
 LATERAL_OFFSET_M = 0.20   # [m] ★왼쪽으로 20 cm★ (런치 인자 lateral_offset_m 이 이긴다)
-#   ※ 넷 다 런치 인자로도 덮을 수 있다:
+#   ※ 전부 런치 인자로도 덮을 수 있다:
 #      goal_lat:=37.1 goal_lon:=127.1 / drive_pulse:=8 / drive_pwm:=140 / route:=...
 
 # ── 그 밖의 상수 ──
@@ -451,17 +475,189 @@ ENC_SUM_TO_PULSE = 0.5
 ENC_MEDIAN_N = 3
 
 BRAKE_MAX_S          = 15.0   # 이 안에 못 서면 굳지 않게 끝낸다(이상 상황)
-BRAKE_RELEASE_WAIT_S = 1.5    # 0단을 내고 ★실제로 빠질 시간★
-AEB_RELEASE_MAX_S    = 20.0   # AEB 가 물고 있을 때 기다려 주는 상한
-DONE_LINGER_S        = 2.0    # 결과를 찍고 이만큼 뒤에 런치를 내린다
+DONE_LINGER_S        = 2.0    # (목표를 못 정해 시작도 못 했을 때) 이만큼 뒤에 런치를 내린다
+#  ★[2026-10-16] 선 뒤에는 런치를 끌 때까지 2단을 유지한다 (사용자 지시)★
+#  종전에는 완전정지 → 리니어 0단 → 1.5 s 뒤 런치가 스스로 내려갔다. 이제는 S_HOLD 에서
+#  /brake_level 2단을 계속 낸다. ★끝은 사람이 Ctrl-C 로 낸다★ — 그때 nxde/arduino 의
+#  종료 정리(stop_and_close)가 B보드에 'x,0' 을 직접 써서 ★리니어가 0단★ 이 된다
+#  (SIGINT · SIGTERM 둘 다). 이 노드가 0 을 내는 것은 보조다 — arduino 도 같이 내려가는 중이다.
+HOLD_NOTE_S          = 10.0   # 유지 중 안내를 이 간격으로 찍는다
+#  ★[2026-10-16] E-STOP 을 풀면 이만큼 기다렸다 출발한다★ — 해제와 동시에 B보드가 리니어를
+#  0단으로 되돌린다(kasa_1016_B 0.5 s · 1007 이하 1.0 s). 종전에는 해제한 그 틱에 15펄스로
+#  밀어, 브레이크가 아직 빠지는 중인 차를 구동이 밀었다. driving.py ESTOP_RESUME_GRACE_S 와 같은 값.
+ESTOP_START_GRACE_S  = 1.5
+
+#  ★[2026-10-16] S 지점★ — 고른 경로 CSV 의 terrain 열이 S/s 인 ★첫 행★ 을 지나는 즉시 2단.
+#  white2 driving 의 'S' 일시정지와 같은 표시다(그쪽은 3.5 s 뒤 재출발, 여기는 계속 선다).
+#  판정은 끝점과 같다 — 그 행을 기준선에 투영한 진행거리 D_S 를 s 가 넘는 순간.
+#  ★S 가 없으면 종전 그대로★ 라이다 장애물 → (못 보면) 끝점 도달. S 가 있어도 라이다는 살아
+#  있다 — 셋 중 먼저 오는 것에서 선다.
+STOP_MARK_MIN_M      = 2.0    # D_S 가 이보다 짧으면(출발점 근처·뒤) S 를 쓰지 않는다
+STOP_MARK_LATERAL_M  = 3.0    # S 행이 기준선에서 이만큼 넘게 벗어나면 경고 (다른 길일 수 있다)
 
 #  정지 사유 (결과 표에 그대로 찍는다)
 WHY_LIDAR, WHY_GOAL = '라이다 장애물', '목표 좌표 도달(FAIL-SAFE)'
+WHY_SMARK = 'S 지점 통과'
 
-S_WAIT, S_RUN, S_BRAKE, S_RELEASE, S_DONE = (
-    'WAIT', 'RUN', 'BRAKE', 'RELEASE', 'DONE')
+S_WAIT, S_RUN, S_BRAKE, S_HOLD, S_DONE = (
+    'WAIT', 'RUN', 'BRAKE', 'HOLD', 'DONE')
 
 EARTH_R = 6378137.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★경로 CSV 선택 창 · 마지막 점 읽기★ [2026-10-16]
+# ══════════════════════════════════════════════════════════════════════════════
+#  braketest.launch.py 가 노드를 띄우기 ★전에★ pick_csv() 로 창을 띄우고, 고른 파일의
+#  절대경로를 route 파라미터로 넘긴다. 노드(goal_from_route)는 read_route() 로 그 파일의
+#  마지막 점을 목표로, terrain 'S' 첫 행을 정지 지점으로 쓴다 — 런치가 검사한 것과 노드가 읽는 것이 ★같은 함수★ 다.
+#    · 파일 이름은 보지 않는다 — ★.csv 면 어느 폴더의 무엇이든★ 고를 수 있다.
+#    · 열 이름은 latitude/longitude (매핑 CSV) 또는 lat/lon. BOM 이 붙어 있어도 된다.
+#    · 창은 zenity(GTK) 를 먼저 쓰고, 없거나 실행에 실패하면 tkinter 로 띄운다.
+#    · 런치 프로세스도 이 모듈을 import 한다 — ★모듈 수준에서 노드·포트를 만들지 말 것★
+LAT_KEYS = ('latitude', 'lat')
+LON_KEYS = ('longitude', 'lon')
+
+
+def _pick(row, keys):
+    for k in keys:
+        v = row.get(k)
+        if v not in (None, ''):
+            return float(v)
+    raise KeyError(keys[0])
+
+
+STOP_MARK_CHARS = ('S', 's')   # terrain 열의 '여기서 선다' 표시 — driving.py STOP_ZONE_CHARS 와 같은 글자
+
+
+def read_route(path):
+    """CSV → (마지막 유효 좌표 (lat, lon), 유효 행 수 n, S 지점). 못 읽으면 예외.
+
+    ★S 지점★ [2026-10-16] terrain 열이 S/s 인 ★첫 행★ → (lat, lon, 행 번호, S 행 수),
+    없거나 terrain 열이 없으면 None. 행 번호는 머리줄 다음을 1 로 센다(편집기 줄 번호 − 1).
+    좌표로 못 읽는 행(빈 칸·글자)은 건너뛴다. 유효 행이 하나도 없으면 ValueError.
+    """
+    last, n = None, 0
+    stop, s_n = None, 0
+    with open(path, 'r', encoding='utf-8-sig', newline='') as f:
+        reader = csv.DictReader(f)
+        cols = [c.strip().lower() for c in (reader.fieldnames or [])]
+        reader.fieldnames = cols
+        if not (any(k in cols for k in LAT_KEYS) and any(k in cols for k in LON_KEYS)):
+            raise ValueError(f"위도·경도 열이 없다 (열: {', '.join(cols) or '없음'}) — "
+                             f"latitude/longitude 또는 lat/lon 이 필요하다")
+        for i, row in enumerate(reader, start=1):
+            try:
+                lat, lon = _pick(row, LAT_KEYS), _pick(row, LON_KEYS)
+            except (KeyError, ValueError, TypeError):
+                continue
+            if -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0 and (lat, lon) != (0.0, 0.0):
+                last, n = (lat, lon), n + 1
+                if str(row.get('terrain') or '').strip() in STOP_MARK_CHARS:
+                    s_n += 1
+                    if stop is None:
+                        stop = (lat, lon, i)
+    if last is None:
+        raise ValueError("좌표로 읽을 수 있는 행이 없다")
+    return last, n, (None if stop is None else stop + (s_n,))
+
+
+#  ★snap 앱(VSCode 등)의 터미널에서 띄우면 그 앱의 GTK·로케일 변수가 물려 들어와
+#  zenity 가 snap 라이브러리를 물고 죽는다★ (2026-10-16 실측: exit 127, libpthread
+#  symbol lookup error). zenity 에 넘기는 환경에서 그 변수를 빼고 원래 값으로 되돌린다.
+_SNAP_LEAK = ('GTK_PATH', 'GTK_EXE_PREFIX', 'GTK_IM_MODULE_FILE', 'GDK_PIXBUF_MODULE_FILE',
+              'GDK_PIXBUF_MODULEDIR', 'GIO_MODULE_DIR', 'GSETTINGS_SCHEMA_DIR', 'LOCPATH')
+
+
+def _clean_env():
+    env = {k: v for k, v in os.environ.items() if k not in _SNAP_LEAK}
+    for k in ('XDG_DATA_DIRS', 'XDG_CONFIG_DIRS'):
+        orig = os.environ.get(f'{k}_VSCODE_SNAP_ORIG')
+        if orig is not None:
+            env[k] = orig
+    return env
+
+
+def _zenity(args):
+    """zenity 를 돌린다 → (returncode, stdout). 0 = 골랐다, 1·5 = 취소·시간초과.
+    ★그 밖의 코드는 '창을 못 띄웠다'★ 라 OSError 를 던진다 — 취소로 읽으면 안 된다."""
+    r = subprocess.run(['zenity'] + args, capture_output=True, text=True, env=_clean_env())
+    if r.returncode not in (0, 1, 5):
+        raise OSError(f"zenity 실패 (exit {r.returncode}): {r.stderr.strip()[:200]}")
+    return r.returncode, r.stdout.strip()
+
+
+def _ask_zenity(start_dir, title):
+    code, out = _zenity(['--file-selection', f'--title={title}',
+                         f'--filename={os.path.join(start_dir, "")}',
+                         '--file-filter=CSV | *.csv *.CSV', '--file-filter=모든 파일 | *'])
+    return out if code == 0 and out else None
+
+
+def _say_zenity(text):
+    _zenity(['--error', '--no-wrap', '--title=경로 CSV', f'--text={text}'])
+
+
+def _ask_tk(start_dir, title):
+    import tkinter
+    from tkinter import filedialog
+    root = tkinter.Tk()
+    root.withdraw()
+    try:
+        p = filedialog.askopenfilename(
+            parent=root, title=title, initialdir=start_dir,
+            filetypes=[('CSV', '*.csv *.CSV'), ('모든 파일', '*')])
+    finally:
+        root.destroy()
+    return p or None
+
+
+def _say_tk(text):
+    import tkinter
+    from tkinter import messagebox
+    root = tkinter.Tk()
+    root.withdraw()
+    try:
+        messagebox.showerror('경로 CSV', text, parent=root)
+    finally:
+        root.destroy()
+
+
+def has_display():
+    return bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+
+
+def pick_csv(start_dir, title='경로 CSV 선택', log=print):
+    """창을 띄워 CSV 하나를 고르게 한다 → (절대경로, (lat, lon), 행 수, S 지점) / 취소면 None.
+
+    고른 파일이 좌표를 못 내면 ★이유를 알려 주고 창을 다시 띄운다★ — 고칠 기회를 준다.
+    화면이 없으면(SSH) RuntimeError — 부르는 쪽이 처리한다.
+    """
+    if not has_display():
+        raise RuntimeError("화면(DISPLAY)이 없다")
+    use_zenity = shutil.which('zenity') is not None
+    ask, say = (_ask_zenity, _say_zenity) if use_zenity else (_ask_tk, _say_tk)
+    start = start_dir if os.path.isdir(start_dir) else os.path.expanduser('~')
+    while True:
+        try:
+            path = ask(start, title)
+        except OSError as e:
+            if ask is _ask_tk:
+                raise
+            log(f"    [경로] ⚠️ {e} — tkinter 창으로 바꾼다")
+            ask, say = _ask_tk, _say_tk
+            continue
+        if not path:
+            return None
+        path = os.path.abspath(path)
+        try:
+            ll, n, stop = read_route(path)
+            return path, ll, n, stop
+        except Exception as e:          # noqa: BLE001 — 이유를 사람에게 보여 준다
+            msg = f"{os.path.basename(path)} 를 쓸 수 없다:\n{e}\n\n다른 파일을 고를 것."
+            log(f"    [경로] ⚠️ {msg.replace(chr(10), ' ')}")
+            say(msg)
+            start = os.path.dirname(path)
 
 
 def wrap180(deg):
@@ -611,6 +807,7 @@ class BrakeTestNode(Node):
         self._enc_buf = []
         self.auto_mode = None
         self.estop = False
+        self._estop_release_t = 0.0        # E-STOP 을 푼 시각 (출발 유예 — ESTOP_START_GRACE_S)
         self.go = False
 
         #  라이다 사슬 관찰
@@ -623,6 +820,10 @@ class BrakeTestNode(Node):
 
         #  ★기준선★ (출발 순간에 확정한다)
         self.goal_lat = self.goal_lon = None
+        self._hold_note_t = 0.0
+        self.smark = None                  # (lat, lon, 행 번호, S 행 수) — 경로 CSV 의 S 지점
+        self.dist_smark = float('inf')     # 그 지점의 진행거리 D_S (build_line). inf = 안 쓴다
+        self.e_smark = float('nan')        # 그 지점의 기준선 횡거리
         self.goal_src = ''
         self.route_name = ''
         self.sx = self.sy = 0.0          # 출발점 S (로컬 xy)
@@ -696,26 +897,36 @@ class BrakeTestNode(Node):
     #  목표 좌표
     # ══════════════════════════════════════════════════════════════════════════
     def resolve_goal(self):
-        """목표 좌표를 정한다. ★런치 인자 > 파일 상단 상수 > route CSV 마지막 점★"""
+        """목표 좌표를 정한다.
+        ★런치 goal_lat/lon > 런치 route:= > 파일 상단 ROUTE > 파일 상단 GOAL_LAT/LON★
+
+        [2026-10-16] 종전에는 GOAL_LAT 상수가 route 보다 앞이라, 상수가 채워져 있는
+        한 route:= 를 줘도 ★조용히 무시★ 됐다. 경로를 적었다는 것은 그 경로로 하겠다는
+        뜻이므로 이제 경로가 상수를 이긴다. 경로를 못 읽으면 상수로 넘어가지 않고
+        출발을 거부한다(다른 방향으로 질주하는 것보다 서 있는 편이 낫다).
+        """
         p_lat = float(self.get_parameter('goal_lat').value)
         p_lon = float(self.get_parameter('goal_lon').value)
+        route = self.route_param()
         if goal_is_set(p_lat, p_lon):
             self.goal_lat, self.goal_lon, self.goal_src = p_lat, p_lon, '런치 인자'
+        elif route:
+            ll = self.goal_from_route(route)
+            if ll is None:
+                self.event(f"❌ ★경로 CSV '{route}' 에서 목표를 못 정했다★ — "
+                           f"GOAL_LAT/GOAL_LON 으로 넘어가지 않는다. ★출발하지 않는다★")
+                return False
+            self.goal_lat, self.goal_lon = ll
+            self.goal_src = f'경로 CSV 마지막 점 [{self.route_name}]'
         elif goal_is_set(GOAL_LAT, GOAL_LON):
             self.goal_lat, self.goal_lon = GOAL_LAT, GOAL_LON
             self.goal_src = '파일 상단 상수'
         else:
-            ll = self.goal_from_route()
-            if ll is None:
-                self.event(
-                    "❌ ★목표 좌표가 없다★ — braketest.py 상단의 "
-                    "GOAL_LAT / GOAL_LON 을 채우거나, 런치 인자 "
-                    "goal_lat:=<위도> goal_lon:=<경도> 로 주거나, "
-                    "route:=<파일>.csv 로 경로의 마지막 점을 쓰게 할 것. "
-                    "★출발하지 않는다★")
-                return False
-            self.goal_lat, self.goal_lon = ll
-            self.goal_src = f'경로 CSV 마지막 점 [{self.route_name}]'
+            self.event(
+                "❌ ★목표 좌표가 없다★ — braketest.py 상단의 ROUTE 나 "
+                "GOAL_LAT / GOAL_LON 을 채우거나, 런치 인자 route:=<파일>.csv 또는 "
+                "goal_lat:=<위도> goal_lon:=<경도> 로 줄 것. ★출발하지 않는다★")
+            return False
         if not self.route_name:
             #  record 가 붙들 수 있는 이름을 만들어 준다('.csv' 로 끝나야 한다).
             self.route_name = (f"goal_{self.goal_lat:.7f}_{self.goal_lon:.7f}.csv")
@@ -725,32 +936,37 @@ class BrakeTestNode(Node):
                    f"({self.goal_lat:.7f}, {self.goal_lon:.7f}) — {self.goal_src}")
         return True
 
-    def goal_from_route(self):
-        """폴백 — route CSV 의 ★마지막 점★ 을 목표로 쓴다. 없으면 None."""
-        import csv as _csv
-        name = str(self.get_parameter('route').value or '').strip() or str(ROUTE or '')
-        name = name.strip()
-        if not name:
-            return None
+    def route_param(self):
+        """경로 CSV 이름. ★런치 route:= 가 상단 ROUTE 를 이긴다★ 둘 다 비면 ''."""
+        name = str(self.get_parameter('route').value or '').strip()
+        return name or str(ROUTE or '').strip()
+
+    def goal_from_route(self, name):
+        """route CSV 의 ★마지막 점★ 을 목표로 쓴다. 못 읽으면 None.
+
+        [2026-10-16] 읽는 규칙은 read_route 하나다 — 런치의 GUI 선택 창이
+        검사한 것과 여기서 읽는 것이 같다. 절대경로면 그대로, 이름만이면 gps_data/.
+        terrain 'S' 첫 행이 있으면 self.smark 에 담는다(정지 지점).
+        """
         path = os.path.join(self.data_dir, name)
         if not os.path.isfile(path):
             self.event(f"❌ 경로 파일 없음: {path}")
             return None
-        last = None
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                for row in _csv.DictReader(f):
-                    try:
-                        last = (float(row['latitude']), float(row['longitude']))
-                    except (KeyError, ValueError, TypeError):
-                        continue
+            last, n, self.smark = read_route(path)
         except Exception as e:            # noqa: BLE001
-            self.event(f"❌ 경로 읽기 실패: {e}")
+            self.event(f"❌ 경로를 쓸 수 없다 [{os.path.basename(path)}]: {e}")
             return None
-        if last is None:
-            self.event(f"❌ 경로에 좌표가 없다: {name}")
-            return None
-        self.route_name = os.path.basename(name)
+        self.route_name = os.path.basename(path)
+        if self.smark is None:
+            sm = "S 표시 없음 — ★라이다 장애물 / 끝점 도달★ 에서 선다"
+        else:
+            sm = (f"★S 지점 = {self.smark[2]}행 ({self.smark[0]:.7f}, {self.smark[1]:.7f})"
+                  f" — 지나는 즉시 2단★")
+            if self.smark[3] > 1:
+                sm += f" (S 가 {self.smark[3]}행 — ★첫 행만★ 쓴다)"
+        self.event(f"🗂️ 경로 CSV {path} — 좌표 {n}행, ★마지막 점을 목표로 쓴다★ "
+                   f"(경로 모양은 따라가지 않는다 — 출발 위치에서 직선). {sm}")
         return last
 
     def build_line(self):
@@ -769,6 +985,14 @@ class BrakeTestNode(Node):
             return False
         self.ux, self.uy = dx / d, dy / d
         self.dist_total = d
+        #  ★S 지점을 이 선에 투영한다★ — 판정은 끝점과 같은 단조 스칼라 문턱(s ≥ D_S).
+        self.dist_smark, self.e_smark = float('inf'), float('nan')
+        if self.smark is not None:
+            mx, my = latlon_to_xy(self.smark[0], self.smark[1], self.lat0, self.lon0)
+            ds = (mx - self.sx) * self.ux + (my - self.sy) * self.uy
+            self.e_smark = -(mx - self.sx) * self.uy + (my - self.sy) * self.ux
+            if STOP_MARK_MIN_M <= ds < d:
+                self.dist_smark = ds
         self.line_brg = math.degrees(math.atan2(dy, dx))
         #  ★폭주 방벽★ 예상 주행시간의 두 배 + 여유. GPS 가 이상해져 s 가 자라지
         #  않아도 이 시간이 지나면 세운다(런치 = 출발이라 사람이 없을 수 있다).
@@ -868,7 +1092,10 @@ class BrakeTestNode(Node):
         self.auto_mode = bool(msg.data)
 
     def cb_estop(self, msg: Bool):
-        self.estop = bool(msg.data)
+        now_on = bool(msg.data)
+        if self.estop and not now_on:
+            self._estop_release_t = time.time()
+        self.estop = now_on
 
     def cb_go(self, msg: Bool):
         if bool(msg.data):
@@ -1040,7 +1267,7 @@ class BrakeTestNode(Node):
     def publish_state(self):
         #  record 가 켜지도록 DRIVE_* 이름을 쓴다(그쪽은 DRIVE_* 일 때만 기록한다).
         name = {S_WAIT: 'IDLE', S_RUN: 'DRIVE_RUN', S_BRAKE: 'DRIVE_RUN',
-                S_RELEASE: 'DRIVE_DONE', S_DONE: 'DRIVE_DONE'}[self.state]
+                S_HOLD: 'DRIVE_DONE', S_DONE: 'DRIVE_DONE'}[self.state]
         self.pub_dstate.publish(String(data=name))
 
     def enter(self, new_state, msg=''):
@@ -1086,8 +1313,9 @@ class BrakeTestNode(Node):
         어느 것이 먼저 걸려도 위험해지지 않는다:
 
           ⓐ ★GPS 속도 ≥ cruise_switch_kmh★  — 사용자 지시의 본선
-          ⓑ 엔코더 ≥ LAUNCH_SWITCH_ENC_PULSE — GPS 가 안 올 때의 폴백. 엔코더는
-            기동 허수로 ★위로★ 튀므로(실측 중앙 16, 최대 34) 조금 일찍 내릴 뿐이다.
+          ⓑ 엔코더 ≥ LAUNCH_SWITCH_ENC_PULSE — ★GPS 속도를 모를 때만★ 보는 폴백.
+            [2026-10-16] GPS 가 살아 있는데 엔코더 허수로 3 초 만에 내려가, 30 km/h 를
+            한 번도 못 넘겼다(상수절 GPS_SPEED_FRESH_S). 이제 GPS 가 있으면 ⓐ 하나다.
           ⓒ 시간 ≥ launch_max_s              — 15펄스로 무한정 달리지 않게 하는 줄
 
         ★한 번 내려오면 다시 올리지 않는다★(_cruise_latched). 올렸다 내렸다 하면
@@ -1096,15 +1324,17 @@ class BrakeTestNode(Node):
         if self._cruise_latched:
             return self.cmd_value
         why = None
-        if self.gps_kmh is not None and self.gps_kmh >= self.cruise_switch_kmh:
+        gps_fresh = (self.gps_kmh is not None
+                     and now - self.fix_time <= GPS_SPEED_FRESH_S)
+        if gps_fresh and self.gps_kmh >= self.cruise_switch_kmh:
             why = f"GPS {self.gps_kmh:.1f} km/h ≥ {self.cruise_switch_kmh:.0f}"
-        elif (self._launch_t0 > 0.0
+        elif (not gps_fresh and self._launch_t0 > 0.0
               and (now - self._launch_t0) >= LAUNCH_ENC_BLANK_S
               and self.enc_pulse >= LAUNCH_SWITCH_ENC_PULSE):
             #  ★기동 블랭킹을 지난 뒤에만 엔코더를 믿는다★ 출발 직후의 허수 펄스
             #  (실측 중앙 16 · 최대 34)가 이 문턱을 그냥 넘긴다 — 상수절 참고.
             why = (f"엔코더 {self.enc_pulse:.1f}펄스 ≥ "
-                   f"{LAUNCH_SWITCH_ENC_PULSE:.0f} (GPS 폴백, "
+                   f"{LAUNCH_SWITCH_ENC_PULSE:.0f} (★GPS 속도 없음★ — 폴백, "
                    f"기동 블랭킹 {LAUNCH_ENC_BLANK_S:.0f}s 경과)")
         elif self._launch_t0 > 0.0 and (now - self._launch_t0) >= self.launch_max_s:
             why = f"출발 {now - self._launch_t0:.1f}s 경과 ≥ {self.launch_max_s:.0f}s"
@@ -1348,6 +1578,13 @@ class BrakeTestNode(Node):
                 raise SystemExit(0)
             return
 
+        #  ★정지 유지★ [2026-10-16] 아래 게이트(E-STOP · D5 · GPS · 라이다)보다 앞 —
+        #  선 뒤에는 무엇이 바뀌어도 2단을 낼 뿐이다(수동조종이면 B보드가 스스로 0단으로
+        #  두고, 자율로 되돌리면 다시 2단이 된다). 끝은 사람이 런치를 끄는 것 하나다.
+        if self.state == S_HOLD:
+            self.run_hold(now)
+            return
+
         # ── 안전 게이트 : 어느 상태에서든 먼저 본다 ──
         if self.estop:
             self.send(0, self._last_steer, control=True)
@@ -1392,8 +1629,6 @@ class BrakeTestNode(Node):
             self.run_follow(now)
         elif self.state == S_BRAKE:
             self.run_brake(now)
-        elif self.state == S_RELEASE:
-            self.run_release(now)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  출발 게이트 — ★통과하면 그 자리에서 지정속도로 굴러간다★
@@ -1403,6 +1638,11 @@ class BrakeTestNode(Node):
         if not (self.auto_start or self.go):
             self.throttle("⏸️ 출발 대기 — `ros2 topic pub -1 /braketest_go "
                           "std_msgs/msg/Bool '{data: true}'` 로 시작")
+            return
+        #  ★E-STOP 을 막 풀었다 — 리니어가 빠질 때까지 기다린다★ (상수절 ESTOP_START_GRACE_S)
+        left = ESTOP_START_GRACE_S - (now - self._estop_release_t)
+        if left > 0.0:
+            self.throttle(f"⏳ E-STOP 해제 — 리니어가 빠지는 중, {left:.1f}s 뒤 출발", period=0.5)
             return
         if not self.fix_ok:
             self.throttle(
@@ -1476,6 +1716,17 @@ class BrakeTestNode(Node):
             d_stop = v * 0.30 + v * v / (2.0 * 2.2)
             note = (f" 이 속도의 2단 정지거리 ≈ {d_stop:.1f}m — "
                     f"★목표 좌표 뒤로 그만큼이 비어 있어야 한다★.")
+        if self.smark is not None:
+            if math.isfinite(self.dist_smark):
+                lid += (f" · ★S 지점 {self.dist_smark:.1f}m 에서 2단★ (선에서 "
+                        f"{self.e_smark:+.2f}m)")
+                if abs(self.e_smark) > STOP_MARK_LATERAL_M:
+                    self.event(f"⚠️ S 지점이 기준선에서 {self.e_smark:+.1f}m 떨어져 있다 — "
+                               f"다른 길에서 딴 CSV 가 아닌지 볼 것(진행거리로만 판정한다)")
+            else:
+                self.event(f"⚠️ ★S 지점을 쓰지 않는다★ — 기준선 위 위치가 출발점 "
+                           f"{STOP_MARK_MIN_M:.0f}m 안이거나 끝점보다 뒤다. "
+                           f"라이다 장애물 / 끝점 도달에서 선다")
         self._launch_t0 = time.time()      # ★[2026-09-13] 출발 구간 시계 시작★
         self.enter(S_RUN,
                    f"▶ ★질주 시작★ 목표까지 {d:.1f}m, 선 방위 {self.line_brg:+.1f}° "
@@ -1513,6 +1764,13 @@ class BrakeTestNode(Node):
         #    (arduino 가 max 로 합치지 않고 각 분기에서 그대로 쓴다).
         if self.aeb_stop:
             self.begin_brake(WHY_LIDAR, now, s, e, psi)
+            return
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  ①-2 ★S 지점 통과★ — 그 즉시 리니어 2단 [2026-10-16] (끝점과 같은 판정)
+        # ══════════════════════════════════════════════════════════════════════
+        if s >= self.dist_smark:
+            self.begin_brake(WHY_SMARK, now, s, e, psi)
             return
 
         # ══════════════════════════════════════════════════════════════════════
@@ -1660,11 +1918,11 @@ class BrakeTestNode(Node):
         held = now - self.brake_t0
         if self.stopped(now):
             self.report(now, held)
-            self.begin_release(now)
+            self.begin_hold(now, "🟢 완전정지 확인")
             return
         if held >= BRAKE_MAX_S:
             self.report(now, held, note="★시간 초과★ 완전정지를 확인하지 못했다")
-            self.begin_release(now)
+            self.begin_hold(now, "⚠️ 완전정지를 확인하지 못한 채")
             return
         self.throttle(
             f"🛑 제동 중 {held:.2f}s — "
@@ -1674,46 +1932,28 @@ class BrakeTestNode(Node):
     # ══════════════════════════════════════════════════════════════════════════
     #  완전정지 뒤 리니어 해제
     # ══════════════════════════════════════════════════════════════════════════
-    def begin_release(self, now):
-        """★물린 채로 런치를 내리지 않는다★
+    def begin_hold(self, now, msg):
+        """★선 뒤에는 런치를 끌 때까지 리니어 2단을 유지한다★ [2026-10-16 사용자 지시]
 
-        arduino 가 내려간 뒤에는 /brake_level 로 풀 방법이 없어져, 차를 밀려면
-        D5 를 내렸다 올리는 수밖에 없다. 그래서 0 을 내고 ★실제로 빠질 시간★ 을
-        준 뒤에 종료한다(arduino 해제유예 0.5s + B보드 0단 복귀 1000ms).
-
-        ⚠️ ★AEB 가 물고 있으면 이 노드는 못 푼다★ /aeb_stop 이 true 인 동안
-        arduino 는 리니어를 계속 물고 있고, 우리 /brake_level=0 은 그 분기보다
-        우선순위가 낮다(compose (1-1)). 그건 결함이 아니라 설계다 —
-        ★장애물이 그대로 있는데 브레이크를 푸는 노드가 있으면 안 된다.★
+        종전에는 여기서 0 을 내고 1.5 s 뒤 런치가 스스로 내려갔다(begin_release).
+        이제는 2단을 계속 내고(loop 의 publish_brake 가 재확인한다) 기다리기만 한다.
+        ★끝은 사람이 Ctrl-C 로 낸다★ — nxde/arduino 의 종료 정리(stop_and_close)가
+        B보드에 'x,0' 을 직접 써서 리니어를 0단으로 되돌린다(상수절 HOLD_NOTE_S 위).
+        AEB 가 따로 물고 있다가 장애물이 치워져도 이 노드의 2단이 남아 계속 선다.
         """
-        self.set_brake(BRAKE_NONE)
-        self.publish_brake(force=True)      # ★0 은 평소 재확인하지 않는다★
-        if self.aeb_stop:
-            self.enter(S_RELEASE,
-                       "🟢 완전정지 확인 — 그런데 ★AEB 가 아직 물고 있다★ "
-                       "(/aeb_stop = true). 장애물을 치우면 arduino 가 스스로 "
-                       "푼다(release_clear_s). 그때까지 기다렸다 런치를 내린다")
-        else:
-            self.enter(S_RELEASE,
-                       f"🟢 완전정지 확인 — 리니어 해제(0단). "
-                       f"{BRAKE_RELEASE_WAIT_S:.1f}초 뒤 런치를 내린다")
+        self.set_brake(BRAKE_FULL)
+        self.publish_brake(force=True)
+        self._siren.stop()                  # 섰다 — 경고음은 여기까지
+        self._hold_note_t = now
+        self.enter(S_HOLD, f"{msg} — ★리니어 2단 유지★. 런치를 Ctrl-C 로 끝내면 0단으로 푼다")
 
-    def run_release(self, now):
+    def run_hold(self, now):
+        self.set_brake(BRAKE_FULL)          # 누가 바꿔 놓았어도 2단으로 되돌린다
         self.send(0, self._last_steer, control=True)
-        held = now - self.state_t0
-        if self.aeb_stop:
-            if held < AEB_RELEASE_MAX_S:
-                self.throttle(
-                    f"⏸️ AEB 가 리니어를 물고 있다 — 장애물을 치우면 풀린다 "
-                    f"({held:.0f}/{AEB_RELEASE_MAX_S:.0f}s)", period=2.0)
-                return
-            self.event(
-                f"⚠️ {AEB_RELEASE_MAX_S:.0f}초가 지나도 /aeb_stop 이 서 있다 — "
-                f"★리니어가 물린 채로 런치를 내린다★. 차를 밀려면 D5 를 수동조종으로 "
-                f"내렸다 올릴 것(모드 전환은 리니어를 반드시 푼다)")
-        if held >= BRAKE_RELEASE_WAIT_S:
-            self._done_t = now
-            self.enter(S_DONE)
+        if now - self._hold_note_t >= HOLD_NOTE_S:
+            self._hold_note_t = now
+            self.event(f"⏸️ 정지 유지 중 ({now - self.state_t0:.0f}s) — 리니어 2단. "
+                       f"끝내려면 런치를 Ctrl-C (그때 리니어 0단)")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  결과
@@ -1764,6 +2004,12 @@ class BrakeTestNode(Node):
             lines.append(
                 f"  ※ 장애물까지 남은 여유 ≈ {reach:+.2f} m  "
                 + ("(★들이받았을 거리다★)" if reach < 0 else "(멈춰 섰다)"))
+        if math.isfinite(self.dist_smark):
+            #  ★[2026-10-16] S 지점 기준★ 트리거가 늦은 만큼(GPS 지연·20 Hz 양자화)과
+            #  실제로 선 자리를 따로 낸다 — 앞쪽이 '판정이 얼마나 늦었나', 뒤쪽이 '얼마나 지나 섰나'.
+            lines.append(
+                f"  ※ S 지점 {self.dist_smark:.1f} m — 트리거 때 {self.hit_s - self.dist_smark:+.2f} m, "
+                f"정지 위치 {s_now - self.dist_smark:+.2f} m (S 를 이만큼 지나 섰다)")
         if note:
             lines.append(f"  ⚠️ {note}")
         for ln in lines:
@@ -1773,16 +2019,14 @@ class BrakeTestNode(Node):
             f"t {held:.2f}s, a {a_t:.2f}/{a_d:.2f} m/s², 초과 {over:.2f}m"
             f"{'  ' + note if note else ''}")))
         self._reported = True
-        #  ★여기서 DONE 으로 가지 않는다★ 해제 단계(begin_release)가 리니어를 풀고
-        #  실제로 빠질 시간을 준 뒤에 DONE 으로 넘긴다.
+        #  ★여기서 DONE 으로 가지 않는다★ [2026-10-16] 부르는 쪽이 정지 유지(begin_hold)로
+        #  넘긴다 — 런치를 끌 때까지 2단이다.
 
     def finish(self, why):
-        """측정 없이 끝낸다(중단·이상). ★리니어는 물린 채로 두지 않는다★"""
-        self.set_brake(BRAKE_FULL)
-        self.publish_brake(force=True)
+        """측정 없이 끝낸다(중단·이상). ★리니어 2단을 물고 런치를 끌 때까지 유지한다★
+        [2026-10-16] 종전에는 곧바로 풀고 내려갔다 — 이제 정상 정지와 같이 begin_hold."""
         self._reported = True
-        self.event(f"⛔ 시험 중단 — {why}. 리니어 2단")
-        self.begin_release(time.time())
+        self.begin_hold(time.time(), f"⛔ 시험 중단 — {why}")
 
     def destroy_node(self):
         try:

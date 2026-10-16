@@ -92,6 +92,17 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-16 — `braketest` 를 white1 과 같은 줄로 (white1 10/16 수정 7건 이식)
+
+`white2/braketest.py` · `launch/braketest.launch.py` 를 white1 현재본에서 `white1 → white2` 이름만 바꿔 옮겼다
+(`diff <(sed s/white2/white1/g …)` 0줄). 10/07 복사 이후 white2 쪽에만 있던 수정은 없었다.
+들어온 것 — 경로 CSV 선택 창(끝점 = 목표) · `route:=` 가 GOAL 상수를 이긴다 · S 지점 통과 즉시 2단 ·
+선 뒤에는 런치를 끌 때까지 2단 유지 · 출발 15펄스를 GPS 30 km/h 까지 · `nolidar:=true` · E-STOP 해제 1.5 s 뒤 출발.
+상세·근거는 white1 CHANGELOG 와 CLAUDE.md 5.1. 경로·기록 폴더는 white2 것(`white2/gps_data`·`ros2bag`)을 쓴다.
+⚠️ 실차 미검증 — `colcon build --packages-select white2` 와 `read_route` 로 white2 CSV 를 읽는 것까지만 확인.
+
+---
+
 ## 2026-10-15 — `prompt.py` START 명령을 driving 이 받을 때까지 지킨다 (E-STOP 해제 경합) · 본선 T1/T2 타이머 점검 (white1 과 같은 줄)
 
 **경합** — prompt 와 driving 은 `/estop` 을 따로 구독한다. 해제 순간 prompt 가 먼저 알고 `DRIVE_START` 를 보냈는데

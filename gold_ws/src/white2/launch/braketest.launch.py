@@ -5,6 +5,21 @@ braketest.launch.py ― ★제동검차 전용 런치★ [white2 / 2026-09-12 �
 ════════════════════════════════════════════════════════════════════════════════
     ros2 launch white2 braketest.launch.py
     ros2 launch white2 braketest.launch.py goal_lat:=37.1234567 goal_lon:=127.1234567
+    ros2 launch white2 braketest.launch.py route:=subcourse.csv  # ★그 CSV 의 마지막 점으로★
+    ros2 launch white2 braketest.launch.py pick_route:=false     # ★선택 창 없이★ 상단 상수로
+    ros2 launch white2 braketest.launch.py nolidar:=true         # ★라이다 미사용★ S 지점 / 끝점에서만 정지
+
+  ★출발 조건★ [2026-10-16 점검] — 셋이 다 서야 출발한다(그 전에는 펄스 0 으로 기다리며 이유를 찍는다)
+    ① D5 = 자율주행   ② E-STOP 해제 — 체결돼 있으면 ★풀고 1.5 s 뒤★ 출발(B보드가 리니어를 빼는 시간)
+    ③ 라이다 사슬이 살아 있음 — nolidar:=true 면 생략.  (그 밖에 GPS 품질 · 목표 거리 20~400 m)
+
+  ★[2026-10-16] 런치를 띄우면 먼저 '경로 CSV 선택' 창이 뜬다★ — 고른 CSV 의 ★마지막 점★
+  이 목표 좌표가 된다(경로 모양은 따라가지 않는다 — 출발 위치에서 그 점까지 직선).
+  파일 이름은 보지 않는다 : ★.csv 면 어느 폴더의 무엇이든★ 고를 수 있고, 위도·경도 열
+  (latitude/longitude 또는 lat/lon)이 없으면 이유를 보여 주고 창을 다시 띄운다.
+  ★취소하면 아무 노드도 띄우지 않고 런치가 내려간다★ (하드웨어는 고른 뒤에 뜬다).
+  창이 뜨지 않는 경우 — route:= 나 goal_lat/goal_lon 을 줬을 때(그쪽이 이긴다),
+  pick_route:=false, 화면이 없는 SSH(경고를 찍고 braketest.py 상단 ROUTE·GOAL 로 간다).
     ros2 launch white2 braketest.launch.py drive_pulse:=8
     ros2 launch white2 braketest.launch.py launch_pulse:=12       # ★출발만 낮춘다★
     ros2 launch white2 braketest.launch.py lateral_offset_m:=0.0  # ★선을 안 옮긴다★
@@ -64,13 +79,14 @@ braketest.launch.py ― ★제동검차 전용 런치★ [white2 / 2026-09-12 �
      (헤딩 초기화 구간이 없다).
      → 확인하고 출발시키고 싶으면 `auto_start:=false` 로 띄우고,
        `ros2 topic pub -1 /braketest_go std_msgs/msg/Bool '{data: true}'`
-  6. 달리는 동안 ★둘 중 먼저 오는 것★ 에서 선다 —
-     ① 라이다 장애물 → ★arduino AEB 가 문다★ (braketest 는 관찰만)
-     ② ★목표 좌표 도달★ → braketest 가 /brake_level 2단 (FAIL-SAFE)
-     완전정지하면 결과를 찍고 ★리니어를 풀고★ 런치가 스스로 내려간다.
-     ⚠️ ①로 섰을 때는 ★장애물을 치워야★ arduino 가 리니어를 푼다(설계상 그렇다).
-        치우지 않으면 20초 뒤 물린 채로 런치가 내려간다 — 그때는 D5 를 수동조종으로
-        내렸다 올리면 풀린다(모드 전환은 반드시 리니어를 푼다).
+  6. 달리는 동안 ★먼저 오는 것★ 에서 선다 — 셋 다 리니어 2단
+     ① 라이다 장애물 → arduino AEB + braketest /brake_level 2단
+     ② ★S 지점 통과★ [2026-10-16] → 고른 CSV 의 terrain 열 S/s ★첫 행★ 을 지나는 즉시
+        (S 가 없으면 이 줄은 없다 — 종전대로 ① 또는 ③)
+     ③ ★목표 좌표(끝점) 도달★ → FAIL-SAFE
+  7. ★[2026-10-16] 선 뒤에는 런치를 끌 때까지 리니어 2단을 유지한다★ 결과 표를 찍고
+     기다린다(10초마다 안내). ★Ctrl-C 로 런치를 끄는 순간 리니어 0단★ — nxde/arduino 의
+     종료 정리가 B보드에 'x,0' 을 직접 쓴다. (종전 : 스스로 풀고 1.5 s 뒤 내려갔다)
 
   ⚠️ ★목표 좌표 뒤로 최소 30 m 가 비어 있어야 한다★ — 목표 좌표는 "여기서 서라"
      가 아니라 ★"여기서 밟기 시작하라"★ 다. 31.8 km/h 에서 그 뒤로 13~20 m 를 더 간다.
@@ -95,24 +111,50 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from white2 import ports
+from white2 import paths, ports
+from white2.braketest import pick_csv
 
 PACKAGE = 'white2'
 NODE_ENV = {'PYTHONUNBUFFERED': '1', 'RCUTILS_COLORIZED_OUTPUT': '1'}
 RESPAWN_DELAY = 2.0
 
 
+def _pick_route(context, cfg, num):
+    """★경로 CSV 선택 창★ [2026-10-16] → (route 파라미터 값, 그만둘 사유 or None).
+
+    노드를 하나도 띄우기 ★전에★ 부른다 — 고르기 전에 arduino 가 붙지 않고, 취소하면
+    아무것도 움직이지 않는다. 고른 파일은 ★절대경로★ 로 넘긴다(gps_data 밖이어도 된다).
+    """
+    route = str(cfg('route').perform(context)).strip()
+    pick = str(cfg('pick_route').perform(context)).strip().lower() in ('true', '1', 'yes')
+    goal_arg = (num('goal_lat') != 0.0 and num('goal_lon') != 0.0)
+    if route or goal_arg or not pick:
+        return route, None
+    start = paths.data_dir(str(cfg('data_dir').perform(context)).strip())
+    try:
+        got = pick_csv(
+            start, title='제동검차 — 목표 경로 CSV 선택 (★마지막 점 = 목표★)',
+            log=print)
+    except RuntimeError as e:
+        print(f"    [경로] ⚠️ 선택 창을 못 띄운다({e}) — braketest.py 상단 "
+              f"ROUTE·GOAL_LAT/GOAL_LON 으로 간다. 고르려면 route:=<파일>.csv")
+        return '', None
+    if got is None:
+        return '', '경로 CSV 선택을 취소했다 — 출발하지 않는다'
+    path, (lat, lon), n, stop = got
+    print(f"    [경로] ✅ {path}")
+    print(f"    [경로]    좌표 {n}행 · ★목표 = 마지막 점 ({lat:.7f}, {lon:.7f})★ — "
+          f"차를 이 점을 일직선으로 바라보게 세울 것")
+    if stop is None:
+        print("    [경로]    S 표시 없음 — 라이다 장애물 / 끝점 도달에서 선다")
+    else:
+        print(f"    [경로]    ★S 지점 = {stop[2]}행 ({stop[0]:.7f}, {stop[1]:.7f}) — 지나는 즉시 2단★"
+              + (f"  (S {stop[3]}행 중 첫 행)" if stop[3] > 1 else ""))
+    return path, None
+
+
 def _setup(context, *args, **kwargs):
     """장치 경로를 확정한 뒤 노드를 만든다 (one_launch.py 와 같은 방식)."""
-    #  udev 링크 → VID/PID → (없으면) 링크 경로 그대로. one_launch.py 와 같은 방식이다.
-    used = set()
-    gps_dev = ports.resolve_device(ports.SYMLINK_GPS, ports.GPS_VIDPID,
-                                   exclude=used, log=lambda m: print(f"    [GPS] {m}"))
-    used.add(gps_dev)
-    imu_dev = ports.resolve_device(ports.SYMLINK_IMU, ports.IMU_VIDPID,
-                                   exclude=used, log=lambda m: print(f"    [IMU] {m}"))
-    used.add(imu_dev)
-
     def cfg(name):
         return LaunchConfiguration(name)
 
@@ -130,6 +172,27 @@ def _setup(context, *args, **kwargs):
         except (ValueError, TypeError):
             print(f"    [braketest] ⚠️ {name} 값을 실수로 읽지 못했다 — {default} 로 둔다")
             return float(default)
+
+    #  ★경로 CSV 선택 창★ — 장치를 찾기 전에 고른다(위 _pick_route).
+    route, quit_why = _pick_route(context, cfg, num)
+    if quit_why:
+        print(f"    [경로] ⏹️ {quit_why}")
+        return [EmitEvent(event=Shutdown(reason=quit_why))]
+
+    #  ★[2026-10-16] nolidar★ true = 라이다 정지 사슬(aeb.launch.py + pedal_drive_node)을
+    #  띄우지 않고, braketest 도 라이다를 기다리지 않는다. 정지는 S 지점 / 끝점뿐이다.
+    use_lidar = str(cfg('nolidar').perform(context)).strip().lower() not in ('true', '1', 'yes')
+    print("    [라이다] " + ("사용 — 라이다 사슬이 살아난 뒤에 출발한다" if use_lidar else
+                           "★미사용 (nolidar:=true)★ — 장애물 보호 없음. S 지점 / 끝점에서만 선다"))
+
+    #  udev 링크 → VID/PID → (없으면) 링크 경로 그대로. one_launch.py 와 같은 방식이다.
+    used = set()
+    gps_dev = ports.resolve_device(ports.SYMLINK_GPS, ports.GPS_VIDPID,
+                                   exclude=used, log=lambda m: print(f"    [GPS] {m}"))
+    used.add(gps_dev)
+    imu_dev = ports.resolve_device(ports.SYMLINK_IMU, ports.IMU_VIDPID,
+                                   exclude=used, log=lambda m: print(f"    [IMU] {m}"))
+    used.add(imu_dev)
 
     # ═══════════════════════════════════════════════════════════════════
     #  [하드웨어] 아두이노 A/B
@@ -193,7 +256,7 @@ def _setup(context, *args, **kwargs):
         output='screen', additional_env=NODE_ENV,
         parameters=[{
             'data_dir':      cfg('data_dir'),
-            'route':         cfg('route'),
+            'route':         route,        # ★선택 창이 고른 절대경로 (또는 route:=)★
             #  ★목표 좌표★ 비우면(0) braketest.py 상단 GOAL_LAT/GOAL_LON 을 쓴다
             'goal_lat':      num('goal_lat'),
             'goal_lon':      num('goal_lon'),
@@ -209,9 +272,9 @@ def _setup(context, *args, **kwargs):
             'ay_max':        cfg('ay_max'),
             'steer_trim_deg': cfg('steer_trim_deg'),
             #  ★라이다가 살아난 뒤에 출발한다★ [2026-09-10]
-            #  use_lidar 를 그대로 물려준다 — 라이다를 안 띄우는 구성에서
+            #  nolidar 의 반대를 물려준다 — 라이다를 안 띄우는 구성에서
             #  영영 기다리는 일이 없게 한다.
-            'require_lidar':   cfg('use_lidar'),
+            'require_lidar':   use_lidar,     # ★nolidar:=true 면 기다리지 않는다★
             'auto_start':    cfg('auto_start'),
         }],
     )
@@ -246,7 +309,7 @@ def _setup(context, *args, **kwargs):
     aeb = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(lidar_pkg, 'launch', 'aeb.launch.py')),
-        condition=IfCondition(cfg('use_lidar')),
+        condition=IfCondition(str(use_lidar).lower()),
         launch_arguments={'use_rviz': cfg('use_lidar_rviz')}.items(),
     )
 
@@ -264,7 +327,7 @@ def _setup(context, *args, **kwargs):
     pedal_aeb = Node(
         package='lidar', executable='pedal_drive_node', name='pedal_drive_node',
         output='screen', additional_env=NODE_ENV,
-        condition=IfCondition(cfg('use_lidar')),
+        condition=IfCondition(str(use_lidar).lower()),
         parameters=[{
             'stop_signal_topic':       '/cone_lidar_node/stop_signal',
             'obstacle_distance_topic': '/cone_lidar_node/obstacle_distance',
@@ -276,8 +339,8 @@ def _setup(context, *args, **kwargs):
         }],
     )
 
-    # ★braketest 가 끝나면 런치 전체를 내린다★ (사용자 지시: 완전정지하면 종료)
-    #   braketest.py 는 결과를 찍고 DONE_LINGER_S 뒤에 SystemExit 로 빠진다.
+    # ★braketest 가 끝나면 런치 전체를 내린다★ [2026-10-16] 이제 이것이 타는 것은 목표를
+    #   못 정해 ★시작도 못 했을 때★ 뿐이다 — 섰을 때는 사람이 끌 때까지 2단을 유지한다.
     shutdown_on_done = RegisterEventHandler(
         OnProcessExit(target_action=braketest,
                       on_exit=[EmitEvent(event=Shutdown(
@@ -302,9 +365,17 @@ def generate_launch_description():
             description='★목표 경도★ 0 이면 braketest.py 상단 GOAL_LON 을 쓴다'),
         DeclareLaunchArgument(
             'route', default_value='',
-            description='★폴백 전용★ 목표 좌표가 비어 있을 때 이 CSV 의 '
-                        '★마지막 점★ 을 목표로 쓴다(기록 파일명도 이 이름이 된다). '
+            description='★경로 CSV★ 이 CSV 의 ★마지막 점★ 을 목표로 쓴다 — '
+                        'braketest.py 상단 ROUTE·GOAL_LAT/GOAL_LON 을 이긴다(goal_lat/'
+                        'goal_lon 인자만 이보다 앞). 이름만 주면 gps_data/ 에서 찾는다. '
+                        '기록 파일명도 이 이름이 된다. 못 읽으면 출발하지 않는다. '
                         '경로를 추종하지는 않는다 — 이 노드는 ★직선 한 줄★ 만 본다'),
+        DeclareLaunchArgument(
+            'pick_route', default_value='true',
+            description='★런치 때 경로 CSV 선택 창을 띄운다★ 고른 CSV 의 마지막 점이 목표. '
+                        '파일 이름 무관 — .csv 면 무엇이든. 취소하면 출발하지 않는다. '
+                        'route:= 나 goal_lat/goal_lon 을 주면 창을 띄우지 않는다. '
+                        'false 면 braketest.py 상단 ROUTE·GOAL_LAT/GOAL_LON 을 쓴다'),
         DeclareLaunchArgument(
             'drive_pulse', default_value='9',
             description='★순항 목표펄스 0~15★ 기본 9 → ★실측 ≈31.8 km/h★ '
@@ -372,10 +443,12 @@ def generate_launch_description():
             description='true = ★런치 = 출발★ 준비되는 대로 스스로 굴러간다. '
                         'false 면 /braketest_go 에 true 가 올 때까지 기다린다'),
         DeclareLaunchArgument(
-            'use_lidar', default_value='true',
-            description='★라이다 정지 시스템(lidar/aeb.launch.py)을 함께 띄운다★ '
-                        '= ouster 드라이버 + cone_lidar_node. false 로 두면 '
-                        '★목표 좌표 도달로만 정지한다★ (장애물 보호 없음)'),
+            'nolidar', default_value='false',
+            description='★true = 라이다 미사용★ [2026-10-16] 라이다 정지 시스템(ouster 드라이버 '
+                        '+ cone_lidar_node + pedal_drive_node)을 띄우지 않고, 라이다를 기다리지 '
+                        '않고 출발한다. 정지는 S 지점 / 끝점 도달뿐(장애물 보호 없음). '
+                        'false(기본) = 라이다 사용 — 라이다가 살아난 뒤에 출발한다. '
+                        '(종전 use_lidar 를 대신한다)'),
         DeclareLaunchArgument(
             'use_lidar_rviz', default_value='false',
             description='RViz 로 라이다 ROI 를 보면서 돌린다'),
