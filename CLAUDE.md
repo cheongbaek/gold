@@ -1516,7 +1516,7 @@ ros2 launch white1 braketest.launch.py t_preview:=1.2        # ★좁은 차로�
 ros2 launch white1 braketest.launch.py drive_pwm:=140        # ★직접 PWM★
 ```
 
-> **[2026-10-16] 목표 = 고른 경로 CSV 의 마지막 점** — 런치가 노드를 띄우기 **전에** 선택 창(`braketest.py` 의 `pick_csv`·`last_point`,
+> **[2026-10-16] 목표 = 고른 경로 CSV 의 마지막 점** — 런치가 노드를 띄우기 **전에** 선택 창(`braketest.py` 의 `pick_csv`·`read_route`,
 > zenity → 실패하면 tkinter)을 띄운다. 파일 이름 무관 · `.csv` 면 어느 폴더든 · 위도·경도 열이 없으면 이유를 보여 주고
 > 다시 고르게 한다. **취소하면 아무 노드도 안 띄우고 내려간다.** 우선순위 `goal_lat/lon` > `route:=` > 창 > 상단 `ROUTE` > `GOAL_LAT/LON`.
 > 경로 모양은 따라가지 않는다(출발 위치 → 끝점 직선). 정지는 그대로(라이다 AEB · 끝점 2단).
@@ -1546,6 +1546,7 @@ ros2 launch white1 braketest.launch.py drive_pwm:=140        # ★직접 PWM★
 | 트리거 | 무엇 |
 |---|---|
 | **① 라이다 장애물** | `cone_lidar_node` 의 `stop_signal` → `pedal_drive_node` → arduino |
+| **①-2 ★S 지점 통과★** [2026-10-16] | 고른 CSV 의 `terrain` 이 `S`/`s` 인 **첫 행**을 기준선에 투영한 `D_S` 를 `s` 가 넘는 순간 2단(끝점과 같은 판정). S 가 없거나 출발점 2 m 안·끝점 뒤면 쓰지 않는다(경고). 라이다는 그대로 살아 있다 — 먼저 오는 쪽 |
 | **② ★목표 좌표 도달★ (FAIL-SAFE)** | **`s ≥ D` 인 순간 즉시 리니어 2단.** 반경이 아니라 **진행거리 투영**이라 한 틱에 0.44 m 를 가도 못 놓친다 |
 
 > **[2026-09-09] 정지 트리거가 `terrain` `'S'` 에서 라이다로 바뀌었다.**
@@ -1699,6 +1700,9 @@ ouster ─/ouster/points─▶ cone_lidar_node ─/…/stop_signal─▶ pedal_d
 
 > ### ⚠️ AEB 로 섰을 때는 braketest 가 리니어를 못 푼다 — 설계상 그렇다
 >
+> **[2026-10-16] 이제 풀 일 자체가 없다** — 섰으면 어느 사유든 런치를 끌 때까지 2단을 유지한다(아래 '완전정지' 항목).
+> 아래는 그 전의 기록이다.
+>
 > `/aeb_stop` 이 true 인 동안 arduino 는 리니어를 계속 물고 있고, braketest 의
 > `/brake_level=0` 은 그 분기보다 우선순위가 낮다(`compose` (1-1)).
 > **장애물이 그대로 있는데 브레이크를 푸는 노드가 있으면 안 되기 때문이다.**
@@ -1823,9 +1827,10 @@ ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
 > **★한 번 내려오면 다시 올리지 않는다★**(래치). 올렸다 내렸다 하면 그것이 곧
 > 속도 되먹임이고, 제동거리를 재려는 이 시험이 재려는 것이 아니다.
 > `launch_pulse` 를 `drive_pulse` 이하로 주면 루틴 자체가 꺼진다(단일 속도 주행).
-- **완전정지하면 리니어를 푼다**(`BRAKE_RELEASE_WAIT_S = 1.5 s` 기다린 뒤 종료).
-  물린 채로 런치를 내리면 arduino 가 없어져 D5 를 내렸다 올리는 것 말고는 풀
-  방법이 없다.
+- **[2026-10-16] 선 뒤에는 런치를 Ctrl-C 로 끌 때까지 리니어 2단을 유지한다**(`S_HOLD`, 사용자 지시) —
+  라이다·S 지점·끝점·중단(E-STOP 등) 어느 사유든 같다. 끄는 순간 `nxde/arduino` 의 종료 정리
+  (`stop_and_close`)가 B보드에 `x,0` 을 직접 써서 **리니어 0단**이다(SIGINT·SIGTERM 둘 다).
+  종전에는 스스로 풀고(`BRAKE_RELEASE_WAIT_S` 1.5 s) 런치가 내려갔다.
 
 > ### ⚠️ 안전 — 기본 10펄스는 **31.8 km/h** 다
 >

@@ -74,13 +74,14 @@ braketest.launch.py ― ★제동검차 전용 런치★ [white1 / 2026-09-12 �
      (헤딩 초기화 구간이 없다).
      → 확인하고 출발시키고 싶으면 `auto_start:=false` 로 띄우고,
        `ros2 topic pub -1 /braketest_go std_msgs/msg/Bool '{data: true}'`
-  6. 달리는 동안 ★둘 중 먼저 오는 것★ 에서 선다 —
-     ① 라이다 장애물 → ★arduino AEB 가 문다★ (braketest 는 관찰만)
-     ② ★목표 좌표 도달★ → braketest 가 /brake_level 2단 (FAIL-SAFE)
-     완전정지하면 결과를 찍고 ★리니어를 풀고★ 런치가 스스로 내려간다.
-     ⚠️ ①로 섰을 때는 ★장애물을 치워야★ arduino 가 리니어를 푼다(설계상 그렇다).
-        치우지 않으면 20초 뒤 물린 채로 런치가 내려간다 — 그때는 D5 를 수동조종으로
-        내렸다 올리면 풀린다(모드 전환은 반드시 리니어를 푼다).
+  6. 달리는 동안 ★먼저 오는 것★ 에서 선다 — 셋 다 리니어 2단
+     ① 라이다 장애물 → arduino AEB + braketest /brake_level 2단
+     ② ★S 지점 통과★ [2026-10-16] → 고른 CSV 의 terrain 열 S/s ★첫 행★ 을 지나는 즉시
+        (S 가 없으면 이 줄은 없다 — 종전대로 ① 또는 ③)
+     ③ ★목표 좌표(끝점) 도달★ → FAIL-SAFE
+  7. ★[2026-10-16] 선 뒤에는 런치를 끌 때까지 리니어 2단을 유지한다★ 결과 표를 찍고
+     기다린다(10초마다 안내). ★Ctrl-C 로 런치를 끄는 순간 리니어 0단★ — nxde/arduino 의
+     종료 정리가 B보드에 'x,0' 을 직접 쓴다. (종전 : 스스로 풀고 1.5 s 뒤 내려갔다)
 
   ⚠️ ★목표 좌표 뒤로 최소 30 m 가 비어 있어야 한다★ — 목표 좌표는 "여기서 서라"
      가 아니라 ★"여기서 밟기 시작하라"★ 다. 31.8 km/h 에서 그 뒤로 13~20 m 를 더 간다.
@@ -135,10 +136,15 @@ def _pick_route(context, cfg, num):
         return '', None
     if got is None:
         return '', '경로 CSV 선택을 취소했다 — 출발하지 않는다'
-    path, (lat, lon), n = got
+    path, (lat, lon), n, stop = got
     print(f"    [경로] ✅ {path}")
     print(f"    [경로]    좌표 {n}행 · ★목표 = 마지막 점 ({lat:.7f}, {lon:.7f})★ — "
           f"차를 이 점을 일직선으로 바라보게 세울 것")
+    if stop is None:
+        print("    [경로]    S 표시 없음 — 라이다 장애물 / 끝점 도달에서 선다")
+    else:
+        print(f"    [경로]    ★S 지점 = {stop[2]}행 ({stop[0]:.7f}, {stop[1]:.7f}) — 지나는 즉시 2단★"
+              + (f"  (S {stop[3]}행 중 첫 행)" if stop[3] > 1 else ""))
     return path, None
 
 
@@ -322,8 +328,8 @@ def _setup(context, *args, **kwargs):
         }],
     )
 
-    # ★braketest 가 끝나면 런치 전체를 내린다★ (사용자 지시: 완전정지하면 종료)
-    #   braketest.py 는 결과를 찍고 DONE_LINGER_S 뒤에 SystemExit 로 빠진다.
+    # ★braketest 가 끝나면 런치 전체를 내린다★ [2026-10-16] 이제 이것이 타는 것은 목표를
+    #   못 정해 ★시작도 못 했을 때★ 뿐이다 — 섰을 때는 사람이 끌 때까지 2단을 유지한다.
     shutdown_on_done = RegisterEventHandler(
         OnProcessExit(target_action=braketest,
                       on_exit=[EmitEvent(event=Shutdown(

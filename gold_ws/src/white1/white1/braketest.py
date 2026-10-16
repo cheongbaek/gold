@@ -12,7 +12,10 @@ braketest.py ― ★브레이크 제동검차 전용 노드★ [white1 / 2026-09
       ① 사람이 차를 ★목표 좌표를 일직선으로 바라보는 자리★ 에 세운다
       ② 런치를 띄우면 그 자리에서 ★목표 좌표를 향한 직선★ 을 기준으로 질주한다
       ③ 라이다가 라바콘을 보면 arduino 가 ★즉시 리니어 2단★ (사슬 그대로)
+      ③-2 [2026-10-16] 경로 CSV terrain 열에 ★S★ 가 있으면 그 행을 지나는 즉시 2단
       ④ 라이다가 못 보고 ★목표 좌표에 도달하면 그 즉시 리니어 2단★ (FAIL-SAFE)
+      ⑤ [2026-10-16] 선 뒤에는 ★런치를 Ctrl-C 로 끌 때까지 2단 유지★ — 끄면 nxde/arduino 가
+         B보드에 'x,0' 을 써서 리니어 0단 (begin_hold)
 
   ★[2026-09-12] 경로 CSV 추종을 버렸다 — 기준은 '점'이 아니라 '선' 이다★
   종전에는 매핑 CSV 291점을 최근접 포인터로 좇았고, 그 층이 사행의 재료였다
@@ -472,15 +475,28 @@ ENC_SUM_TO_PULSE = 0.5
 ENC_MEDIAN_N = 3
 
 BRAKE_MAX_S          = 15.0   # 이 안에 못 서면 굳지 않게 끝낸다(이상 상황)
-BRAKE_RELEASE_WAIT_S = 1.5    # 0단을 내고 ★실제로 빠질 시간★
-AEB_RELEASE_MAX_S    = 20.0   # AEB 가 물고 있을 때 기다려 주는 상한
-DONE_LINGER_S        = 2.0    # 결과를 찍고 이만큼 뒤에 런치를 내린다
+DONE_LINGER_S        = 2.0    # (목표를 못 정해 시작도 못 했을 때) 이만큼 뒤에 런치를 내린다
+#  ★[2026-10-16] 선 뒤에는 런치를 끌 때까지 2단을 유지한다 (사용자 지시)★
+#  종전에는 완전정지 → 리니어 0단 → 1.5 s 뒤 런치가 스스로 내려갔다. 이제는 S_HOLD 에서
+#  /brake_level 2단을 계속 낸다. ★끝은 사람이 Ctrl-C 로 낸다★ — 그때 nxde/arduino 의
+#  종료 정리(stop_and_close)가 B보드에 'x,0' 을 직접 써서 ★리니어가 0단★ 이 된다
+#  (SIGINT · SIGTERM 둘 다). 이 노드가 0 을 내는 것은 보조다 — arduino 도 같이 내려가는 중이다.
+HOLD_NOTE_S          = 10.0   # 유지 중 안내를 이 간격으로 찍는다
+
+#  ★[2026-10-16] S 지점★ — 고른 경로 CSV 의 terrain 열이 S/s 인 ★첫 행★ 을 지나는 즉시 2단.
+#  white1 driving 의 'S' 일시정지와 같은 표시다(그쪽은 3.5 s 뒤 재출발, 여기는 계속 선다).
+#  판정은 끝점과 같다 — 그 행을 기준선에 투영한 진행거리 D_S 를 s 가 넘는 순간.
+#  ★S 가 없으면 종전 그대로★ 라이다 장애물 → (못 보면) 끝점 도달. S 가 있어도 라이다는 살아
+#  있다 — 셋 중 먼저 오는 것에서 선다.
+STOP_MARK_MIN_M      = 2.0    # D_S 가 이보다 짧으면(출발점 근처·뒤) S 를 쓰지 않는다
+STOP_MARK_LATERAL_M  = 3.0    # S 행이 기준선에서 이만큼 넘게 벗어나면 경고 (다른 길일 수 있다)
 
 #  정지 사유 (결과 표에 그대로 찍는다)
 WHY_LIDAR, WHY_GOAL = '라이다 장애물', '목표 좌표 도달(FAIL-SAFE)'
+WHY_SMARK = 'S 지점 통과'
 
-S_WAIT, S_RUN, S_BRAKE, S_RELEASE, S_DONE = (
-    'WAIT', 'RUN', 'BRAKE', 'RELEASE', 'DONE')
+S_WAIT, S_RUN, S_BRAKE, S_HOLD, S_DONE = (
+    'WAIT', 'RUN', 'BRAKE', 'HOLD', 'DONE')
 
 EARTH_R = 6378137.0
 
@@ -489,8 +505,8 @@ EARTH_R = 6378137.0
 #  ★경로 CSV 선택 창 · 마지막 점 읽기★ [2026-10-16]
 # ══════════════════════════════════════════════════════════════════════════════
 #  braketest.launch.py 가 노드를 띄우기 ★전에★ pick_csv() 로 창을 띄우고, 고른 파일의
-#  절대경로를 route 파라미터로 넘긴다. 노드(goal_from_route)는 last_point() 로 그 파일의
-#  마지막 점을 목표로 쓴다 — 런치가 검사한 것과 노드가 읽는 것이 ★같은 함수★ 다.
+#  절대경로를 route 파라미터로 넘긴다. 노드(goal_from_route)는 read_route() 로 그 파일의
+#  마지막 점을 목표로, terrain 'S' 첫 행을 정지 지점으로 쓴다 — 런치가 검사한 것과 노드가 읽는 것이 ★같은 함수★ 다.
 #    · 파일 이름은 보지 않는다 — ★.csv 면 어느 폴더의 무엇이든★ 고를 수 있다.
 #    · 열 이름은 latitude/longitude (매핑 CSV) 또는 lat/lon. BOM 이 붙어 있어도 된다.
 #    · 창은 zenity(GTK) 를 먼저 쓰고, 없거나 실행에 실패하면 tkinter 로 띄운다.
@@ -507,12 +523,18 @@ def _pick(row, keys):
     raise KeyError(keys[0])
 
 
-def last_point(path):
-    """CSV 의 ★마지막 유효 좌표★ 와 유효 행 수 → ((lat, lon), n). 못 읽으면 예외.
+STOP_MARK_CHARS = ('S', 's')   # terrain 열의 '여기서 선다' 표시 — driving.py STOP_ZONE_CHARS 와 같은 글자
 
+
+def read_route(path):
+    """CSV → (마지막 유효 좌표 (lat, lon), 유효 행 수 n, S 지점). 못 읽으면 예외.
+
+    ★S 지점★ [2026-10-16] terrain 열이 S/s 인 ★첫 행★ → (lat, lon, 행 번호, S 행 수),
+    없거나 terrain 열이 없으면 None. 행 번호는 머리줄 다음을 1 로 센다(편집기 줄 번호 − 1).
     좌표로 못 읽는 행(빈 칸·글자)은 건너뛴다. 유효 행이 하나도 없으면 ValueError.
     """
     last, n = None, 0
+    stop, s_n = None, 0
     with open(path, 'r', encoding='utf-8-sig', newline='') as f:
         reader = csv.DictReader(f)
         cols = [c.strip().lower() for c in (reader.fieldnames or [])]
@@ -520,16 +542,20 @@ def last_point(path):
         if not (any(k in cols for k in LAT_KEYS) and any(k in cols for k in LON_KEYS)):
             raise ValueError(f"위도·경도 열이 없다 (열: {', '.join(cols) or '없음'}) — "
                              f"latitude/longitude 또는 lat/lon 이 필요하다")
-        for row in reader:
+        for i, row in enumerate(reader, start=1):
             try:
                 lat, lon = _pick(row, LAT_KEYS), _pick(row, LON_KEYS)
             except (KeyError, ValueError, TypeError):
                 continue
             if -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0 and (lat, lon) != (0.0, 0.0):
                 last, n = (lat, lon), n + 1
+                if str(row.get('terrain') or '').strip() in STOP_MARK_CHARS:
+                    s_n += 1
+                    if stop is None:
+                        stop = (lat, lon, i)
     if last is None:
         raise ValueError("좌표로 읽을 수 있는 행이 없다")
-    return last, n
+    return last, n, (None if stop is None else stop + (s_n,))
 
 
 #  ★snap 앱(VSCode 등)의 터미널에서 띄우면 그 앱의 GTK·로케일 변수가 물려 들어와
@@ -598,7 +624,7 @@ def has_display():
 
 
 def pick_csv(start_dir, title='경로 CSV 선택', log=print):
-    """창을 띄워 CSV 하나를 고르게 한다 → (절대경로, (lat, lon), 행 수) / 취소면 None.
+    """창을 띄워 CSV 하나를 고르게 한다 → (절대경로, (lat, lon), 행 수, S 지점) / 취소면 None.
 
     고른 파일이 좌표를 못 내면 ★이유를 알려 주고 창을 다시 띄운다★ — 고칠 기회를 준다.
     화면이 없으면(SSH) RuntimeError — 부르는 쪽이 처리한다.
@@ -621,8 +647,8 @@ def pick_csv(start_dir, title='경로 CSV 선택', log=print):
             return None
         path = os.path.abspath(path)
         try:
-            ll, n = last_point(path)
-            return path, ll, n
+            ll, n, stop = read_route(path)
+            return path, ll, n, stop
         except Exception as e:          # noqa: BLE001 — 이유를 사람에게 보여 준다
             msg = f"{os.path.basename(path)} 를 쓸 수 없다:\n{e}\n\n다른 파일을 고를 것."
             log(f"    [경로] ⚠️ {msg.replace(chr(10), ' ')}")
@@ -789,6 +815,10 @@ class BrakeTestNode(Node):
 
         #  ★기준선★ (출발 순간에 확정한다)
         self.goal_lat = self.goal_lon = None
+        self._hold_note_t = 0.0
+        self.smark = None                  # (lat, lon, 행 번호, S 행 수) — 경로 CSV 의 S 지점
+        self.dist_smark = float('inf')     # 그 지점의 진행거리 D_S (build_line). inf = 안 쓴다
+        self.e_smark = float('nan')        # 그 지점의 기준선 횡거리
         self.goal_src = ''
         self.route_name = ''
         self.sx = self.sy = 0.0          # 출발점 S (로컬 xy)
@@ -909,21 +939,29 @@ class BrakeTestNode(Node):
     def goal_from_route(self, name):
         """route CSV 의 ★마지막 점★ 을 목표로 쓴다. 못 읽으면 None.
 
-        [2026-10-16] 읽는 규칙은 last_point 하나다 — 런치의 GUI 선택 창이
+        [2026-10-16] 읽는 규칙은 read_route 하나다 — 런치의 GUI 선택 창이
         검사한 것과 여기서 읽는 것이 같다. 절대경로면 그대로, 이름만이면 gps_data/.
+        terrain 'S' 첫 행이 있으면 self.smark 에 담는다(정지 지점).
         """
         path = os.path.join(self.data_dir, name)
         if not os.path.isfile(path):
             self.event(f"❌ 경로 파일 없음: {path}")
             return None
         try:
-            last, n = last_point(path)
+            last, n, self.smark = read_route(path)
         except Exception as e:            # noqa: BLE001
             self.event(f"❌ 경로를 쓸 수 없다 [{os.path.basename(path)}]: {e}")
             return None
         self.route_name = os.path.basename(path)
+        if self.smark is None:
+            sm = "S 표시 없음 — ★라이다 장애물 / 끝점 도달★ 에서 선다"
+        else:
+            sm = (f"★S 지점 = {self.smark[2]}행 ({self.smark[0]:.7f}, {self.smark[1]:.7f})"
+                  f" — 지나는 즉시 2단★")
+            if self.smark[3] > 1:
+                sm += f" (S 가 {self.smark[3]}행 — ★첫 행만★ 쓴다)"
         self.event(f"🗂️ 경로 CSV {path} — 좌표 {n}행, ★마지막 점을 목표로 쓴다★ "
-                   f"(경로 모양은 따라가지 않는다 — 출발 위치에서 직선)")
+                   f"(경로 모양은 따라가지 않는다 — 출발 위치에서 직선). {sm}")
         return last
 
     def build_line(self):
@@ -942,6 +980,14 @@ class BrakeTestNode(Node):
             return False
         self.ux, self.uy = dx / d, dy / d
         self.dist_total = d
+        #  ★S 지점을 이 선에 투영한다★ — 판정은 끝점과 같은 단조 스칼라 문턱(s ≥ D_S).
+        self.dist_smark, self.e_smark = float('inf'), float('nan')
+        if self.smark is not None:
+            mx, my = latlon_to_xy(self.smark[0], self.smark[1], self.lat0, self.lon0)
+            ds = (mx - self.sx) * self.ux + (my - self.sy) * self.uy
+            self.e_smark = -(mx - self.sx) * self.uy + (my - self.sy) * self.ux
+            if STOP_MARK_MIN_M <= ds < d:
+                self.dist_smark = ds
         self.line_brg = math.degrees(math.atan2(dy, dx))
         #  ★폭주 방벽★ 예상 주행시간의 두 배 + 여유. GPS 가 이상해져 s 가 자라지
         #  않아도 이 시간이 지나면 세운다(런치 = 출발이라 사람이 없을 수 있다).
@@ -1213,7 +1259,7 @@ class BrakeTestNode(Node):
     def publish_state(self):
         #  record 가 켜지도록 DRIVE_* 이름을 쓴다(그쪽은 DRIVE_* 일 때만 기록한다).
         name = {S_WAIT: 'IDLE', S_RUN: 'DRIVE_RUN', S_BRAKE: 'DRIVE_RUN',
-                S_RELEASE: 'DRIVE_DONE', S_DONE: 'DRIVE_DONE'}[self.state]
+                S_HOLD: 'DRIVE_DONE', S_DONE: 'DRIVE_DONE'}[self.state]
         self.pub_dstate.publish(String(data=name))
 
     def enter(self, new_state, msg=''):
@@ -1524,6 +1570,13 @@ class BrakeTestNode(Node):
                 raise SystemExit(0)
             return
 
+        #  ★정지 유지★ [2026-10-16] 아래 게이트(E-STOP · D5 · GPS · 라이다)보다 앞 —
+        #  선 뒤에는 무엇이 바뀌어도 2단을 낼 뿐이다(수동조종이면 B보드가 스스로 0단으로
+        #  두고, 자율로 되돌리면 다시 2단이 된다). 끝은 사람이 런치를 끄는 것 하나다.
+        if self.state == S_HOLD:
+            self.run_hold(now)
+            return
+
         # ── 안전 게이트 : 어느 상태에서든 먼저 본다 ──
         if self.estop:
             self.send(0, self._last_steer, control=True)
@@ -1568,8 +1621,6 @@ class BrakeTestNode(Node):
             self.run_follow(now)
         elif self.state == S_BRAKE:
             self.run_brake(now)
-        elif self.state == S_RELEASE:
-            self.run_release(now)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  출발 게이트 — ★통과하면 그 자리에서 지정속도로 굴러간다★
@@ -1652,6 +1703,17 @@ class BrakeTestNode(Node):
             d_stop = v * 0.30 + v * v / (2.0 * 2.2)
             note = (f" 이 속도의 2단 정지거리 ≈ {d_stop:.1f}m — "
                     f"★목표 좌표 뒤로 그만큼이 비어 있어야 한다★.")
+        if self.smark is not None:
+            if math.isfinite(self.dist_smark):
+                lid += (f" · ★S 지점 {self.dist_smark:.1f}m 에서 2단★ (선에서 "
+                        f"{self.e_smark:+.2f}m)")
+                if abs(self.e_smark) > STOP_MARK_LATERAL_M:
+                    self.event(f"⚠️ S 지점이 기준선에서 {self.e_smark:+.1f}m 떨어져 있다 — "
+                               f"다른 길에서 딴 CSV 가 아닌지 볼 것(진행거리로만 판정한다)")
+            else:
+                self.event(f"⚠️ ★S 지점을 쓰지 않는다★ — 기준선 위 위치가 출발점 "
+                           f"{STOP_MARK_MIN_M:.0f}m 안이거나 끝점보다 뒤다. "
+                           f"라이다 장애물 / 끝점 도달에서 선다")
         self._launch_t0 = time.time()      # ★[2026-09-13] 출발 구간 시계 시작★
         self.enter(S_RUN,
                    f"▶ ★질주 시작★ 목표까지 {d:.1f}m, 선 방위 {self.line_brg:+.1f}° "
@@ -1689,6 +1751,13 @@ class BrakeTestNode(Node):
         #    (arduino 가 max 로 합치지 않고 각 분기에서 그대로 쓴다).
         if self.aeb_stop:
             self.begin_brake(WHY_LIDAR, now, s, e, psi)
+            return
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  ①-2 ★S 지점 통과★ — 그 즉시 리니어 2단 [2026-10-16] (끝점과 같은 판정)
+        # ══════════════════════════════════════════════════════════════════════
+        if s >= self.dist_smark:
+            self.begin_brake(WHY_SMARK, now, s, e, psi)
             return
 
         # ══════════════════════════════════════════════════════════════════════
@@ -1836,11 +1905,11 @@ class BrakeTestNode(Node):
         held = now - self.brake_t0
         if self.stopped(now):
             self.report(now, held)
-            self.begin_release(now)
+            self.begin_hold(now, "🟢 완전정지 확인")
             return
         if held >= BRAKE_MAX_S:
             self.report(now, held, note="★시간 초과★ 완전정지를 확인하지 못했다")
-            self.begin_release(now)
+            self.begin_hold(now, "⚠️ 완전정지를 확인하지 못한 채")
             return
         self.throttle(
             f"🛑 제동 중 {held:.2f}s — "
@@ -1850,46 +1919,28 @@ class BrakeTestNode(Node):
     # ══════════════════════════════════════════════════════════════════════════
     #  완전정지 뒤 리니어 해제
     # ══════════════════════════════════════════════════════════════════════════
-    def begin_release(self, now):
-        """★물린 채로 런치를 내리지 않는다★
+    def begin_hold(self, now, msg):
+        """★선 뒤에는 런치를 끌 때까지 리니어 2단을 유지한다★ [2026-10-16 사용자 지시]
 
-        arduino 가 내려간 뒤에는 /brake_level 로 풀 방법이 없어져, 차를 밀려면
-        D5 를 내렸다 올리는 수밖에 없다. 그래서 0 을 내고 ★실제로 빠질 시간★ 을
-        준 뒤에 종료한다(arduino 해제유예 0.5s + B보드 0단 복귀 1000ms).
-
-        ⚠️ ★AEB 가 물고 있으면 이 노드는 못 푼다★ /aeb_stop 이 true 인 동안
-        arduino 는 리니어를 계속 물고 있고, 우리 /brake_level=0 은 그 분기보다
-        우선순위가 낮다(compose (1-1)). 그건 결함이 아니라 설계다 —
-        ★장애물이 그대로 있는데 브레이크를 푸는 노드가 있으면 안 된다.★
+        종전에는 여기서 0 을 내고 1.5 s 뒤 런치가 스스로 내려갔다(begin_release).
+        이제는 2단을 계속 내고(loop 의 publish_brake 가 재확인한다) 기다리기만 한다.
+        ★끝은 사람이 Ctrl-C 로 낸다★ — nxde/arduino 의 종료 정리(stop_and_close)가
+        B보드에 'x,0' 을 직접 써서 리니어를 0단으로 되돌린다(상수절 HOLD_NOTE_S 위).
+        AEB 가 따로 물고 있다가 장애물이 치워져도 이 노드의 2단이 남아 계속 선다.
         """
-        self.set_brake(BRAKE_NONE)
-        self.publish_brake(force=True)      # ★0 은 평소 재확인하지 않는다★
-        if self.aeb_stop:
-            self.enter(S_RELEASE,
-                       "🟢 완전정지 확인 — 그런데 ★AEB 가 아직 물고 있다★ "
-                       "(/aeb_stop = true). 장애물을 치우면 arduino 가 스스로 "
-                       "푼다(release_clear_s). 그때까지 기다렸다 런치를 내린다")
-        else:
-            self.enter(S_RELEASE,
-                       f"🟢 완전정지 확인 — 리니어 해제(0단). "
-                       f"{BRAKE_RELEASE_WAIT_S:.1f}초 뒤 런치를 내린다")
+        self.set_brake(BRAKE_FULL)
+        self.publish_brake(force=True)
+        self._siren.stop()                  # 섰다 — 경고음은 여기까지
+        self._hold_note_t = now
+        self.enter(S_HOLD, f"{msg} — ★리니어 2단 유지★. 런치를 Ctrl-C 로 끝내면 0단으로 푼다")
 
-    def run_release(self, now):
+    def run_hold(self, now):
+        self.set_brake(BRAKE_FULL)          # 누가 바꿔 놓았어도 2단으로 되돌린다
         self.send(0, self._last_steer, control=True)
-        held = now - self.state_t0
-        if self.aeb_stop:
-            if held < AEB_RELEASE_MAX_S:
-                self.throttle(
-                    f"⏸️ AEB 가 리니어를 물고 있다 — 장애물을 치우면 풀린다 "
-                    f"({held:.0f}/{AEB_RELEASE_MAX_S:.0f}s)", period=2.0)
-                return
-            self.event(
-                f"⚠️ {AEB_RELEASE_MAX_S:.0f}초가 지나도 /aeb_stop 이 서 있다 — "
-                f"★리니어가 물린 채로 런치를 내린다★. 차를 밀려면 D5 를 수동조종으로 "
-                f"내렸다 올릴 것(모드 전환은 리니어를 반드시 푼다)")
-        if held >= BRAKE_RELEASE_WAIT_S:
-            self._done_t = now
-            self.enter(S_DONE)
+        if now - self._hold_note_t >= HOLD_NOTE_S:
+            self._hold_note_t = now
+            self.event(f"⏸️ 정지 유지 중 ({now - self.state_t0:.0f}s) — 리니어 2단. "
+                       f"끝내려면 런치를 Ctrl-C (그때 리니어 0단)")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  결과
@@ -1940,6 +1991,12 @@ class BrakeTestNode(Node):
             lines.append(
                 f"  ※ 장애물까지 남은 여유 ≈ {reach:+.2f} m  "
                 + ("(★들이받았을 거리다★)" if reach < 0 else "(멈춰 섰다)"))
+        if math.isfinite(self.dist_smark):
+            #  ★[2026-10-16] S 지점 기준★ 트리거가 늦은 만큼(GPS 지연·20 Hz 양자화)과
+            #  실제로 선 자리를 따로 낸다 — 앞쪽이 '판정이 얼마나 늦었나', 뒤쪽이 '얼마나 지나 섰나'.
+            lines.append(
+                f"  ※ S 지점 {self.dist_smark:.1f} m — 트리거 때 {self.hit_s - self.dist_smark:+.2f} m, "
+                f"정지 위치 {s_now - self.dist_smark:+.2f} m (S 를 이만큼 지나 섰다)")
         if note:
             lines.append(f"  ⚠️ {note}")
         for ln in lines:
@@ -1949,16 +2006,14 @@ class BrakeTestNode(Node):
             f"t {held:.2f}s, a {a_t:.2f}/{a_d:.2f} m/s², 초과 {over:.2f}m"
             f"{'  ' + note if note else ''}")))
         self._reported = True
-        #  ★여기서 DONE 으로 가지 않는다★ 해제 단계(begin_release)가 리니어를 풀고
-        #  실제로 빠질 시간을 준 뒤에 DONE 으로 넘긴다.
+        #  ★여기서 DONE 으로 가지 않는다★ [2026-10-16] 부르는 쪽이 정지 유지(begin_hold)로
+        #  넘긴다 — 런치를 끌 때까지 2단이다.
 
     def finish(self, why):
-        """측정 없이 끝낸다(중단·이상). ★리니어는 물린 채로 두지 않는다★"""
-        self.set_brake(BRAKE_FULL)
-        self.publish_brake(force=True)
+        """측정 없이 끝낸다(중단·이상). ★리니어 2단을 물고 런치를 끌 때까지 유지한다★
+        [2026-10-16] 종전에는 곧바로 풀고 내려갔다 — 이제 정상 정지와 같이 begin_hold."""
         self._reported = True
-        self.event(f"⛔ 시험 중단 — {why}. 리니어 2단")
-        self.begin_release(time.time())
+        self.begin_hold(time.time(), f"⛔ 시험 중단 — {why}")
 
     def destroy_node(self):
         try:
