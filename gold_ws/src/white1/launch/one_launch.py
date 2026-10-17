@@ -427,14 +427,15 @@ def generate_launch_description():
                         '천천히 지우는 용도다. 0 이면 적분항을 끈다. 기여는 '
                         'driving.py 의 CTE_I_MAX_DEG(2.5°)로 한 번 더 잘린다'),
         # ── ★흔들림 감소 + 10펄스 증속 [2026-09-30]★ (CHANGELOG TODO-1, driving.py 상수절) ──
-        #   ★기본값은 전부 '현행과 같음(꺼짐)'★ — 실차에서 한 단계씩 켠다:
+        #   ★[2026-10-17] 1·2단계(A·B·C)는 기본 켬★ — 저속 직선 흔들림(CHANGELOG 2026-10-17). 끄려면 0.0 / false 로.
+        #   D·E 는 기본 꺼짐 그대로(8펄스 이상용). 단계 :
         #     1단계 steer_backlash_deg:=0.8 yaw_damp_k:=0.15                  (7펄스)
         #     2단계 + pp_rear_axle:=true gps_ant_x_m:=1.25                     (7펄스)
         #     3단계 + corner_ay_max:=2.0 curve_preview_far_m:=40.0            (7펄스)
         #     4단계 + lfd_max_m:=14.0 drive_pulse:=8 → 9 → 10
         #   ★실수는 소수점으로 준다★ (0.8 · 2.0) — 정수로 주면 ROS 파라미터 형이 달라 뜨지 않는다.
         DeclareLaunchArgument(
-            'steer_backlash_deg', default_value='0.0',
+            'steer_backlash_deg', default_value='0.8',   # [2026-10-17] 기본 켬 (A)
             description='A 조향 백래시 선보상 [pot deg]. 0 = 끔. 설계값 0.8 — B보드는 |오차|가 '
                         '6카운트(1.78°)를 넘어야 조향을 돌려 목표 ~1° 앞에서 선다(9/13 식별 '
                         '0.8~1.2°). 움직이는 방향으로 이만큼 더 준다. ★식별값보다 크게 주지 말 것★ '
@@ -444,7 +445,7 @@ def generate_launch_description():
             description='A 의 방향 판정 히스테리시스 [pot deg]. 지령이 극값에서 이만큼 '
                         '되돌아와야 방향을 뒤집는다(잡음 반전 방지)'),
         DeclareLaunchArgument(
-            'pp_rear_axle', default_value='false',
+            'pp_rear_axle', default_value='true',   # [2026-10-17] 기본 켬 (B — C 와 함께)
             description='B 순수추종을 뒷차축에서 겨눈다. 코너 안쪽 파고듦(9/13 +0.19~+0.30 m)의 '
                         '원인 제거. ★yaw_damp_k 와 함께 켤 것★ — 혼자 켜면 직선 흔들림이 는다. '
                         'CTE·진행 포인터·종점 판정은 안테나 자리 그대로다'),
@@ -453,7 +454,7 @@ def generate_launch_description():
             description='B 의 뒷차축 → GPS 안테나 진행방향 거리 [m]. GPS 안테나는 앞차축 위라 '
                         '축거 1.25 m 다(라이다는 뒷차축 위 — mppi handover.gps_antenna_x_m 과 같은 값)'),
         DeclareLaunchArgument(
-            'yaw_damp_k', default_value='0.0',
+            'yaw_damp_k', default_value='0.15',   # [2026-10-17] 기본 켬 (C)
             description='C 요레이트 댐핑 [도로휠 deg/(deg/s)]. 0 = 끔. 설계값 0.15 — 경로가 '
                         '요구하지 않은 요레이트(r − v·κ)만 누른다. 백래시가 만든 위상지연을 '
                         '되돌리는 선행 성분이다'),

@@ -1778,7 +1778,7 @@ CTE_I_FLIP_SCALE  = 0.35
 CTE_I_MIN_PULSE   = 0.3    # 실측이 이 밑이면 적분을 ★동결★ 한다(감쇠도 안 한다)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ★★ 흔들림 감소 + 10펄스 증속 (CHANGELOG TODO-1) [2026-09-30] — ★전부 기본 꺼짐★ ★★
+#  ★★ 흔들림 감소 + 10펄스 증속 (CHANGELOG TODO-1) [2026-09-30] — ★[2026-10-17] A·B·C 기본 켬, D·E 꺼짐★ ★★
 # ══════════════════════════════════════════════════════════════════════════════
 #  원인·모의·실차 확인 순서의 정본은 white1/CHANGELOG.md 의 2026-09-30 항목이다
 #  (9/13 주행 4개 분석 + sim/follow_design.py 폐루프 모의). 요약만 옮긴다:
@@ -1790,7 +1790,8 @@ CTE_I_MIN_PULSE   = 0.3    # 실측이 이 밑이면 적분을 ★동결★ 한�
 #      앞차축(안테나) 좌표를 넣어서★ 생긴다.
 #    · drive_pulse 10 은 LFD_MAX_M 11.3 의 ω_n 결속(corner_speed (b2))에 묶여 ★9펄스★ 로 돈다.
 #    · 코너 속도가 drive_pulse 에 비례해 10펄스 코너 횡가속이 2.3~2.8 m/s² 가 된다.
-#  ★기본값은 전부 '현행과 같음'★ 이라 이 절이 있어도 거동은 한 틱도 바뀌지 않는다
+#  [2026-10-17] A·B·C 를 기본으로 켰다(저속 직선 흔들림 — CHANGELOG 2026-10-17). D·E 는 꺼짐 그대로라 7펄스 이하 코너 속도는 종전과 같다.
+#  (종전 문구 : 기본값은 전부 '현행과 같음' 이라 이 절이 있어도 거동은 한 틱도 바뀌지 않는다)
 #  (모의 궤적 해시가 수정 전과 비트 단위로 같다). 실차에서 런치 인자로 한 단계씩 켠다:
 #      1단계  steer_backlash_deg:=0.8  yaw_damp_k:=0.15                    (7펄스)
 #      2단계  + pp_rear_axle:=true  gps_ant_x_m:=1.25                       (7펄스)
@@ -1806,7 +1807,7 @@ CTE_I_MIN_PULSE   = 0.3    # 실측이 이 밑이면 적분을 ★동결★ 한�
 #  pot°/s 로 모터·드라이버를 괴롭힌다. ★덜 보상하는 쪽이 안전하다★. 켠 뒤 새 로그를
 #  `sim/follow_design.py log` 로 다시 식별해 b 를 맞출 것.
 #  ★driving 에만 둔다★ arduino.py(보드 규약의 소유자)에 두면 mppi·조이스틱까지 바뀐다.
-STEER_BACKLASH_DEG      = 0.0    # [pot deg] 0 = 끔. 설계값 0.8
+STEER_BACKLASH_DEG      = 0.8    # [pot deg] 0 = 끔. 설계값 0.8 — ★[2026-10-17] 기본 켬★ (TODO-1 A)
 STEER_BACKLASH_HYST_DEG = 0.3    # [pot deg] 방향 판정 히스테리시스
 #
 #  ── B. 순수추종 기하 = 뒷차축 ──
@@ -1818,7 +1819,7 @@ STEER_BACKLASH_HYST_DEG = 0.3    # [pot deg] 방향 판정 히스테리시스
 #  handover.gps_antenna_x_m 은 그대로 둔다.
 #  ⚠️ ★단독으로 켜지 말 것★ 앞 안테나가 주던 선행(리드) 효과가 사라져 직선 흔들림이
 #     다시 는다(모의 경로 B : A 만 1.46 → A+B 1.86 °/s). C 와 함께 켠다.
-PP_REAR_AXLE = False
+PP_REAR_AXLE = True    # ★[2026-10-17] 기본 켬★ (TODO-1 B — C 와 함께)
 GPS_ANT_X_M  = 1.25   # [m] 뒷차축 → GPS 안테나 진행방향 거리. ★GPS 안테나는 앞차축 위★
                       #   라 축거와 같다. 라이다가 뒷차축 위라 mppi 의 handover.gps_antenna_x_m
                       #   (라이다 원점 → 안테나)도 같은 1.25 다 — 안테나를 옮기면 둘 다 고친다.
@@ -1831,7 +1832,7 @@ GPS_ANT_X_M  = 1.25   # [m] 뒷차축 → GPS 안테나 진행방향 거리. ★
 #  ★경로가 요구하지 않은 요레이트만★ 누른다 — 코너를 도는 데 필요한 회전은 건드리지 않는다.
 #  자이로 잡음 실측 1.8~2.0 °/s → LPF 뒤 ≈0.8 °/s × 0.15 = 도로휠 0.12° — 정수 지령
 #  (1° pot)보다 작다. 트림 추정(실측 pot ↔ 요레이트 회귀)과는 무관하다.
-YAW_DAMP_K           = 0.0    # [도로휠 deg / (deg/s)] 0 = 끔. 설계값 0.15
+YAW_DAMP_K           = 0.15   # [도로휠 deg / (deg/s)] 0 = 끔. 설계값 0.15 — ★[2026-10-17] 기본 켬★ (TODO-1 C)
 YAW_DAMP_LPF         = 0.3    # 틱당 1차 저역 계수 (20 Hz 에서 시정수 ≈0.14 s)
 YAW_DAMP_KAPPA_WIN_M = 3.0    # [m] 부호 있는 곡률의 앞뒤 창
 #
@@ -2001,7 +2002,7 @@ class DrivingNode(Node):
         self.declare_parameter('corner_brake_enable', CORNER_BRAKE_ENABLE)
         self.declare_parameter('corner_brake_late_k', CORNER_BRAKE_LATE_K)
         # ── 흔들림 감소 + 10펄스 증속 [2026-09-30] ── 상수절 'CHANGELOG TODO-1' 절.
-        #   ★기본값은 전부 현행과 같다(꺼짐)★ — 실차에서 한 단계씩 켠다.
+        #   ★[2026-10-17] A·B·C 기본 켬 · D·E 꺼짐★ — 끄려면 런치 인자로 0.0 / false.
         self.declare_parameter('steer_backlash_deg', STEER_BACKLASH_DEG)          # A
         self.declare_parameter('steer_backlash_hyst_deg', STEER_BACKLASH_HYST_DEG)
         self.declare_parameter('pp_rear_axle', PP_REAR_AXLE)                      # B

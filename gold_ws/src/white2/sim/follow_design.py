@@ -51,7 +51,8 @@ E = {'lfd_max_m': 14.0}
 def candidate(name):
     """→ (mods, params). mods 는 기각한 대안(코드에 없는 것)만 쓴다."""
     table = {
-        '현행': ([], {}),
+        '현행': ([], {}),          # [2026-10-17] = driving 기본값 = A+B+C 켬
+        '종전': ([], {'steer_backlash_deg': 0.0, 'pp_rear_axle': False, 'yaw_damp_k': 0.0}),   # 10-17 이전 기본 (A·B·C 끔)
         'A': ([], dict(A)),
         'C': ([], dict(C)),
         'A+C': ([], {**A, **C}),
