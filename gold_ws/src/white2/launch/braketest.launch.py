@@ -377,9 +377,9 @@ def generate_launch_description():
                         'route:= 나 goal_lat/goal_lon 을 주면 창을 띄우지 않는다. '
                         'false 면 braketest.py 상단 ROUTE·GOAL_LAT/GOAL_LON 을 쓴다'),
         DeclareLaunchArgument(
-            'drive_pulse', default_value='9',
-            description='★순항 목표펄스 0~15★ 기본 9 → ★실측 ≈31.8 km/h★ '
-                        '(A보드 PID 가 지령보다 +1펄스 높게 돈다 — 2026-09-13 실측). '
+            'drive_pulse', default_value='12',
+            description='★순항 목표펄스 0~15★ 기본 12 [2026-10-17] — 통합 보드(kasa_1017)는 지령보다 '
+                        '낮게 돈다(지령 9 → 실측 ≈7.3, 23 km/h). 12 면 ≈30.5 km/h 로 본다. '
                         'braketest.py 상단 DRIVE_PULSE 와 같은 값이며 여기가 이긴다. '
                         '★출발은 launch_pulse 로 민다★ (2단 속도 루틴)'),
         #  ★[2026-09-13] 2단 속도 루틴 — 제동검차는 30 km/h 를 넘겨야 한다★
@@ -390,9 +390,9 @@ def generate_launch_description():
             description='★출발 구간 목표펄스★ 기본 15 (A보드 TARGET_MAX 와 같다). '
                         'drive_pulse 이하로 주면 2단 루틴이 꺼진다(단일 속도 주행)'),
         DeclareLaunchArgument(
-            'cruise_switch_kmh', default_value='30.0',
+            'cruise_switch_kmh', default_value='33.0',
             description='★GPS 속도★ 가 이 값을 넘으면 순항으로 내린다. '
-                        '제동검차 통과선이 30 km/h 라 그 값이 기본이다'),
+                        '[2026-10-17] 30 → 33 — 통과선 30 km/h 위에서 내려와 순항이 30 위에 머물게'),
         DeclareLaunchArgument(
             'launch_max_s', default_value='12.0',
             description='출발 구간 시간 상한[s] — GPS·엔코더가 둘 다 안 걸려도 '
