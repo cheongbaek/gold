@@ -183,7 +183,7 @@ HSV 판정(`_hsv_state`): 박스 가운데 85% · 빨강 색상 0~10 또는 160~
 
 driving 이 경로 CSV `terrain` 으로 `/tl_zone` 을 낸다. 셋 다 허락·근접 문턱(9px, 서면 6.3px)·정지 근거·해제가 같고 **'무엇을 빨강으로 세나' 만 다르다**.
 
-**white2 본선 = `gps_data/maincourse_b400.csv`** (원본 `white1/gps_data/maincourse.csv` 는 손대지 않는다 — 복사본에서 terrain 만)
+**white2 본선 = `gps_data/maincourse.csv`** [2026-10-17 개명 — 사용자가 다시 딴 15열 경로(종전 `route_20200202_222222.csv`), 라벨 순서 T·T·B·A·T + S·L. 종전 `maincourse_b400.csv`(white1 본선 사본)는 지웠다]. white2 에서 이 이름은 신호 타이머를 켜지 않는다. `white1/gps_data/maincourse.csv` 는 손대지 않는다
 
 | 신호 | 라벨 |
 |---|---|

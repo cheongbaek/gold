@@ -55,7 +55,9 @@ from std_msgs.msg import Float64MultiArray, Int32   # noqa: E402
 
 import white2.driving as drv                         # noqa: E402
 
-GPS_DIR = os.path.join(PKG_ROOT, 'gps_data')
+#  ★[2026-10-17] 모의 경로는 두 판 모두 white1/gps_data 에서 읽는다★ — 모의에 쓰는 세 경로(아래 ROUTES)는
+#  white1 에 추적돼 있고, white2/gps_data 는 대회 코스 둘(태그판)만 남겼다(2026-10-17 사용자 정리). terrain 은 어차피 지운다.
+GPS_DIR = os.path.join(os.path.dirname(PKG_ROOT), 'white1', 'gps_data')
 BAG_DIR = os.path.join(PKG_ROOT, 'ros2bag')
 ROUTE_TMP = os.path.join(tempfile.gettempdir(), 'white2_follow_sim_routes')
 MS_PER_PULSE = drv.MS_PER_PULSE
@@ -64,7 +66,7 @@ EARTH_R = drv.EARTH_R
 # 모의에 쓴 경로 셋 (전부 저장소에 추적돼 있다)
 ROUTES = {
     'A': 'route_20200101_111113.csv',    # 745 m 굽은 코스 (9/13 155621·160154)
-    'B': 'route_20260913_161721.csv',    # 743 m 긴 직선 + 코너 (9/13 163010)
+    'B': 'maincourse.csv',               # 743 m 긴 직선 + 코너 (9/13 163010) — 옛 route_20260913_161721
     'C': 'route_20200202_222200.csv',    # 568 m 굽은 코스 (9/13 170016)
 }
 # 9/13 최신 주행 4개 (record CSV, 경로)

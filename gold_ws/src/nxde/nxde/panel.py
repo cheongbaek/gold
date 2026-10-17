@@ -15,8 +15,9 @@ panel.py ― ★터치 조작반★ [nxde / 2026-10-16]
 
   ★[2026-10-16] <스택> = white1 / white2★ (3.1 투트랙) — [<스택>] 버튼이 둘을 오간다. 두 스택은
   노드 이름·토픽이 같아 같이 띄우면 안 되므로 ★세 줄이 전부 쉬는 중일 때만★ 바꿀 수 있다.
-  코스 CSV 는 스택마다 다르다(STACKS) — white2 본선은 maincourse_b400.csv, 서브는
-  route_20200202_222223.csv(white1 subcourse.csv 와 같은 파일).
+  코스 CSV 는 스택마다 그 스택의 gps_data/ 에서 고른다(STACKS) — [2026-10-17] 두 스택 모두 이름이
+  subcourse.csv · maincourse.csv 다(파일은 다르다 — white2 는 T·A·B 태그판). white2 에서 maincourse.csv 는
+  신호 타이머를 켜지 않는다(white2 에는 traffic_timer 가 없다 — CLAUDE.md 3.1).
 
   <상태> = 쉬는 중 / 실행 중 / 종료 중.  [x] = 그 줄에 ★Ctrl+C★ (프로세스 그룹에 SIGINT —
   터미널에서 누른 것과 같다). STOP_TERM_S 안에 안 내려가면 SIGTERM, STOP_KILL_S 면 SIGKILL.
@@ -57,7 +58,7 @@ CMD_KILL = ['ros2', 'run', 'nxde', 'kill']
 #  스택별 코스 CSV — [subcourse] [maincourse] 버튼이 넘기는 이름 (그 스택의 gps_data/ 안)
 STACKS = {
     'white1': {'subcourse': 'subcourse.csv', 'maincourse': 'maincourse.csv'},
-    'white2': {'subcourse': 'route_20200202_222223.csv', 'maincourse': 'maincourse_b400.csv'},
+    'white2': {'subcourse': 'subcourse.csv', 'maincourse': 'maincourse.csv'},   # [2026-10-17] 개명
 }
 DEFAULT_STACK = 'white1'
 

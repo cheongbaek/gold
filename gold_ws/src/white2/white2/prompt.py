@@ -67,12 +67,16 @@ prompt.py ― CLI 메인화면 [white2]
   실제 출발 시각은 바뀌지 않는다.
 
   ★[2026-10-16] `--route <경로 CSV 이름>` — 메뉴를 건너뛰고 그 경로로 '2) 주행' 을 고른다★
-    ros2 run white2 prompt --route maincourse_b400.csv
-  nxde/panel 의 코스 버튼이 이것을 쓴다(터미널 없이 — white1 과 같은 줄). driving 이 /drive_cmd 를
+    ros2 run white2 prompt --route maincourse.csv
+  nxde/panel 의 [subcourse]·[maincourse] 버튼이 이것을 쓴다(터미널 없이 — white1 과 같은 줄). driving 이 /drive_cmd 를
   구독하고 주행모드(/vehicle_mode)가 들어올 때까지 기다렸다가 고른다 — 그 전에 보낸 경로 이름은
   사라지기 때문이다. 그 뒤는 손으로 고른 것과 같다(게이트 대기 → 주행 → 메뉴). 표준입력이
   없으면(EOF) 키 입력을 더 보지 않는다 — '아무 키나 취소' 로 읽히지 않게.
-  ★이름은 경로 폴더에 있는 .csv 면 된다★ — 메뉴 목록(route_*)에 없는 maincourse_b400.csv 도 고른다.
+  ★이름은 경로 폴더에 있는 .csv 면 된다★ — 메뉴 목록에 없는 이름도 고른다.
+
+  ★[2026-10-17] 맨 위에 고정하는 코스 = maincourse.csv · subcourse.csv (PINNED_ROUTES)★ — white1 과 같은 이름·자리.
+  ★white2 에서 이 이름은 신호 타이머를 켜지 않는다★ — white2 에는 traffic_timer 가 없고 신호는 경로 CSV 태그
+  (T·A·B)로 traffic_light 가 판단한다(CLAUDE.md 3.1 투트랙). 이름은 고르기 쉽게 고정할 뿐이다.
 
   ┌ 조작 요령 ────────────────────────────────────────────────────────────────┐
   │  1) 매핑 : ★스위치는 어느 쪽이어도 된다★ E-STOP 만 해제되면 즉시 시작.     │
@@ -130,6 +134,14 @@ except Exception:                       # noqa: BLE001 — 음성이 없다고 C
 
 
 BANNER = "═" * 74
+
+#  ★맨 위에 고정하는 코스 [2026-10-17]★ (white1 PINNED_ROUTES 와 같은 이름·순서) — 이름이 route_ 로
+#  시작하지 않아 날짜 목록에 안 걸리고, 가장 자주 고르는 파일들이다. ★white2 에서는 타이머와 무관하다★
+#  (신호 = CSV 태그 T·A·B → traffic_light). nxde/panel STACKS 의 white2 칸이 같은 두 이름을 쓴다.
+PINNED_ROUTES = (
+    ('maincourse.csv', '본선 코스 (신호 T·A·B 는 카메라)'),
+    ('subcourse.csv', '서브 코스 (신호 T 는 카메라)'),
+)
 
 #  ★경로 선택 화면에 한 번에 보이는 개수★ [2026-09-30] — 12 였는데 경로가 늘어 목록 끝
 #  (최신순이라 이름이 route_2020… 인 참고 경로들)이 잘려 안 보였다. 번호 입력 판정도
@@ -321,12 +333,16 @@ class PromptNode(Node):
 
     # ── 화면 ───────────────────────────────────────────────────────────────────
     def routes(self):
+        """경로 목록 — 최신순. ★PINNED_ROUTES(본선·서브 코스)는 맨 위에 고정한다★ [2026-10-17]
+        (white1 과 같은 규칙 — 이름이 route_ 로 시작하지 않아 종전 거름망에 빠지고,
+        날짜순으로도 설 자리가 없다)."""
         try:
-            names = [f for f in os.listdir(self.data_dir)
-                     if f.startswith('route_') and f.endswith('.csv')]
+            files = os.listdir(self.data_dir)
         except OSError:
             return []
-        return sorted(names, reverse=True)
+        names = sorted((f for f in files if f.startswith('route_') and f.endswith('.csv')),
+                       reverse=True)
+        return [n for n, _ in PINNED_ROUTES if n in files] + names
 
     def mode_str(self):
         if self.auto_mode is None:
@@ -341,7 +357,10 @@ class PromptNode(Node):
                 f"{BANNER}")
 
     def menu_screen(self, routes):
-        latest = routes[0] if routes else '(없음)'
+        #  ★최신은 날짜로 딴 것 중에서★ — 맨 위에 고정한 코스는 '최신' 이 아니다
+        pinned = {n for n, _ in PINNED_ROUTES}
+        dated = [r for r in routes if r not in pinned]
+        latest = dated[0] if dated else '(없음)'
         lines = [self.header(),
                  f" 저장된 경로: {len(routes)}개   (최신: {latest})",
                  ""]
@@ -364,7 +383,9 @@ class PromptNode(Node):
             lines.append("   (없음)")
         for i, name in enumerate(routes[:ROUTE_LIST_MAX], 1):
             mark = "★" if name == self.selected else " "
-            lines.append(f"  {mark}{i:2d}) {name}")
+            label = dict(PINNED_ROUTES).get(name)
+            note = f"   ← {label}" if label else ""
+            lines.append(f"  {mark}{i:2d}) {name}{note}")
         if len(routes) > ROUTE_LIST_MAX:
             #  잘린 것이 있으면 그렇다고 말한다 — 조용히 안 보이면 없는 줄 안다.
             lines.append(f"   … 오래된 {len(routes) - ROUTE_LIST_MAX}개는 목록에 없다 "
@@ -492,7 +513,7 @@ def main(args=None):
     start_last_t = 0.0      # 마지막으로 보낸 시각
     stdin_open = True       # [2026-10-16] EOF(터미널 없이 띄움)면 키 입력을 더 보지 않는다
     if auto_route is not None:
-        #  ★목록(route_*)이 아니라 폴더에 있는지로 본다★ — maincourse_b400.csv 는 목록에 안 나온다
+        #  ★목록이 아니라 폴더에 있는지로 본다★ — 목록(고정 코스 + route_*)에 없는 이름도 고른다
         if not (auto_route.endswith('.csv')
                 and os.path.isfile(os.path.join(node.data_dir, auto_route))):
             print(f"⚠️ --route '{auto_route}' 가 경로 폴더({node.data_dir})에 없다 — 메뉴로 간다",

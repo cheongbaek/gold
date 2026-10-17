@@ -465,7 +465,7 @@ gold_ws/src/
                  ★[Kill]·[Exit] 는 먼저 자기가 띄운 것에 Ctrl+C★ — kill 은 SIGKILL 이라 arduino 의
                  종료 정리(리니어 0단)를 건너뛴다. 로그 ~/.ros/log/panel/. ROS 노드가 아니다(rclpy 없음)
                  ★[2026-10-16] [white1 ⇄ white2] 버튼★(또는 `--stack white2`) — 세 줄이 다 쉬는 중일 때만
-                 바뀐다. 코스 CSV 는 `STACKS` 표 : white2 = route_20200202_222223.csv · maincourse_b400.csv
+                 바뀐다. 코스 CSV 는 `STACKS` 표 : white2 도 subcourse.csv · maincourse.csv ([2026-10-17] 개명 — white2/gps_data 의 태그판, 타이머 없음)
     tts.py       ★domichat 채팅방을 읽어 주는 TTS★ <PC명>_TTS_M(남성)·
                  <PC명>_TTS_W(여성) 두 방을 구독해 올라오는 말을 그대로
                  읽는다. 방 비밀번호는 PC 이름. GUI 없음(구독 전용)
@@ -677,7 +677,7 @@ throttle_pulse,wheel_pulse,wheel_speed,steer_measured,throttle_raw,auto_mode,est
 | **`S` / `s`** | **일시정지** — 2단 정지 → 3.5 s → 재출발 (★한 행★, 6.1) | `white1/driving` |
 | **`T` / `t`** | **신호등 구간** (여러 행) — ★구간 끝 = 정지선★ [2026-10-01]. 카메라가 빨간불이면 정지선 1 m 앞에 선다 | `white1/driving` (카메라는 색만) |
 | **`T1`~`T5`** [2026-09-30] | ★본선 코스(`maincourse.csv`)만★ — T1 타이머 0초(처음부터 녹색이면 T2 에서 — [2026-10-07]) · T2~T4 타이머 · T5 카메라 (4.10). ★다른 경로에서는 번호를 버리고 `T` 로 본다★ | `white1/driving` + `traffic_timer` |
-| **`A` / `B`** [white2 만] | `A` 좌회전 신호 구간 · **`B` #400 교차로(버스 신호 + 차량 가로 4구, 좌회전)** [2026-10-07 · 10-08] — T 와 같이 개입을 허락하고, `B` 에서는 traffic_light 가 ① 차량 박스 왼쪽의 **버스 신호를 판단에서 빼고** ② 차량 박스 하나의 셋째 칸(←화살표)을 읽어 **화살표가 켜져야만 진행**한다 — 원등만·빨강·황색·20px 미만(못 읽음)은 정지 신호(`tl_b_need_arrow` · white2 CHANGELOG 10-08 · TODO-9). white1 driving 은 `A`·`B` 를 내지 않는다. ★white2 본선 = `white2/gps_data/maincourse_b400.csv`★ [2026-10-08] — `maincourse.csv` 를 복사해 terrain 만 T3(#400) → `B`, ★T4 → `A`(좌회전, [2026-10-08 밤] 사용자)★, T1·T2·T5 → `T`(white2 는 번호 라벨을 신호 구간으로 못 읽는다). ★`maincourse.csv` 자체는 손대지 않는다(사용자)★ | `white2/driving` + `traffic_light` |
+| **`A` / `B`** [white2 만] | `A` 좌회전 신호 구간 · **`B` #400 교차로(버스 신호 + 차량 가로 4구, 좌회전)** [2026-10-07 · 10-08] — T 와 같이 개입을 허락하고, `B` 에서는 traffic_light 가 ① 차량 박스 왼쪽의 **버스 신호를 판단에서 빼고** ② 차량 박스 하나의 셋째 칸(←화살표)을 읽어 **화살표가 켜져야만 진행**한다 — 원등만·빨강·황색·20px 미만(못 읽음)은 정지 신호(`tl_b_need_arrow` · white2 CHANGELOG 10-08 · TODO-9). white1 driving 은 `A`·`B` 를 내지 않는다. ★white2 본선 = `white2/gps_data/maincourse.csv` · 서브 = `white2/gps_data/subcourse.csv`★ [2026-10-17 개명] — 본선은 사용자가 다시 딴 15열 경로(종전 `route_20200202_222222.csv`, 라벨 T·T·B(#400)·A(좌회전)·T + S·L), 서브는 white1 `subcourse.csv` 와 같은 파일(종전 `route_20200101_111111.csv`). 종전 `maincourse_b400.csv`(white1 본선 사본, T3 → `B` · T4 → `A` · 나머지 `T` [2026-10-08])는 2026-10-17 사용자가 지웠다. ★white2 에서 `maincourse.csv` 라는 이름은 신호 타이머를 켜지 않는다★(white2 에 traffic_timer 가 없다) — white2 prompt 가 맨 위에 고정할 뿐. ★white1 `gps_data/maincourse.csv` 는 손대지 않는다(사용자)★ | `white2/driving` + `traffic_light` |
 | 그 밖 (빈 칸 · `0` · 숫자 · 열 없음) | GPS 추종 | `white1/driving` |
 
 `driving.py:963-964`, 판정은 `zone_at()`(:1511), 읽는 곳은 `select_route()`(:1678).

@@ -95,6 +95,25 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-17 (저녁) — ★white2 코스 이름 = subcourse.csv · maincourse.csv — prompt 고정 · panel 매칭★ (사용자 지시)
+
+- `white2/gps_data/route_20200101_111111.csv` → **`subcourse.csv`**(white1 `subcourse.csv` 와 바이트 단위로 같은 파일) ·
+  `route_20200202_222222.csv` → **`maincourse.csv`**(사용자가 10/15 다시 딴 15열 본선, 라벨 T·T·B(#400)·A·T + S·L) — `git mv`.
+- `white2/prompt.py` — white1 과 같은 **`PINNED_ROUTES`**(maincourse · subcourse 를 목록 맨 위에 고정, '최신' 에서 뺀다, 옆에 설명).
+  `--route maincourse.csv` 는 종전대로 '폴더에 있으면' 고른다.
+- ★white2 에서 `maincourse.csv` 라는 이름은 신호 타이머를 켜지 않는다★ — white2 에는 `traffic_timer` 모듈·`MAINCOURSE_FILE`·`/traffic_timer`
+  구독이 없다(전수 grep). 신호는 CSV 태그 T·A·B → traffic_light(CLAUDE.md 3.1). 이름은 고르기 쉽게 고정할 뿐이다.
+- `nxde/panel.py` `STACKS['white2']` = `subcourse.csv` · `maincourse.csv` — [white1 ⇄ white2] 전환 뒤 코스 버튼이 white2/gps_data 의 두 파일을 고른다.
+- `white{1,2}/sim/follow_sim.py` — 모의 경로를 **두 판 모두 `white1/gps_data`** 에서 읽는다(white2/gps_data 에 모의용 세 경로가 없어졌다) ·
+  white2 의 경로 B 이름을 white1 과 같이 `maincourse.csv`(옛 route_20260913_161721).
+- 문서 — CLAUDE.md 3.4 terrain 표(white2 본선) · 3.1 panel 줄 · `white2/TRAFFIC_LIGHT.md` 5절 · `docs/kcity/README.md` 66행.
+
+**검증** — white2 prompt(도메인 77) 목록 = `1) maincourse.csv ← 본선 코스 (신호 T·A·B 는 카메라)` · `2) subcourse.csv ← 서브 코스` ·
+'최신' 은 (없음)(날짜 경로가 없다) · `panel.STACKS` 두 스택 모두 subcourse/maincourse · 저장소에서 바로 돌린 `follow_sim` 경로 B 궤적 white1·white2 같음(7ef8e4b78faa).
+⚠️ `~/tl_eval/zone_*.yaml` 머리 주석의 `maincourse_b400.csv`·`route_20200202_222223.csv` 는 저장소 밖이라 그대로다(주석만).
+
+---
+
 ## 2026-10-17 (오후) — ★신호 정지 중 조향이 왼쪽으로 꺾인 채 움찔 — 정차 헤딩 적분 멈춤(ZUPT) · 정지 중 조향 힘빼기(x)★ (사용자 승인)
 
 **관측** — white2 실차 `white2/ros2bag/route_20200202_222222-20261017_142142.csv`(14:21, 통합 보드 첫날). #400(B) 신호 정지 67 s 동안
