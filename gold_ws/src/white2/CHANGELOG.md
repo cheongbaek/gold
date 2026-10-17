@@ -95,6 +95,29 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-17 (밤 2) — ★white1 ↔ white2 일치 점검 — 맞춘 것 넷 · 허용 차이 목록★ (사용자 규칙)
+
+**규칙** — 신호등 정지·인지, CSV 규칙(경로 태그 해석·코스 이름·타이머)을 뺀 나머지는 두 판이 같아야 한다.
+**방법** — 추적 파일 전부를 `sed 's/white2/white1/g;s/WHITE2/WHITE1/g'` 로 이름만 맞춰 diff. 같은 파일 22개(gps·iahrs·speed·mapping·paths·ports·
+camera_launch·camera_model·braketest·follow_design·launch 4개·setup·package·BRAKING·GPS_HEADING 등).
+
+**맞춘 것 (나)**
+| 파일 | 어느 쪽이 정본 | 무엇 |
+|---|---|---|
+| `BOARD_B.md` | white1 (1016·1017 머리 메모가 white1 에만 있었다) | white2 ← white1 그대로 복사 |
+| `STOPLINE_TEST.md` | white2 (`sl_interval` 은 10-06 에 없앴다 — traffic_light 는 두 판 같다) | white1 의 세 줄을 `tl_video_scale:=0.5` 로 |
+| `record.py` `/tl/near_metric` 설명 | white2 (`tl_red_stop_min_area_frac` 파라미터는 두 판 traffic_light 어디에도 없다) | white1 설명에서 그 말을 뺐다 |
+| `prompt.py --route` 판정 | white2 (10-16, 목록에 없는 이름도 폴더에 있으면 고른다) | white1 도 `isfile` 판정으로 |
+
+**허용 차이 (가)** — driving(T1~T5·신호 접근·타이머 ↔ T·A·B·traffic_light 2단·신호등 정지 묶음) · prompt(타이머 노드·고정 코스 설명) ·
+record(`/traffic_timer` 열·`/tl_zone` 출처) · hud `_zone_char`(T1~T5) · one_launch 머리말 · traffic_light 머리말 13줄 · 파일 단위(타이머 셋 / TL 설명서 셋) · CHANGELOG.
+
+**결정 요청 (다)** — white2 `hud._zone_char` 가 `A`·`B` 를 신호 구간으로 안 그린다(`T` 만 — 화면에 GPS 구간으로 보인다). CSV 규칙 쪽이라 고치지 않았다.
+
+**검증** — 빌드(white1·white2) 뒤 white1 `prompt --route`(도메인 77, 소리 끔) : `nosuch.csv` → '경로 폴더에 없다 — 메뉴로 간다' · `subcourse.csv` → '뜨기를 기다렸다가 고른다'. 문서 셋은 글자만. 백업 `~/tl_eval/_backup/{white1,white2}_1017_unify/`.
+
+---
+
 ## 2026-10-17 (밤) — ★braketest 순항 9 → 12펄스 · 전환 30 → 33 km/h — 통합 보드가 지령보다 낮게 돈다★ (사용자 지시)
 
 **관측** — white1 braketest 2026-10-17 16:07(`white1/ros2bag/route_20261017_160359-20261017_160749.csv` · `~/.ros/log/panel/braketest-20261017_160728.log`):

@@ -503,6 +503,11 @@ gold_ws/src/
 > - **traffic_light.py 는 두 판이 같다**(머리말·import 만 다르다 — [2026-10-07] white2 의 인지 개선을 white1 에 이식).
 >   인지(ROI·엔진·게이트)를 고치면 **둘 다** 고친다. 제동 판단은 white2 에서만 쓰인다(white1 은 `/tl_permit` 이 늘 False).
 > - **타이머와 무관한 공통 수정은 양쪽에 넣는다** — 예: AS 필(hud)·E-STOP 해제 직후 출발 유예(driving)는 [2026-10-07] 둘 다 있다.
+> - ★**[2026-10-17] 일치 규칙 (사용자)** — 신호등 정지·인지와 CSV 규칙(경로 태그 해석·코스 이름·타이머)을 뺀 나머지는 두 판이 같아야 한다★.
+>   점검은 `diff <(sed 's/white2/white1/g;s/WHITE2/WHITE1/g' white2/<파일>) white1/<파일>`. 2026-10-17 전수 대조에서 남은(허용된) 차이 :
+>   `driving.py`(T1~T5·신호 접근·타이머 ↔ T·A·B 와 traffic_light 2단 · white2 신호등 정지 묶음 `_tl_held`) · `prompt.py`(타이머 노드 · 고정 코스 설명) ·
+>   `record.py`(`/traffic_timer` 열 · `/tl_zone` 출처) · `hud.py _zone_char`(T1~T5 접기) · `one_launch.py` 머리말(T 설명) · `traffic_light.py` 머리말 13줄 ·
+>   white1 만 `traffic_timer.py`·`TRAFFIC_TIMER.md`·`sim/signal_sim.py` · white2 만 `TRAFFIC_LIGHT.md`·`TL_TUNING.md`·`doc/tl_debug_view.jpg`(두 판 공통 설명서) · `CHANGELOG.md`.
 > - ⚠️ **두 스택을 동시에 띄우지 말 것** — 노드 이름·토픽이 같다(`ros2 launch white2 one_launch.py` · `ros2 run white2 prompt`).
 >   경로·기록 폴더와 환경변수는 갈라져 있다(`src/white2/{gps_data,ros2bag,video,sound}`, `WHITE2_*_DIR`).
 > - 신호등 1280 엔진(`/home/mad1/runs/detect/combined_light/weights_1280/best.engine`)은 이 PC 에서 [2026-10-07] 빌드했다

@@ -72,6 +72,7 @@ prompt.py ― CLI 메인화면 [white1]
   구독하고 주행모드(/vehicle_mode)가 들어올 때까지 기다렸다가 고른다 — 그 전에 보낸 경로 이름은
   사라지기 때문이다. 그 뒤는 손으로 고른 것과 같다(게이트 대기 → 주행 → 메뉴). 표준입력이
   없으면(EOF) 키 입력을 더 보지 않는다 — '아무 키나 취소' 로 읽히지 않게.
+  ★이름은 경로 폴더에 있는 .csv 면 된다★ — 메뉴 목록에 없는 이름도 고른다.
 
   ┌ 조작 요령 ────────────────────────────────────────────────────────────────┐
   │  1) 매핑 : ★스위치는 어느 쪽이어도 된다★ E-STOP 만 해제되면 즉시 시작.     │
@@ -529,8 +530,11 @@ def main(args=None):
     start_last_t = 0.0      # 마지막으로 보낸 시각
     stdin_open = True       # [2026-10-16] EOF(터미널 없이 띄움)면 키 입력을 더 보지 않는다
     if auto_route is not None:
-        if auto_route not in node.routes():
-            print(f"⚠️ --route '{auto_route}' 가 경로 목록({node.data_dir})에 없다 — 메뉴로 간다",
+        #  ★목록이 아니라 폴더에 있는지로 본다★ — 목록(고정 코스 + route_*)에 없는 이름도 고른다
+        #  [2026-10-17] white2 와 같은 규칙으로 맞췄다
+        if not (auto_route.endswith('.csv')
+                and os.path.isfile(os.path.join(node.data_dir, auto_route))):
+            print(f"⚠️ --route '{auto_route}' 가 경로 폴더({node.data_dir})에 없다 — 메뉴로 간다",
                   flush=True)
             auto_route = None
         else:

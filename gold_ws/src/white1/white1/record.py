@@ -408,7 +408,7 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
               note='RED / RED_FAR / GREEN / UNKNOWN — 프레임 판정'),
     TopicSpec('/tl/near_metric', Float32, ('tl_near_metric',), _scalar,
               note='근접도 게이트에 걸리는 값(빨간 박스 중 최대). 기본 단위는 '
-                   '★박스 높이[px]★ 이고 tl_red_stop_min_area_frac>0 이면 면적비다. '
+                   '★박스 높이[px]★ 다. '
                    '임계(tl_red_stop_min_height, 기본 25)와 비교해서 읽는다'),
     TopicSpec('/tl/red_far', Bool, ('tl_red_far',), _scalar,
               note='이번 프레임이 RED_FAR 인가 = 빨갛지만 아직 멀다고 본 것'),

@@ -320,7 +320,7 @@ python3 ~/gold/sl_check.py ~/gold/gold_ws/src/white1/ros2bag/manual-XXXX.csv
 | 4-9 | 브레이크 채터링(2↔0 왕복) | **0회** | 8항 회귀 — `red_release_hold_s` 확인 |
 | 4-10 | 정지 유지 중 `tl_near_metric` | **0 이 되지 않는다** | 등기구 소실 → 카메라 틸트 |
 | 4-11 | 대기 상한(8초) 발동 | **없어야** 한다 | B2 도달 불가 → 아래 조정표 |
-| 4-12 | 카메라 fps | **≥ 25** | `sl_interval:=2` (왜곡보정이 3~5ms 를 더 쓴다) |
+| 4-12 | 카메라 fps | **≥ 25** | 녹화 배율 `tl_video_scale:=0.5` (`sl_interval` 은 2026-10-06 에 없앴다) |
 
 **기록란**
 
@@ -404,7 +404,7 @@ ros2 launch white1 one_launch.py
 | 오검출 한두 프레임에 대기가 걸린다 | `sl_hold_s` | 0.2 | ↑ 0.4 |
 | 대기가 너무 길게 유지된다 | `sl_wait_max_s` | 8.0 | ↓ 5.0 |
 | 코앞에서도 안 밟는다 | `sl_override_gate_ratio` | 1.6 | ↓ 1.3 |
-| fps 가 떨어진다 | `sl_interval` | 1 | ↑ 2 |
+| fps 가 떨어진다 | `tl_video_scale` | 1.0 | ↓ 0.5 (`sl_interval` 은 2026-10-06 에 없앴다) |
 | 정지 유지 중 굴러간다 | 카메라 틸트 5~8° 또는 `tl_stop_latch:=true` | — | 8-5 참고 |
 | BEV 거리가 거리와 안 맞는다 | `bev_src_pts` | 실측값 | 단계 2-A 를 다시 |
 | 거리가 통째로 어긋난다 | `bev_bumper_y_px` | 480.0 | 단계 2-B 를 다시 |
@@ -412,7 +412,7 @@ ros2 launch white1 one_launch.py
 
 **측정된 비용** (이 PC, 1920×1080, cuda:0) : 신호등만 4.3 ms/frame → 정지선까지 7.5 ms.
 **여기에 왜곡보정 remap 이 3~5 ms 더 붙는다**(2026-08-19). 30fps 예산 33.3 ms 대비
-여유는 남지만, fps 가 25 밑으로 떨어지면 `sl_interval:=2` 를 먼저 쓴다.
+여유는 남지만, fps 가 25 밑으로 떨어지면 `tl_video_scale:=0.5` 를 먼저 쓴다.
 
 ---
 
