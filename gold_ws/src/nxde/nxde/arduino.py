@@ -471,6 +471,16 @@ B_STATE_NONE  = 0
 B_STATE_BRAKE = 1
 B_STATE_ESTOP = 2
 STEER_RELEASE_TOKEN = 'x'    # 조향 힘빼기 (B보드 isReleaseToken)
+# ★[2026-10-17] 서 있는 차의 조향 힘빼기★ — 자율 (3)·(4) 분기에서만.
+#   보낼 브레이크가 STEER_REST_BRAKE(2단) 이고 보드가 알려 준 양 바퀴 펄스가 둘 다 0 인 채
+#   STEER_REST_STILL_S 이어지면 조향 칸을 'x' 로 보낸다. 브레이크가 2 밑으로 내려가는 그 줄에서
+#   다시 각도가 나간다 — 펌웨어는 'x' → 각도를 '값이 바뀜' 으로 보고 곧바로 건다(kasa_1017 [1017-2]).
+#   근거 : 2026-10-17 white2 #400 신호 정지 67 s — 선 차에서 조향 PD 가 목표(최대 −32.5°)에 못 닿은 채
+#   (실측 −27°) 값이 바뀔 때마다·0.9 s 마다 다시 걸려 움찔거렸다(실측 조향 151번 바뀜).
+#   ★틀리는 방향은 힘을 빼는 쪽★ — 2단으로 서 있으니 조향을 잃어도 차는 안 간다. 보드가 빠지면 하지 않는다.
+#   수동조종(이미 'x')·조이스틱(스틱이 조향)·E-STOP(이미 'x')·AEB 분기는 건드리지 않는다.
+STEER_REST_BRAKE   = 2
+STEER_REST_STILL_S = 0.5
 
 # ★[2026-10-17] 통합 보드 kasa_1017 의 텔레메트리 한 줄★ (그 펌웨어 [1017-3] 과 짝)
 #   "I,<왼쪽펄스>,<오른쪽펄스>,<쓰로틀raw>,<브레이크단계>,<D5>,<실측조향각>,<상태>"
@@ -1180,6 +1190,8 @@ class Arduino(Node):
         # ── 보드 → ROS 최신 상태 (STOP·형식오류 시 마지막 값 유지) ──
         self.pulse_l = 0
         self.pulse_r = 0
+        self._wheels_still_t0 = None   # [2026-10-17] 양 바퀴 펄스가 둘 다 0 이 된 시각 (STEER_REST_*)
+        self._steer_rest = False       # 지금 조향 칸을 'x' 로 쉬게 하고 있는가 (로그용)
         self.angle_board = 0       # 실측 조향각 (− 좌 / + 우 = ROS 규약과 동일)
         self.throttle_raw = 0
         # ★[2026-10-17] 보드가 알려 준 '지금 지시된 브레이크 단계' 0/1/2★ (I, 다섯째 칸)
@@ -1524,6 +1536,7 @@ class Arduino(Node):
             self._last_s_t = 0.0
             self._thr_buf.clear()
             self.b_state = B_STATE_NONE     # 빠진 보드의 상태 2·1 을 들고 있지 않는다
+            self._wheels_still_t0 = None    # [2026-10-17] 새 보드 줄로 정지를 다시 잰다 (STEER_REST_*)
         elif which == 'j':
             # ★조이스틱이 빠지면 그 자리에서 조종을 끈다★ 입력을 잃은 채 마지막
             #   펄스가 남으면 차가 계속 간다(보드는 신선도를 보지 않고 래치한다).
@@ -2019,7 +2032,7 @@ class Arduino(Node):
             stop_brake = self.stop_brake_level if self._stop_brake_armed else 0
             brake = max(stop_brake, self.cmd_brake)
             brake = max(0, min(BRAKE_LEVEL_MAX, brake))
-            return '0', f'{self.to_board_angle(self.cmd_angle)},{brake}', 0
+            return '0', f'{self._rest_steer(brake)},{brake}', 0
 
         # (4) 정상 자율주행 — /brake_level 을 그대로 반영(안 오면 0)
         brake = max(0, min(BRAKE_LEVEL_MAX, self.cmd_brake))
@@ -2046,9 +2059,29 @@ class Arduino(Node):
         #  라벨(/drive_pulse_cmd)에는 0~15 스케일을 유지해야 하므로 상한으로 접는다.
         if pulse > PULSE_MAX:
             return (f'{pulse},{pulse}',
-                    f'{self.to_board_angle(self.cmd_angle)},{brake}',
+                    f'{self._rest_steer(brake)},{brake}',
                     PULSE_MAX)
-        return str(pulse), f'{self.to_board_angle(self.cmd_angle)},{brake}', pulse
+        return str(pulse), f'{self._rest_steer(brake)},{brake}', pulse
+
+    def _rest_steer(self, brake):
+        """자율 (3)·(4) 분기의 조향 칸. ★2단 + 양 바퀴 0 이 STEER_REST_STILL_S 이어지면 'x'★, 아니면 각도.
+
+        브레이크가 2 밑으로 내려가는 줄에서 곧바로 각도로 돌아온다(재출발 전에 조향을 다시 잡는다 —
+        리니어가 빠지는 동안 보드는 상태 1 로 인휠을 끊고 있다). 상수절 STEER_REST_* 에 근거."""
+        t0 = self._wheels_still_t0
+        rest = (brake >= STEER_REST_BRAKE and self.ser_k is not None
+                and t0 is not None
+                and time.monotonic() - t0 >= STEER_REST_STILL_S)
+        if rest != self._steer_rest:
+            self._steer_rest = rest
+            if rest:
+                self.get_logger().info(
+                    f"[조향 쉼] 2단 + 바퀴 정지 {STEER_REST_STILL_S:.1f}s — 조향 힘빼기(x)")
+            else:
+                self.get_logger().info(
+                    f"[조향 복귀] 브레이크 {brake}단 · 바퀴 {self.pulse_l}/{self.pulse_r} — 조향 "
+                    f"{self.to_board_angle(self.cmd_angle)}° 다시 건다")
+        return STEER_RELEASE_TOKEN if rest else self.to_board_angle(self.cmd_angle)
 
     def on_tx_timer(self):
         """값이 바뀌었거나 KEEPALIVE_S 가 지났을 때만 실제로 시리얼에 쓴다.
@@ -2282,6 +2315,11 @@ class Arduino(Node):
             return
         self.pulse_l = pulse_l
         self.pulse_r = pulse_r
+        if pulse_l == 0 and pulse_r == 0:
+            if self._wheels_still_t0 is None:
+                self._wheels_still_t0 = time.monotonic()
+        else:
+            self._wheels_still_t0 = None
         self.throttle_raw = throttle
         self._thr_buf.append(throttle)
         self.brake_stage = stage

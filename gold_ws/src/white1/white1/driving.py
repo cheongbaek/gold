@@ -1248,6 +1248,19 @@ HEAD_FORCED_MIN_SAMPLES = 3  # 강제확정에도 최소 이만큼. 2점은 직�
 GYRO_BIAS_MAX_DPS      = 2.0    # [deg/s] 이보다 크게 돌고 있으면 학습하지 않는다
 GYRO_BIAS_LPF_ALPHA    = 0.002  # 표본당 학습률. iAHRS 20Hz 기준 시정수 ≈ 25s
 GYRO_BIAS_CLAMP_DPS    = 5.0    # [deg/s] 추정 바이어스 절대 상한 (폭주 방어)
+#
+#  ★★ [2026-10-17] 정차 중에는 헤딩을 적분하지 않는다 (ZUPT) ★★
+#  2026-10-17 14:21 white2 실차(route_20200202_222222-20261017_142142) — #400 신호 정지 67 s 동안
+#  엔코더 0 · GPS 0 km/h 인데 ego_heading 이 84.9° → 50.5° (−34°, −0.5°/s) 흘렀다. 그날 IMU 를 옮겨
+#  달아(축 57.5° → 2.1° → 90°) 투영 요레이트의 바이어스가 정지 두 번 사이에 ≈1.4°/s 바뀌었고, 위 학습
+#  (시정수 25 s)은 그 변화를 정지 시간 안에 따라가지 못했다. 서 있는 동안에는 GPS 진행방향 보정도 돌지
+#  않으므로(0.30 m 이동 필요) 흐른 만큼이 그대로 남아 ★출발 첫 조향을 틀리게 만든다★.
+#  → 차가 서 있다는 것이 ★엔코더(바퀴 펄스 0)와 GPS(< ZUPT_GPS_KMH) 둘 다★ 로 ZUPT_HOLD_S 이어지면
+#    헤딩 적분을 멈춘다. 바이어스 학습은 그대로 돈다(서 있을 때가 배울 때다).
+#  ★틀리는 방향★ — 둘 중 하나라도 '움직인다' 거나 GPS 속도를 모르면 종전대로 적분한다.
+#    엔코더만 0 으로 굳은 채(보드 단절) 차가 돌고 있으면 GPS 가 그것을 막는다.
+ZUPT_GPS_KMH = 0.3      # [km/h] GPS 변위 속도가 이 밑이어야 '서 있다'
+ZUPT_HOLD_S  = 0.3      # [s] 두 조건이 이만큼 이어져야 멈춘다 (서는 중의 마지막 회전을 잃지 않게)
 HEAD_MAX_RESID_M  = 0.15     # 직선 잔차 RMS 상한(곧게 갔는가)
 MODE_SETTLE_S     = 0.7      # 스위치 엣지 직후 이만큼은 굴리지 않는다(빠른 토글 대비)
 # ★[2026-08-21] E-STOP 해제 후 재개까지의 유예 [s]★
@@ -2124,6 +2137,8 @@ class DrivingNode(Node):
         #  실측 +0.155°/s (상단 '자이로 바이어스 학습' 절). 주행 사이에도
         #  들고 간다 — 온도로 천천히 변할 뿐 매 주행 새로 배울 이유가 없다.
         self.gyro_bias_dps = 0.0          # [deg/s]
+        self._zupt_t0 = None              # [2026-10-17] 정차가 시작된 시각 (ZUPT_*)
+        self.zupt = False                 # 지금 헤딩 적분을 멈추고 있는가
         # ── ★[2026-09-13] 조향 트림 자동 추정★ 상수절 참고 ──
         self.steer_trim = 0.0             # [pot deg] ★지금 지령에 더하고 있는 값★
         self.pot_meas = float('nan')      # /steer_angle_measured 실측 pot
@@ -2509,7 +2524,17 @@ class DrivingNode(Node):
         (종전 거동 — 조용히 다르게 도는 것보다 낫다).
         """
         now = time.time()
-        if self.imu_time > 0.0 and self.heading is not None:
+        #  ★[2026-10-17] 정차 중에는 적분하지 않는다★ (상수절 ZUPT_* — 바퀴 0 AND GPS 정지가 0.3 s)
+        g_kmh = self.gps_kmh()
+        if (self.enc_pulse <= ENC_STOP_EPS and g_kmh is not None
+                and g_kmh < ZUPT_GPS_KMH):
+            if self._zupt_t0 is None:
+                self._zupt_t0 = now
+        else:
+            self._zupt_t0 = None
+        self.zupt = (self._zupt_t0 is not None
+                     and now - self._zupt_t0 >= ZUPT_HOLD_S)
+        if self.imu_time > 0.0 and self.heading is not None and not self.zupt:
             dt = now - self.imu_time
             if 0.0 < dt < 0.5:
                 # 직전 표본을 그 구간에 적용한다(1샘플 홀드) — 종전과 같은 규칙이다.

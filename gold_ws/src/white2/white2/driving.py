@@ -1245,6 +1245,19 @@ HEAD_FORCED_MIN_SAMPLES = 3  # 강제확정에도 최소 이만큼. 2점은 직�
 GYRO_BIAS_MAX_DPS      = 2.0    # [deg/s] 이보다 크게 돌고 있으면 학습하지 않는다
 GYRO_BIAS_LPF_ALPHA    = 0.002  # 표본당 학습률. iAHRS 20Hz 기준 시정수 ≈ 25s
 GYRO_BIAS_CLAMP_DPS    = 5.0    # [deg/s] 추정 바이어스 절대 상한 (폭주 방어)
+#
+#  ★★ [2026-10-17] 정차 중에는 헤딩을 적분하지 않는다 (ZUPT) ★★
+#  2026-10-17 14:21 white2 실차(route_20200202_222222-20261017_142142) — #400 신호 정지 67 s 동안
+#  엔코더 0 · GPS 0 km/h 인데 ego_heading 이 84.9° → 50.5° (−34°, −0.5°/s) 흘렀다. 그날 IMU 를 옮겨
+#  달아(축 57.5° → 2.1° → 90°) 투영 요레이트의 바이어스가 정지 두 번 사이에 ≈1.4°/s 바뀌었고, 위 학습
+#  (시정수 25 s)은 그 변화를 정지 시간 안에 따라가지 못했다. 서 있는 동안에는 GPS 진행방향 보정도 돌지
+#  않으므로(0.30 m 이동 필요) 흐른 만큼이 그대로 남아 ★출발 첫 조향을 틀리게 만든다★.
+#  → 차가 서 있다는 것이 ★엔코더(바퀴 펄스 0)와 GPS(< ZUPT_GPS_KMH) 둘 다★ 로 ZUPT_HOLD_S 이어지면
+#    헤딩 적분을 멈춘다. 바이어스 학습은 그대로 돈다(서 있을 때가 배울 때다).
+#  ★틀리는 방향★ — 둘 중 하나라도 '움직인다' 거나 GPS 속도를 모르면 종전대로 적분한다.
+#    엔코더만 0 으로 굳은 채(보드 단절) 차가 돌고 있으면 GPS 가 그것을 막는다.
+ZUPT_GPS_KMH = 0.3      # [km/h] GPS 변위 속도가 이 밑이어야 '서 있다'
+ZUPT_HOLD_S  = 0.3      # [s] 두 조건이 이만큼 이어져야 멈춘다 (서는 중의 마지막 회전을 잃지 않게)
 HEAD_MAX_RESID_M  = 0.15     # 직선 잔차 RMS 상한(곧게 갔는가)
 MODE_SETTLE_S     = 0.7      # 스위치 엣지 직후 이만큼은 굴리지 않는다(빠른 토글 대비)
 # ★[2026-08-21] E-STOP 해제 후 재개까지의 유예 [s]★
@@ -2047,6 +2060,8 @@ class DrivingNode(Node):
         #  실측 +0.155°/s (상단 '자이로 바이어스 학습' 절). 주행 사이에도
         #  들고 간다 — 온도로 천천히 변할 뿐 매 주행 새로 배울 이유가 없다.
         self.gyro_bias_dps = 0.0          # [deg/s]
+        self._zupt_t0 = None              # [2026-10-17] 정차가 시작된 시각 (ZUPT_*)
+        self.zupt = False                 # 지금 헤딩 적분을 멈추고 있는가
         # ── ★[2026-09-13] 조향 트림 자동 추정★ 상수절 참고 ──
         self.steer_trim = 0.0             # [pot deg] ★지금 지령에 더하고 있는 값★
         self.pot_meas = float('nan')      # /steer_angle_measured 실측 pot
@@ -2153,6 +2168,9 @@ class DrivingNode(Node):
         self._lz_slow = False         # 인계 서행(1단 + 유지펄스) 중인가
         self._lz_slow_t = 0.0         # 그 시작 시각 (시간 상한)
         self._lz_done_s0 = None       # 이미 판단을 끝낸 L 구간의 시작 호길이 [2026-09-28]
+        # ── [2026-10-17] 신호등이 2단으로 세운 동안의 조향·펄스 묶음 (run_follow) ──
+        self._tl_held = False         # 신호등 2단 + 정지로 묶었는가 (풀릴 때까지 유지)
+        self._tl_rel_t = None         # 신호등이 풀린 시각 — STOP_RELEASE_WAIT_S 동안 펄스 0
         # ── S 일시정지 서브페이즈 [2026-09-07] ──
         self._sp_state = SP_NONE
         self._sp_idx = -1             # 지금 처리 중인 S 의 WP 인덱스
@@ -2408,7 +2426,17 @@ class DrivingNode(Node):
         (종전 거동 — 조용히 다르게 도는 것보다 낫다).
         """
         now = time.time()
-        if self.imu_time > 0.0 and self.heading is not None:
+        #  ★[2026-10-17] 정차 중에는 적분하지 않는다★ (상수절 ZUPT_* — 바퀴 0 AND GPS 정지가 0.3 s)
+        g_kmh = self.gps_kmh()
+        if (self.enc_pulse <= ENC_STOP_EPS and g_kmh is not None
+                and g_kmh < ZUPT_GPS_KMH):
+            if self._zupt_t0 is None:
+                self._zupt_t0 = now
+        else:
+            self._zupt_t0 = None
+        self.zupt = (self._zupt_t0 is not None
+                     and now - self._zupt_t0 >= ZUPT_HOLD_S)
+        if self.imu_time > 0.0 and self.heading is not None and not self.zupt:
             dt = now - self.imu_time
             if 0.0 < dt < 0.5:
                 # 직전 표본을 그 구간에 적용한다(1샘플 홀드) — 종전과 같은 규칙이다.
@@ -3398,6 +3426,8 @@ class DrivingNode(Node):
         #  ★여기서 set_brake 를 부르지 않는다★ 아래 '브레이크' 절이 DRIVE_DONE 이면
         #  2단, 아니면 0단을 무조건 내므로 리니어 처리는 그 한 곳이 소유한다.
         self._sp_state = SP_NONE
+        self._tl_held = False             # [2026-10-17] 신호등 정지 묶음도 상태가 바뀌면 버린다
+        self._tl_rel_t = None
         self._lz_slow = False
         self._lz_done_s0 = None
         # ★라이다 이양도 함께 내린다 [2026-09-01]★ 도착·이탈·정지명령·수동전환으로
@@ -4030,6 +4060,38 @@ class DrivingNode(Node):
         #   큰 CTE 를 4펄스로 파고들면 순수추종이 경로를 가로질러 반대편으로 넘어간다.
         if self._rejoin:
             pulse = min(pulse, REJOIN_PULSE_MAX)
+
+        # ── ★[2026-10-17] 신호등이 2단으로 세운 동안 — 조향을 묶고 펄스 0★ ──
+        #   이 판(white2)은 traffic_light 가 /tl_permit 구간에서 직접 2단으로 세우고, 이 노드는 그동안도
+        #   DRIVE_RUN 이라 순수추종을 계속 냈다. 2026-10-17 #400 정지 67 s 에 헤딩이 흐르면서 조향 지령이
+        #   −4 → −32.5° 로 꺾였고(실측 −27°), 지령 펄스 3↔4 가 언더스티어 항으로 조향을 150 ms 마다
+        #   −19 ↔ −23° 흔들었다(조향 움찔). 지령 펄스도 저속 보정으로 4~5 였다 — 해제 순간 그대로 나간다.
+        #   → 신호등 요구가 2단이고 차가 서 있으면(self.zupt — 바퀴 0 AND GPS 정지 0.3 s) ★직전 조향을
+        #     그대로·펄스 0★ 을 낸다(S 일시정지가 정지 직전 각을 유지하는 것과 같은 규칙). 적분도 쌓지 않는다.
+        #   한 번 묶으면 신호등이 2단을 요구하는 동안은 계속 묶는다(GPS 잡음으로 self.zupt 가 깜빡여도).
+        #   풀리면 ★STOP_RELEASE_WAIT_S(1.0 s) 동안 펄스 0★ — S 재출발과 같은 값·같은 이유다
+        #   (arduino 해제 유예 0.5 s + 리니어 2→0 0.5 s. TL_REQ_RELEASE_HOLD_S 는 0 이라 이것이 없으면
+        #   해제 그 틱에 저속 보정이 얹힌 4~5 펄스가 나간다). 아직 구르는 중(2단이 막 물림)이면 평소대로 조향한다.
+        #   조향 힘빼기('x')는 nxde/arduino 가 한다(2단 + 바퀴 0 이 0.5 s) — 이 노드는 각도를 묶을 뿐이다.
+        if self.tl_brake_req() >= BRAKE_FULL:
+            if self.zupt and not self._tl_held:
+                self._tl_held = True
+                self.event("🚦 신호 정지 — 조향 각 유지 · 펄스 0 (풀리면 "
+                           f"{STOP_RELEASE_WAIT_S:.1f}s 뒤 출발)")
+            if self._tl_held:
+                self._tl_rel_t = None
+                self.send(0, self._last_steer, control=True)
+                return
+        elif self._tl_held:
+            now_t = time.time()
+            if self._tl_rel_t is None:
+                self._tl_rel_t = now_t
+            if now_t - self._tl_rel_t < STOP_RELEASE_WAIT_S:
+                self.send(0, self._last_steer, control=True)
+                return
+            self._tl_held = False
+            self._tl_rel_t = None
+            self.event("🚦 신호 해제 — 출발")
 
         # ── 제어 : 순수추종(도로휠각) + 요레이트 댐핑 + CTE 적분 → 전달계 보정 → pot 지령 ──
         road = self.pure_pursuit_steer(lfd)
