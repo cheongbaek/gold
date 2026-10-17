@@ -1,10 +1,33 @@
-# arduino : kasa A/B 2보드 아두이노 시리얼 브리지 (Ubuntu 22.04 / ROS2 Humble 전용)
+# arduino : kasa ★통합 보드(kasa_1017)★ 아두이노 시리얼 브리지 (Ubuntu 22.04 / ROS2 Humble 전용)
+#
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-10-17] A·B 두 보드 → ★Mega 한 장(kasa_1017.ino)★ — 이 파일도 한 보드용이다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#   ★옛 두 보드용은 nxde/arduino_old.py 로 남겼다★ (kasa_1016_A/B 와 짝). 이 파일은 ★하위호환이
+#   없다★ — 옛 "S,"·"P," 보드를 꽂으면 붙지 않고 '옛 펌웨어' 라고 알린다. ★ROS 토픽은 하나도
+#   바뀌지 않았다★ (이름·타입·뜻 그대로 — 아래 '역할' 절).
+#
+#   보드 → PC : "I,<왼쪽펄스>,<오른쪽펄스>,<쓰로틀raw>,<브레이크단계>,<D5>,<실측조향각>,<상태>"  (50ms)
+#                 = 옛 A "S,<좌>,<우>,<쓰로틀>" + 옛 B "P,<조향각>,<상태>,<모드>" + 브레이크단계
+#                 상태 2 = E-STOP 효력 / 1 = 제동등 조건 / 0 (옛 B 와 같다)
+#   PC → 보드 : "<왼쪽값>,<오른쪽값>,<명령조향각|x>,<브레이크단수>"   ★늘 네 칸★
+#                 = 옛 A 페이로드(단일값이면 좌우 같은 값으로 펼친다) + 옛 B 페이로드
+#                 "-" 핸드셰이크 → "YES" 는 그대로. 'a'(조향 영점)는 종전처럼 보내지 않는다.
+#   ▶ ★무엇을 보낼지 정하는 판단(compose 의 우선순위·E-STOP·AEB·수동조종·조이스틱·해제 유예)은
+#     한 줄도 바꾸지 않았다★ — 옛 A 줄과 B 줄을 만들던 그 결과를 한 줄로 묶어 보낼 뿐이다(command_line).
+#   ▶ 전송 정책도 같다 — 한 줄이 '바뀌었을 때 + KEEPALIVE_S(1초)마다'. 조향 칸이 같은 값으로
+#     자주 와도 보드가 0.9초마다만 다시 건다(kasa_1017 [1017-2] STEER_REARM_MS) — 옛 B 가 줄마다
+#     도달 판정을 다시 세던 문제는 보드가 맡는다.
+#   ▶ ★상태 2·1 의 구동 차단은 보드도 직접 한다★ (kasa_1017 [1017-4]) — 이 파일의 쓰로틀 0
+#     (compose (1) · 마지막 덮어쓰기)도 그대로 둔다. 둘은 같은 판정이라 결과가 같고, 이 노드가
+#     죽거나 늦어도 보드가 끊는다.
+#   ▶ 아래 머리말의 'A보드'·'B보드' 는 ★통합 보드의 구동 쪽·조향 쪽★ 으로 읽는다(역사 기록이 많아
+#     낱낱이 고치지 않았다). 'STOP' 줄 이야기는 전부 1015 이하의 기록이다.
 #
 # ★ 이 파일의 위치 ★
 #   kasa_ws/src/nxde/nxde/arduino.py 에서 통신 로직만 가져와, 토픽 계약을 white 패키지
 #   규약으로 바꾼 것이다. **kasa_ws 쪽은 수정하지 않았다** — 저쪽은 /in·/out String
 #   프로토콜을 그대로 쓰고, 이쪽은 white 의 Twist/Bool/Int32 토픽을 직접 주고받는다.
-#   아두이노 펌웨어(★kasa_1016_A.ino / kasa_1016_B.ino★)도 무수정 전제다.
 
 #   ★[2026-10-16] A·B 가 1016 으로 올라갔다 — "STOP" 줄이 없어지고 B 셋째 칸이 상태다★
 #     · B보드 텔레메트리 "P,<조향각>,<상태>,<모드>" — ★E-STOP 중에도 이 양식 하나★.
@@ -449,6 +472,14 @@ B_STATE_BRAKE = 1
 B_STATE_ESTOP = 2
 STEER_RELEASE_TOKEN = 'x'    # 조향 힘빼기 (B보드 isReleaseToken)
 
+# ★[2026-10-17] 통합 보드 kasa_1017 의 텔레메트리 한 줄★ (그 펌웨어 [1017-3] 과 짝)
+#   "I,<왼쪽펄스>,<오른쪽펄스>,<쓰로틀raw>,<브레이크단계>,<D5>,<실측조향각>,<상태>"
+#   ★칸 수가 다르면 줄 통째로 버린다★ (parse_i) — 펌웨어를 바꾸면 여기도 같이 바꾼다.
+TELEM_PREFIX = 'I,'
+TELEM_FIELDS = 8                 # 'I' 를 포함해 split(',') 한 길이
+#   옛 두 보드(kasa_1016_A·B 이하)의 접두어 — 보이면 붙지 않고 '옛 펌웨어' 라고 알린다(하위호환 없음)
+OLD_TELEM_PREFIXES = ('S,', 'P,')
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★[2026-09-16] 조이스틱 보드("J,") — 이 노드가 세 번째 보드로 함께 잡는다★
 # ══════════════════════════════════════════════════════════════════════════════
@@ -546,27 +577,13 @@ HANDSHAKE_TRIES     = 3      # 같은 포트를 연 채로 재시도할 횟수 (
 HANDSHAKE_HOLD_S    = 2.0
 
 # ── 보드 탐색 ──
-DETECT_READ_S  = 8.0         # 포트 하나를 A/B 로 식별하기 위해 읽어보는 시간
+DETECT_READ_S  = 8.0         # 포트 하나를 식별하기 위해 읽어보는 시간
 #   ★5→8 [2026-08-27]★ USB-ACM open 이 DTR 로 보드를 리셋한다. Mega 부트로더
 #   (~2s) + 스케치 setup + 첫 S,/P, 가 5초 경계에 걸리면 식별 실패 → close 가
 #   또 리셋 → 다음 스캔도 부팅 중. 그 루프가 "스로틀이 안 들어와 Ctrl+C" 다.
-# ★E-STOP 중에는 B보드가 "STOP" 만 내보낸다★ (kasa_1007_B.ino sendOutput:
-#   estop_active 면 println("STOP") 하고 return). 그래서 그 동안에는 'P,' 접두어가
-#   아예 나오지 않아 ★B보드의 역할을 알 수 없다★.
-#   ★[2026-10-07] kasa_1007_B 에서는 '자율주행 + E-STOP' 일 때만이다★ D5 가 수동이면
-#     E-STOP 이 눌려 있어도 'P,' 가 나와 곧바로 식별된다 — 이 대기는 자율에서만 생긴다.
-#   ★[2026-09-04] A보드는 더 이상 여기 걸리지 않는다★ ESTOP_ENABLED = false 라
-#     E-STOP 중에도 'S,' 를 계속 내보낸다 — A는 그 동안에도 정상 식별된다.
-#     아래 설명은 이제 B보드 하나에 대한 것이다.
-#   그때 5초 만에 포트를 닫으면 두 가지가 나쁘다:
-#     ① 로그가 "보드 미발견 — 케이블 확인" 이 되어 원인을 하드웨어에서 찾게 된다
-#        (실제로 그렇게 헤맸다. 정답은 'E-STOP 을 풀어라' 다)
-#     ② close 가 DTR 을 토글해 ★보드를 리셋한다★ — 8초마다 리셋이 반복되고,
-#        E-STOP 을 풀어도 부팅 대기 때문에 붙는 데 시간이 더 걸린다
-#   → "STOP" 을 한 줄이라도 보면 ★그 포트에 kasa 보드가 있다는 증거★ 로 받아들이고,
-#     포트를 닫지 않고 이 시간까지 해제를 기다린다. 풀리는 즉시 식별된다.
-DETECT_ESTOP_HOLD_S = 15.0
-DETECT_RETRY_S = 3.0         # 두 보드를 아직 못 찾았을 때 재스캔 간격
+# ★[2026-10-17] E-STOP 대기(DETECT_ESTOP_HOLD_S)를 지웠다★ — 1015 이하 B 는 E-STOP 중 "STOP" 만 내
+#   역할을 알 수 없었다. kasa_1017 은 E-STOP 중에도 "I," 를 낸다(상태 칸 2) — 곧바로 식별된다.
+DETECT_RETRY_S = 3.0         # 보드를 아직 못 찾았을 때 재스캔 간격
 #  ★조이스틱만 없을 때는 느리게 다시 본다★ [2026-09-16] 조이스틱은 '없는 것이
 #  정상' 인 장치라, A/B 와 같은 3초로 두면 안 꽂은 차에서 남은 포트를 계속 두드린다
 #  (포트를 여는 것 자체가 그 보드를 DTR 로 리셋시킨다 — 다른 USB 시리얼이 꽂혀
@@ -624,10 +641,9 @@ def is_busy_error(exc):
 #  포트 탐색 — ★이 파일이 소유한다★ (구 nxde/ports.py 에서 흡수, 2026-08-05)
 # ══════════════════════════════════════════════════════════════════════════════
 #  아두이노 계열 USB-serial VID: Arduino 정품(2341) / CH340 클론(1A86) / Arduino LLC(2A03)
-#  ★ A/B 두 대가 같은 VID/PID 라서 VID/PID 로는 역할을 구분할 수 없다 ★ 실제 식별은
-#  포트를 열어 첫 텔레메트리 접두어('S,'=A / 'P,'=B)로 한다 — identify_port().
-#  ★단, E-STOP 중에는 두 보드가 모두 "STOP" 만 보낸다★ → 그 동안은 역할을 알 수 없다.
-#    그 경우를 '보드 없음' 과 구별해 다루는 이유는 DETECT_ESTOP_HOLD_S 주석에 적었다.
+#  ★ 통합 보드와 조이스틱 보드가 같은 VID/PID 일 수 있어 VID/PID 로는 역할을 구분할 수 없다 ★
+#  실제 식별은 포트를 열어 첫 텔레메트리 접두어('I,'=통합 보드 / 'J,'=조이스틱)로 한다 — identify_port().
+#  [2026-10-17] 옛 'S,'(A)·'P,'(B)·"STOP" 은 '옛 펌웨어' 로 알리고 붙지 않는다.
 ARDUINO_VIDS = {0x2341, 0x1A86, 0x2A03}
 
 #  ★★ GPS·IMU 를 스스로 제외한다 ★★
@@ -934,13 +950,13 @@ def handshake(ser, port, role, logger):
 
 
 def identify_port(port, baud, logger, reclaim=True):
-    """포트를 열어 DETECT_READ_S 동안 읽으며 첫 'S,'/'P,' 줄로 보드를 식별하고,
+    """포트를 열어 DETECT_READ_S 동안 읽으며 첫 텔레메트리 줄로 보드를 식별하고,
        이어서 ★'-' → "YES" 핸드셰이크로 PC→보드 방향까지 확인★한다.
 
        반환: (role, serial.Serial 또는 None)
-         role = 'A' | 'B'      : 식별 + 핸드셰이크 모두 성공 (ser 유효)
+         role = 'K'            : ★통합 보드 kasa_1017★ ("I,") — 식별 + 핸드셰이크 모두 성공 (ser 유효)
                 'J'            : ★조이스틱 보드★ [2026-09-16]. ser 유효.
-                                 ★핸드셰이크를 요구하지 않는다★ — A/B 에 그것을
+                                 ★핸드셰이크를 요구하지 않는다★ — 통합 보드에 그것을
                                  요구하는 이유는 "PC→보드 방향이 죽으면 명령이
                                  안 나가는데 텔레메트리만 보고 연결로 인정하면
                                  안 된다" 였다. 조이스틱은 반대다: 조종은
@@ -949,7 +965,8 @@ def identify_port(port, baud, logger, reclaim=True):
                                  (겸사겸사 핸드셰이크가 없는 구 joy4.ino 도 붙는다)
                 'NOACK'        : 역할은 알았는데 "YES" 가 안 왔다 → 포트를 닫았다.
                                  호출측이 다음 스캔에서 다시 열어 재확인한다.
-                'ESTOP'        : 보드는 있는데 STOP 만 보내 역할을 모른다.
+                'OLD'          : ★옛 두 보드 펌웨어★("S,"·"P,"·"STOP") → 포트를 닫았다.
+                                 [2026-10-17] 이 파일은 그 보드를 몰지 않는다(arduino_old.py 의 몫).
                 None           : 아무것도 못 봤다 (보드가 아니거나 열지 못했다)."""
     ser = open_serial(port, baud, logger, reclaim=reclaim)
     if ser is None:
@@ -957,7 +974,6 @@ def identify_port(port, baud, logger, reclaim=True):
 
     buf = b''
     deadline = time.monotonic() + DETECT_READ_S
-    saw_stop = False
     while time.monotonic() < deadline:
         try:
             data = ser.read(256)
@@ -972,43 +988,39 @@ def identify_port(port, baud, logger, reclaim=True):
             while b'\n' in buf:
                 line, buf = buf.split(b'\n', 1)
                 text = line.decode('ascii', errors='ignore').strip()
-                role = 'A' if text.startswith('S,') else (
-                       'B' if text.startswith('P,') else (
-                       'J' if text.startswith(JOY_PREFIX) else None))
-                if role == 'J':
+                if text.startswith(JOY_PREFIX):
                     # ★조이스틱은 핸드셰이크 없이 바로 인정한다★ (위 docstring)
                     logger.info(f"[조이스틱 연결] {port}")
                     return 'J', ser
-                if role is not None:
+                if text.startswith(TELEM_PREFIX):
                     # ★출력이 정상이어도 여기서 끝내지 않는다★ '-' → "YES" 로
                     #   PC→보드 방향까지 확인해야 연결로 인정한다.
-                    if handshake(ser, port, role, logger):
-                        return role, ser
+                    if handshake(ser, port, '통합', logger):
+                        return 'K', ser
                     logger.error(
-                        f"❌ {port} : {role}보드의 텔레메트리는 보이는데 "
+                        f"❌ {port} : 통합 보드의 텔레메트리는 보이는데 "
                         f"'{HANDSHAKE_TOKEN}' 에 \"{HANDSHAKE_REPLY}\" 로 답하지 "
                         f"않습니다 — ★보내는 방향(PC→보드)이 죽었거나 펌웨어가 "
-                        f"kasa_0904 이전 판입니다★. 포트를 닫고 다시 확인합니다")
+                        f"kasa_1017 이 아닙니다★. 포트를 닫고 다시 확인합니다")
                     try:
                         ser.close()
                     except (serial.SerialException, OSError):
                         pass
                     return 'NOACK', None
-                # ★E-STOP 중 — 보드는 있는데 역할을 말해주지 않는다★ (상수 주석 참고)
-                #   포트를 닫지 않고 해제를 기다린다. 닫으면 보드가 리셋된다.
-                if text == 'STOP' and not saw_stop:
-                    saw_stop = True
-                    deadline = time.monotonic() + DETECT_ESTOP_HOLD_S
-                    logger.warn(
-                        f"⛔ {port} : ★E-STOP 이 걸려 있습니다★ 보드는 붙어 있는데 "
-                        f"펌웨어가 \"STOP\" 만 보내 A/B 를 구별할 수 없습니다 "
-                        f"(케이블 문제가 아닙니다). 스위치를 해제하면 즉시 붙습니다 "
-                        f"— {DETECT_ESTOP_HOLD_S:.0f}초까지 포트를 잡고 기다립니다")
+                if text.startswith(OLD_TELEM_PREFIXES) or text == 'STOP':
+                    # ★옛 두 보드 펌웨어★ — 이 파일은 그 보드를 몰지 않는다(하위호환 없음)
+                    logger.error(
+                        f"❌ {port} : ★옛 두 보드 펌웨어★ 의 텔레메트리({text[:24]!r}) 입니다. "
+                        f"이 arduino.py 는 통합 보드(kasa_1017, \"I,\")만 몹니다 — "
+                        f"보드에 kasa_1017.ino 를 굽거나, 옛 두 보드로 달리려면 arduino_old.py 를 쓰십시오")
+                    try:
+                        ser.close()
+                    except (serial.SerialException, OSError):
+                        pass
+                    return 'OLD', None
 
     ser.close()
-    # ★'보드가 없다' 와 'E-STOP 때문에 역할을 모른다' 를 구별해서 돌려준다★
-    #   호출측(_link_loop)의 경고 문구가 갈라진다 — 사람이 볼 곳이 달라지기 때문이다.
-    return ('ESTOP' if saw_stop else None), None
+    return None, None
 
 
 class Arduino(Node):
@@ -1151,28 +1163,29 @@ class Arduino(Node):
         #   stop_and_close 는 언제든 불릴 수 있는데, 그 안에서 이 속성들을 읽는다.
         self._running = False
         self._link_thread = None
-        self.ser_a = None
-        self.ser_b = None
-        self.ser_j = None          # ★조이스틱 보드★ (없어도 A/B 는 정상이다)
-        self.rx_buf_a = b''
-        self.rx_buf_b = b''
+        self.ser_k = None          # ★[2026-10-17] 통합 보드 kasa_1017★ (옛 ser_a·ser_b 자리)
+        self.ser_j = None          # ★조이스틱 보드★ (없어도 통합 보드는 정상이다)
+        self.rx_buf_k = b''
         self.rx_buf_j = b''
-        self.last_line_a = None
-        self.last_line_b = None
-        self._last_s_t = 0.0           # 마지막 유효 S, 수신 (monotonic). 0 = 아직 없음
+        self.last_line_k = None
+        self._last_s_t = 0.0           # 마지막 유효 I, 수신 (monotonic). 0 = 아직 없음
         self._skip_junk_n = 0          # 에코/잡음 줄을 건너뛴 횟수 (경고 throttle 용)
-        # 핸드셰이크 직후 보드가 텔레메트리를 멈추는 구간. 그 동안은 S, 공백을 탓하지 않는다.
+        # 핸드셰이크 직후 보드가 텔레메트리를 멈추는 구간. 그 동안은 I, 공백을 탓하지 않는다.
         self._telem_grace_until = 0.0
-        # ★E-STOP 때문에 역할을 못 읽은 포트★ (_scan_once 가 매 바퀴 다시 채운다)
-        self._estop_ports = []
-        # ★텔레메트리는 나오는데 '-' 에 "YES" 로 답하지 않은 포트★ (같이 매 바퀴 갱신)
+        # ★텔레메트리는 나오는데 '-' 에 "YES" 로 답하지 않은 포트★ (_scan_once 가 매 바퀴 갱신)
         self._noack_ports = []
+        # ★옛 두 보드 펌웨어("S,"·"P,")가 꽂힌 포트★ (같이 매 바퀴 갱신)
+        self._old_ports = []
 
         # ── 보드 → ROS 최신 상태 (STOP·형식오류 시 마지막 값 유지) ──
         self.pulse_l = 0
         self.pulse_r = 0
-        self.angle_board = 0       # B보드 실측 조향각 (− 좌 / + 우 = ROS 규약과 동일)
+        self.angle_board = 0       # 실측 조향각 (− 좌 / + 우 = ROS 규약과 동일)
         self.throttle_raw = 0
+        # ★[2026-10-17] 보드가 알려 준 '지금 지시된 브레이크 단계' 0/1/2★ (I, 다섯째 칸)
+        #   보드가 실제로 받아들인 값이다 — E-STOP 이면 2, 수동조종이면 0. 토픽으로는 내지 않는다
+        #   (같은 이름의 토픽이 없다 — ROS 토픽은 바꾸지 않는다). 진단·로그용.
+        self.brake_stage = 0
         # ★[2026-10-16] B보드 상태 (P, 셋째 칸)★ 0 평상 / 1 제동등 조건 / 2 E-STOP (kasa_1016_B).
         #   /brake_pot 으로 그대로 발행한다. 1015 이하에서는 A5 raw 가 이 자리였다.
         self.b_state = 0
@@ -1266,11 +1279,9 @@ class Arduino(Node):
         self.drive_state = ''
         self.drive_state_t = 0.0
 
-        # ── 전송 변경 감지 ──
-        self._last_a = None
-        self._last_b = None
-        self._last_a_t = 0.0
-        self._last_b_t = 0.0
+        # ── 전송 변경 감지 ── (★[2026-10-17] 한 줄★ — 옛 _last_a·_last_b 를 합쳤다)
+        self._last_k = None
+        self._last_k_t = 0.0
 
         # ── 퍼블리셔 ──
         self.pub_encoder = self.create_publisher(Int32, '/encoder', 10)
@@ -1355,18 +1366,17 @@ class Arduino(Node):
         self.create_timer(TX_PERIOD_S, self.on_tx_timer)
 
         self.get_logger().info(
-            "아두이노 브리지 시작 — A/B 보드 탐색은 백그라운드에서 진행합니다 "
+            "아두이노 브리지 시작 — 통합 보드(kasa_1017) 탐색은 백그라운드에서 진행합니다 "
             "(연결 전에도 노드는 정상 동작하며, 꽂는 순간 자동으로 붙습니다)")
 
     # ═══════════════════════════════════════════════════════════════
     #  보드 링크 관리 : 최초 탐색 + 도중 단절 재연결 (전용 스레드)
     # ═══════════════════════════════════════════════════════════════
     def _link_loop(self):
-        """A/B 보드가 둘 다 붙어 있을 때까지(그리고 빠질 때마다 다시) 스캔한다.
+        """통합 보드가(조이스틱이 켜져 있으면 그것까지) 붙어 있을 때까지, 그리고 빠질 때마다 다시 스캔한다.
 
         ★ 이 루프가 최초 연결과 재연결을 겸한다 ★ read/write 오류로 _drop_board 가
-        포트를 None 으로 떨어뜨리면 다음 사이클이 그것을 보고 다시 찾는다. 한쪽만
-        빠지면 나머지 한쪽은 계속 정상 동작한다(그쪽 포트는 건드리지 않는다).
+        포트를 None 으로 떨어뜨리면 다음 사이클이 그것을 보고 다시 찾는다.
 
         rclpy 콜백이 아니라 전용 스레드이므로 여기서 time.sleep / 블로킹 read 를 해도
         제어 타이머(on_tx_timer/on_rx_timer)를 막지 않는다."""
@@ -1377,69 +1387,64 @@ class Arduino(Node):
                 first_round = False
                 continue
 
-            missing = [n for n, s in (('A', self.ser_a), ('B', self.ser_b)) if s is None]
             if first_round:
                 self.get_logger().info(
-                    f"{'/'.join(missing) if missing else 'J'}보드 탐색 시작...")
+                    f"{'통합' if self.ser_k is None else '조이스틱'} 보드 탐색 시작...")
             self.publish_status()
 
             self._scan_once()
 
-            if self.ser_a is None or self.ser_b is None:
-                missing = [n for n, s in (('A', self.ser_a), ('B', self.ser_b)) if s is None]
-                if self._noack_ports:
+            if self.ser_k is None:
+                if self._old_ports:
+                    # ★원인이 확실할 때는 케이블을 의심하게 만들지 않는다★
+                    self.get_logger().error(
+                        f"통합 보드가 아직 안 붙었습니다 — ★옛 두 보드 펌웨어가 꽂혀 있습니다★ "
+                        f"({', '.join(self._old_ports)}). kasa_1017.ino 를 구우십시오 "
+                        f"(옛 두 보드로 달리려면 nxde/arduino_old.py)",
+                        throttle_duration_sec=10.0)
+                elif self._noack_ports:
                     # ★출력은 정상인데 응답이 없다 = 케이블을 의심할 자리가 아니다★
                     self.get_logger().error(
-                        f"{'/'.join(missing)}보드가 아직 안 붙었습니다 — "
+                        f"통합 보드가 아직 안 붙었습니다 — "
                         f"★텔레메트리는 나오는데 '{HANDSHAKE_TOKEN}' 에 "
                         f"\"{HANDSHAKE_REPLY}\" 로 답하지 않습니다★ "
                         f"({', '.join(self._noack_ports)}). "
-                        f"보드 펌웨어가 kasa_0904 인지, 시리얼 TX(PC→보드)가 살아 있는지 "
+                        f"보드 펌웨어가 kasa_1017 인지, 시리얼 TX(PC→보드)가 살아 있는지 "
                         f"확인하세요. {DETECT_RETRY_S}s 뒤 포트를 다시 열어 재확인합니다",
-                        throttle_duration_sec=10.0)
-                elif self._estop_ports:
-                    # ★원인이 확실할 때는 케이블을 의심하게 만들지 않는다★
-                    self.get_logger().warn(
-                        f"{'/'.join(missing)}보드가 아직 안 붙었습니다 — "
-                        f"★E-STOP 이 걸려 있습니다★ ({', '.join(self._estop_ports)}). "
-                        f"스위치를 해제하면 {DETECT_RETRY_S}s 안에 붙습니다 "
-                        f"(케이블·전원은 정상입니다 — 보드가 응답하고 있습니다)",
                         throttle_duration_sec=10.0)
                 else:
                     self.get_logger().warn(
-                        f"{'/'.join(missing)}보드 미발견, {DETECT_RETRY_S}s 후 재스캔 "
+                        f"통합 보드 미발견, {DETECT_RETRY_S}s 후 재스캔 "
                         f"(연결·전원·USB 케이블 확인)", throttle_duration_sec=15.0)
                 self.publish_status()
                 time.sleep(DETECT_RETRY_S)
             elif self.use_joystick and self.ser_j is None:
                 # ★조이스틱이 없는 것은 정상이다 — 경고하지 않는다★ [2026-09-16]
-                #   A/B 가 없으면 차가 아예 안 움직이지만, 조이스틱이 없으면
+                #   통합 보드가 없으면 차가 아예 안 움직이지만, 조이스틱이 없으면
                 #   그냥 '조이스틱으로 안 모는 날' 이다. 꽂으면 알아서 붙는다.
                 self.get_logger().info(
                     f"조이스틱 보드 미발견 — 꽂으면 자동으로 붙습니다 "
-                    f"(A/B 는 정상, {JOY_RESCAN_S:.0f}초마다 확인)",
+                    f"(통합 보드는 정상, {JOY_RESCAN_S:.0f}초마다 확인)",
                     throttle_duration_sec=120.0)
                 time.sleep(JOY_RESCAN_S)
             elif not first_round:
-                self.get_logger().info("A/B 보드 모두 연결됨")
+                self.get_logger().info("통합 보드 연결됨")
             first_round = False
 
     def _all_boards_linked(self):
         """더 스캔할 것이 남았는가. ★조이스틱은 켜져 있을 때만 센다★"""
-        if self.ser_a is None or self.ser_b is None:
+        if self.ser_k is None:
             return False
         return not (self.use_joystick and self.ser_j is None)
 
     def _scan_once(self):
         """후보 포트를 한 바퀴 돌며 아직 못 찾은 보드를 채운다."""
-        owned = {s.port for s in (self.ser_a, self.ser_b, self.ser_j) if s is not None}
+        owned = {s.port for s in (self.ser_k, self.ser_j) if s is not None}
         exclude = list(self.exclude_ports) + list(owned)
-        # ★이번 바퀴에서 'E-STOP 때문에 역할을 못 읽은' 포트★ (매 바퀴 새로 판단한다 —
-        #   해제되면 다음 바퀴에서 정상 식별되어야 하므로 남겨두면 안 된다)
-        self._estop_ports = []
-        # ★핸드셰이크에 답하지 않은 포트도 매 바퀴 새로 판단한다★ (선을 다시 꽂거나
+        # ★핸드셰이크에 답하지 않은 포트·옛 펌웨어 포트는 매 바퀴 새로 판단한다★ (선을 다시 꽂거나
         #   펌웨어를 올리면 다음 바퀴에서 붙어야 하므로 남겨두면 안 된다)
         self._noack_ports = []
+        self._old_ports = []
 
         for port in candidate_ports(exclude=exclude):
             if not (self._running and rclpy.ok()):
@@ -1448,7 +1453,7 @@ class Arduino(Node):
                 return
 
             # 이미 한 보드를 연 상태면 USB 컨트롤러가 안정되도록 잠깐 쉰다
-            if self.ser_a is not None or self.ser_b is not None or self.ser_j is not None:
+            if self.ser_k is not None or self.ser_j is not None:
                 time.sleep(PORT_SETTLE_S)
 
             try:
@@ -1457,15 +1462,14 @@ class Arduino(Node):
                 self.get_logger().warn(f"{port} 감지 중 오류(건너뜀): {e}")
                 continue
 
-            if role == 'ESTOP':
-                # 보드는 있다 — 역할만 모른다. identify_port 가 이미 경고했다.
-                self._estop_ports.append(port)
-                continue
-
             if role == 'NOACK':
                 # ★역할은 알았는데 '-' 에 "YES" 로 답하지 않았다★ identify_port 가 이미
                 #   포트를 닫았다(=보드 리셋). 다음 바퀴에서 다시 열어 처음부터 확인한다.
                 self._noack_ports.append(port)
+                continue
+
+            if role == 'OLD':
+                self._old_ports.append(port)
                 continue
 
             if role == 'J' and self.use_joystick and self.ser_j is None:
@@ -1482,25 +1486,16 @@ class Arduino(Node):
                     f"(영점). 그 다음 ★SWA 를 한 번 누르면 조종이 시작됩니다★ "
                     f"(자율주행 모드에서만 / 최대 {self.joy_pulse_max}펄스)")
                 self.publish_status()
-            elif role == 'A' and self.ser_a is None:
+            elif role == 'K' and self.ser_k is None:
                 ser.timeout = 0            # 이후 폴링은 논블로킹
-                self.rx_buf_a = b''        # 재연결이면 이전 버퍼 잔재를 버린다
-                self._last_a = None        # 변경감지 캐시 초기화 → 다음 TX 에서 즉시 재전송
-                self._last_s_t = time.monotonic()  # 부팅 직후 S, 유예
+                self.rx_buf_k = b''        # 재연결이면 이전 버퍼 잔재를 버린다
+                self._last_k = None        # 변경감지 캐시 초기화 → 다음 TX 에서 즉시 재전송
+                self._last_s_t = time.monotonic()  # 부팅 직후 I, 유예
                 # ★핸드셰이크 직후 2초는 보드가 텔레메트리를 멈춘다★ (펌웨어 유예)
                 self._telem_grace_until = time.monotonic() + HANDSHAKE_HOLD_S
-                self.ser_a = ser
+                self.ser_k = ser
                 self.get_logger().info(
-                    f"[A보드 연결] {port} (인휠 PID + 주행펄스) "
-                    f"— 핸드셰이크 확인됨('{HANDSHAKE_TOKEN}'→\"{HANDSHAKE_REPLY}\")")
-                self.publish_status()
-            elif role == 'B' and self.ser_b is None:
-                ser.timeout = 0
-                self.rx_buf_b = b''
-                self._last_b = None
-                self.ser_b = ser
-                self.get_logger().info(
-                    f"[B보드 연결] {port} (조향 + 제동 + 모드) "
+                    f"[통합 보드 연결] {port} (인휠 + 조향 + 제동 + 모드 + E-STOP, kasa_1017) "
                     f"— 핸드셰이크 확인됨('{HANDSHAKE_TOKEN}'→\"{HANDSHAKE_REPLY}\")")
                 self.publish_status()
             elif ser is not None:
@@ -1510,42 +1505,38 @@ class Arduino(Node):
         """단절된 보드의 포트를 닫고 None 으로 떨어뜨린다 → _link_loop 가 다시 찾는다.
 
         ★ 텔레메트리 캐시(펄스/각도/모드)는 지우지 않는다 ★ 마지막 정상값을 유지하는
-        것이 STOP·형식오류 처리와 같은 태도이고, 재연결 직후 값이 0 으로 튀는 것보다 낫다.
-        단, 최신 줄(last_line_*)은 지운다 — 'STOP' 이 남아 있으면 보드가 빠진 뒤에도
-        e-stop 이 걸린 것으로 오판한다."""
+        것이 형식오류 처리와 같은 태도이고, 재연결 직후 값이 0 으로 튀는 것보다 낫다.
+        단 ★상태(b_state)는 지운다★ — 빠진 보드의 E-STOP·제동등 조건을 들고 있지 않는다."""
         ser = self._ser(which)
         if ser is None:
             return
+        name = '통합' if which == 'k' else '조이스틱'
         self.get_logger().error(
-            f"[{which.upper()}보드 단절] {getattr(ser, 'port', '?')}: {reason} → 재연결 시도")
+            f"[{name} 보드 단절] {getattr(ser, 'port', '?')}: {reason} → 재연결 시도")
         try:
             ser.close()
         except (serial.SerialException, OSError):
             pass
-        if which == 'a':
-            self.ser_a = None
-            self.rx_buf_a = b''
-            self.last_line_a = None
+        if which == 'k':
+            self.ser_k = None
+            self.rx_buf_k = b''
+            self.last_line_k = None
             self._last_s_t = 0.0
             self._thr_buf.clear()
+            self.b_state = B_STATE_NONE     # 빠진 보드의 상태 2·1 을 들고 있지 않는다
         elif which == 'j':
             # ★조이스틱이 빠지면 그 자리에서 조종을 끈다★ 입력을 잃은 채 마지막
-            #   펄스가 남으면 차가 계속 간다(A보드는 신선도를 보지 않고 래치한다).
+            #   펄스가 남으면 차가 계속 간다(보드는 신선도를 보지 않고 래치한다).
             self.ser_j = None
             self.rx_buf_j = b''
             self._set_joy_on(False, '조이스틱 단절')
             if self.joy is not None:
                 self.joy.reset('조이스틱 단절')
-        else:
-            self.ser_b = None
-            self.rx_buf_b = b''
-            self.last_line_b = None
-            self.b_state = B_STATE_NONE     # [2026-10-16] 빠진 보드의 상태 2·1 을 들고 있지 않는다
         self.publish_status()
 
     def _ser(self, which):
-        """'a'/'b'/'j' → 그 보드의 serial 객체 (없으면 None)."""
-        return {'a': self.ser_a, 'b': self.ser_b, 'j': self.ser_j}.get(which)
+        """'k'/'j' → 그 보드의 serial 객체 (없으면 None)."""
+        return {'k': self.ser_k, 'j': self.ser_j}.get(which)
 
     # ═══════════════════════════════════════════════════════════════
     #  ROS 콜백
@@ -1893,13 +1884,13 @@ class Arduino(Node):
         A5 브레이크 스위치가 닫힌 동안 페달 구동을 끊는다. 상태 2(E-STOP)는 (1) 분기가 맡는다.
         B보드 리니어 지령(b_payload)은 건드리지 않는다."""
         a_payload, b_payload, pulse = self._compose_modes()
-        cut = self.ser_b is not None and self.b_state == B_STATE_BRAKE
+        cut = self.ser_k is not None and self.b_state == B_STATE_BRAKE
         if cut != self._b_brake_cut:
             self._b_brake_cut = cut
             if cut:
-                self.get_logger().info("[제동등 조건] B보드 상태 1 — A보드 쓰로틀 0")
+                self.get_logger().info("[제동등 조건] 보드 상태 1 — 쓰로틀 0 (보드도 스스로 끊는다)")
             else:
-                self.get_logger().info("[제동등 조건 해제] B보드 상태 0 — 쓰로틀 복귀")
+                self.get_logger().info("[제동등 조건 해제] 보드 상태 0 — 쓰로틀 복귀")
         if cut:
             return '0', b_payload, 0
         return a_payload, b_payload, pulse
@@ -2074,15 +2065,14 @@ class Arduino(Node):
         a_payload, b_payload, drive_pulse = self.compose()
         now = time.monotonic()
 
-        if a_payload != self._last_a or (now - self._last_a_t) >= KEEPALIVE_S:
-            if self.send_line('a', a_payload):
-                self._last_a = a_payload
-                self._last_a_t = now
-
-        if b_payload != self._last_b or (now - self._last_b_t) >= KEEPALIVE_S:
-            if self.send_line('b', b_payload):
-                self._last_b = b_payload
-                self._last_b_t = now
+        # ★[2026-10-17] 옛 A 줄 + 옛 B 줄 = 한 줄★ (command_line). 전송 정책은 같다 — 바뀌었거나
+        #   KEEPALIVE_S 가 지났을 때만. 구동값이 바뀔 때 조향 칸이 같은 값으로 함께 가도 보드가
+        #   0.9초마다만 다시 건다(kasa_1017 [1017-2]).
+        line = self.command_line(a_payload, b_payload)
+        if line != self._last_k or (now - self._last_k_t) >= KEEPALIVE_S:
+            if self.send_line('k', line):
+                self._last_k = line
+                self._last_k_t = now
 
         # ★ 주행 목표펄스(0~15 라벨)를 발행한다 ★ 수동조종에서는 페달 환산값이므로
         #   mapping 의 수집 라벨 ①이 된다. 보드가 단절되어 전송이 안 된 주기에도
@@ -2133,6 +2123,17 @@ class Arduino(Node):
                 self._last_j = line
                 self._last_j_t = now
 
+    @staticmethod
+    def command_line(a_payload, b_payload):
+        """★[2026-10-17] 통합 보드 명령 한 줄★ "<왼쪽값>,<오른쪽값>,<명령조향각|x>,<브레이크단수>".
+
+        a_payload 는 compose 가 옛 A보드에 보내던 그대로다 — 단일값("7")이면 ★좌우 같은 값으로
+        펼친다★("7,7"), 콤마 2값("140,140")은 그대로 쓴다. 옛 A 펌웨어에서 단일값은 0~15 펄스만
+        받았고 compose 는 단일값으로 16 이상을 내지 않으므로(그때는 콤마 2값) 뜻이 바뀌지 않는다.
+        b_payload 는 옛 B 줄 "<조향각|x>,<브레이크단계>" 그대로 뒤에 붙인다."""
+        drive = a_payload if ',' in a_payload else f'{a_payload},{a_payload}'
+        return f'{drive},{b_payload}'
+
     def send_line(self, which, text):
         """한 보드에 한 줄 전송. 성공하면 True.
 
@@ -2153,8 +2154,7 @@ class Arduino(Node):
     #  보드 → ROS : 수신 + 발행
     # ═══════════════════════════════════════════════════════════════
     def on_rx_timer(self):
-        self.poll_port('a')
-        self.poll_port('b')
+        self.poll_port()
         self.poll_joystick()
         self.update_estop()
         self._warn_stale_throttle()
@@ -2162,24 +2162,24 @@ class Arduino(Node):
         self.publish_status()
 
     def _warn_stale_throttle(self):
-        """A보드는 붙었는데 S, 가 안 오면 페달이 죽은 것처럼 보인다. 조용히 넘기지 않는다."""
-        if self.ser_a is None:
+        """보드는 붙었는데 I, 가 안 오면 페달·조향각·모드가 죽은 것처럼 보인다. 조용히 넘기지 않는다."""
+        if self.ser_k is None:
             return
-        # ★핸드셰이크 유예 중에는 S, 가 없는 것이 정상이다★ (펌웨어가 2초 멈춘다)
+        # ★핸드셰이크 유예 중에는 I, 가 없는 것이 정상이다★ (펌웨어가 2초 멈춘다)
         if time.monotonic() < self._telem_grace_until:
             return
         if self._last_s_t <= 0.0:
             self.get_logger().warn(
-                "A보드는 붙었는데 S, 텔레메트리(쓰로틀)를 아직 못 받았습니다 "
-                "— /throttle_pedal 이 0 으로 보입니다. 보드 부팅을 확인하세요",
+                "통합 보드는 붙었는데 I, 텔레메트리를 아직 못 받았습니다 "
+                "— /throttle_pedal·/steer_angle_measured 가 갱신되지 않습니다. 보드 부팅을 확인하세요",
                 throttle_duration_sec=5.0)
             return
         age = time.monotonic() - self._last_s_t
         if age > TELEMETRY_STALE_S:
             self.get_logger().warn(
-                f"A보드 S, 텔레메트리가 {age:.1f}초째 없습니다 "
-                f"(마지막 줄={self.last_line_a!r}). 스로틀 raw 가 갱신되지 않습니다 "
-                f"— TX 에코가 S, 를 가리고 있거나 A보드가 멎었을 수 있습니다",
+                f"통합 보드 I, 텔레메트리가 {age:.1f}초째 없습니다 "
+                f"(마지막 줄={self.last_line_k!r}). 스로틀·조향각·모드가 갱신되지 않습니다 "
+                f"— TX 에코가 I, 를 가리고 있거나 보드가 멎었을 수 있습니다",
                 throttle_duration_sec=5.0)
 
     def poll_joystick(self):
@@ -2209,158 +2209,103 @@ class Arduino(Node):
             if text:
                 self.joy.feed_line(text)
 
-    def poll_port(self, which):
-        ser = self.ser_a if which == 'a' else self.ser_b
+    def poll_port(self):
+        """통합 보드 수신. ★한 창의 줄을 전부 보고★ 마지막 유효 I, 줄 하나를 반영한다."""
+        ser = self.ser_k
         if ser is None:
             return
-        buf_attr = 'rx_buf_a' if which == 'a' else 'rx_buf_b'
-        buf = getattr(self, buf_attr)
-
         try:
             data = ser.read(4096)
         except (serial.SerialException, OSError) as e:
-            # 포트가 죽었다(USB 분리 등) → 그 보드만 떨어뜨리고 _link_loop 가 재연결한다
-            self._drop_board(which, f"수신 실패: {e}")
+            # 포트가 죽었다(USB 분리 등) → 떨어뜨리고 _link_loop 가 재연결한다
+            self._drop_board('k', f"수신 실패: {e}")
             return
-        if data:
-            buf += data
+        buf = self.rx_buf_k + (data or b'')
         if b'\n' not in buf:
-            setattr(self, buf_attr, buf)
+            self.rx_buf_k = buf
             return
 
         lines = buf.split(b'\n')
-        setattr(self, buf_attr, lines[-1])          # 미완성 줄은 버퍼에 보존
+        self.rx_buf_k = lines[-1]                   # 미완성 줄은 버퍼에 보존
         texts = [t for t in
                  (line.decode('ascii', errors='ignore').strip() for line in lines[:-1])
                  if t]
-        if not texts:
-            return
-
-        # ★ 진단 줄('#'로 시작)은 걸러낸다 ★ kasa_1007_B.ino 의 DEBUG_B 와 조향 영점
-        #   캘리브레이션('a') 결과가 이 형식으로 나온다. 운용 중 DEBUG_B=false 라도
-        #   캘리브레이션 줄은 항상 나오므로, 걸러내지 않으면 그 줄이 최신 줄로 잡혀
-        #   텔레메트리를 덮어버린다.
+        # ★ 진단 줄('#'로 시작)은 걸러낸다 ★ 조향 영점 캘리브레이션('a') 결과가 이 형식으로 나온다.
         texts = [t for t in texts if not t.startswith('#')]
         if not texts:
             return
 
-        # ★한 창의 줄을 전부 본다★ 최신 한 줄만 쓰면 TX 에코("<pwm>,<pwm>" / "0")가
-        #   S,/P, 뒤에 붙어 스로틀·모드 파싱이 건너뛰어지고, 페달이 죽은 것처럼 보인다.
-        #   STOP 과 텔레메트리가 같은 창에 있으면 ★더 나중 줄이 이긴다★
-        #   (부팅 직후 STOP → S, 회복 / 체결 직후 S, → STOP).
+        # ★한 창의 줄을 전부 본다★ 최신 한 줄만 쓰면 TX 에코(접두어 없는 "7,7,-12,0")가 I, 뒤에
+        #   붙어 스로틀·모드 파싱이 건너뛰어진다(CH340 클론 — [2026-08-27] 그 경위).
         last_telem = None
-        last_is_stop = False
         junk = 0
-        prefix = 'S,' if which == 'a' else 'P,'
         for t in texts:
             if t == HANDSHAKE_REPLY:
                 # ★핸드셰이크 응답★ 연결 확인 때 말고는 올 일이 없다(이 노드는 운용 중
-                #   '-' 를 보내지 않는다). 잡음으로 세지 않고 그냥 흘린다 — 텔레메트리도
-                #   STOP 도 아니므로 아무 상태를 바꾸지 않는다.
+                #   '-' 를 보내지 않는다). 잡음으로 세지 않고 그냥 흘린다.
                 continue
-            if t == 'STOP' and which == 'b':
-                # ★[2026-10-16] 1015 이하 B 펌웨어용으로만 남긴다★ kasa_1016_B 는 STOP 대신
-                #   P, 셋째 칸 2 를 낸다. A보드의 STOP 은 더 이상 E-STOP 이 아니다(kasa_1016_A
-                #   는 내지 않는다) — 와도 아래 잡음으로 센다.
-                last_is_stop = True
-                last_telem = None
-            elif t.startswith(prefix):
+            if t.startswith(TELEM_PREFIX):
                 last_telem = t
-                last_is_stop = False
             else:
                 junk += 1
         if junk:
             self._skip_junk_n += junk
             self.get_logger().warn(
-                f"[{which.upper()}보드] 텔레메트리가 아닌 줄 {junk}개를 건너뛰었습니다 "
-                f"(예: TX 에코). 스로틀/모드는 S,/P, 만 반영합니다",
+                f"[통합 보드] 텔레메트리가 아닌 줄 {junk}개를 건너뛰었습니다 "
+                f"(예: TX 에코). 상태는 I, 줄만 반영합니다",
                 throttle_duration_sec=10.0)
-
-        if last_is_stop:                    # B 뿐이다 (위 — 1015 이하 펌웨어)
-            self.last_line_b = 'STOP'
-            # ★[2026-10-07] kasa_1007_B : "STOP" = 자율주행 + E-STOP (AS-Emergency)★
-            #   수동조종에서는 B보드가 E-STOP 을 보지 않아 STOP 이 나오지 않는다. 그런데
-            #   STOP 줄에는 모드 필드가 없어(필드를 붙이면 안 된다 — update_estop 이
-            #   문자열 완전일치다) 그대로 두면 /vehicle_mode 가 마지막 P, 값에 얼어붙는다.
-            #   ★E-STOP 이 눌린 채 수동→자율로 올리면 P,…,1 이 한 줄도 안 나오고 곧장
-            #   STOP 이 된다★ — 그러면 ROS 는 계속 '수동' 으로 알고 prompt 가 '①스위치를
-            #   자율로' 를 잘못 안내하고 HUD 도 AS-OFF 로 남는다. 그래서 여기서 자율로 둔다.
-            #   ⚠️ 펌웨어와 짝이다 — 구 펌웨어(0909 이하)는 수동에서도 STOP 을 낸다.
-            self._set_switch_mode(True, "B보드 STOP = 자율주행 + E-STOP")
-            return
         if last_telem is None:
-            return                          # 에코만 온 주기 — 직전 S,/P, 를 유지
-        if which == 'a':
-            self.last_line_a = last_telem
-            self.parse_a(last_telem)
-        else:
-            self.last_line_b = last_telem
-            self.parse_b(last_telem)
+            return                          # 에코만 온 주기 — 직전 I, 를 유지
+        self.last_line_k = last_telem
+        self.parse_i(last_telem)
 
-    def parse_a(self, text):
-        """"S,<왼쪽펄스>,<오른쪽펄스>,<쓰로틀raw>" (kasa_0904_A.ino).
-           STOP/형식오류 시 마지막 값 유지. 쓰로틀 필드가 없는 구버전(3필드)도 받아준다."""
-        if not text.startswith('S,'):
+    def parse_i(self, text):
+        """"I,<왼쪽펄스>,<오른쪽펄스>,<쓰로틀raw>,<브레이크단계>,<D5>,<실측조향각>,<상태>" (kasa_1017).
+
+        ★칸 수가 TELEM_FIELDS 가 아니면 줄 통째로 버린다★ — 형식오류 시 마지막 값을 유지한다
+        (옛 parse_a·parse_b 와 같은 태도). 조향각 부호는 ★− 좌 / + 우★ 로 ROS 규약과 같다.
+        상태 0·1·2 밖의 값은 0 으로 본다."""
+        if not text.startswith(TELEM_PREFIX):
             return
         fields = text.split(',')
-        if len(fields) not in (3, 4):
+        if len(fields) != TELEM_FIELDS:
             return
         try:
-            self.pulse_l = int(fields[1])
-            self.pulse_r = int(fields[2])
-            if len(fields) == 4:
-                self.throttle_raw = int(fields[3])
-                self._thr_buf.append(self.throttle_raw)
-            self._last_s_t = time.monotonic()
-        except ValueError:
-            pass
-
-    def parse_b(self, text):
-        """"P,<조향각>,<상태>,<모드>" (kasa_1016_B.ino). 조향각 부호는 ★− 좌 / + 우★
-           로 ROS 규약과 같다(그대로 발행한다). 형식오류 시 마지막 값 유지.
-
-        ★[2026-10-16] 셋째 칸 = 상태★ 0 평상 / 1 제동등 조건 / 2 E-STOP. 0·1·2 밖의 값
-        (1015 이하의 A5 raw)은 0 으로 본다 — 그 펌웨어의 E-STOP 은 "STOP" 줄로 온다.
-
-        ★지금 펌웨어 양식 하나만 받는다 [2026-08-21]★ 구버전 호환 분기를 두지
-        않았다 — 보드는 한 대이고, 펌웨어를 바꾸면 이 함수도 같이 바꾸는 것이
-        규약이다. 필드 수가 다른 줄은 통째로 버려지므로, 구형을 꽂으면 조향각·모드가
-        마지막 값에 얼어붙는다(경고는 남지 않는다). 그 증상이면 여기부터 볼 것.
-        """
-        if not text.startswith('P,'):
-            return
-        fields = text.split(',')
-        if len(fields) != 4:
-            return
-        try:
-            self.angle_board = int(fields[1])
-            state = int(fields[2])
-            new_mode = bool(int(fields[3]))       # ★1 = 자율주행 / 0 = 수동조종★
+            pulse_l = int(fields[1])
+            pulse_r = int(fields[2])
+            throttle = int(fields[3])
+            stage = int(fields[4])
+            new_mode = bool(int(fields[5]))     # ★1 = 자율주행 / 0 = 수동조종★ (D5)
+            angle = int(fields[6])
+            state = int(fields[7])
         except ValueError:
             return
+        self.pulse_l = pulse_l
+        self.pulse_r = pulse_r
+        self.throttle_raw = throttle
+        self._thr_buf.append(throttle)
+        self.brake_stage = stage
+        self.angle_board = angle
         self.b_state = state if state in (B_STATE_NONE, B_STATE_BRAKE, B_STATE_ESTOP) else B_STATE_NONE
-        self._set_switch_mode(new_mode, "B보드 D5")
+        self._last_s_t = time.monotonic()
+        self._set_switch_mode(new_mode, "D5")
 
     def _set_switch_mode(self, new_mode, why):
-        """B보드가 알려 준 주행모드를 반영한다. ★출처는 둘이다★ — "P,…,<모드>" 의 넷째
-        칸, 그리고 [2026-10-07] kasa_1007_B 의 "STOP"(= 자율주행 + E-STOP, poll_port)."""
+        """보드가 알려 준 주행모드(I, 여섯째 칸 = 실제 D5)를 반영한다."""
         if new_mode != self.switch_mode:
             self.switch_mode = new_mode
             self.get_logger().info(
                 f"[주행모드 전환] {'자율주행' if new_mode else '수동조종'} ({why})")
 
     def update_estop(self):
-        """★[2026-10-16] E-STOP = B보드 상태 2★ (P, 셋째 칸, kasa_1016_B). 전환 시점만 로그.
-        A보드는 보지 않는다(kasa_1016_A 는 E-STOP 이 없다). 1015 이하 B 의 "STOP" 줄도 받는다.
-        B 가 빠지면 _drop_board 가 상태를 지워 E-STOP 이 풀린 것으로 본다(종전과 같다)."""
-        active = self.ser_b is not None and (
-            self.b_state == B_STATE_ESTOP or self.last_line_b == 'STOP')
+        """★E-STOP = 보드 상태 2★ (I, 여덟째 칸, kasa_1017). 전환 시점만 로그.
+        보드가 빠지면 _drop_board 가 상태를 지워 E-STOP 이 풀린 것으로 본다(종전과 같다)."""
+        active = self.ser_k is not None and self.b_state == B_STATE_ESTOP
         if active and not self.estop_active:
             self.get_logger().warn(
-                "[E-STOP 발동] B보드 상태 2 (1015 이하는 STOP) "
-                "— B보드가 리니어 2단 체결, A보드 쓰로틀 0")
+                "[E-STOP 발동] 보드 상태 2 — 보드가 리니어 2단 체결 · 인휠 차단 (이 노드도 쓰로틀 0)")
         elif not active and self.estop_active:
-            self.get_logger().info("[E-STOP 해제] 정상 텔레메트리 재개 (리니어 0단 복귀)")
+            self.get_logger().info("[E-STOP 해제] 보드 상태 0/1 (리니어 0단 복귀)")
         self.estop_active = active
 
     def publish_telemetry(self):
@@ -2387,7 +2332,7 @@ class Arduino(Node):
 
         self.pub_mode.publish(Bool(data=bool(self.auto_mode)))
         self.pub_throttle.publish(Int32(data=int(self.throttle_raw)))
-        # ★[2026-10-16] B보드 상태 0/1/2 (kasa_1016_B)★ — 토픽 이름만 옛 그대로다
+        # ★보드 상태 0/1/2 (kasa_1017 I, 여덟째 칸 — 1016_B 와 같은 값)★ — 토픽 이름만 옛 그대로다
         self.pub_brake_pot.publish(Int32(data=int(self.b_state)))
         self.pub_estop.publish(Bool(data=bool(self.estop_active)))
 
@@ -2404,7 +2349,10 @@ class Arduino(Node):
         #  ★[2026-09-16] J 칸을 뒤에 붙였다★ 앞의 네 칸은 자리도 뜻도 그대로라
         #  기존 파서(master·sound·record)는 아무것도 바뀌지 않는다.
         #  J:0 = 조이스틱 미연결 / J:1 = 연결 / J:2 = ★연결 + 지금 조종 중★
-        msg.data = (f"A:{1 if self.ser_a else 0},B:{1 if self.ser_b else 0},"
+        #  ★[2026-10-17] 통합 보드 하나가 A·B 두 칸을 함께 채운다★ — 양식을 바꾸지 않았다
+        #  (hud 의 AS 판정이 B 칸을, master·sound·record 가 이 양식을 읽는다).
+        linked = 1 if self.ser_k else 0
+        msg.data = (f"A:{linked},B:{linked},"
                     f"ESTOP:{1 if self.estop_active else 0},"
                     f"MODE:{1 if self.auto_mode else 0},"
                     f"J:{(2 if self.joy_on else 1) if self.ser_j else 0}")
@@ -2454,7 +2402,7 @@ class Arduino(Node):
                 pass                   # 메인 스레드가 아니면 등록할 수 없다 — 무해
 
     def stop_and_close(self):
-        """차를 세우는 정지값을 두 보드에 직접 쓰고 포트를 닫는다.
+        """차를 세우는 정지값을 보드에 직접 쓰고 포트를 닫는다.
 
         ★ 보드 워치독보다 이쪽이 먼저다 ★ ([2026-09-04] kasa_0904_A.ino [0904-4] 로
         3초 무입력 정지가 생겼지만, 정상 종료가 차를 3초 굴릴 이유가 없다) 마지막 수신 명령을
@@ -2471,21 +2419,21 @@ class Arduino(Node):
         # 정지값을 보낸 의미가 없어지고 포트가 물린 채로 프로세스가 끝난다.
         self._running = False
         wrote = False
-        for ser, text in ((self.ser_a, '0'), (self.ser_b, f'{STEER_RELEASE_TOKEN},0')):
-            if ser is None:
-                continue
+        #  ★[2026-10-17] 한 줄★ = 옛 A "0" + 옛 B "x,0"
+        stop_line = self.command_line('0', f'{STEER_RELEASE_TOKEN},0')
+        ser = self.ser_k
+        if ser is not None:
             try:
-                if not ser.is_open:
-                    continue
-                ser.write((text + '\n').encode('ascii'))
-                ser.flush()
-                wrote = True
+                if ser.is_open:
+                    ser.write((stop_line + '\n').encode('ascii'))
+                    ser.flush()
+                    wrote = True
             except (serial.SerialException, OSError):
                 pass
         if wrote:
             time.sleep(STOP_FLUSH_S)   # 정지값이 실제로 나갈 시간을 준 뒤 닫는다
 
-        for ser in (self.ser_a, self.ser_b, self.ser_j):
+        for ser in (self.ser_k, self.ser_j):
             try:
                 if ser is not None and ser.is_open:
                     ser.close()

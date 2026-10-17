@@ -28,6 +28,13 @@
 > | 단위 환산 (C++ 쪽 단일 소유자) | `gold_ws/src/lidar/include/lidar/kasa_units.hpp` |
 > | 튜닝 상수 (Python 쪽 단일 소유자) | `gold_ws/src/white1/white1/driving.py` 상단 상수절 |
 
+> ### ⚠️ [2026-10-17] ★A·B 두 보드 → Mega 한 장 (`../mad-code/kasa_1017.ino`)★ — `nxde/arduino.py` 를 새로 썼다
+> - **보드 → PC `I,<좌펄스>,<우펄스>,<쓰로틀raw>,<브레이크단계>,<D5>,<실측조향각>,<상태>`** (50 ms) · **PC → 보드 `<좌>,<우>,<조향|x>,<브레이크>`** 늘 네 칸.
+> - 핀 : A 그대로 + **조향 pot A10 · DC PWM 44 · DC DIR 46 · 리니어 PWM 45 · 리니어 DIR 47** · E-STOP D12 · D5 · 제동등 D11 · 스위치 A5.
+> - **상태 2·1 이면 보드가 스스로 인휠 0**(ROS 의 쓰로틀 0 도 그대로) · 조향 칸이 같으면 0.9 s 마다만 다시 건다.
+> - **ROS 토픽은 그대로**, `arduino.py` 는 하위호환 없음 — 옛 두 보드용은 `nxde/arduino_old.py`. 아래 1.5·3.2·7절의 A/B 서술은 **1016 까지**다.
+> - 정본 : `kasa_1017.ino` 머리말 `[1017-1]`~`[1017-4]` · `white1/BOARD_B.md` 머리 · CHANGELOG 2026-10-17 (TODO-15 실차 확인).
+
 > ### ⚠️ [2026-10-16] 펌웨어 1016 (A·B) — 보드 계약이 바뀌었다 (`kasa_1016_A.ino` · `kasa_1016_B.ino` 를 함께 굽는다)
 > - **B → ROS 는 늘 `P,<조향각>,<상태>,<모드>`** — `STOP` 줄이 없다. 상태 **2 = E-STOP · 1 = 제동등 조건 · 0**. 모드 칸은 실제 D5.
 > - **`arduino.py` : 상태 2 또는 1 이면 A보드 쓰로틀 0**(자율·수동 무관). `/estop` = 상태 2. `/brake_pot` 은 이름만 남고 **상태 값**을 싣는다.
@@ -413,7 +420,8 @@ gold_ws/src/
   white2/     ★투트랙의 다른 한쪽★ [2026-10-07] (ament_python) — 구조·파일은 white1 과 같다(아래 '투트랙')
 
   nxde/       아두이노 계층 (런치파일 없음, 전부 ros2 run)
-    arduino.py   ★차량 구동의 필수 노드★ A/B/★J★ 3보드 시리얼 브리지
+    arduino.py   ★차량 구동의 필수 노드★ ★[2026-10-17] 통합 보드(kasa_1017) + J★ 시리얼 브리지
+                 (옛 A/B 두 보드용은 arduino_old.py — 하위호환 없음, 토픽은 그대로)
                  [2026-09-16] 조이스틱("J,")까지 이 노드가 잡고 ★직접 몬다★ (4.8절)
     master.py    마우스·키보드 GUI 조종 (하드웨어 검증용). 조이스틱이 모는 동안은
                  레버를 잠그고 ★비추기만★ 한다(/joy_active 구독)
@@ -3174,6 +3182,7 @@ ping -c2 192.168.6.11
 | **미리보기 ↔ `/lidar_ref[3]`** [2026-09-28] | mppi 미리보기는 driving 의 `zone_left`(다음 L 구간까지 호길이)로 켜진다. **그 열의 뜻을 바꾸면 미리보기가 조용히 꺼진다** |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
+| **통합 보드 입출력 한 줄 (`I,` 8칸 · 명령 4칸)** [2026-10-17] | `../mad-code/kasa_1017.ino` `sendOutput`·`handleCommandLine`(`[1017-2]`·`[1017-3]`) **+** `nxde/arduino.py` `TELEM_PREFIX`·`TELEM_FIELDS`·`parse_i`·`command_line` **+** `nxde/check.py` `TELEM_PREFIX` — **짝이다.** 칸을 늘리면 셋을 함께 고친다(칸 수가 다르면 줄 통째로 버려 값이 조용히 얼어붙는다). 조향 다시 걸기 `STEER_REARM_MS`(0.9 s)는 상위 `KEEPALIVE_S`(1.0 s)보다 짧고 `SETTLE_MS`(0.5 s)보다 길어야 한다 |
 | **B 텔레메트리 상태 칸 (0 평상 / 1 제동등 조건 / 2 E-STOP)** [2026-10-16] | `../mad-code/kasa_1016_B.ino` `sendOutput`(`[1016-C]`) **+** `nxde/arduino.py` `B_STATE_*`·`parse_b`·`update_estop`·`compose`(상태 1·2 → A 쓰로틀 0) — **짝이다.** 값을 바꾸면 둘을 함께 고친다. `/brake_pot` 은 이 상태를 싣는다(record·hud·master 는 옛 이름 그대로 표시만 한다) |
 | **`STOP` 의 뜻 = 자율주행 + E-STOP** [2026-10-07] — ★1015 이하 B 펌웨어 호환으로만 남았다★ | `../mad-code/kasa_1007_B.ino` `[1007-1]`(효력 = D12 AND D5 자율) **+** `nxde/arduino.py` `poll_port`(STOP → 모드 자율, `_set_switch_mode`) — **짝이다.** 구 펌웨어(0909 이하)를 꽂은 채 두면 수동+E-STOP 이 '자율' 로 보인다. 펌웨어가 STOP 에 다른 뜻을 싣게 되면 그 줄도 함께 고친다 |
 | **신호등 인지 · 공통 수정** [2026-10-07] | `white1/white1/traffic_light.py` **+** `white2/white2/traffic_light.py` — 두 파일은 머리말·import 만 다르다(`diff <(sed s/white2/white1/g white2/…) white1/…`). 타이머와 무관한 수정(hud AS 필 · driving 출발 유예 같은 것)도 **양쪽에** 넣는다 — 3.1 투트랙 |

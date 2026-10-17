@@ -33,9 +33,10 @@
 ═══════════════════════════════════════════════════════════════════════════════
  무엇을 보고하는가
 ═══════════════════════════════════════════════════════════════════════════════
-   A보드      Arduino Mega  텔레메트리 "S," (인휠 PID + 주행펄스)
-   B보드      Arduino Mega  텔레메트리 "P," (조향 + 제동 + 모드스위치)
-              ★[2026-09-04] 두 보드 모두 접두어만으로는 ✅ 를 주지 않는다★
+   통합 보드  Arduino Mega  텔레메트리 "I," (인휠 PID + 조향 + 제동 + 모드스위치 + E-STOP)
+              ★[2026-10-17] A·B 두 보드가 kasa_1017 한 장으로 합쳐졌다★ 옛 "S,"(A)·"P,"(B)
+              가 보이면 ❌ — 옛 펌웨어가 꽂혀 있다는 뜻이다(새 arduino.py 는 그 보드를 몰지 않는다).
+              ★[2026-09-04] 접두어만으로는 ✅ 를 주지 않는다★
               '-' 를 보내 "YES" 를 받아야(양방향) 정상 연결로 처리한다 — 아래 참고.
    조이스틱   Arduino Mega  텔레메트리 "J," 또는 "U,"   ※ 없어도 정상(선택 장치)
    GPS        u-blox        ★NMEA GGA 의 fix quality 를 실제로 읽어 RTK 여부를 본다★
@@ -49,7 +50,7 @@
 ═══════════════════════════════════════════════════════════════════════════════
  ★★ [2026-09-04] 아두이노는 ★양방향★ 으로 확인한다 ('-' → "YES") ★★
 ═══════════════════════════════════════════════════════════════════════════════
- 텔레메트리("S,"/"P,")가 보인다는 것은 ★보드→PC 한 방향★ 만 증명한다. PC→보드는
+ 텔레메트리("I,")가 보인다는 것은 ★보드→PC 한 방향★ 만 증명한다. PC→보드는
  아무것도 증명하지 못한다 — TX 선이 빠져 있어도, 다른 프로세스가 포트를 물고 있어
  이쪽 write 가 실제로 닿지 않아도, 화면에는 텔레메트리가 멀쩡히 흐른다. 그 상태로
  ✅ 를 보고 런치를 올리면 ★차가 명령을 하나도 받지 않는다★.
@@ -58,7 +59,7 @@
    못 받으면 ❌ 이고 ★포트를 닫았다가 다시 열어 한 번 더 확인한다★
    (close 가 DTR 을 건드려 보드를 리셋하므로, 그 자체가 재초기화다).
 
- 펌웨어 : kasa_0904_A.ino [0904-3] / kasa_1007_B.ino [0904-2].
+ 펌웨어 : kasa_1017.ino (핸드셰이크는 0904 그대로 — [0904-3]).
    보드는 "YES" 한 줄을 찍고 2초 동안 평상시 텔레메트리를 멈춘다(구동에는 영향 없음).
    ★구형 펌웨어(0821 이하)는 '-' 를 무시하므로 여기서 ❌ 가 난다★ — 그때는 케이블이
    아니라 ★펌웨어 판올림★ 을 먼저 확인할 것.
@@ -97,6 +98,9 @@ CAM_PREFERRED_ORDER = ('/dev/video2', '/dev/video0')
 
 # udev 심볼릭링크 (99-white.rules)
 SYMLINKS = ('/dev/gps', '/dev/imu', '/dev/kasa_a', '/dev/kasa_b')
+# ★[2026-10-17] 통합 보드 텔레메트리 접두어★ (nxde/arduino.py TELEM_PREFIX 와 같은 값)
+TELEM_PREFIX = 'I,'
+OLD_PREFIXES = ('S,', 'P,')   # 옛 두 보드(kasa_1016_A·B) — 보이면 ❌ 로 알린다
 
 BAUD = 115200
 ARDUINO_READ_S = 5.0    # 자동리셋 + 부트로더 대기를 감안한 식별 시간
@@ -228,7 +232,7 @@ def identify_arduino(dev):
     이어서 ★'-' → "YES" 핸드셰이크로 PC→보드 방향까지 확인★한다.
 
     반환 (role, detail):
-      role = 'A' | 'B' | 'JOY' | None
+      role = 'K'(통합 보드 kasa_1017) | 'JOY' | None
       ★핸드셰이크에 실패하면 role = None★ — 출력만 보이는 상태를 ✅ 로 보고하지
       않는다. 그 상태로 런치를 올리면 차가 명령을 하나도 받지 못한다.
       ※ 조이스틱 보드(J,/U,)는 ★보고 전용 입력 장치★ 라 PC→보드 방향이 필요 없고
@@ -246,10 +250,12 @@ def identify_arduino(dev):
             role = None
             telem = None
             for text in read_lines(ser, ARDUINO_READ_S):
-                if text.startswith('S,'):
-                    role, telem = 'A', text[:40]
-                elif text.startswith('P,'):
-                    role, telem = 'B', text[:40]
+                if text.startswith(TELEM_PREFIX):
+                    role, telem = 'K', text[:48]
+                elif text.startswith(OLD_PREFIXES) or text == 'STOP':
+                    # ★옛 두 보드 펌웨어★ — 새 arduino.py 는 이 보드를 몰지 않는다(하위호환 없음)
+                    return None, (f"옛 두 보드 펌웨어의 텔레메트리 '{text[:40]}' 입니다 "
+                                  f"— ★kasa_1017.ino(통합 보드)를 구우십시오★")
                 elif text.startswith('J,') or text.startswith('U,'):
                     # 조이스틱은 핸드셰이크 없이 그대로 통과시킨다(위 docstring 참고)
                     return 'JOY', f"텔레메트리 '{text[:40]}'"
@@ -257,7 +263,7 @@ def identify_arduino(dev):
                     break
 
             if role is None:
-                return None, (f"{ARDUINO_READ_S:.0f}초 동안 'S,'/'P,'/'J,' 접두어가 "
+                return None, (f"{ARDUINO_READ_S:.0f}초 동안 '{TELEM_PREFIX}'/'J,' 접두어가 "
                               f"안 나왔습니다 — 펌웨어가 안 올라갔거나 다른 "
                               f"아두이노일 수 있습니다")
 
@@ -266,8 +272,8 @@ def identify_arduino(dev):
                 return role, f"텔레메트리 '{telem}' / {hs_detail}"
 
             last_detail = (f"텔레메트리 '{telem}' 는 나오는데 {hs_detail} "
-                           f"— ★보내는 방향(PC→보드)이 죽었거나 펌웨어가 kasa_0904 "
-                           f"이전 판입니다★")
+                           f"— ★보내는 방향(PC→보드)이 죽었거나 펌웨어가 kasa_1017 "
+                           f"이 아닙니다★")
         finally:
             try:
                 ser.close()
@@ -531,7 +537,7 @@ def run(args):
     if not serial_ports:
         print("  ❌ /dev/ttyACM* · /dev/ttyUSB* 가 없습니다 — USB 케이블·전원을 확인하세요.")
 
-    found = {'A': None, 'B': None, 'JOY': None, 'gps': None, 'imu': None}
+    found = {'K': None, 'JOY': None, 'gps': None, 'imu': None}
     details = {}
 
     for p in serial_ports:
@@ -566,8 +572,7 @@ def run(args):
                   f"{ARDUINO_READ_S + HANDSHAKE_TIMEOUT_S * HANDSHAKE_TRIES:.0f}초)...")
             role, detail = identify_arduino(p.device)
             if role:
-                name = {'A': 'A보드 (인휠 PID + 주행펄스)',
-                        'B': 'B보드 (조향 + 제동 + 모드스위치)',
+                name = {'K': '통합 보드 (인휠 + 조향 + 제동 + 모드 + E-STOP)',
                         'JOY': '조이스틱 보드'}[role]
                 print(f"     → ✅ {name}: {detail}")
                 if found[role] is None:
@@ -622,8 +627,7 @@ def run(args):
     print(_hr('═'))
 
     rows = [
-        ("A보드 (주행)",   found['A'],   True),
-        ("B보드 (조향/제동)", found['B'], True),
+        ("통합 보드 (kasa_1017)", found['K'], True),
         ("GPS (u-blox)",   found['gps'], True),
         ("IMU (iAHRS)",    found['imu'], True),
         ("카메라",          cam_pick,     not args.no_camera),
@@ -645,7 +649,7 @@ def run(args):
             missing_required.append(label)
 
     if args.quick:
-        print("\n  ※ --quick 이라 A/B 역할·핸드셰이크와 GPS RTK 상태는 "
+        print("\n  ※ --quick 이라 보드 식별·핸드셰이크와 GPS RTK 상태는 "
               "확인하지 않았습니다.")
 
     check_dds_buffer()
@@ -655,9 +659,9 @@ def run(args):
         print(f"  ❌ 필수 장치 {len(missing_required)}개 미확인: "
               f"{', '.join(missing_required)}")
         print("     연결·전원·USB 케이블을 확인한 뒤 다시 실행하십시오.")
-        if any(label.startswith(('A보드', 'B보드')) for label in missing_required):
-            print(f"     ※ 위 로그에 \"{HANDSHAKE_REPLY} 가 오지 않았습니다\" 가 있으면 "
-                  f"케이블이 아니라 ★펌웨어(kasa_0904 인지)★ 와")
+        if any(label.startswith('통합 보드') for label in missing_required):
+            print(f"     ※ 위 로그에 \"{HANDSHAKE_REPLY} 가 오지 않았습니다\" 나 '옛 두 보드 펌웨어' 가 "
+                  f"있으면 케이블이 아니라 ★펌웨어(kasa_1017 인지)★ 와")
             print("       PC→보드 방향(TX)을 먼저 확인하십시오 — 출력만으로는 "
                   "연결로 보지 않습니다.")
         rc = 1
