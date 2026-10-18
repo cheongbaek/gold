@@ -32,6 +32,10 @@ hud.py ― kasa 차량 상태 HUD  [white1]
 
 키: F11 전체화면, Esc 전체화면 해제(창 닫기는 창 버튼).
 카메라 미리보기: show_camera:=false 로 끈다.
+  ★[2026-10-18] 메뉴 '카메라' 화면에 있는 동안만 /tl/debug_image 를 구독한다★ — 평소에는
+  영상 토픽을 하나도 받지 않는다(1080p·3MB 영상의 구독자가 늘면 usb_cam·traffic_light 가
+  같은 프레임을 한 번 더 보내야 해 인지 fps 를 깎는다). /image_raw 는 받지 않는다.
+  CAM LED 는 usb_cam 의 /camera_info(작은 메시지, 프레임마다 하나)로 본다.
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import OccupancyGrid, Path
-from sensor_msgs.msg import Image, Imu, NavSatFix
+from sensor_msgs.msg import CameraInfo, Image, Imu, NavSatFix
 from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
 from rcl_interfaces.msg import Parameter as ParamMsg, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
@@ -101,6 +105,8 @@ KMH_PER_PULSE = 3.18
 ENC_SUM_TO_PULSE = 0.5
 STALE_S = 1.5
 UI_MS = 50
+#  '카메라' 화면 진입·이탈을 구독에 반영하는 주기 [s] — 들어가면 이 안에 영상이 붙는다.
+CAM_SUB_SYNC_S = 0.2
 EARTH_R = 6378137.0
 ROUTE_CMD_WORDS = ('STOP', 'MAP_START', 'DRIVE_START')
 ROUTE_CSV_RE = re.compile(r'([^\s\[\]/\\]+\.csv)')
@@ -498,12 +504,16 @@ class HudNode(Node):
         self._mppi_ref = []
         self._mppi_ref_t = 0.0
 
+        #  카메라 화면 — /tl/debug_image 는 want_tl_debug 인 동안만 구독한다(_sync_cam_sub).
+        #  콜백은 메시지만 들고 있고, 변환은 화면이 그릴 때 한 번만 한다(tl_frame).
         self._img_lock = threading.Lock()
-        self._img_bgr = None
-        self._tl_bgr = None
+        self._tl_msg = None
         self._tl_t = 0.0
-        self._img_t = 0.0
-        self._tl_t = 0.0
+        self._tl_bgr = None              # _tl_msg 를 변환한 캐시 — 같은 메시지를 두 번 변환하지 않는다
+        self._tl_bgr_of = None
+        self._cam_t = 0.0                # /camera_info 마지막 수신(CAM LED)
+        self.want_tl_debug = False       # HudApp 가 '카메라' 화면에서만 True 로 둔다
+        self._tl_sub = None
         self._bridge = CvBridge() if _HAVE_CV else None
 
         qos = 10
@@ -590,11 +600,10 @@ class HudNode(Node):
                                  lambda m: self.aeb_dist.set(float(m.data)), qos)
         self.create_subscription(Bool, aeb_sig,
                                  lambda m: self.aeb_sig.set(bool(m.data)), qos)
-        if self._bridge is not None:
-            self.create_subscription(
-                Image, '/image_raw', self._cb_image, qos_profile_sensor_data)
-            self.create_subscription(
-                Image, '/tl/debug_image', self._cb_tl_debug, qos_profile_sensor_data)
+        self.create_subscription(
+            CameraInfo, '/camera_info', self._cb_camera_info, qos_profile_sensor_data)
+        #  구독을 만들고 지우는 일은 ROS 실행기 스레드(이 타이머)에서만 한다 — tk 스레드는 깃발만 바꾼다.
+        self.create_timer(CAM_SUB_SYNC_S, self._sync_cam_sub)
         cmap = str(self.get_parameter('mppi_costmap_topic').value)
         pth = str(self.get_parameter('mppi_path_topic').value)
         ref = str(self.get_parameter('mppi_ref_path_topic').value)
@@ -756,27 +765,42 @@ class HudNode(Node):
         q = m.orientation
         self.imu.set((float(q.x), float(q.y), float(q.z), float(q.w)))
 
-    def _cb_image(self, m):
-        if self._bridge is None:
-            return
-        try:
-            bgr = self._bridge.imgmsg_to_cv2(m, desired_encoding='bgr8')
-        except Exception:  # noqa: BLE001
-            return
-        with self._img_lock:
-            self._img_bgr = bgr
-            self._img_t = time.monotonic()
+    def _cb_camera_info(self, _m):
+        self._cam_t = time.monotonic()
+
+    def _sync_cam_sub(self):
+        """'카메라' 화면에 있을 때만 /tl/debug_image 구독을 둔다."""
+        want = self.want_tl_debug and self.show_camera and self._bridge is not None
+        if want and self._tl_sub is None:
+            self._tl_sub = self.create_subscription(
+                Image, '/tl/debug_image', self._cb_tl_debug, qos_profile_sensor_data)
+        elif not want and self._tl_sub is not None:
+            self.destroy_subscription(self._tl_sub)
+            self._tl_sub = None
+            with self._img_lock:         # 다시 들어왔을 때 옛 화면이 잠깐 보이지 않게
+                self._tl_msg = None
+                self._tl_t = 0.0
+                self._tl_bgr = None
+                self._tl_bgr_of = None
 
     def _cb_tl_debug(self, m):
-        if self._bridge is None:
-            return
-        try:
-            bgr = self._bridge.imgmsg_to_cv2(m, desired_encoding='bgr8')
-        except Exception:  # noqa: BLE001
-            return
         with self._img_lock:
-            self._tl_bgr = bgr
+            self._tl_msg = m
             self._tl_t = time.monotonic()
+
+    def tl_frame(self):
+        """(BGR 프레임 | None, 나이 s) — 새 메시지일 때만 변환한다."""
+        with self._img_lock:
+            m, t = self._tl_msg, self._tl_t
+            if m is None or self._bridge is None:
+                return None, 1e9
+            if self._tl_bgr_of is not m:
+                try:
+                    self._tl_bgr = self._bridge.imgmsg_to_cv2(m, desired_encoding='bgr8')
+                except Exception:  # noqa: BLE001
+                    return None, 1e9
+                self._tl_bgr_of = m
+            return self._tl_bgr, time.monotonic() - t
 
     def _cb_mppi_grid(self, msg):
         info = msg.info
@@ -812,7 +836,6 @@ class HudNode(Node):
         with self._mppi_lock:
             self._mppi_ref = pts
             self._mppi_ref_t = time.monotonic()
-            self._img_t = time.monotonic()
 
 
 class HudApp:
@@ -942,6 +965,7 @@ class HudApp:
             return
         prev = self.page
         self.page = page
+        self.n.want_tl_debug = (page == 'camera')   # 구독은 노드 타이머가 따라 붙이고 뗀다
         if page == 'params':
             self.cv.pack_forget()
             self.param_frame.pack(fill='both', expand=True)
@@ -1085,7 +1109,7 @@ class HudApp:
         c.create_text(w / 2, 70, text='카메라 / 신호등 디버그', fill=GOLD,
                       font=self.font(13, 'bold'))
         pad = 16
-        self._draw_camera(c, pad, 96, w - pad * 2, h - 96 - pad, prefer_tl=True)
+        self._draw_camera(c, pad, 96, w - pad * 2, h - 96 - pad)
 
     def _scan_debug_files(self):
         d = getattr(self.n, 'mppi_debug_dir', '') or ''
@@ -2370,8 +2394,8 @@ class HudApp:
         ]
         x = 16
         y = h - 18
-        cam_live = (n.show_camera and n._img_t > 0 and
-                    (time.monotonic() - n._img_t) < stale)
+        #  CAM = usb_cam 이 프레임을 내고 있는가(/camera_info) — 영상 토픽은 받지 않는다.
+        cam_live = n._cam_t > 0 and (time.monotonic() - n._cam_t) < stale
         with n._nav_lock:
             nav_live = len(n.route_wps) >= 2 or len(n.map_trail) >= 2
         #  ★LDR — driving.lidar_wait_reason() 과 ★같은 판정★ 이다★
@@ -2394,7 +2418,7 @@ class HudApp:
                 ever = lidar_ever
             elif name == 'CAM':
                 live = cam_live
-                ever = n._img_t > 0
+                ever = n._cam_t > 0
             elif name == 'NAV':
                 if n.nav_mode == 'mppi':
                     live = mppi_live
@@ -2412,7 +2436,7 @@ class HudApp:
             x += 50
 
     # ── 카메라 ────────────────────────────────────────────────────────────
-    def _draw_camera(self, c, x, y, tw, th, prefer_tl=False):
+    def _draw_camera(self, c, x, y, tw, th):
         n = self.n
         self._round_rect(c, x, y, x + tw, y + th, 10,
                          fill='#05070a', outline='#1c2430')
@@ -2420,20 +2444,11 @@ class HudApp:
             c.create_text(x + tw / 2, y + th / 2, text='CAM off',
                           fill=DIM, font=self.font(10))
             return tw + 8
-        frame = None
-        src = '/image_raw'
-        with n._img_lock:
-            if prefer_tl and n._tl_bgr is not None:
-                frame = n._tl_bgr
-                age = time.monotonic() - n._tl_t if n._tl_t else 1e9
-                src = '/tl/debug_image'
-            elif n._img_bgr is not None:
-                frame = n._img_bgr
-                age = time.monotonic() - n._img_t if n._img_t else 1e9
-            else:
-                age = 1e9
+        #  /tl/debug_image 만 본다 — 녹화(tl_record_video)를 끈 런이면 비어 있다(사용자 결정).
+        frame, age = n.tl_frame()
         if frame is None or age > max(n.stale_s, 1.5):
-            c.create_text(x + tw / 2, y + th / 2, text=src + ' —',
+            c.create_text(x + tw / 2, y + th / 2,
+                          text='/tl/debug_image —  (tl_record_video 가 꺼져 있으면 오지 않는다)',
                           fill=DIM, font=self.font(10))
             return tw + 8
         ih, iw = frame.shape[:2]

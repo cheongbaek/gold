@@ -3236,6 +3236,7 @@ ping -c2 192.168.6.11
 | **`STOP` 의 뜻 = 자율주행 + E-STOP** [2026-10-07] — ★1015 이하 B 펌웨어 호환으로만 남았다★ | `../mad-code/kasa_1007_B.ino` `[1007-1]`(효력 = D12 AND D5 자율) **+** `nxde/arduino.py` `poll_port`(STOP → 모드 자율, `_set_switch_mode`) — **짝이다.** 구 펌웨어(0909 이하)를 꽂은 채 두면 수동+E-STOP 이 '자율' 로 보인다. 펌웨어가 STOP 에 다른 뜻을 싣게 되면 그 줄도 함께 고친다 |
 | **신호등 인지 · 공통 수정** [2026-10-07] | `white1/white1/traffic_light.py` **+** `white2/white2/traffic_light.py` — 두 파일은 머리말·import 만 다르다(`diff <(sed s/white2/white1/g white2/…) white1/…`). 타이머와 무관한 수정(hud AS 필 · driving 출발 유예 같은 것)도 **양쪽에** 넣는다 — 3.1 투트랙 |
 | **AS 상태 판정** [2026-10-07] | `white1/hud.py as_state()` 하나 — 입력은 `/vehicle_mode`·`/estop`·`/board_status` 의 B 칸. `/estop` 이 '효력' 이라는 전제(위 짝)에 기대므로 펌웨어의 E-STOP 게이트를 바꾸면 이 함수도 본다. 다른 화면·기록이 AS 상태를 쓰게 되면 이 함수를 가져간다 — 베끼지 말 것 |
+| **HUD 의 카메라 영상 구독** [2026-10-18] | `white1`·`white2` `hud.py` — `/tl/debug_image` 는 메뉴 `'camera'` 화면일 때만(`HudApp._goto` → `want_tl_debug` → 노드 타이머 `_sync_cam_sub` 가 구독 생성·해제), `/image_raw` 는 받지 않는다. CAM LED 는 usb_cam 의 `/camera_info`. ★영상을 늘 받는 새 화면·LED 를 붙이지 말 것★ — 1080p·3 MB 영상의 구독자가 늘면 usb_cam·traffic_light 가 같은 프레임을 한 번 더 보내야 해 인지 fps 가 33 ms 문턱을 넘는다(CHANGELOG 2026-10-18). 카메라 화면 페이지 이름을 바꾸면 `_goto` 의 비교도 함께 |
 
 ### 설계 원칙 (코드 전반에서 반복되는 것)
 
