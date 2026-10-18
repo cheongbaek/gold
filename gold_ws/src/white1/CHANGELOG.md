@@ -92,6 +92,50 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-18 (3) — ★'B' 잘린 차량 박스는 화살표 판독 유지 · 영상 끊김 뒤 RED 재확정 금지 · 'B' 화살표 파라미터 런치 인자 · `green_hold_s` 0.3★ (사용자 승인, `traffic_light.py` white1·white2 같은 줄)
+
+> white1 에서는 traffic_light 가 제동하지 않고(`/tl_permit` 항상 False) 'B' 구간도 없다 — 인지 코드를 white2 와 같은 줄로 두는 규칙(CLAUDE.md 3.1)이라 함께 바꿨다. `green_hold_s` 는 white1 의 `/tl/state` 녹색 확정과 무관하다(driving `LightFilter` 가 따로 잰다).
+
+**관측** — 10/17 17:29 white2 본선 #400('B', `white2/ros2bag/maincourse-20261017_172835.csv`, 원본 `~/nxde_video/cam-20261017_172742.mp4`)에서
+좌회전 화살표로 2단을 푼 뒤 신호등이 화면 위로 벗어나는 동안 두 번 더 2단을 물었다(17:29:02.86 · 06.06). cam-test 로 같은 3회가 재현된다
+(프레임 1843·1914·1991). 1843 은 화살표가 아직 꺼진 원등만이라 정당하고, 1914·1991 은 ★화살표가 켜져 있는데★ 차량 박스가 화면 윗변(y1 = 0)에
+잘려(높이 50 → 22 px, 가로세로비 2.8~4.9) 셋째 칸 창이 어긋나 비율 0.27~0.30 < 0.30 = RED 였다. 그 박스의 conf 는 0.86~0.92(많이 잘려 0.63~0.80) —
+conf 문제가 아니다. 또 cam-test 영상 끝(= 영상 끊김)마다 1.5~3.0 s 동안 '빨강 1.5초 미감지 해제 → 남은 RED 로 재체결' 이 30 Hz 로 46회 왕복했다
+(판정 `tl_state` 는 `tl_state_max_age` 3 s 동안 살아 있고 `_red_confirmed` 가 영상 신선도를 안 봤다).
+
+**바꾼 것**
+- `tl_b_clip_hold`(기본 켬) — `_decision_boxes` : 차량 박스가 ROI 가장자리(ROI 윗변 = 화면 윗변)에 `CLIP_MARGIN_PX` 1 px 안으로 닿으면 판독하지 않고
+  직전(잘리지 않은) 판독을 유지한다. 직전 판독이 없으면 종전대로 읽는다. 구간이 바뀌면 지운다. 로그 `✂️ … 잘렸다 — 화살표 판독 유지(켜짐|꺼짐)` / `✂️ 잘림 풀림`.
+  틀리는 방향 — 빨강에 서 있다 잘리면 RED 유지, 화살표로 출발한 뒤 잘리면 GREEN 유지(그때는 이미 정지선 앞이다). 선택안이던 '진행 래치'는 넣지 않았다.
+- `tl_img_stale_s`(1.5 s, 0 = 끔) — 영상이 이만큼 끊기면 `_red_confirmed` 가 RED 를 새로 확정하지 않는다. 물고 있는 것을 푸는 길(`red_release_hold_lost_s`)은 그대로.
+- 'B' 화살표 파라미터 런치 인자 — `tl_b_arrow_frac` · `tl_b_arrow_min_h` · `tl_b_veh_min_ar` · `tl_b_clip_hold`
+  (`ros2 launch white1 one_launch.py tl_b_arrow_frac:=0.25`). ★기본값은 `white1/tl_params.py`(white2 같은 파일) 의 `B_ARROW` 하나★ — traffic_light 가 그 값으로 선언하고
+  camera_launch(`tl_b_params()`)가 같은 값으로 인자를 연다. `ParameterValue(value_type=…)` 로 형을 고정해 `:=20` 처럼 정수로 줘도 20.0 으로 넘어간다.
+- `green_hold_s` 0.4 → **0.3** (사용자 결정 — white2 작업트리에 있던 값을 white1 에도 같은 줄로).
+- 문서 — `TL_TUNING.md`(런치 인자 줄 · `tl_b_clip_hold` · `tl_img_stale_s` · `green_hold_s`) · `TRAFFIC_LIGHT.md`(해제 0.3 s).
+
+**검증** (cam-test lockstep, 1280 엔진, 도메인 91, 수정 전 `CHB0-*` = 설치본 main 49191c2 + green_hold 0.3 → 수정 후 `CHB1-*`, `gold_ws/testbed_results/1018_21*_CHB{0,1}-*`)
+
+| 런 | `tl_state` 다른 프레임 | 2단 체결 프레임 | 영상 끝 해제·재체결 왕복 |
+|---|---|---|---|
+| P2B (#400, 17:28~17:29 원본 1550~2120) | 19 — 전부 잘린 프레임(1913~1919 · 1932 · 1988~1999) RED → GREEN | 1843 · 1914 · 1991 → **1843** | 1 → 0 |
+| P3T (subcourse T, 154550 5850~6650) | 0 | 같음 | **46 → 0** (해제 1회만) |
+| #400 105807 (2689~3088) · 144031 (2545~2939) | 0 · 0 (잘림 보류가 걸렸지만 직전 판독 = 꺼짐 · 켜짐과 같았다) | 2995 → 2996 · 없음 | 1 → 1 · 0 |
+| `ev.py` q · v1f · v2f (구간 일정 프리셋) | 0 · 0 · 0 | ±1 프레임(252→251 · 359→358 · 3633→3634 · 753→752) | — |
+
+- `ev.py` 정지 2/2 · 5/5 · 1/1 (놓침·잘못 선 곳 0, 근거도 같다) — 전후 같음.
+- 체결 프레임 ±1 은 lockstep 의 틱(벽시계 30 Hz) 흔들림이다 — 같은 코드로 돈 옛 런도 q 첫 정지가 251·252 로 갈렸다(`1008_*REG-q`). `tl_state` 는 전 프레임 같다.
+- 런치 인자 — 스크래치 런치(도메인 91)에서 white1·white2 각각 기본값(0.3 · 20.0 · 1.75 · true)이 노드 값과 같고, `tl_b_arrow_min_h:=22 tl_b_veh_min_ar:=2 tl_b_clip_hold:=false`
+  가 22.0 · 2.0 · false 로 들어간다. `ros2 launch white{1,2} one_launch.py --show-args` 에 넷이 보인다.
+- 두 판 diff `diff <(sed s/white2/white1/g white2/…/traffic_light.py) white1/…` = 13, `camera_launch.py` · `tl_params.py` = 0.
+
+⚠️ **남은 위험** — ① 잘리기 직전(y1 2~9)의 가까운 켜짐도 0.30~0.36 으로 문턱에 붙어 있다 — 잘리지 않은 한 프레임이 0.2996 으로 RED 가 된 적이 있다(1890, 이번엔 확정 0.1 s 를 못 채움).
+② 화살표 판독 자체의 한계는 그대로다 — 정지 거리(39~40 px) 맑은 날 켜짐 0.10~0.17(10/17 14:24, 원본 없음) · 황혼 20~28 px 에서 꺼진 렌즈가 0.87~1.00(거짓 진행) — TODO-17.
+③ HUD 화살표 숫자는 원래 비율을 그대로 보여 잘림 보류로 '진행' 인데 0.28/0.30 처럼 보일 수 있다(로그 `✂️` 로 구별). ④ 실차 미검증.
+백업 `~/tl_eval/_backup/white{1,2}_1018_cliphold/`.
+
+---
+
 ## 2026-10-18 (2) — ★디버그 화면을 traffic_light 가 직접 녹화 · 구독자 있을 때만 발행 · OpenCV 8스레드 복원★ (사용자 승인 A·B)
 
 **원인 (py-spy, 녹화 켬)** — traffic_light 안에서 GIL 을 쥔 시간의 **41% 가 `/tl/debug_image` 발행**(rclpy `publish` 34% · `cv2_to_imgmsg` 7%)이었다.

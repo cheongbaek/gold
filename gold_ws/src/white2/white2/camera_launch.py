@@ -98,9 +98,12 @@ from launch.conditions import IfCondition
 from launch.substitutions import (AndSubstitution, LaunchConfiguration, NotSubstitution,
                                   PythonExpression)
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 #  ★저장 위치는 paths.py 가 소유한다★ 여기에 리터럴을 적지 않는다(CLAUDE.md 7절).
 from white2 import paths
+#  ★'B' 화살표 파라미터의 기본값은 tl_params 가 소유한다★ — 노드 선언과 런치 인자가 같은 표를 읽는다 [2026-10-18].
+from white2 import tl_params
 
 #  카메라 해상도 — ports.resolve_camera_format() 이 '이 해상도에서 실제로 나오는
 #  포맷'을 보고 pixel_format 을 정하므로, 이 값을 바꾸면 포맷도 따라 바뀐다.
@@ -299,7 +302,29 @@ def declare_args(cam_dev):
                         '스치는 값)로 관측돼 내렸다. 옛 동작으로 되돌리려면 이 인자를 '
                         '170 으로 준다. cam_testbed 전수 회귀(오탐 유무)로 확정 전까지는 '
                         '이 인자로 두 값을 나란히 돌려 비교한다'),
-    ]
+    ] + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_B_DESC[k])
+         for k, v in tl_params.B_ARROW.items()]
+
+
+#  [2026-10-18] 구간 'B'(#400) 좌회전 화살표 판독 — 기본값은 tl_params.B_ARROW (노드와 같은 값).
+_TL_B_DESC = {
+    'tl_b_arrow_frac':  "'B' 셋째 칸 녹색 비율 문턱 — 이 이상이면 좌회전 화살표 켜짐(진행). TL_TUNING.md 2절",
+    'tl_b_arrow_min_h': "'B' 화살표를 읽는 차량 박스 최소 높이 [px] — 밑이면 못 읽음 = 정지",
+    'tl_b_veh_min_ar':  "'B' 화살표를 읽을 박스 최소 가로세로비 — 버스 박스(1.47~1.80)를 거른다",
+    'tl_b_clip_hold':   "'B' 차량 박스가 화면 가장자리에 잘리면 직전 판독 유지(true) / 종전처럼 읽기(false)",
+}
+
+
+def _launch_str(v):
+    """런치 인자 기본값 문자열 — bool 은 'true'/'false', 실수는 소수점을 남긴다(20 → '20.0')."""
+    return str(v).lower() if isinstance(v, bool) else repr(float(v))
+
+
+def tl_b_params():
+    """traffic_light 에 넘길 'B' 파라미터 — ★형을 고정해 넘긴다★: `tl_b_arrow_min_h:=20` 처럼 정수로 줘도
+    float 로 바꿔 넘겨 노드가 형 오류로 안 뜨는 일이 없게 한다."""
+    return {k: ParameterValue(LaunchConfiguration(k), value_type=type(v))
+            for k, v in tl_params.B_ARROW.items()}
 
 
 def camera_params():
@@ -483,6 +508,7 @@ def actions(package_name, cam_format, node_env, respawn_delay):
             'stop_latch':             LaunchConfiguration('tl_stop_latch'),
             'publish_cmd_vel':        LaunchConfiguration('tl_publish_cmd_vel'),
             'hsv_red_h2_low':         LaunchConfiguration('tl_hsv_red_h2_low'),
+            **tl_b_params(),          # 'B' 화살표 — tl_b_arrow_frac · tl_b_arrow_min_h · tl_b_veh_min_ar · tl_b_clip_hold
             # ★카메라 기하는 한 벌로 받는다★ 차선 인지가 붙으면 같은 dict 를 넘긴다.
             **camera_params(),
         }],

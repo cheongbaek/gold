@@ -10,7 +10,8 @@
 2. **바꾸는 방법은 셋**
    - 런치 인자로 열린 것: `ros2 launch white2 one_launch.py tl_conf:=0.4` — 열린 것은 `tl_device` `tl_conf` `tl_red_stop_min_height`
      `tl_near_release_ratio` `sl_enable` `sl_trigger_bev_y` `tl_solo_stop_min_height` `sl_conf` `sl_gate_red_s` `tl_show_window`
-     `tl_record_video` `tl_window_width` `tl_stop_latch` `tl_publish_cmd_vel` `tl_hsv_red_h2_low` (+ 녹화 `tl_video_*`, 카메라 기하는 `camera_model`).
+     `tl_record_video` `tl_window_width` `tl_stop_latch` `tl_publish_cmd_vel` `tl_hsv_red_h2_low` (+ 녹화 `tl_video_*`, 카메라 기하는 `camera_model`)
+     · [2026-10-18] 'B' 화살표 `tl_b_arrow_frac` `tl_b_arrow_min_h` `tl_b_veh_min_ar` `tl_b_clip_hold` — 예 `ros2 launch white2 one_launch.py tl_b_arrow_frac:=0.25`. 기본값은 `white2/tl_params.py` 의 `B_ARROW` 한 곳(노드·런치가 같이 읽는다).
    - 그 밖: 코드 기본값을 고치고 `colcon build --packages-select white1 white2`(★`--symlink-install` 금지★ — 다시 빌드해야 반영).
    - 시험: 테스트베드 `--param traffic_light.<이름>=<값>` (코드를 안 고치고 대조군을 만든다).
 3. **바꾸기 전에 근거, 바꾼 뒤에 검증** — 측정 분포(최소·최대)와 여유로 값을 정하고, `cam-test` 스킬로 회귀를 돌려 디버그 영상을 남긴다
@@ -72,6 +73,7 @@
 | `tl_gap_grace_s` | 0.15 | 이 이하 끊김은 확정 유지 | 내리면 먼 신호 확정이 매번 리셋 | 0.05 일 때 제동 0.8 s 늦었다(10-06) |
 | `tl_arm_hold_s` | 1.0 | 확정 뒤 대기를 잇는 시간 | | 0 = 끔 |
 | `tl_state_max_age` | 3.0 | 판정이 이보다 낡으면 개입 안 함 | | fail-open |
+| `tl_img_stale_s` [2026-10-18] | 1.5 | 영상이 이만큼 끊기면 RED 를 새로 확정하지 않는다 | 0 = 끔(종전) | 끊긴 뒤 '빨강 미감지' 해제 → 남은 RED 로 재체결 30 Hz 왕복 방지(cam-test 영상 끝 46회 → 0) |
 | `tl_zone_stale_s` | 1.0 | `/tl_zone` 신선도 | | driving 은 20 Hz 로 낸다 |
 
 ### 판단 — 정지 위치
@@ -93,7 +95,7 @@
 |---|---|---|---|---|
 | `red_release_hold_s` | 0.7 | 초록을 봤을 때 RED 미감지 유예 | 내리면 빨리 출발, 떨림↑ | 0.55 s 공백에 풀렸다 물린 실측 |
 | `red_release_hold_lost_s` | 1.5 | 초록도 못 봤을 때 유예 | 내리면 떨림 재발 | RED 끊김 최장 0.42 s · k-city 1.0 s 끊김 실측. `red_release_hold_s` 이하 = 끔 |
-| `green_hold_s` | 0.4 | 초록 확정 시간 | | 해제와 `stop_latch` 에 쓴다 |
+| `green_hold_s` | 0.3 [2026-10-18 사용자 결정, 종전 0.4] | 초록 확정 시간 | | 해제와 `stop_latch` 에 쓴다 |
 | `stop_latch` | false (false) | true 면 초록 확정까지 문다 | | 정지선에 바짝 붙어 신호가 화면을 벗어나는 코스 |
 | `tl_hold_log_ratio` | 0.5 | `⏳ 해제 보류` 로그 기준 | | 로그만. 0 = 끔 |
 
@@ -116,6 +118,7 @@
 | `tl_b_arrow_min_h` | 20 | 이보다 작은 차량 박스는 화살표를 안 읽는다(= 정지) | 20px 밑은 원등 번짐이 셋째 칸에 0.60 까지 |
 | `tl_b_arrow_frac` | 0.30 | 셋째 칸 초록 비율 문턱 | 켜짐 최소 0.42 / 꺼짐 최대 0.14 |
 | `tl_b_veh_min_ar` | 1.75 | 화살표를 읽을 최소 가로세로비 | 버스 박스 1.47~1.80 을 거른다 |
+| `tl_b_clip_hold` [2026-10-18] | true | 차량 박스가 ROI·화면 가장자리(1px)에 닿으면 판독하지 않고 직전(잘리지 않은) 판독 유지 | 잘린 박스는 셋째 칸이 어긋나 켜진 화살표를 0.27~0.30 으로 읽었다(10/17 17:29 재제동 2회) |
 | `tl_bus_min_veh_h` · `tl_bus_dark_t` · `tl_bus_open_k` · `tl_bus_iso_below` · `tl_bus_iso_left` | 10 · 0.5 · 0.40 · 0.12 · 0.20 | 버스 몸체 영상처리 | **표시용** — 판단에 안 쓴다 |
 | (코드 상수) `ARROW` | x 0.50~0.66 · y 0.15~0.85 · HSV 45~100/45/40 | 판독 창 | 노드 HSV(S55·V60)로는 가까운 화살표(V60~90)를 놓쳐 따로 둔다 |
 

@@ -112,7 +112,7 @@ cv2.setNumThreads(TL_CV_THREADS)
 from nxde.recorder import SegmentRecorder
 
 # 카메라 기하(어안 보정·BEV)의 단일 소유자. 보정 계수도 사다리꼴도 이 파일에는 없다.
-from white1 import camera_model
+from white1 import camera_model, tl_params
 
 # HSV 가 YOLO 라벨을 ★위험한 방향(RED→GREEN)★ 으로 뒤집는 것을 허용하는 conf 상한.
 # 이보다 자신 있는 박스는 색 몇 픽셀로 뒤집지 않는다. (구 white 스택에서 이어받은 값 — 실측 근거는 없다)
@@ -528,6 +528,9 @@ def _bus_split(mask, x0, y0, cx, cy, h, P):
 #    ⚠️ 20px 밑은 원등 번짐이 셋째 칸까지 퍼져 꺼짐이 0.60 까지 나온다 → 읽지 않는다(모름 = 정지, tl_b_arrow_min_h).
 #    ⚠️ 빨강+화살표 현시 녹화는 없다 — 원등과 무관하게 셋째 칸만 보므로 같은 식으로 읽힐 것으로 본다(미검증).
 ARROW = dict(x=(0.50, 0.66), y=(0.15, 0.85), lo=(45, 45, 40), hi=(100, 255, 255))
+#  잘림 판정 여유 [px] — 차량 박스가 ROI 가장자리에서 이 안이면 잘린 것으로 본다(tl_b_clip_hold).
+#    실측(10/17 17:29) 잘린 박스는 y1 = 0 이었다. 잘리기 직전 프레임은 y1 = 2~9.
+CLIP_MARGIN_PX = 1
 
 
 def arrow_frac(img, box, P=ARROW):
@@ -609,7 +612,11 @@ class TrafficLight(Node):
         #   매번 리셋돼 제동이 0.8초 늦었다 — CHANGELOG 2026-10-06).
         self.declare_parameter('tl_gap_grace_s',   0.15)
         self.declare_parameter('tl_state_max_age', 3.0)   # 이보다 낡은 판정은 무시(fail-open)
-        self.declare_parameter('green_hold_s',     0.4)   # GREEN 확정 시간 — 해제(_release_ready)와 stop_latch 해제에 쓴다
+        # [2026-10-18] 영상이 이만큼 끊기면 RED 를 새로 확정하지 않는다 — 판정(tl_state)은 tl_state_max_age(3 s)
+        #   동안 살아 있어서, 끊긴 뒤 1.5 s 에 '빨강 미감지' 로 풀고 남은 RED 로 다시 무는 30 Hz 왕복이 났다
+        #   (cam-test 영상 끝 46회 — CHANGELOG 2026-10-18). 0 = 끔(종전).
+        self.declare_parameter('tl_img_stale_s',   1.5)
+        self.declare_parameter('green_hold_s',     0.3)   # GREEN 확정 시간 — 해제(_release_ready)와 stop_latch 해제에 쓴다
         # 빨간불을 이만큼 못 봐야 놓는다(무는 쪽은 그대로) — 검출이 흔들려 리니어가 왕복하지
         #   않게. 0.55초 공백에 풀렸다 다시 물린 실측 때문에 0.7. 전체 해제 지연은 여기 +
         #   arduino BRAKE_RELEASE_HOLD_S(0.5).
@@ -694,9 +701,13 @@ class TrafficLight(Node):
         self.declare_parameter('tl_bus_detect', True)        # 끄면 'B' 도 'T' 와 똑같다(버스 찾기·화살표 둘 다 꺼진다)
         self.declare_parameter('tl_bus_min_veh_h', 10.0)     # 이보다 작은 차량 박스로는 버스 몸체를 영상처리로 찾지 않는다 [px]
         self.declare_parameter('tl_b_need_arrow', True)      # false = 버스만 빼고 원등에도 간다(직진 경로일 때)
-        self.declare_parameter('tl_b_arrow_min_h', 20.0)     # 이보다 작은 차량 박스는 화살표를 안 읽는다(모름 = 정지) [px]
-        self.declare_parameter('tl_b_arrow_frac', 0.30)      # 셋째 칸 녹색 비율이 이 이상이면 화살표 켜짐(ARROW 근거)
-        self.declare_parameter('tl_b_veh_min_ar', 1.75)      # 화살표를 읽을 박스의 최소 가로세로비 — 버스 박스(1.47~1.80)를 거른다
+        #   아래 넷의 기본값은 tl_params.B_ARROW 하나가 소유한다 — camera_launch 가 같은 값으로 런치 인자를 연다 [2026-10-18]
+        #   (tl_b_arrow_min_h 20 px · tl_b_arrow_frac 0.30 · tl_b_veh_min_ar 1.75 · tl_b_clip_hold 켬).
+        #   tl_b_clip_hold : 차량 박스가 ROI·화면 가장자리에 닿으면(잘리면) 셋째 칸이 어긋나 화살표를 꺼짐으로 읽는다 —
+        #   정지선 앞에서 신호등이 화면 위로 벗어날 때 실차가 다시 2단을 물었다(10/17 17:29, CHANGELOG 2026-10-18).
+        #   잘린 박스는 판독하지 않고 직전(잘리지 않은) 판독을 유지한다. 직전 판독이 없으면 종전대로 읽는다.
+        for _k, _v in tl_params.B_ARROW.items():
+            self.declare_parameter(_k, _v)
         self.declare_parameter('tl_bus_dark_t', BUS_BODY['dark_t'])
         self.declare_parameter('tl_bus_open_k', BUS_BODY['open_k'])
         self.declare_parameter('tl_bus_iso_below', BUS_BODY['iso_below'])
@@ -736,6 +747,9 @@ class TrafficLight(Node):
         self.b_arrow_min_h = float(g('tl_b_arrow_min_h'))
         self.b_arrow_frac  = float(g('tl_b_arrow_frac'))
         self.b_veh_min_ar  = float(g('tl_b_veh_min_ar'))
+        self.b_clip_hold   = bool(g('tl_b_clip_hold'))
+        self.b_lit_last    = None     # 잘리지 않은 차량 박스로 마지막에 읽은 화살표(켜짐?) — tl_b_clip_hold
+        self.b_clip_prev   = False    # 로그용 — 잘림 보류가 바뀔 때만 한 줄
         self.last_bus = []            # 이번 프레임 버스 신호 [{'box':원본좌표,'src':'model'|'cv','color':…}]
         self.last_veh = None          # 이번 프레임 #400 차량 박스(boxes 의 원소) — 구간 'B' 에서만
         self.last_arrow = None        # 그 박스의 화살표 판독 (셋째 칸 비율 | None=못 읽음, 켜짐?) — 구간 'B' 에서만
@@ -770,6 +784,7 @@ class TrafficLight(Node):
         self.tl_hold_s        = float(g('tl_hold_s'))
         self.tl_gap_grace_s   = float(g('tl_gap_grace_s'))
         self.tl_state_max_age = float(g('tl_state_max_age'))
+        self.tl_img_stale_s   = max(0.0, float(g('tl_img_stale_s')))
         self.green_hold_s     = float(g('green_hold_s'))
         self.red_release_hold_s = max(0.0, float(g('red_release_hold_s')))
         self.red_release_hold_lost_s = max(self.red_release_hold_s, float(g('red_release_hold_lost_s')))
@@ -1201,7 +1216,7 @@ class TrafficLight(Node):
         self.last_bus = [{'box': body, 'src': 'cv', 'color': color}]
         return self.last_bus
 
-    def _decision_boxes(self, frame, boxes, bus, xmin, ymin):
+    def _decision_boxes(self, frame, boxes, bus, xmin, ymin, roi_w, roi_h):
         """★판단에 쓸 박스★ — 구간 'B' 밖이면 boxes 그대로다(종전과 한 글자도 같은 판단).
         'B' 에서는 ① 버스 신호(모델 박스)를 뺀다 ② tl_b_need_arrow 면 차량 박스(last_veh) 하나만 남겨
         좌회전 화살표로 읽는다 — 켜짐 = GREEN, 그 밖(원등만·빨강·황색·작아서 못 읽음·버스 모양) = RED.
@@ -1221,6 +1236,20 @@ class TrafficLight(Node):
         if bh >= self.b_arrow_min_h and (x2 - x1) / max(1.0, bh) >= self.b_veh_min_ar:
             frac = arrow_frac(frame, (x1 + xmin, y1 + ymin, x2 + xmin, y2 + ymin))
         lit = frac is not None and frac >= self.b_arrow_frac
+        if self.b_clip_hold:
+            # 잘림 = 박스가 ROI 가장자리(ROI 윗변이 화면 윗변이면 그것도)에 CLIP_MARGIN_PX 안으로 닿았다.
+            m = CLIP_MARGIN_PX
+            clipped = x1 <= m or y1 <= m or x2 >= roi_w - 1 - m or y2 >= roi_h - 1 - m
+            if clipped and self.b_lit_last is not None:
+                lit = self.b_lit_last
+            elif not clipped and frac is not None:
+                self.b_lit_last = lit
+            held = clipped and self.b_lit_last is not None
+            if held != self.b_clip_prev:
+                self.get_logger().info(
+                    f"✂️ #400 차량 박스가 화면 가장자리에 잘렸다 — 화살표 판독 유지({'켜짐' if lit else '꺼짐'})"
+                    if held else "✂️ 잘림 풀림 — 화살표를 다시 읽는다")
+                self.b_clip_prev = held
         self.last_arrow = (frac, lit)
         if frac is not None and lit != self.arrow_lit_prev:
             self.get_logger().info(
@@ -1443,7 +1472,7 @@ class TrafficLight(Node):
         # 구간 'B' — 버스·차량 박스를 가르고(_find_bus), 판단에 쓸 박스를 따로 만든다(_decision_boxes).
         #   'B' 밖에서는 dec 가 boxes 그 자체라 판단이 종전과 같다.
         bus = self._find_bus(frame, boxes, xmin, ymin)
-        dec = self._decision_boxes(frame, boxes, bus, xmin, ymin)
+        dec = self._decision_boxes(frame, boxes, bus, xmin, ymin, xmax - xmin, ymax - ymin)
         self.last_dec = dec
         # [진단] 이 프레임 박스(원본 좌표). ★/tl/state 보다 먼저★ — 테스트베드는 그것을
         #   동기 신호로 다음 프레임을 민다.
@@ -1925,6 +1954,8 @@ class TrafficLight(Node):
         (리니어는 물거나 풀거나 둘뿐이라 멀리서 물면 곧 급제동이다)."""
         if self.red_since is None or not self._fresh(now):
             return False
+        if self.tl_img_stale_s > 0.0 and (now - self.img_time) > self.tl_img_stale_s:
+            return False            # 영상이 끊겼다 — 남은 RED 로 새로 물지 않는다(해제 뒤 30 Hz 왕복 방지)
         if self.tl_state != 'RED':
             return False
         return (now - self.red_since) >= self.tl_hold_s
@@ -2034,6 +2065,8 @@ class TrafficLight(Node):
                                    + (f"  (⬅️ 빨강 안 녹색 ≥{self.a_arrow_min_px}px 면 진행 · {self.a_arrow_min_h:.0f}px 밑은 모델 판정)"
                                       if z == 'A' else ""))
             self.arrow_lit_prev = None
+            self.b_lit_last = None
+            self.b_clip_prev = False
         self.tl_zone   = z
         self.tl_zone_t = time.time()
 
