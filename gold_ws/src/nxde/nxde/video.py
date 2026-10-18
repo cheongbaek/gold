@@ -8,6 +8,11 @@ video.py ― 인지 카메라 화면 녹화 [nxde]
 차선·신호등 인지가 보는 그 화면(`/image_raw`)을 노드가 도는 동안 파일로 적는다.
 ★Ctrl-C 로 끝내면 그 시점까지의 영상이 재생 가능한 상태로 닫힌다.★
 
+★[2026-10-18] 녹화 엔진은 nxde/recorder.py 로 옮겼다★ — 이 노드는 토픽을 받아 그 엔진에 넣는다.
+  인지 디버그 화면은 이제 traffic_light 가 ★그 자리에서 같은 엔진으로★ 적는다(/tl/debug_image 를
+  거치지 않는다 — 3 MB 발행이 인지 스레드와 GIL 을 다퉜다). 이 노드는 원본(/image_raw) 같은
+  다른 토픽을 적을 때 쓴다(camera_launch 의 tl_video_topic).
+
     저장 위치 : output_dir 파라미터 → 없으면 <nxde 패키지 루트(setup.py 가 있는 곳)>/video/
                 ★단, 이 워크스페이스는 복사설치(--symlink-install 금지)라 ★언제나★
                 ~/nxde_video/ 로 떨어진다★ (resolve_output_dir). 인지 디버그 녹화는
@@ -16,7 +21,7 @@ video.py ― 인지 카메라 화면 녹화 [nxde]
                 [2026-10-16] 녹화 중에는 조각을 parts/<세션>/<세션>-01.mp4 … 에 쓰고, 끝나면
                 nxde/videomerge 가 위 이름 한 파일로 합친다(검증 뒤 조각 삭제). 그래서 폴더 맨 위에는
                 최종본만 있다. 강제 종료로 못 합친 세션은 다음 기동 때(또는 ros2 run nxde
-                video_merge) 합친다 — 아래 '세그먼트 분할', videomerge.py 머리말.
+                video_merge) 합친다 — recorder.py '세그먼트 분할', videomerge.py 머리말.
 
 ────────────────────────────────────────────────────────────────────────────────
  ★무엇을 녹화하는가 — '기본 처리만 된 화면' 이 정확히 무엇인지★
@@ -77,7 +82,7 @@ camera_launch 는 usb_cam 에 `framerate: 30.0` 을 주지만 ★실제 도착�
   · `fps:=30` 처럼 명시하면 실측을 건너뛰고 ★첫 프레임부터★ 적는다.
     시작 순간이 중요한 시험(출발 직후 등)에서는 이쪽을 쓴다.
   · ★[2026-10-16] 그 뒤 도착률이 바뀌어도 영상 길이는 벽시계와 같다★ — 프레임을 시각
-    기준 칸에 넣는다(늦으면 직전 프레임 반복, 빠르면 버림). 상수절 MAX_FILL_S 참고.
+    기준 칸에 넣는다(늦으면 직전 프레임 반복, 빠르면 버림). recorder.py 상수절 MAX_FILL_S 참고.
     종전에는 처음 잰 fps 와 실제 도착률이 다르면 영상이 그만큼 빠르거나 느리게 재생됐다.
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -103,13 +108,8 @@ camera_launch 는 usb_cam 에 `framerate: 30.0` 을 주지만 ★실제 도착�
 
 import atexit
 import os
-import shutil
 import signal
-import subprocess
-import sys
-import threading
 import time
-from datetime import datetime
 
 import rclpy
 import rclpy.executors
@@ -118,11 +118,12 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from sensor_msgs.msg import Image
 
-import cv2
 from cv_bridge import CvBridge
 
-#  ★[2026-10-16] 조각 → 최종본★ 폴더 이름·잠금의 단일 소유자는 videomerge 다(ROS 를 import 하지 않는 모듈).
-from nxde import videomerge
+#  ★[2026-10-18] 녹화 엔진은 nxde/recorder.py 가 소유한다★ fps 실측·시각 칸·조각 분할·합본·
+#  디스크 감시가 전부 거기 있다 — traffic_light 도 같은 엔진으로 디버그 화면을 직접 적는다.
+#  이 노드는 '토픽을 받아 그 엔진에 넣는' 일만 한다.
+from nxde.recorder import DEFAULT_CODEC, SEGMENT_S, SegmentRecorder
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -132,66 +133,16 @@ DEFAULT_TOPIC = '/image_raw'
 #   white1/camera_launch.py 가 usb_cam 을 이 이름으로 띄운다. traffic_light 의
 #   image_topic 기본값도 같다 — ★같은 토픽을 봐야 '인지가 본 화면'이 된다★.
 
-#  코덱 → 컨테이너. 컨테이너를 코덱과 따로 고르면 재생이 안 되는 조합이 나오므로 묶는다.
-#    mp4v : 어디서나 열리고 용량이 작다. ★닫아야 재생 가능★ (기본)
-#    MJPG : 프레임마다 독립 JPEG → 잘려도 앞부분을 살린다. 용량이 몇 배.
-#    XVID : MJPG 보다 작고 avi. 잘림 내성은 mp4v 와 MJPG 사이.
-CODEC_EXT = {'mp4v': '.mp4', 'avc1': '.mp4', 'MJPG': '.avi', 'XVID': '.avi'}
-DEFAULT_CODEC = 'mp4v'
-
-FPS_PROBE_N     = 30     # 실측에 쓸 프레임 수(30fps 면 약 1초)
-FPS_PROBE_MAX_S = 4.0    # 그 안에 못 모으면 모은 것으로 확정한다(저프레임 카메라 대비)
-FPS_MIN, FPS_MAX = 1.0, 120.0   # 실측이 이 범위를 벗어나면 못 믿는다 → 폴백
-FPS_FALLBACK    = 30.0   # camera_launch 의 framerate 와 같은 값
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ★★ [2026-09-13] 세그먼트 분할 — SIGKILL 을 맞아도 직전 조각은 살아남는다 ★★
-# ══════════════════════════════════════════════════════════════════════════════
-#  ★mp4 는 인덱스(moov atom)를 파일 ★끝★ 에 쓴다★ — release() 가 안 불리면 파일
-#  전체가 재생 불가가 된다("moov atom not found"). 아래 신호 핸들러·atexit·finally
-#  삼중 방어가 있지만 ★SIGKILL 은 그 셋을 전부 건너뛴다★:
-#      · `ros2 run nxde kill` 은 ★처음부터 SIGKILL★ 이다(그 파일 주석에 명시)
-#      · Ctrl-C 여도 런치가 유예 안에 안 죽으면 SIGKILL 로 에스컬레이트한다 —
-#        큰 파일일수록 release() 가 오래 걸려 그 경계에 걸리기 쉽다
-#  2026-09-13 실측 : video/ 의 mp4 4개 중 ★3개가 깨져 있었다★
-#      236M · 181M · 55M → moov 없음(재생 불가)   /   8.5M → 정상
-#  ★큰 파일만 깨졌다★ — 위 두 경로가 정확히 그렇게 작동한다는 증거다.
-#
-#  ★그래서 파일을 잘게 나눈다.★ 이 주기마다 닫고 다음 파일을 연다.
-#  ([2026-10-16] 조각은 parts/<세션>/ 에 쓰고 녹화가 끝나면 videomerge 가 한 파일로 합친다.) 닫는 순간
-#  그 조각은 ★완결된 mp4★ 이므로, 그 뒤에 SIGKILL 을 맞아도 잃는 것은 마지막
-#  조각(최대 SEGMENT_S 초)뿐이다. 분당 15~25MB 이므로 120초면 조각당 30~50MB 다.
-#  ⚠️ 0 으로 두면 분할하지 않는다(종전 거동) — 그때는 SIGKILL 에 전부 잃는다.
-SEGMENT_S = 120.0        # [s] 이 주기마다 파일을 닫고 새로 연다. 0 = 분할 안 함
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ★★ [2026-10-16] 시각 기준으로 넣는다 — 영상 길이 = 벽시계 ★★
-# ══════════════════════════════════════════════════════════════════════════════
-#  fps 는 처음 FPS_PROBE_N 프레임으로 한 번 재고 파일에 박힌다. 그런데 실제 도착률은
-#  그 뒤에 바뀐다 — 디버그 화면은 기동 직후 29.2 fps 로 쟀는데 평균 20.8 fps 로 들어와
-#  ★48.5초 녹화가 34.5초짜리 영상★ 이 됐다(1.4배 빨리 재생 — record CSV 와 시각이 안 맞는다).
-#  그래서 출력의 k 번째 프레임을 '조각 시작 + k/fps' 시점으로 정하고, 프레임이 오면
-#  그 시점의 칸에 넣는다: 늦게 오면 ★직전 프레임을 반복★ 해 빈 칸을 채우고, 빨리 오면
-#  이미 찬 칸이므로 버린다. 반복 프레임은 mpeg4 에서 거의 0 바이트다.
-#  공백이 MAX_FILL_S 를 넘으면(카메라 두절) 그만큼만 채우고 나머지는 경고로 남긴다 —
-#  한 번에 수천 장을 인코딩하느라 노드가 멈추지 않게.
-MAX_FILL_S = 5.0         # [s] 한 공백에서 반복으로 채우는 최대 길이
-
-LOG_PERIOD_S = 10.0      # 진행 상황 로그 주기
 NO_FRAME_WARN_S = 5.0    # 이 시간 동안 프레임이 없으면 경고(usb_cam 확인 안내)
-MIN_FREE_MB = 500.0      # 남은 디스크가 이 밑이면 스스로 종료
-FREE_CHECK_PERIOD_S = 5.0
 
 
 def _package_root():
     """setup.py 가 있는 nxde 패키지 루트. 못 찾으면 None.
 
     ★symlink-install(egg-link) 이면 __file__ 이 소스트리를 가리킨다★ 그래서 여기서
-    찾은 루트가 곧 사용자가 말한 'setup.py 가 있는 디렉터리' 다(실측: nxde 는
-    egg-link 방식이고 nxde.__file__ 이 src/nxde/nxde/__init__.py 로 풀린다).
+    찾은 루트가 곧 사용자가 말한 'setup.py 가 있는 디렉터리' 다.
     ★symlink 가 아닌 빌드면 install/ 아래가 나온다★ — 거기 쌓으면 재빌드에 날아가므로
     그때는 루트로 인정하지 않고 홈으로 폴백한다(아래 resolve_output_dir).
-    white1/paths.py 가 gps_data·ros2bag 위치를 정하는 방식과 같은 태도다.
     """
     here = os.path.dirname(os.path.realpath(__file__))   # .../src/nxde/nxde
     root = os.path.dirname(here)                         # .../src/nxde
@@ -229,106 +180,39 @@ class VideoNode(Node):
         self.declare_parameter('codec', DEFAULT_CODEC)
         #   파일 이름 앞머리. 여러 대를 동시에 녹화하거나 시험을 구분할 때 바꾼다.
         self.declare_parameter('prefix', 'cam')
-        #  ★[2026-09-13] 세그먼트 분할★ 상수절 참고. 0 이면 종전처럼 한 파일에 쓴다.
+        #  ★[2026-09-13] 세그먼트 분할★ recorder.py 상수절 참고. 0 이면 한 파일에 쓴다.
         self.declare_parameter('segment_s', SEGMENT_S)
         #  ★[2026-10-16] 끝나면 조각을 최종본 한 파일로 합친다★ (videomerge 머리말)
         self.declare_parameter('merge', True)
         #   True 면 합본 검증 뒤에도 parts/<세션>/ 의 조각을 지우지 않는다.
         self.declare_parameter('keep_parts', False)
 
-        self.topic  = str(self.get_parameter('image_topic').value)
-        self.fps_p  = float(self.get_parameter('fps').value)
-        self.scale  = float(self.get_parameter('scale').value)
-        self.codec  = str(self.get_parameter('codec').value)
-        prefix      = str(self.get_parameter('prefix').value) or 'cam'
-        if self.codec not in CODEC_EXT:
-            self.get_logger().warn(
-                f"codec '{self.codec}' 은 모르는 값 — '{DEFAULT_CODEC}' 로 진행한다 "
-                f"(아는 것: {', '.join(CODEC_EXT)})")
-            self.codec = DEFAULT_CODEC
-        if not (0.05 <= self.scale <= 1.0):
-            self.get_logger().warn(f"scale {self.scale} → 1.0 으로 클램프(0.05~1.0)")
-            self.scale = 1.0
+        g = lambda k: self.get_parameter(k).value
+        self.topic = str(g('image_topic'))
+        out_dir, why = resolve_output_dir(str(g('output_dir')))
+        self.rec = SegmentRecorder(
+            out_dir, prefix=str(g('prefix')) or 'cam', log=self._say, src=self.topic,
+            fps=float(g('fps')), scale=float(g('scale')), codec=str(g('codec')),
+            segment_s=float(g('segment_s')), merge=bool(g('merge')),
+            keep_parts=bool(g('keep_parts')))
+        self.final_path = self.rec.final_path
 
-        out_dir, why = resolve_output_dir(str(self.get_parameter('output_dir').value))
-        os.makedirs(out_dir, exist_ok=True)
-        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')   # record.py 와 같은 규칙
-        #  ★[2026-10-16] 맨 위에는 최종본만★ 조각은 parts/<세션>/<세션>-NN 에 쓰고, 닫은 뒤
-        #  videomerge 가 <out_dir>/<세션>.mp4 한 파일로 합친다(그 모듈 머리말).
-        self.ext = CODEC_EXT[self.codec]
-        self.out_dir = out_dir
-        self.session = f"{prefix}-{stamp}"
-        self.parts_dir = os.path.join(out_dir, videomerge.PARTS_DIR, self.session)
-        self.final_path = os.path.join(out_dir, self.session + self.ext)
-        self.merge = bool(self.get_parameter('merge').value)
-        self.keep_parts = bool(self.get_parameter('keep_parts').value)
-        self.path = os.path.join(self.parts_dir, f"{self.session}-01{self.ext}")
-
-        # ── 상태 ──
         self.bridge = CvBridge()
-        self.writer = None
-        self.size   = None            # (w, h) 실제로 쓰는 크기
-        self.n_written = 0            # 파일에 쓴 프레임(반복 포함) — 영상 길이 = 이것 ÷ fps
-        self.n_dropped = 0            # 크기 불일치·인코딩 실패로 못 쓴 프레임
-        self.n_dup = 0                # 빈 칸을 채우려고 반복해 쓴 프레임 [2026-10-16]
-        self.n_skip = 0               # fps 보다 빨리 와서 버린 프레임 [2026-10-16]
-        self.lost_s = 0.0             # MAX_FILL_S 를 넘어 못 채운 공백 [s]
-        self._last_frame = None       # 반복에 쓸 직전 프레임
         self.exit_requested = False   # 신호를 받았다 — main 이 이것을 보고 나간다 [2026-10-16]
-        self.t_first = None           # 첫 ★기록된★ 프레임 시각
-        self.t_last_frame = 0.0       # 마지막 수신 시각(두절 경고용)
-        self.fps_used = None
-        self._probe_t = []            # 실측용 도착 시각
-        self._closed = False
-        # ★RLock 이어야 한다 (plain Lock 이면 교착)★ SIGTERM 핸들러가 close() 를
-        #   ★콜백과 같은 스레드에서★ 부른다 — 파이썬 신호 핸들러는 바이트코드 사이에서
-        #   실행되므로, 콜백이 이 락을 쥔 순간 신호가 들어오면 close() 가 같은 스레드에서
-        #   같은 락을 다시 잡으려 한다. Lock 이면 거기서 영구 정지하고 ★파일이 닫히지
-        #   않는다★ — 정확히 막으려던 실패로 되돌아간다. RLock 은 같은 스레드의 재진입을
-        #   허용해 그 경로가 성립하지 않는다.
-        #   (close() 뒤 콜백으로 돌아와도 _write 가 writer None 을 보고 멈춘다 [2026-10-16].)
-        self._lock = threading.RLock()
-        self._t_log = time.time()
-        self._t_free = time.time()
         self._warned_no_frame = False
-        self._stop_reason = None
-        #  ── 세그먼트 상태 [2026-09-13] ──
-        self.segment_s = max(0.0, float(self.get_parameter('segment_s').value))
-        self._seg_i = 1               # 지금 쓰고 있는 조각 번호(1 부터)
-        self._seg_t0 = 0.0            # 이 조각을 연 시각
-        self._seg_frames = 0          # 이 조각에 쓴 프레임 수
-        self._seg_done = 0            # 완결된 조각 수(로그용)
 
         # ── 구독 ──
         #   ★QoS 를 usb_cam 에 맞춘다★ BEST_EFFORT / KEEP_LAST / depth=1.
         #   RELIABLE 로 잡으면 ★발행자와 규약이 안 맞아 아예 연결되지 않는다★(프레임이
         #   한 장도 안 온다). white1/traffic_light.py 의 qos_img 와 같은 값이다.
         #   depth=1 인 것도 의도다 — 인코딩이 밀리면 ★최신 프레임만 남기고 버린다★.
-        #   큐를 키우면 메모리가 늘고(1080p 한 장 6.2MB) 영상 시각이 실제보다 뒤로 밀린다.
         qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                          history=HistoryPolicy.KEEP_LAST, depth=1)
         self.create_subscription(Image, self.topic, self.cb_image, qos)
         self.create_timer(1.0, self._on_tick)
 
         self._install_signal_handlers()
-
-        self.get_logger().info(
-            f"🎥 nxde video 준비 — {self.topic} → 최종본 {self.final_path}")
-        self.get_logger().info(
-            f"   저장 위치 : {out_dir}  ({why}) · 녹화 중 조각은 "
-            f"{videomerge.PARTS_DIR}/{self.session}/"
-            + (" — 끝나면 한 파일로 합친다" if self.merge else " — ★합치지 않는다(merge:=false)★"))
-        #  ★[2026-10-16] 지난번에 못 합친 세션(SIGKILL·전원 차단)을 마저 합친다★ — 별도 프로세스.
-        #  녹화 중인 세션(다른 녹화 노드)은 .recording 의 pid 로 가려 건드리지 않는다.
-        if self.merge and os.path.isdir(os.path.join(out_dir, videomerge.PARTS_DIR)):
-            if self._spawn_merge('--orphans', out_dir):
-                self.get_logger().info(
-                    f"   ♻️ {videomerge.PARTS_DIR}/ 에 남은 세션을 합치도록 맡겼다 "
-                    f"(로그 {videomerge.LOG_PATH})")
-        self.get_logger().info(
-            f"   코덱 {self.codec} / scale {self.scale:g} / fps "
-            f"{'실측(첫 %d프레임은 파일에 안 들어간다)' % FPS_PROBE_N if self.fps_p <= 0 else f'{self.fps_p:g} 고정'}"
-            f" | ★Ctrl-C 로 끝내면 그 시점까지 저장된다★")
+        self.rec.describe(why)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  종료 처리 — ★이게 이 노드의 핵심 요구사항이다★
@@ -347,21 +231,15 @@ class VideoNode(Node):
         #  중) 안에서 처리되면 그 예외가 pybind11 을 지나며 RuntimeError('Unable to convert
         #  call argument') 로 바뀌어 ★파일은 멀쩡히 닫혔는데 트레이스백 + exit 1★ 로 끝났다
         #  (`nxde kill` 실측). → 파일을 닫고 표시만 세운다. main 의 spin_once 루프가 0.1 s
-        #  안에 그것을 보고 정상으로 나간다. 콜백 도중에 닫혔어도 _write 가 writer None 을
+        #  안에 그것을 보고 정상으로 나간다. 콜백 도중에 닫혔어도 recorder 가 writer None 을
         #  보고 멈춘다.
         def _term(signum, _frame):
             self._say(f"신호 {signum} 수신 — 파일을 닫는다")
             self.close()
             self.exit_requested = True
-        #  ★[2026-09-13] SIGINT 도 여기서 직접 잡는다★
-        #  종전에는 "Ctrl-C 는 rclpy 가 KeyboardInterrupt 로 올려 주므로 finally 가
-        #  받는다" 에 맡겼는데, 그 경로는 ★rclpy 가 스핀을 풀고 → 예외가 올라가고 →
-        #  finally 가 도는★ 동안 시간이 걸린다. 그 사이 런치가 유예를 넘겼다고 보고
-        #  SIGKILL 을 보내면 파일이 그대로 깨진다(2026-09-13 실측: 큰 파일만 깨졌다 —
-        #  release() 가 오래 걸릴수록 그 경계에 걸린다).
-        #  → ★신호를 받은 그 자리에서 먼저 닫는다.★ close() 는 멱등이므로 뒤따르는
-        #  finally·atexit 과 겹쳐도 안전하고, 이미 닫혔으면 즉시 돌아온다.
-        #  (그래서 Ctrl-C 가 KeyboardInterrupt 로 올라오지 않는다 — main 이 표시를 본다.)
+        #  ★[2026-09-13] SIGINT 도 여기서 직접 잡는다★ rclpy 가 스핀을 풀고 → 예외가 올라가고
+        #  → finally 가 도는 동안 런치가 유예를 넘겼다고 보고 SIGKILL 을 보내면 파일이 그대로
+        #  깨진다(2026-09-13 실측: 큰 파일만 깨졌다). → ★신호를 받은 그 자리에서 먼저 닫는다.★
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:
                 signal.signal(sig, _term)
@@ -370,23 +248,16 @@ class VideoNode(Node):
         atexit.register(self.close)
 
     def _say(self, text, warn=False):
-        """종료 경로에서도 메시지가 보이게 한다.
+        """종료 경로에서도 메시지가 보이게 한다 — recorder 의 로그도 여기로 온다.
 
         ★close() 는 rclpy 컨텍스트가 이미 내려간 뒤에 불릴 수 있다★(SIGINT →
-        KeyboardInterrupt → finally). 그때 get_logger() 로 찍으면 내용은 콘솔에 나오지만
-        'Failed to publish log message to rosout: publisher's context is invalid' 가
-        따라붙어 ★저장이 실패한 것처럼 보인다★. 컨텍스트가 죽었으면 print 로 낸다.
+        KeyboardInterrupt → finally). 그때 get_logger() 로 찍으면 'Failed to publish log
+        message to rosout' 가 따라붙어 ★저장이 실패한 것처럼 보인다★. 컨텍스트가 죽었으면 print 로 낸다.
 
         ★★ info 와 warn 을 ★한 줄에서★ 부르면 안 된다 [2026-09-10] ★★
-        rclpy 의 rcutils_logger 는 로그 설정을 ★호출한 줄★ 단위로 캐시하고
-        (CallerId = 파일·함수·줄번호), 같은 줄에서 심각도가 바뀌면
-            ValueError: Logger severity cannot be changed between calls.
-        를 ★던진다★. 종전 코드는 삼항식으로 `.warn` 과 `.info` 를 한 줄에 두어
-        정확히 그 조건이었다 — 그래서 close() 가 '✅ 저장 완료'(info) 뒤에
-        '⚠️ 벽시계와 영상 길이가 다르다'(warn)를 낼 때마다 터졌다.
-        ★파일은 이미 닫힌 뒤라 영상은 멀쩡했지만★, 신호 핸들러 안에서 터지는
-        예외라 종료가 트레이스백으로 끝나고 종료코드가 1 이 됐다 — 런치 로그에서
-        '녹화가 실패했다' 로 읽히는 모습이다(실측으로 확인했다).
+        rclpy 의 rcutils_logger 는 로그 설정을 ★호출한 줄★ 단위로 캐시하고, 같은 줄에서
+        심각도가 바뀌면 ValueError: Logger severity cannot be changed between calls. 를
+        ★던진다★ — 신호 핸들러 안에서 터지면 종료가 트레이스백 + exit 1 로 끝난다(실측).
         → ★두 줄로 나눠 호출 위치를 가른다.★ 줄을 합치지 말 것.
         """
         if rclpy.ok():
@@ -399,339 +270,44 @@ class VideoNode(Node):
             print(('[WARN] ' if warn else '[INFO] ') + text, flush=True)
 
     def close(self):
-        """VideoWriter 를 닫는다. ★몇 번 불려도 안전해야 한다★(신호·atexit·finally
-        가 겹칠 수 있다)."""
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            w = self.writer
-            self.writer = None
-        if w is None:
-            self._say(f"⚠️ 프레임을 한 장도 못 받아 파일을 만들지 않았다 — "
-                      f"{self.topic} 확인. usb_cam 이 떠 있나? "
-                      f"(ros2 topic hz {self.topic})", warn=True)
+        """녹화를 닫는다. ★몇 번 불려도 안전★(신호·atexit·finally 가 겹칠 수 있다)."""
+        if self.rec.closed:
             return
-        try:
-            w.release()
-        except Exception as e:
-            self._say(f"❌ 파일 닫기 실패: {e} — 파일이 재생되지 않을 수 있다", warn=True)
-            return
-        vid_s = self._video_seconds()
-        wall_s = (time.time() - self.t_first) if self.t_first else 0.0
-        mb = self._size_mb()
-        #  ★[2026-10-16] 세션 전체로 보고한다★ 조각은 parts/<세션>/ 에 있고 곧 한 파일로 합쳐진다.
-        self._say(
-            f"✅ 녹화 끝 — 조각 {self._seg_i}개 · {self.n_written}프레임 / ★영상 {vid_s:.1f}초★ / "
-            f"fps {self.fps_used:g} (마지막 조각 {mb:.1f}MB)"
-            + (f" / 기록 실패 {self.n_dropped}" if self.n_dropped else ""))
-        #  ★[2026-10-16] 시각 맞춤 결과★ 반복·버림은 정상 동작이다(수신률이 fps 와 다를 뿐).
-        #  수신률 = 실제로 받은 프레임 ÷ 벽시계 — 반복분을 빼야 '몇 fps 로 들어왔나' 가 된다.
-        got = self.n_written - self.n_dup
-        self._say(
-            f"   시각 맞춤 : 반복 {self.n_dup} / 버림 {self.n_skip} 프레임 "
-            f"(실수신 평균 {got / wall_s if wall_s > 0.5 else 0.0:.1f}fps)")
-        # ★영상이 벽시계보다 짧으면 MAX_FILL_S 를 넘는 공백이 있었다★ (카메라 두절 등)
-        if self.lost_s > 0.5 or (wall_s > 0.5 and abs(wall_s - vid_s) > max(1.0, 0.05 * wall_s)):
-            self._say(
-                f"   ⚠️ 벽시계 {wall_s:.1f}초인데 영상은 {vid_s:.1f}초 — "
-                f"{self.lost_s:.1f}초는 {MAX_FILL_S:g}초를 넘는 공백이라 채우지 않았다. "
-                f"usb_cam·발행 노드 두절을 의심할 것", warn=True)
-        #  ★[2026-10-16] 잠금을 풀고 합본을 맡긴다★ 별도 프로세스라 이 노드의 종료가 늦어지지
-        #  않는다(nxde kill 의 2 s 유예 안). 합본이 죽어도 조각은 남고 다음 기동 때 다시 합친다.
-        try:
-            os.remove(os.path.join(self.parts_dir, videomerge.LOCK_RECORDING))
-        except OSError:
-            pass
-        if self.merge and self._spawn_merge(self.parts_dir, *(['--keep'] if self.keep_parts else [])):
-            self._say(f"   📦 최종본 → {self.final_path}  (합본은 백그라운드 — 로그 {videomerge.LOG_PATH})")
-        else:
-            self._say(f"   조각 → {self.parts_dir}  (합치려면 ros2 run nxde video_merge)")
-
-    def _spawn_merge(self, *args):
-        """videomerge 를 ★별도 프로세스★ 로 띄운다(자기 세션 — 런치의 Ctrl+C·nxde kill 이 닿지 않는다).
-        ★신호 핸들러 안에서도 불린다★ — 기다리지 않고 바로 돌아온다."""
-        try:
-            os.makedirs(os.path.dirname(videomerge.LOG_PATH), exist_ok=True)
-            with open(videomerge.LOG_PATH, 'a') as err:     # import 실패 같은 것도 로그에 남게
-                subprocess.Popen([sys.executable, '-m', 'nxde.videomerge', *args],
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
-                                 start_new_session=True, close_fds=True)
-            return True
-        except Exception as e:
-            self._say(f"⚠️ 합본을 띄우지 못했다({e})", warn=True)
-            return False
+        if not self.rec.recording:
+            self._say(f"   (ros2 topic hz {self.topic} — usb_cam·발행 노드가 떠 있나?)")
+        self.rec.close()
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  수신 · 기록
+    #  수신
     # ══════════════════════════════════════════════════════════════════════════
     def cb_image(self, msg: Image):
         now = time.time()
-        self.t_last_frame = now
         self._warned_no_frame = False
-
         # ★traffic_light 와 같은 한 줄★ — 그래서 같은 그림이 적힌다
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as e:
-            self.n_dropped += 1
+            self.rec.t_last_frame = now
+            self.rec.n_dropped += 1
             self.get_logger().error(
                 f"cv_bridge 변환 실패({msg.encoding}): {e}", throttle_duration_sec=5.0)
             return
-
-        if self.scale != 1.0:
-            frame = cv2.resize(
-                frame, (max(1, int(frame.shape[1] * self.scale)),
-                        max(1, int(frame.shape[0] * self.scale))),
-                interpolation=cv2.INTER_AREA)
-
-        with self._lock:
-            if self._closed:
-                return                      # 이미 닫혔다(종료 중) — 더 쓰지 않는다
-            if self.writer is None:
-                if not self._open_writer(frame, now):
-                    return                  # 실측 중이거나 열기 실패
-            # ★크기가 바뀌면 writer 를 다시 열 수 없다★ 맞춰서 넣는다.
-            #   (usb_cam 이 도중에 해상도를 바꿀 일은 없지만, 그때 조용히 깨진 파일이
-            #    되는 것보다 리사이즈해서 이어 적고 경고를 남기는 편이 낫다)
-            h, w = frame.shape[:2]
-            if (w, h) != self.size:
-                self.get_logger().warn(
-                    f"프레임 크기 변경 {w}x{h} → {self.size[0]}x{self.size[1]} 로 맞춘다",
-                    throttle_duration_sec=10.0)
-                frame = cv2.resize(frame, self.size, interpolation=cv2.INTER_AREA)
-            # ★[2026-10-16] 시각 기준 칸★ 상수절 MAX_FILL_S 참고.
-            k = int((now - self._seg_t0) * self.fps_used)   # 이 프레임이 들어갈 칸
-            if k < self._seg_frames:
-                self.n_skip += 1            # 이 칸은 이미 찼다 — fps 보다 빨리 왔다
-                return
-            gap = k - self._seg_frames      # 직전 프레임 뒤로 비어 있는 칸 수
-            if gap > 0 and self._last_frame is not None:
-                fill = min(gap, int(MAX_FILL_S * self.fps_used))
-                for _ in range(fill):
-                    if not self._write(self._last_frame):
-                        return
-                    self.n_dup += 1
-                if gap > fill:
-                    # 못 채운 만큼 기준을 당긴다 — 이후 프레임이 끝없이 '늦은' 것으로 보이지 않게
-                    lost = (gap - fill) / self.fps_used
-                    self.lost_s += lost
-                    self._seg_t0 += lost
-                    self.get_logger().warn(
-                        f"⚠️ {gap / self.fps_used:.1f}초 공백 — {MAX_FILL_S:g}초만 채우고 "
-                        f"{lost:.1f}초는 건너뛴다(그만큼 영상이 벽시계보다 짧아진다)")
-            if not self._write(frame):
-                return
-            self._last_frame = frame
-            if self.t_first is None:
-                self.t_first = now
-            #  ★[2026-09-13] 세그먼트 롤오버★ 상수절 참고. 여기서 하는 이유는
-            #  ★프레임을 쓴 직후가 조각을 끊기에 가장 안전한 지점★ 이기 때문이다
-            #  (writer 가 반쯤 쓴 프레임을 들고 있지 않다). _lock 을 이미 쥐고 있다.
-            if self.segment_s > 0.0 and (now - self._seg_t0) >= self.segment_s:
-                self._roll_segment(now)
-
-    def _write(self, frame) -> bool:
-        """한 칸 쓴다. ★_lock 을 잡은 채로 불린다.★ 못 썼으면 False.
-
-        ★self.writer 를 매번 다시 읽는다★ — 신호 핸들러가 콜백 도중(같은 스레드, 바이트코드
-        사이)에 close() 로 writer 를 떼어 갈 수 있다. 종전에는 핸들러가 예외를 던져 콜백을
-        끊었지만 [2026-10-16] 부터는 표시만 세우므로 여기서 멈춰야 한다."""
-        w = self.writer
-        if w is None or self._closed:
-            return False
-        try:
-            w.write(frame)
-        except Exception as e:
-            self.n_dropped += 1
-            self.get_logger().error(f"프레임 기록 실패: {e}", throttle_duration_sec=5.0)
-            return False
-        self.n_written += 1
-        self._seg_frames += 1
-        return True
-
-    def _open_writer(self, frame, now) -> bool:
-        """→ 열었으면 True. 실측이 아직 안 끝났으면 False(그 프레임은 버린다).
-        ★_lock 을 잡은 채로 불린다.★"""
-        if self.fps_p > 0:
-            fps = self.fps_p
-        else:
-            # ── fps 실측 ── 도착 간격의 ★중앙값★ 을 쓴다. 평균은 기동 직후 한 번의
-            #    긴 간격(드라이버 워밍업)에 끌려가고, 중앙값은 그것에 반응하지 않는다.
-            self._probe_t.append(now)
-            n = len(self._probe_t)
-            span = now - self._probe_t[0]
-            if n < FPS_PROBE_N and span < FPS_PROBE_MAX_S:
-                return False                # 아직 모으는 중
-            if n < 2 or span <= 0.0:
-                fps = FPS_FALLBACK
-            else:
-                d = sorted(self._probe_t[i + 1] - self._probe_t[i]
-                           for i in range(n - 1))
-                med = d[len(d) // 2]
-                fps = (1.0 / med) if med > 1e-6 else FPS_FALLBACK
-            if not (FPS_MIN <= fps <= FPS_MAX):
-                self.get_logger().warn(
-                    f"실측 fps {fps:.2f} 가 허용범위({FPS_MIN}~{FPS_MAX}) 밖 — "
-                    f"{FPS_FALLBACK:g} 로 진행한다")
-                fps = FPS_FALLBACK
-            self.get_logger().info(
-                f"📐 fps 실측 {fps:.2f} ({n}프레임 / {span:.2f}초) — 이 값으로 파일을 연다")
-
-        h, w = frame.shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*self.codec)
-        #  ★[2026-10-16] 세션 폴더와 녹화 잠금★ 첫 프레임을 쓸 때 만든다(프레임이 없으면 폴더도 없다).
-        #  잠금(pid)이 살아 있는 동안 videomerge 의 orphan 정리가 이 세션을 건드리지 않는다.
-        try:
-            os.makedirs(self.parts_dir, exist_ok=True)
-            with open(os.path.join(self.parts_dir, videomerge.LOCK_RECORDING), 'w') as f:
-                f.write(str(os.getpid()))
-        except OSError as e:
-            self.get_logger().error(f"❌ 조각 폴더를 만들 수 없다: {self.parts_dir} ({e})")
-            self._closed = True
-            return False
-        #  ★[2026-10-16] 첫 조각부터 반올림한 같은 값으로 연다★ 종전에는 첫 조각만 원래 값(29.979…)
-        #  으로 열고 다음 조각부터 반올림(29.979)으로 열어, OpenCV 가 조각마다 다른 시간 단위
-        #  (1/11992 · 1/29979)를 골랐다 — 합치면 길이가 2.5배로 틀어진다(videomerge 가 맞춰 주지만
-        #  애초에 같게 쓴다).
-        fps = round(float(fps), 3)
-        writer = cv2.VideoWriter(self.path, fourcc, fps, (w, h))
-        if not writer.isOpened():
-            # ★여기서 죽지 않는다★ 코덱이 없는 환경일 수 있다. 사유를 정확히 알려 준다.
-            self.get_logger().error(
-                f"❌ 파일을 열 수 없다: {self.path}\n"
-                f"   코덱 '{self.codec}' 을 OpenCV 가 못 쓰는 환경일 수 있다 — "
-                f"`codec:=MJPG` (avi) 로 다시 시도해 볼 것.\n"
-                f"   쓰기 권한·경로도 확인: {os.path.dirname(self.path)}")
-            self._closed = True             # 더 시도하지 않는다(로그 폭주 방지)
-            return False
-        self.writer = writer
-        self.size = (w, h)
-        self.fps_used = round(float(fps), 3)
-        self._seg_t0 = now
-        self._seg_frames = 0
-        seg = (f"  (조각당 {self.segment_s:.0f}초씩 나눠 적는다 — "
-               f"중간에 죽어도 직전 조각까지는 남는다)"
-               if self.segment_s > 0 else "  (분할 없음 — 끝까지 한 파일)")
-        self.get_logger().info(
-            f"🔴 녹화 시작 {w}x{h} @ {self.fps_used:g}fps → "
-            f"{os.path.basename(self.path)}{seg}")
-        return True
+        self.rec.feed(frame, now)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  세그먼트 분할 [2026-09-13]
-    # ══════════════════════════════════════════════════════════════════════════
-    def _segment_path(self, i):
-        """i 번째 조각의 경로 = parts/<세션>/<세션>-NN [2026-10-16]. 최종본 이름(<세션>.mp4)은
-        종전 첫 조각 이름과 같아 record CSV 와 시각을 맞추는 규칙(tl-<시각>.mp4)이 그대로다."""
-        return os.path.join(self.parts_dir, f"{self.session}-{i:02d}{self.ext}")
-
-    def _roll_segment(self, now):
-        """지금 조각을 ★완결★ 하고 다음 조각을 연다. ★_lock 을 쥔 채로 불린다.★
-
-        ★이 함수가 이 노드의 내구성 전부다★ — 여기서 release() 가 끝나는 순간
-        그 조각은 moov 까지 갖춘 온전한 mp4 가 된다. 그 뒤에 SIGKILL 이 와도
-        잃는 것은 그 시점 이후에 쓴 마지막 조각뿐이다.
-
-        ★close() 를 재사용하지 않는다★ close() 는 `_closed` 를 세워 '녹화 끝' 을
-        뜻하고 멱등이라, 롤오버에 쓰면 다음 조각을 열 수 없게 된다.
-        """
-        w = self.writer
-        if w is None:
-            return
-        self.writer = None              # 먼저 떼어 둔다(콜백이 죽은 writer 를 안 보게)
-        done_path = self.path
-        frames = self._seg_frames
-        try:
-            w.release()
-        except Exception as e:
-            self._say(f"❌ 조각 닫기 실패: {e}", warn=True)
-            return
-        self._seg_done += 1
-        try:
-            mb = os.path.getsize(done_path) / 1e6
-        except OSError:
-            mb = 0.0
-        vid_s = (frames / self.fps_used) if self.fps_used else 0.0
-        self._say(f"💾 조각 {self._seg_i:02d} 저장 — {os.path.basename(done_path)}  "
-                  f"{frames}프레임 / {vid_s:.1f}초 / {mb:.1f}MB")
-        # ── 다음 조각을 연다 ── fps·크기는 ★재측정하지 않는다★ (재측정하면 그
-        #    프레임들을 또 버리고, 조각마다 fps 가 달라져 이어 보기가 어려워진다)
-        self._seg_i += 1
-        self.path = self._segment_path(self._seg_i)
-        fourcc = cv2.VideoWriter_fourcc(*self.codec)
-        writer = cv2.VideoWriter(self.path, fourcc, float(self.fps_used), self.size)
-        if not writer.isOpened():
-            self._say(f"❌ 다음 조각을 열 수 없다: {self.path} — 녹화를 여기서 끝낸다",
-                      warn=True)
-            self._closed = True
-            return
-        self.writer = writer
-        #  ★[2026-10-16] 시간축을 잇는다★ 다음 칸은 직전 조각의 마지막 칸 바로 뒤 시각이다.
-        #  now 로 다시 잡으면 조각마다 한 칸씩 시간이 빠진다(롤오버를 부른 프레임이 이미
-        #  직전 조각의 마지막 칸에 들어갔으므로).
-        self._seg_t0 += frames / self.fps_used
-        self._seg_frames = 0
-
-    # ══════════════════════════════════════════════════════════════════════════
-    #  주기 점검 — 진행 상황 · 프레임 두절 · 디스크
+    #  주기 점검 — 프레임 두절 (진행 상황·디스크는 recorder.tick)
     # ══════════════════════════════════════════════════════════════════════════
     def _on_tick(self):
         now = time.time()
-
-        # ── 프레임이 안 온다 ──
-        if (self.t_last_frame == 0.0 or now - self.t_last_frame > NO_FRAME_WARN_S):
+        t_last = self.rec.t_last_frame
+        if (t_last == 0.0 or now - t_last > NO_FRAME_WARN_S):
             if not self._warned_no_frame:
                 self._warned_no_frame = True
                 self.get_logger().warn(
                     f"⚠️ {self.topic} 프레임이 {NO_FRAME_WARN_S:.0f}초 이상 없다 — "
                     f"usb_cam 이 떠 있는지, 카메라를 꽂았는지 확인 "
                     f"(ros2 topic hz {self.topic})")
-
-        # ── 진행 상황 ──
-        if self.writer is not None and now - self._t_log >= LOG_PERIOD_S:
-            self._t_log = now
-            vid_s = self._video_seconds()
-            mb = self._size_mb()
-            # ★MB/분은 '영상 1분당' 이다★ 벽시계로 나누면 프레임이 안 오는 구간에서
-            #   값이 0 으로 수렴해 '용량이 안 늘어난다'는 잘못된 인상을 준다.
-            rate = (mb / vid_s * 60.0) if vid_s > 0.5 else 0.0
-            self.get_logger().info(
-                f"🎥 {self.n_written}프레임 / 영상 {vid_s:.0f}초 / {mb:.1f}MB "
-                f"(영상 1분당 {rate:.0f}MB) / 반복 {self.n_dup} · 버림 {self.n_skip}"
-                + (f" / 기록 실패 {self.n_dropped}" if self.n_dropped else ""))
-
-        # ── 디스크 ── ★가득 채우면 주행 기록까지 못 쓴다 → 녹화를 포기한다★
-        if now - self._t_free >= FREE_CHECK_PERIOD_S:
-            self._t_free = now
-            try:
-                free_mb = shutil.disk_usage(os.path.dirname(self.path)).free / 1e6
-            except OSError:
-                return
-            if free_mb < MIN_FREE_MB and not self._closed:
-                self.get_logger().error(
-                    f"🛑 남은 디스크 {free_mb:.0f}MB < {MIN_FREE_MB:.0f}MB — "
-                    f"녹화를 여기서 끝낸다(파일은 정상 종료). 디스크를 채우면 주행 "
-                    f"기록 CSV·로그까지 못 쓰게 되므로 녹화를 잃는 쪽을 택한다")
-                self._stop_reason = 'disk'
-                self.close()
-
-    def _size_mb(self):
-        try:
-            return os.path.getsize(self.path) / 1e6
-        except OSError:
-            return 0.0
-
-    def _video_seconds(self):
-        """★파일의 실제 재생 길이★ = 기록한 프레임 수 ÷ 파일에 박힌 fps.
-
-        벽시계 경과를 쓰면 안 된다 — 프레임이 안 오는 동안에도 시간은 흐르므로
-        '9.6초짜리 영상'을 '117초'로 보고하게 된다(실측으로 잡은 오류다).
-        재생기에서 보이는 길이와 같은 값이어야 로그·CSV 와 시각을 맞출 수 있다.
-        """
-        if not self.fps_used:
-            return 0.0
-        return self.n_written / self.fps_used
+        self.rec.tick(now)
 
     def destroy_node(self):
         self.close()

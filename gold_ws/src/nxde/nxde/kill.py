@@ -313,7 +313,10 @@ def alive(pid):
 #  → 녹화 노드에만 SIGTERM 을 먼저 보내고 아래 유예만큼 기다린 뒤, 그래도 살아
 #    있으면 원칙대로 SIGKILL 한다. ★유예는 짧게★ — 이 도구는 빨라야 한다.
 #  (video.py 는 SIGTERM 핸들러에서 파일을 닫고 즉시 나간다 — 보통 즉시 끝난다.)
-RECORDER_COMMS = ('video',)      # comm 에 이 문자열이 들어가면 녹화 노드로 본다
+#  ★[2026-10-18] traffic_light 도 녹화 노드다★ 인지 디버그 화면을 그 노드가 직접 적는다
+#  (nxde/recorder.py). SIGTERM 을 받으면 정리 첫 단계에서 파일부터 닫는다(수 ms) — 그 뒤
+#  리니어 해제 발행까지 마치면 스스로 끝난다.
+RECORDER_COMMS = ('video', 'traffic_light')   # comm 에 이 문자열이 들어가면 녹화 노드로 본다
 RECORDER_GRACE_S = 2.0           # [s] 그 노드에만 주는 SIGTERM 유예
 
 

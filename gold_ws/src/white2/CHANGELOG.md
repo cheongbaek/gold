@@ -96,6 +96,34 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-18 (2) — ★디버그 화면을 traffic_light 가 직접 녹화 · 구독자 있을 때만 발행 · OpenCV 8스레드 복원★ (사용자 승인 A·B)
+
+**원인 (py-spy, 녹화 켬)** — traffic_light 안에서 GIL 을 쥔 시간의 **41% 가 `/tl/debug_image` 발행**(rclpy `publish` 34% · `cv2_to_imgmsg` 7%)이었다.
+그림 그리기(cv2)는 GIL 을 거의 쥐지 않는다. 또 **ultralytics 가 import 순간 `cv2.setNumThreads(0)`** 으로 OpenCV 를 1스레드로 묶어
+어안 보정(remap 1080p)이 9.7 ms — 프레임 예산 33 ms 의 3할이었다(ultralytics 없이 같은 코드는 1.1 ms).
+
+**A — 녹화를 그린 자리에서** — `nxde/recorder.py`(`SegmentRecorder`, 신설)로 nxde video 의 녹화 엔진(fps 실측·시각 칸·120 s 조각·
+합본 의뢰·디스크 감시·멱등 close)을 ROS 없는 부품으로 옮기고 `video.py` 는 그것을 쓰는 얇은 노드가 됐다. traffic_light 는 `tl_record`
+(런치 `tl_record_video`)가 켜지면 `_draw()` 끝에서 캔버스를 그대로 `feed` 한다(`VideoWriter.write` 는 GIL 을 놓는다). `/tl/debug_image` 는
+**구독자가 있을 때만**(`_debug_wanted` — HUD '카메라' 화면). camera_launch 는 `tl_video_topic` 이 기본값이면 nxde video 노드를 띄우지 않는다
+(다른 토픽이면 종전처럼 그 노드가 적는다). traffic_light 에 `sigterm_timeout 10` · `nxde kill` 의 SIGTERM 유예 대상에 `traffic_light` 추가.
+종료 때는 신호를 막은 직후 **녹화부터 닫는다**(`close_recorder` — 리니어 해제 발행보다 먼저).
+- 비교 실험 — Python 작업 스레드 옆에서 1728×590 을 30 Hz 로 : 아무것도 안 함 9,503/s · 토픽 발행 8,532/s(−10%) · 직접 인코딩 9,423/s(−0.8%).
+
+**B — OpenCV 스레드 복원** (사용자 : GPU 보정 대신 이쪽) — `TL_CV_THREADS = 8`, `from ultralytics import YOLO` 바로 뒤.
+cv2 스레드 1·2·4·8·16 → 보정 9.66·5.19·2.75·1.67·1.31 ms, **결과는 모두 1스레드와 픽셀 단위로 같다**(np.array_equal), YOLO 7.3 → 5.9 ms.
+GPU 보정(torch grid_sample)은 1.4 ms 지만 결과가 평균 0.4·최대 45 단계 달라 YOLO 입력이 바뀌므로 하지 않았다.
+
+**검증 (도메인 77, 카메라 조각만 · white1·white2)**
+- py-spy(측정 부하 포함) 프레임당 인지 처리 — 녹화 켬 **25.2 → 11.3 ms**(보정 15.4 → 2.5 · YOLO 8.8 → 7.7), 그리기 스레드 GIL 점유 47.5 → 5.5%,
+  녹화 `feed` 의 GIL 0.1%. 인지 30 fps · 실수신 평균 29.5 fps.
+- 10 s 조각 5개 → 최종본 한 파일 42.2 s(1277 프레임) · 조각 삭제. 종료 경로 — Ctrl+C(그룹 SIGINT) · traffic_light 만 SIGTERM · `kill.kill_all`
+  (SIGTERM 유예 안에 스스로 끝남) 모두 최종본 정상. `tl_video_topic:=/image_raw` 이면 nxde video 가 원본을 적는다(30.8 s, 리팩터 회귀 없음).
+- HUD 처럼 구독하면 `/tl/debug_image` 28.5~30 fps.
+- ⚠️ 실차 미검증 — 실차에서 디버그 화면 'FPS' 와 녹화 '실수신 평균' 을 볼 것.
+
+---
+
 ## 2026-10-18 — ★HUD 가 카메라 영상을 '카메라' 화면에서만 구독한다 — 인지 fps 13~14 조사의 첫 조치★ (사용자 지시)
 
 **증상** — 10/16~10/17 런의 인지 fps 가 런마다 **13.x 아니면 29~30**(녹화 72개 · 녹화 노드 '실수신 평균'). 13 fps 런의 디버그 화면 HUD 도 'FPS 14' —

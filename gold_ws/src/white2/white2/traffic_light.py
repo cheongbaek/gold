@@ -92,6 +92,14 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32, Int32, String
 from cv_bridge import CvBridge
 from ultralytics import YOLO
+#  ★[2026-10-18] ultralytics 는 import 하는 순간 cv2.setNumThreads(0) 으로 OpenCV 를 1스레드로 묶는다★
+#  (DataLoader 와의 충돌 회피용 — 이 노드에는 해당 없다). 그러면 어안 보정(cv2.remap 1080p)이
+#  9.7 ms 로 프레임 예산(33 ms)의 3할을 먹는다. 되돌리면 1.7 ms · 결과는 픽셀 단위로 같다
+#  (8스레드, 실측 — CHANGELOG 2026-10-18). 16 이어도 1.3 ms 라 이득이 작고 다른 노드 몫을 남긴다.
+TL_CV_THREADS = 8
+cv2.setNumThreads(TL_CV_THREADS)
+#  ★[2026-10-18] 디버그 화면 녹화는 이 노드가 그린 자리에서 직접 적는다★ (nxde/recorder.py)
+from nxde.recorder import SegmentRecorder
 
 # 카메라 기하(어안 보정·BEV)의 단일 소유자. 보정 계수도 사다리꼴도 이 파일에는 없다.
 from white2 import camera_model
@@ -634,9 +642,15 @@ class TrafficLight(Node):
 
         # ── 표시 ───────────────────────────────────────────────────────────
         self.declare_parameter('show_window', True)   # 화면 없는 ssh 면 false
-        # _draw() 가 그린 같은 그림을 /tl/debug_image 로 낸다. 실차는 camera_launch 의
-        #   tl_record_video 가 이것과 nxde video 노드를 함께 켜서 mp4 로 적는다.
+        # _draw() 가 그린 같은 그림을 /tl/debug_image 로 낸다 — ★[2026-10-18] 구독자가 있을 때만★
+        #   (HUD 의 '카메라' 화면). 3 MB 발행이 인지 스레드와 GIL 을 다퉜다(py-spy --gil 41%).
         self.declare_parameter('tl_publish_debug', False)
+        # ★[2026-10-18] 같은 그림을 이 노드가 직접 mp4 로 적는다★ (nxde/recorder.py — 조각·합본·
+        #   벽시계 길이·디스크 감시는 종전 nxde video 와 같다). camera_launch 의 tl_record_video 가 켠다.
+        self.declare_parameter('tl_record', False)
+        self.declare_parameter('tl_video_dir', '')        # 빈 값 = paths.video_dir()
+        self.declare_parameter('tl_video_scale', 1.0)
+        self.declare_parameter('tl_video_segment_s', 120.0)
         self.declare_parameter('draw_roi',    True)
         # 카메라 뷰 폭(우측 패널·HUD 는 밖에 붙는다). 960 = 1920 의 절반이라 리사이즈가
         #   0.28ms(임의 배율은 2.5ms). 0 이면 원본 크기.
@@ -773,9 +787,12 @@ class TrafficLight(Node):
         self.require_permission = bool(g('require_permission'))
         self.show_window = bool(g('show_window'))
         self.publish_debug = bool(g('tl_publish_debug'))
+        self.rec = None                   # SegmentRecorder — 아래 _start_recorder
+        self._rec_t_tick = 0.0
         self.draw_roi    = bool(g('draw_roi'))
         self.window_width = max(0, int(g('window_width')))
-        self.show_bev    = bool(g('show_bev')) and (self.show_window or self.publish_debug)
+        self.show_bev    = bool(g('show_bev')) and (self.show_window or self.publish_debug
+                                                     or bool(g('tl_record')))
         self.roi_dim     = min(1.0, max(0.0, float(g('roi_dim'))))
         self.roi_zoom    = bool(g('tl_roi_zoom'))
         # 캘리브 로드 실패는 경고로 끝나고 보정만 꺼진다(fail-open).
@@ -789,7 +806,10 @@ class TrafficLight(Node):
         self._draw_lock = threading.Lock()
         self._draw_job = None
         self._draw_evt = threading.Event()
-        if self.show_window or self.publish_debug:
+        if bool(g('tl_record')):
+            self._start_recorder(str(g('tl_video_dir')), float(g('tl_video_scale')),
+                                 float(g('tl_video_segment_s')))
+        if self.show_window or self.publish_debug or self.rec is not None:
             threading.Thread(target=self._draw_loop, daemon=True).start()
         # ── 그리기 도구 — 전부 캐시다(매 프레임 새로 만드는 것이 없다) ──────────
         self.tr = TextRenderer(log=self.get_logger() if self.show_window else None,
@@ -1445,10 +1465,45 @@ class TrafficLight(Node):
         self.fps = 0.9 * self.fps + 0.1 * inst if self.fps > 0 else inst
         self.fps_t = now
 
-        if self.show_window or self.publish_debug:
+        if self.show_window or self.rec is not None or self._debug_wanted():
             with self._draw_lock:       # 그리기 스레드에 넘기기만 한다(_draw_loop)
                 self._draw_job = (frame, boxes, state, (xmin, ymin, xmax, ymax), bus, dec, veh, arrow)
             self._draw_evt.set()
+
+    def _debug_wanted(self):
+        """/tl/debug_image 를 낼 때인가 — 켜져 있고 ★구독자가 있을 때만★ [2026-10-18]."""
+        return self.publish_debug and self.pub_debug_img.get_subscription_count() > 0
+
+    def _start_recorder(self, out_dir, scale, segment_s):
+        """디버그 화면 녹화를 연다(nxde/recorder.py). 실패해도 인지는 그대로 돈다."""
+        from white2 import paths
+        try:
+            d = paths.video_dir(out_dir or '')
+            self.rec = SegmentRecorder(d, prefix='tl', log=self._rec_log, src='디버그 화면(traffic_light)',
+                                       scale=scale, segment_s=segment_s)
+            self.rec.describe('tl_video_dir' if out_dir else 'paths.video_dir()')
+        except Exception as e:
+            self.rec = None
+            self.get_logger().error(f"⚠️ 디버그 녹화를 열지 못했다 — 인지는 그대로 돈다: {e}")
+
+    def _rec_log(self, text, warn=False):
+        """recorder 의 로그. ★warn 과 info 를 다른 줄에서 부른다★ — rclpy 로거는 호출한 줄마다
+        심각도를 캐시해 한 줄에서 바꾸면 ValueError 를 던진다(nxde/video.py _say 와 같은 이유).
+        컨텍스트가 내려간 뒤(종료 중)에는 print."""
+        if rclpy.ok():
+            log = self.get_logger()
+            if warn:
+                log.warn(text)
+            else:
+                log.info(text)
+        else:
+            print(('[WARN] ' if warn else '[INFO] ') + text, flush=True)
+
+    def close_recorder(self):
+        """녹화를 닫는다 — 몇 번 불려도 안전. 종료 경로에서 ★리니어 해제 발행보다 먼저★ 부른다
+        (파일은 닫는 데 수 ms, 그 뒤에 SIGKILL 을 맞아도 영상은 산다)."""
+        if self.rec is not None:
+            self.rec.close()
 
     def _draw_loop(self):
         """그리기 전용 스레드 — 밀린 재료는 버리고 최신 것만 그린다."""
@@ -1569,7 +1624,13 @@ class TrafficLight(Node):
             with self._show_lock:
                 self._show_frame = canvas
 
-        if self.publish_debug:
+        # ★[2026-10-18] 녹화는 여기서 직접★ VideoWriter.write 는 C++ 안에서 GIL 을 놓는다.
+        #   canvas 는 CanvasPool 의 두 장 중 하나 — recorder 가 반복용으로 들고 있는 '직전 프레임' 은
+        #   다른 한 장이라 다음 그림이 덮기 전에 쓰인다(recorder.py 머리말 ⚠️).
+        if self.rec is not None:
+            self.rec.feed(canvas)
+        # 발행은 보는 사람이 있을 때만(HUD '카메라' 화면) — 3 MB 직렬화가 GIL 을 쥔다.
+        if self._debug_wanted():
             try:
                 msg = self.bridge.cv2_to_imgmsg(canvas, encoding='bgr8')
                 msg.header.stamp = self.get_clock().now().to_msg()
@@ -2129,6 +2190,8 @@ class TrafficLight(Node):
 
     def status_tick(self):
         now = time.time()
+        if self.rec is not None:
+            self.rec.tick(now)
         if self.model is None:
             self.get_logger().error("⛔ 신호등 모델이 없다 — 이 노드는 정지를 걸지 않는다",
                                     throttle_duration_sec=10.0)
@@ -2210,6 +2273,7 @@ def main(args=None):
         import signal
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, signal.SIG_IGN)
+        node.close_recorder()         # ★[2026-10-18] 먼저 닫는다★ mp4 는 닫아야 재생된다
         executor.shutdown(timeout_sec=2.0)
         node.shutdown_release()
         node.destroy_node()

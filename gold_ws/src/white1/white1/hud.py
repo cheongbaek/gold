@@ -2444,11 +2444,11 @@ class HudApp:
             c.create_text(x + tw / 2, y + th / 2, text='CAM off',
                           fill=DIM, font=self.font(10))
             return tw + 8
-        #  /tl/debug_image 만 본다 — 녹화(tl_record_video)를 끈 런이면 비어 있다(사용자 결정).
+        #  /tl/debug_image 만 본다(사용자 결정) — traffic_light 는 구독자가 있을 때만 낸다(2026-10-18).
         frame, age = n.tl_frame()
         if frame is None or age > max(n.stale_s, 1.5):
             c.create_text(x + tw / 2, y + th / 2,
-                          text='/tl/debug_image —  (tl_record_video 가 꺼져 있으면 오지 않는다)',
+                          text='/tl/debug_image —  (traffic_light 가 떠 있지 않으면 오지 않는다)',
                           fill=DIM, font=self.font(10))
             return tw + 8
         ih, iw = frame.shape[:2]

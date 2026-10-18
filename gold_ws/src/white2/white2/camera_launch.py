@@ -19,8 +19,8 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
                   BEV 발화선(sl_trigger_bev_y)에 정지선이 닿거나, 신호등 박스가
                   tl_solo_stop_min_height 를 넘거나 — ★먼저 성립하는 쪽★ 에서
                   풀브레이크. 1단 예비제동과 대기 상한은 없앴다.
-    tl_video      ★[2026-09-10] 인지 디버그 화면을 주행 내내 mp4 로 적는다★
-                  nxde 의 video 노드를 /tl/debug_image 에 붙인 것이다(아래 절).
+    tl_video      ★[2026-10-18] 디버그 화면은 traffic_light 가 직접 적으므로 기본으로 뜨지 않는다★
+                  tl_video_topic 을 /image_raw 처럼 다른 토픽으로 줄 때만 nxde video 로 그 토픽을 적는다.
 
 ────────────────────────────────────────────────────────────────────────────────
  ★디버그 녹화 — 창을 안 띄우고도 '무엇을 보고 판단했나' 가 남는다 [2026-09-10]★
@@ -39,31 +39,34 @@ one_launch.py(자율주행)와 master.launch.py(수동 계측)가 ★같은 카�
     잃는 정보가 없다. 화면을 보며 튜닝할 때만 tl_show_window:=true.
 
 ★같은 캔버스다.★ traffic_light 의 _draw() 가 그린 한 장(YOLO 박스·ROI 음영·BEV
-사다리꼴·정지선·게이지 패널·한글 HUD 3줄)을 창에도 띄우고 토픽으로도 낸다 —
+사다리꼴·정지선·게이지 패널·한글 HUD 3줄)을 창에도 띄우고 파일로도 적는다 —
 즉 ★녹화 영상에 창과 똑같은 것이 들어 있다★. 창을 껐다고 정보가 줄지 않는다.
 
-  · 발행 : traffic_light 의 tl_publish_debug → /tl/debug_image (BEST_EFFORT)
-  · 녹화 : nxde 의 video 노드가 그 토픽을 구독해 mp4 로 적는다
+  · 녹화 : ★[2026-10-18] traffic_light 가 그린 그 자리에서 직접★ mp4 로 적는다(nxde/recorder.py —
+           종전 nxde video 와 같은 엔진: 벽시계 길이·120초 조각·합본·디스크 감시). 종전에는
+           /tl/debug_image 로 내보내 nxde video 가 받아 적었는데, 그 3 MB 발행이 traffic_light
+           안에서 GIL 을 쥔 시간의 41% 였다(py-spy) — 인지 fps 를 깎던 몫이다.
+  · 발행 : /tl/debug_image (BEST_EFFORT) 는 ★구독자가 있을 때만★ 나간다 — HUD '카메라' 화면.
   · 위치 : white2/paths.py 의 video_dir() = <src>/white2/video/tl-<날짜>_<시각>.mp4
            ★[2026-10-16] 한 녹화 = 한 파일★ — 녹화 중 조각은 <src>/white2/video/parts/<세션>/, 끝나면
            nxde/videomerge 가 합쳐 위 이름 한 파일로 만든다(ros2 run nxde video_merge 로 손으로도).
 
-★스위치가 ★하나★ 인 이유 (tl_record_video)★ 발행과 녹화를 따로 열면 짝이 어긋나
-'발행 안 하는 토픽을 녹화' = ★0바이트 파일★ 이 나온다. 한 인자가 둘을 함께 켠다.
+★스위치는 tl_record_video 하나★ — traffic_light 의 tl_record 를 켠다(발행과 녹화가 한 노드라
+짝이 어긋날 일이 없다).
 
 ★범위★ — 런치가 뜬 순간부터 내려갈 때까지다(주행 구간만 고르지 않는다). 주행 전
 대기·헤딩 초기화까지 통째로 들어가는 편이 사후 판정에 낫고, 무엇보다 '언제부터
 적을지' 를 판단하는 로직이 없어야 그 로직이 틀릴 일도 없다. 런치가 SIGTERM 을
-보내면 video 노드가 파일을 정상으로 닫는다(nxde/video.py 의 신호 처리).
+보내면 traffic_light 가 정리 첫 단계에서 파일을 닫는다(main 의 finally — close_recorder).
 
 ⚠️ ★비용★ 캔버스는 원본(1920x1080)이 아니라 tl_window_width 기준이다 —
    기본 960 이면 BEV 패널·ROI 확대 열을 붙여 ★1728x590★ (3.06MB/프레임 — [2026-10-16]
    정정, 1248x610 은 패널 이전 값). 파일은 실주행 14 fps 에서 분당 4~8MB, 30 fps 면 ~15MB.
-   인지 FPS 가 눈에 띄게 떨어지면 tl_video_scale:=0.5 (용량·인코딩 비용 약 1/4) 로 내린다.
+   인코딩은 C++ 안에서 GIL 을 놓으므로 인지를 거의 늦추지 않는다(2026-10-18 실측).
 ⚠️ ★DDS★ 이 캔버스(3.1MB)와 /image_raw(4.1MB)는 CycloneDDS 수신 버퍼가 작으면 프레임째
    사라진다 — 세 노드에 nxde/config/cyclonedds.xml 을 넘기고(dds_env), 기계마다 한 번
    nxde/tools/setup_dds_buffer.sh 로 커널 상한을 올린다 [2026-10-16].
-⚠️ ★디스크★ video 노드는 남은 용량이 500MB 밑이면 ★스스로 녹화를 끝낸다★(파일은
+⚠️ ★디스크★ 녹화 엔진은 남은 용량이 500MB 밑이면 ★스스로 녹화를 끝낸다★(파일은
    정상으로 닫는다). 그래도 <src>/white2/video 는 주행할수록 쌓이므로 가끔 비운다.
    .gitignore 가 *.mp4 · *.avi 를 막고 있어 이력에는 안 들어간다.
 
@@ -92,7 +95,8 @@ import os
 
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.conditions import IfCondition
-from launch.substitutions import AndSubstitution, LaunchConfiguration
+from launch.substitutions import (AndSubstitution, LaunchConfiguration, NotSubstitution,
+                                  PythonExpression)
 from launch_ros.actions import Node
 
 #  ★저장 위치는 paths.py 가 소유한다★ 여기에 리터럴을 적지 않는다(CLAUDE.md 7절).
@@ -227,18 +231,17 @@ def declare_args(cam_dev):
             description='★인지 디버그 화면을 주행 내내 mp4 로 적는다 [2026-09-10]★ '
                         '창(tl_show_window)과 ★같은 캔버스★ 다 — YOLO 박스·ROI 음영·'
                         'BEV 사다리꼴·정지선·게이지·한글 HUD 가 전부 들어 있다. '
-                        '★이 인자 하나가 둘을 함께 켠다★ : traffic_light 의 '
-                        'tl_publish_debug(→ /tl/debug_image) 와 그것을 받아 적는 '
-                        'nxde video 노드. 따로 열면 짝이 어긋나 ★0바이트 파일★ 이 '
-                        '나오므로 스위치를 하나로 뒀다. 런치가 뜬 순간부터 내려갈 '
+                        '★[2026-10-18] traffic_light 가 그린 그 자리에서 직접 적는다★ '
+                        '(nxde/recorder.py — /tl/debug_image 3 MB 발행이 인지 스레드와 GIL 을 '
+                        '다퉈 fps 를 깎았다). /tl/debug_image 는 구독자가 있을 때만(HUD '
+                        '카메라 화면) 나간다. 런치가 뜬 순간부터 내려갈 '
                         '때까지 적고(주행 구간만 고르지 않는다), 런치 종료 SIGTERM 에서 '
-                        '파일을 정상으로 닫는다. ⚠️ 인지 FPS 가 떨어지면 끄지 말고 '
-                        '먼저 tl_video_scale 을 내려 볼 것'),
+                        '파일을 정상으로 닫는다'),
         DeclareLaunchArgument(
             'tl_video_dir', default_value=paths.video_dir(),
             description='녹화 mp4 저장 폴더. 기본값은 white2/paths.py 의 video_dir() '
                         '= <소스트리>/src/white2/video 다. ★여기서 미리 풀어서 넘긴다★ — '
-                        '받는 쪽이 nxde 의 노드라 white2/paths.py 를 모르기 때문이다'
+                        '받는 쪽(원본 녹화용 nxde video)이 white2/paths.py 를 모르기 때문이다'
                         '(one_launch 가 sound_dir 을 넘기는 방식과 같다). '
                         '★nxde/video.py 의 자체 기본값에 맡기지 않는 이유★ 그 노드는 '
                         '설치본에서 돌면 ~/nxde_video 로 폴백하는데, 이 워크스페이스는 '
@@ -263,12 +266,11 @@ def declare_args(cam_dev):
                         '강제 종료로 못 합친 세션은 다음 기동 때 합친다'),
         DeclareLaunchArgument(
             'tl_video_topic', default_value='/tl/debug_image',
-            description='녹화할 이미지 토픽. 기본은 인지 디버그 화면이다. '
-                        '★/image_raw 로 바꾸면 오버레이 없는 원본이 적힌다★ — 어안 '
-                        '왜곡이 남아 있는 카메라 원본이고, 그때 tl_record_video 는 '
-                        'tl_publish_debug 도 함께 켜지만 아무도 안 보므로 무해하다 '
-                        '(정확히 말하면 그 발행이 낭비이니, 원본만 필요하면 '
-                        '`ros2 run nxde video` 를 따로 띄우는 편이 낫다)'),
+            description='녹화할 이미지 토픽. 기본(/tl/debug_image)이면 ★traffic_light 가 '
+                        '직접★ 적는다(토픽을 거치지 않는다 — 2026-10-18). '
+                        '★/image_raw 처럼 다른 토픽을 주면 종전처럼 nxde video 노드가 그 '
+                        '토픽을 받아 적는다★ — 어안 왜곡이 남아 있는 카메라 원본이다. '
+                        '⚠️ 1080p 원본 구독자가 하나 늘어 usb_cam 이 한 번 더 보낸다'),
         DeclareLaunchArgument(
             'tl_window_width', default_value='960',
             description='인지 결과 창의 ★카메라 뷰★ 가로폭[px]. 창은 이보다 크다 — '
@@ -350,14 +352,16 @@ def dds_env(log=print):
 def actions(package_name, cam_format, node_env, respawn_delay):
     """usb_cam · v4l2 보정 · traffic_light · tl_video 네 액션.
 
-    전부 use_camera 로 묶이고, 녹화는 거기에 tl_record_video 를 ★AND★ 로 더 건다 —
-    카메라를 안 띄우면 /tl/debug_image 가 아예 안 나오므로 녹화만 살아 있으면
-    '프레임을 못 받는다' 경고만 5초마다 찍는 노드가 남는다.
+    전부 use_camera 로 묶인다. 디버그 화면 녹화는 traffic_light 안에서 한다(tl_record) —
+    tl_video 는 tl_video_topic 이 다른 토픽일 때만 뜬다 [2026-10-18].
     """
     use_camera   = LaunchConfiguration('use_camera')
     video_device = LaunchConfiguration('video_device')
     cam_exposure = LaunchConfiguration('cam_exposure')
     rec_video    = LaunchConfiguration('tl_record_video')
+    #  ★[2026-10-18] 디버그 화면이면 traffic_light 가 직접 적는다★ 다른 토픽일 때만 nxde video.
+    rec_in_tl = PythonExpression(
+        ["'", LaunchConfiguration('tl_video_topic'), "' == '/tl/debug_image'"])
     #  ★[2026-10-16] 큰 영상을 주고받는 세 노드에만 DDS 수신 버퍼 설정을 더한다★ (dds_env)
     cam_env = {**node_env, **dds_env()}
 
@@ -467,10 +471,14 @@ def actions(package_name, cam_format, node_env, respawn_delay):
             'sl_conf':                LaunchConfiguration('sl_conf'),
             'sl_gate_red_s':          LaunchConfiguration('sl_gate_red_s'),
             'show_window':            LaunchConfiguration('tl_show_window'),
-            # ★녹화 스위치가 발행도 켠다 [2026-09-10]★ 창과 독립이다 — 창을 꺼도
-            #   _draw() 는 돌고(그쪽 `if show_window or publish_debug`), 그 캔버스가
-            #   /tl/debug_image 로 나가 아래 tl_video 가 받아 적는다.
-            'tl_publish_debug':       rec_video,
+            # ★[2026-10-18] 디버그 화면은 traffic_light 가 그린 자리에서 직접 mp4 로 적는다★
+            #   (nxde/recorder.py). 창과 독립이다 — 창을 꺼도 녹화가 켜져 있으면 _draw() 가 돈다.
+            #   /tl/debug_image 는 ★구독자가 있을 때만★ 나간다(HUD '카메라' 화면) — 늘 켜 둔다.
+            'tl_publish_debug':       True,
+            'tl_record':              AndSubstitution(rec_video, rec_in_tl),
+            'tl_video_dir':           LaunchConfiguration('tl_video_dir'),
+            'tl_video_scale':         LaunchConfiguration('tl_video_scale'),
+            'tl_video_segment_s':     LaunchConfiguration('tl_video_segment_s'),
             'window_width':           LaunchConfiguration('tl_window_width'),
             'stop_latch':             LaunchConfiguration('tl_stop_latch'),
             'publish_cmd_vel':        LaunchConfiguration('tl_publish_cmd_vel'),
@@ -478,10 +486,15 @@ def actions(package_name, cam_format, node_env, respawn_delay):
             # ★카메라 기하는 한 벌로 받는다★ 차선 인지가 붙으면 같은 dict 를 넘긴다.
             **camera_params(),
         }],
+        #  ★[2026-10-18] mp4 를 닫을 틈★ 이 노드가 녹화를 들고 있다 — 종전 tl_video 노드와 같은 유예.
+        sigterm_timeout='10',
+        sigkill_timeout='10',
         condition=IfCondition(use_camera),
     )
 
-    # ── 인지 디버그 화면 녹화 [2026-09-10] ──
+    # ── 원본 등 ★다른 토픽★ 녹화 [2026-09-10 · 2026-10-18 역할 축소] ──
+    #   ★[2026-10-18] 디버그 화면(기본)은 traffic_light 가 직접 적으므로 이 노드는 뜨지 않는다★
+    #   tl_video_topic 을 /image_raw 처럼 바꿨을 때만 그 토픽을 받아 적는다(엔진은 같다 — nxde/recorder.py).
     #   ★새 녹화 코드를 쓰지 않는다★ nxde/video.py 가 이미 '아무 Image 토픽이나 mp4 로
     #   적는' 일의 단일 소유자다 — fps 를 실측해서 열고(재생 속도가 맞아야 CSV 와 시각을
     #   맞출 수 있다), 남은 디스크가 500MB 밑이면 스스로 끝내고, SIGTERM·SIGINT·atexit
@@ -517,7 +530,8 @@ def actions(package_name, cam_format, node_env, respawn_delay):
         #  파일이 깨졌다. 이 노드에만 넉넉히 준다 — 다른 노드는 그대로다.
         sigterm_timeout='10',
         sigkill_timeout='10',
-        condition=IfCondition(AndSubstitution(use_camera, rec_video)),
+        condition=IfCondition(AndSubstitution(AndSubstitution(use_camera, rec_video),
+                                              NotSubstitution(rec_in_tl))),
     )
 
     return [usb_cam, usb_cam_ctrl, traffic_light, tl_video]

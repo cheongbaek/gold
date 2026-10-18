@@ -127,7 +127,7 @@
 | `publish_cmd_vel` | true (런치 false) | 2단 동안 `/cmd_vel_raw` 0/0 도 낸다 |
 | `require_permission` | true | false = 벤치 모드(항상 허락) — 실차 금지 |
 | `stop_cmd_hz` | 30 | 판단 틱 |
-| `show_window` · `tl_publish_debug` | true(런치 false) · false(녹화 켜면 true) | 창 · 디버그 토픽 |
+| `show_window` · `tl_publish_debug` · `tl_record` | true(런치 false) · false(런치 true — [2026-10-18] 구독자가 있을 때만 발행) · false(런치 = tl_record_video) | 창 · 디버그 토픽 · 직접 mp4 녹화(nxde/recorder) |
 | `window_width` · `show_bev` · `tl_roi_zoom` · `roi_dim` · `draw_roi` · `hud_font` | 960 · true · true · 0.6 · true · '' | 디버그 화면(1728×590). 끄면 960×590 |
 
 ## 3. 같이 움직여야 하는 짝

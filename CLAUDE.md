@@ -447,8 +447,11 @@ gold_ws/src/
     exhaust.py   배기음 합성 엔진 + 튜닝 도구(`python3 exhaust.py`). 실차 음량은
                  위 vess.py 가 생성자로 넘긴다 — 여기 기본값은 단독 실행용이다
     loopify.py   외부 음원을 exhaust 용 심리스 루프 레이어로 가공하는 도구
-    video.py     ★아무 Image 토픽이나 mp4 녹화★ (원본 /image_raw 도, 인지 디버그
-                 화면 /tl/debug_image 도 — 후자를 one_launch 가 자동으로 띄운다)
+    recorder.py  ★녹화 엔진의 단일 소유자★ [2026-10-18] — fps 실측·시각 칸(벽시계 길이)·120 s 조각·
+                 합본 의뢰·디스크 감시. ROS 를 import 하지 않는다. video 와 traffic_light 가 같이 쓴다
+    video.py     ★아무 Image 토픽이나 mp4 녹화★ (recorder 를 쓰는 얇은 노드). ★[2026-10-18] 인지 디버그
+                 화면은 traffic_light 가 직접 적으므로 one_launch 는 이 노드를 띄우지 않는다★ —
+                 tl_video_topic:=/image_raw 처럼 다른 토픽을 줄 때만 뜬다(5.2)
                  ★원본은 자동으로 녹화되지 않는다★ — `ros2 run nxde video` 를 따로 띄우면
                  `~/nxde_video/cam-*.mp4`(복사설치라 홈으로 떨어진다). [2026-10-16] 프레임을
                  시각 기준 칸에 넣어 ★영상 길이 = 벽시계★ (5.2)
@@ -1983,7 +1986,7 @@ ouster 50(`1024x20`) + `confirm_frames` 2×50 + `pedal_drive` 확정 + arduino
 | **무엇이 적히나** | `traffic_light._draw()` 가 그린 캔버스 **그대로** — YOLO 박스(판단 박스만 굵게, #400 버스는 회색 skip)·ROI 음영·BEV 사다리꼴·정지선 폴리곤 · 우측 **BEV 패널**(썸네일 + 근접·정지선 게이지) · **ROI 확대 열**(타일 4장, 판단 박스부터 — 'B' 면 4칸·화살표 창) · 한글 HUD 2줄(상태·근거 / 제동·허락 — 패널이 없으면 근접·정지선 숫자도). [2026-10-08 저녁] 사용자 — '그림은 두고 글자만 필수로' : 고정 파라미터·크기 글자를 지웠다 |
 | **언제부터 언제까지** | **런치가 뜬 순간부터 내려갈 때까지.** 주행 구간만 고르지 않는다 — '언제부터 적을지' 를 판단하는 로직이 없어야 그 로직이 틀릴 일도 없다 |
 | **크기** | 캔버스는 원본(1920×1080)이 아니라 `tl_window_width` 기준. 기본 960 → 패널·확대 열 포함 ★**1728×590**★ [2026-10-08 저녁] (HUD 3줄이던 종전 1728×616) |
-| **끝맺음** | 런치 종료(SIGINT/SIGTERM)에서 `nxde/video` 가 파일을 정상으로 닫는다. **mp4 는 닫아야 재생된다** |
+| **끝맺음** | 런치 종료(SIGINT/SIGTERM)에서 `traffic_light` 가 정리 첫 단계에서 파일을 닫는다(`close_recorder`, [2026-10-18]). **mp4 는 닫아야 재생된다** |
 
 **★창과 녹화는 완전히 독립이다★**
 
@@ -2004,11 +2007,17 @@ ros2 launch white1 one_launch.py tl_record_video:=false    # 녹화 끄기
 ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없는 원본
 ```
 
-> ### ★스위치가 하나인 이유★
-> 녹화는 **두 노드의 협업**이다 — `traffic_light` 가 `tl_publish_debug` 로
-> `/tl/debug_image` 를 내고, `nxde/video` 가 그것을 받아 적는다. 둘을 따로 열면
-> 짝이 어긋나 **"발행 안 하는 토픽을 녹화" = 0바이트 파일**이 나온다.
-> `tl_record_video` 한 인자가 **둘을 함께** 켠다(`camera_launch.py`).
+> ### ★[2026-10-18] traffic_light 가 그린 자리에서 직접 적는다 — 인지 fps 13~14 의 원인 정리★ (근거 = CHANGELOG 2026-10-18)
+> - **종전 구조의 비용** — traffic_light 가 3 MB 캔버스를 `/tl/debug_image` 로 발행하고 `nxde/video` 가 받아 적었다. 그 발행
+>   (`publish` + `cv2_to_imgmsg`)이 traffic_light 안에서 ★GIL 을 쥔 시간의 41%★ 였다(py-spy --gil) — 인지 스레드를 늦췄다.
+> - **지금** — `tl_record_video` 가 traffic_light 의 `tl_record` 를 켜고, `_draw()` 끝에서 `nxde/recorder.py`(`SegmentRecorder`)에
+>   그대로 넣는다. `VideoWriter.write` 는 C++ 안에서 GIL 을 놓는다. 조각·합본·벽시계 길이·디스크 감시는 종전 nxde video 와 같은 코드다.
+>   `/tl/debug_image` 는 ★구독자가 있을 때만★ 나간다(HUD '카메라' 화면 — 그 화면을 켠 동안만 종전 비용).
+> - **함께 고친 것** — ultralytics 가 import 순간 `cv2.setNumThreads(0)` 으로 OpenCV 를 1스레드로 묶어 어안 보정이 9.7 ms 였다.
+>   traffic_light 가 `TL_CV_THREADS = 8` 로 되돌린다 → 1.7 ms, 결과는 픽셀 단위로 같다.
+> - **효과 (py-spy 를 얹은 책상 측정)** — 녹화 켠 채 프레임당 인지 처리 25.2 → **11.3 ms**(33 ms 문턱까지 여유 8 → 22 ms),
+>   그리기 스레드의 GIL 점유 47.5 → 5.5%. ⚠️ 실차 미검증.
+> - **`tl_video_topic` 을 바꾸면**(예 `/image_raw`) 종전처럼 nxde video 노드가 그 토픽을 받아 적는다(같은 엔진).
 
 > ### ★[2026-10-16] 녹화 점검 결과와 고친 것★ (근거 = white1 CHANGELOG 2026-10-16)
 > - **영상 길이 = 벽시계** — fps 는 처음 30프레임으로 한 번 재지만, 그 뒤 프레임을 ★시각 기준 칸★ 에 넣는다
@@ -2021,18 +2030,14 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 > - **traffic_light 종료** — Ctrl+C 는 SIGINT 를 두 번 준다(그룹 + launch 전달). 정리 중 두 번째에 죽어 리니어 해제 발행을
 >   건너뛰던 것을 [2026-10-16] 막았다(main finally 에서 신호 무시 + `executor.shutdown(2.0)`).
 
-> ⚠️ **새 녹화 코드를 쓰지 않았다.** `nxde/video.py` 가 이미 그 일의 단일 소유자다 —
-> fps 를 실측해서 열고(재생 속도가 맞아야 `record` CSV 와 시각을 맞출 수 있다),
-> 남은 디스크가 **500 MB** 밑이면 스스로 끝내고, SIGTERM·SIGINT·atexit 어느
-> 경로로 죽어도 파일을 닫는다. `camera_launch` 가 한 일은 **그 노드를
-> `/tl/debug_image` 에 붙이고 저장 위치를 못 박은 것뿐**이다.
+> ⚠️ **녹화 엔진은 하나다** — `nxde/recorder.py` 가 fps 실측(재생 속도가 맞아야 `record` CSV 와 시각을 맞출 수 있다)·
+> 디스크 **500 MB** 감시·멱등 close 의 단일 소유자다. traffic_light 와 nxde video 가 같이 쓴다 — 녹화 로직을 다른 곳에 베끼지 말 것.
 
 > ⚠️ **`video/` 는 빠르게 쌓인다.** `.gitignore` 가 `*.mp4`·`*.avi` 를 막아 이력에는
 > 안 들어가지만 **작업트리에는 그대로 남는다** — 가끔 비운다.
 
-> ⚠️ **인지 FPS 가 눈에 띄게 떨어지면** 녹화를 끄기 전에 `tl_video_scale:=0.5` 를
-> 먼저 써 본다. 토픽 부하는 캔버스 기준 68 MB/s 인데, `/image_raw` 가 이미
-> 187 MB/s 흐르고 있으므로 그 위에 +36% 다.
+> ⚠️ **인지 FPS 가 눈에 띄게 떨어지면** 디버그 화면 'FPS' 를 먼저 본다 — 13~14 로 반이 되면 한 프레임 처리가 33 ms 를
+> 넘은 것이다(depth 1 구독이 한 장씩 건너뛴다). HUD '카메라' 화면을 켜 두지 않았는지, 영상 토픽을 늘 받는 노드가 늘지 않았는지 볼 것.
 
 ---
 
@@ -2094,6 +2099,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
 | **B 상태 칸 0/1/2 · `STOP` 폐지 · 상태 1·2 = A 쓰로틀 0 · A 의 STOP 무시 [2026-10-16]** | `nxde/arduino.py` `B_STATE_*` · `parse_b` · `update_estop` · `compose`(→ `_compose_modes`) · `_drop_board` · `../mad-code/kasa_1016_{A,B}.ino` |
 | **정차 헤딩 적분 멈춤(ZUPT) · 정지 중 조향 힘빼기(x) · white2 신호등 정지 중 조향·펄스 묶음 [2026-10-17]** | white1·white2 `driving.py cb_imu`·`ZUPT_*` · `nxde/arduino.py _rest_steer`·`STEER_REST_*` · white2 `driving.run_follow` `_tl_held`·`_tl_rel_t` |
+| **디버그 화면 직접 녹화 · 구독자 있을 때만 발행 · OpenCV 8스레드 복원 · HUD 영상 구독은 카메라 화면만 (5.2) [2026-10-18]** | `nxde/recorder.py`(신설) · `nxde/video.py`(recorder 사용) · `nxde/kill.py RECORDER_COMMS` · white1·white2 `traffic_light.py` `TL_CV_THREADS`·`_start_recorder`·`_debug_wanted`·`close_recorder` · `camera_launch.py` `tl_record`·`rec_in_tl` · `hud.py _sync_cam_sub`·`tl_frame`·`/camera_info` |
 | **녹화 조각 → 최종본 한 파일 · parts/ · 끊긴 세션 자동 합본 · 옛 영상 정리 (5.2) [2026-10-16]** | `nxde/videomerge.py`(`merge_session`·`merge_orphans`·`migrate_legacy`·`part_end`·최소공배수 단위) · `nxde/video.py`(`parts_dir`·`_spawn_merge`·`.recording` · 첫 조각 fps 반올림) · `nxde/setup.py video_merge` · `camera_launch` 설명(white1·white2) |
 | **카메라 녹화 — DDS 수신 버퍼 · 영상 길이 = 벽시계 · 종료 경로 (3.1·5.2) [2026-10-16]** | `nxde/config/cyclonedds.xml` · `nxde/tools/setup_dds_buffer.sh` · `nxde/check.py check_dds_buffer` · `camera_launch.dds_env`(white1·white2) · `nxde/video.py MAX_FILL_S`·`_write`·`exit_requested` · `traffic_light.main` finally(white1·white2) · `nxde/panel.py _unignore_signals` |
 | **prompt START 확인·재전송 — E-STOP 해제 경합으로 시작이 사라지던 것 (white1·white2) [2026-10-15]** | `prompt.py START_SETTLE_S`·`START_RETRY_S`·`START_GIVEUP_S` · main 루프 게이트 블록 · `publish_wait`(`DRIVE_START`) · `wait_screen`(gate None) |
@@ -3207,7 +3213,9 @@ ping -c2 192.168.6.11
 | **음량 — 안내 음성** [2026-09-18] | **`nxde/soundutil.py` 의 `PLAY_GAIN`(3.0)·`PLAY_LIMIT` 하나가 소유자다** — `sound`·`kill`·`prompt`·`braketest`·`tts` 가 전부 그 `PLAYERS` 표를 쓴다. **재생기마다 증폭 단위가 다르므로**(`gain_args`: ffplay `-af volume,alimiter` / mpg123 `-f 32768×g` / mpv `--volume %` / cvlc `--gain`) 값만 고치고 표는 건드리지 말 것. ⚠️ **3.0 이 실질 상한이다** — 리미터가 이미 포화해 x4·x5 는 +0.5 dB 뿐이고 다이내믹만 잃는다(실측은 그 파일 주석) |
 | **음량 — 가상 배기음** [2026-09-18] | **`nxde/vess.py` 상단의 `VOLUME`(1.0)·`LOUDNESS`(2.5) 가 소유자**이고, `exhaust.py` 의 `MASTER_GAIN`·`SOFTCLIP_DRIVE` 를 **생성자로** 덮는다(모듈 전역을 밖에서 바꾸지 않는다 — 같은 프로세스의 다른 엔진까지 따라 바뀐다). `VOLUME` 은 tanh 뒤라 **1.0 이 상한**이고, 더 키우는 손잡이는 `LOUDNESS` 다(피크를 안 올리고 평균만 올린다, 실질 상한 ≈4.0). ⚠️ **안내 음성보다 크게 두지 말 것** — 말이 묻힌다 |
 | **가상 배기음 스레드** [2026-09-30] | `nxde/vess.py` 는 arduino 와 **같은 프로세스**다 — ① **자기 `SingleThreadedExecutor` 로 spin** 한다(`rclpy.spin(node)` = 전역 실행기를 쓰면 arduino 메인 스레드와 대기 생성기를 동시에 돌려 `ValueError: generator already executing` — vess 가 거의 늘 죽고, 드물게 arduino 가 exit 1) ② **`Node('vess', use_global_arguments=False)`** — 런치의 `__node:=arduino` 가 프로세스 전체에 걸린다 ③ arduino `main()` 의 `import nxde.vess` 는 **spin 의 try 안**에 둔다(import 0.2 s 동안의 Ctrl+C 가 포트 정리를 건너뛰지 않게). 시험은 sounddevice 를 가짜로 바꿔 도메인 77 에서 돌린다(차 스피커로 소리를 내지 않게) |
-| 인지 디버그 녹화 | **`tl_record_video` 하나가 `traffic_light` 의 `tl_publish_debug`(발행) 와 `nxde/video` 노드(수신) 를 함께 켠다** — 따로 열면 0바이트 파일이 나온다(5.2절) |
+| 인지 디버그 녹화 | **`tl_record_video` → traffic_light `tl_record`** — 그린 자리에서 `nxde/recorder.py` 로 직접 적는다 [2026-10-18]. `/tl/debug_image` 는 구독자가 있을 때만(`_debug_wanted`). `tl_video_topic` 이 다른 토픽일 때만 nxde video 노드가 뜬다(`camera_launch` 의 `rec_in_tl`). `nxde/kill.py RECORDER_COMMS` 에 `traffic_light` 가 있어야 nxde kill 이 SIGTERM 유예를 준다 |
+| **녹화 엔진** [2026-10-18] | `nxde/recorder.py SegmentRecorder` 하나 — `video.py` 와 white1·white2 `traffic_light.py` 가 쓴다. 상수(조각·채움·디스크)는 여기만. feed 는 넘긴 배열을 반복용으로 참조만 든다 — 부르는 쪽이 다음 feed 전에 덮어쓰면 안 된다(traffic_light 의 `CanvasPool` 두 장 번갈아가 그 조건을 지킨다) |
+| **OpenCV 스레드 (traffic_light)** [2026-10-18] | white1·white2 `traffic_light.py TL_CV_THREADS`(8) — ★`from ultralytics import YOLO` 뒤에서★ 부른다(ultralytics 가 import 때 1로 묶는다). 앞에 두면 다시 1스레드가 되어 어안 보정이 9.7 ms 로 돌아간다 |
 | **녹화 폴더 구조 · 조각 합본** [2026-10-16] | `nxde/videomerge.py` 의 `PARTS_DIR`·`LOCK_RECORDING`·`LOCK_MERGING` 이 단일 소유자 — `video.py` 가 import 한다. 조각 이름(`<세션>-NN`)·최종본 이름(`<세션>.mp4` = record CSV 와 시각 맞춤 규칙)을 바꾸면 둘을 함께 고친다. 합본 프로세스는 ★ROS 를 import 하지 말 것★ — 하면 `nxde kill` 의 maps 판정에 걸려 합본 도중 죽는다 |
 | **카메라 영상 DDS 수신 버퍼** [2026-10-16] | `nxde/config/cyclonedds.xml`(`max` 만 — ★`min` 금지★) **+** `white1`·`white2` `camera_launch.dds_env()`(세 노드에만, 기존 `CYCLONEDDS_URI` 우선) **+** 기계별 `nxde/tools/setup_dds_buffer.sh`(sysctl `rmem_max`) **+** `nxde/check.py DDS_RMEM_MIN` — xml 만 있고 sysctl 이 없으면 효력이 없고, xml 에 min 을 쓰면 sysctl 없는 기계에서 노드가 안 뜬다 |
 | `terrain` 규약 | `driving.py:963` **+** `one_launch.py` 헤더 **+** `lidar/README.md` **+** 이 문서 |
