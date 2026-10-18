@@ -100,7 +100,7 @@ from white2 import paths
 
 #  카메라 해상도 — ports.resolve_camera_format() 이 '이 해상도에서 실제로 나오는
 #  포맷'을 보고 pixel_format 을 정하므로, 이 값을 바꾸면 포맷도 따라 바뀐다.
-#  ★traffic_light 의 tl_roi 기본값(0,0,1920,540)이 이 해상도 기준이다★ 해상도를
+#  ★traffic_light 의 tl_roi 기본값(640,0,1280,560 — 가운데 위쪽 640×560)이 이 해상도 기준이다★ 해상도를
 #  낮추면 ROI 는 프레임 크기로 클램프되지만(_clamp_roi), 근접도 게이트
 #  tl_red_stop_min_height(25px)는 화면이 작아진 만큼 같이 낮춰야 한다.
 CAM_WIDTH, CAM_HEIGHT = 1920, 1080
