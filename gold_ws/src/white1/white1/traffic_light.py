@@ -29,7 +29,7 @@ traffic_light.py ― 신호등 인지·정지 [white1]
   보정(camera_model.undistort) → ROI → YOLO → 크기·종횡비·conf 필터 → HSV 색 교정
   → RED 적색픽셀 관문 · GREEN 아랫변 관문(tl_green_max_y2, 지평선 아래 수풀·사람) → RED / RED_FAR / GREEN / UNKNOWN
   · RED 와 RED_FAR 는 박스 높이로 가른다 — tl_red_stop_min_height(25px), 신호 구간(/tl_zone
-    'T'·'A'·'B')에서는 tl_zone_red_min_height(9px). 'A' 에서는 빨강+좌회전 화살표가 진행이다
+    'T'·'A'·'B')에서는 구간별 tl_zone_red_min_height_{t,a,b}(12·9·9px, [2026-10-19]). 'A' 에서는 빨강+좌회전 화살표가 진행이다
     — 화살표는 박스 안 녹색 픽셀로 직접 읽는다(tl_a_arrow_min_px · tl_a_arrow_min_h, [2026-10-09]).
   · 정지선 seg 는 빨간 박스가 보이는 동안(sl_gate_red_s)만 같은 프레임에 한 번 더 돈다.
 
@@ -588,6 +588,7 @@ class TrafficLight(Node):
         self.declare_parameter('tl_solo_stop_min_height',   25.0)
         # 물고 있는 동안 근접 게이트를 이 비율로 낮춘다 — 박스가 몇 px 줄었다고
         #   RED_FAR 로 떨어져 해제 타이머가 도는 것을 막는다. 1.0 = 히스테리시스 없음.
+        #   ★[2026-10-19] 구간 밖(tl_red_stop_min_height)에만 쓴다★ — 신호 구간 안은 tl_near_release_ratio_{t,a,b}(tl_params.ZONE_GATE).
         self.declare_parameter('tl_near_release_ratio',     0.7)
         # [2026-10-08 진단] 서 있는데 초록이 보이고, 그 높이 × 이 비율 이하의 작은 빨강이 RED 로 해제를 막으면 로그를 남긴다
         #   (판단은 바꾸지 않는다). 본선 T1 에 서면 다음 교차로(T2) 신호가 5~6px 빨강으로 보인다(144031 797~1730,
@@ -682,12 +683,16 @@ class TrafficLight(Node):
 
         # ── 신호 구간 · 작은 맞은편 신호 대응 ───────────────────────────────
         #  /tl_zone (driving 이 경로 CSV terrain 에서 낸다):
-        #    'T' 신호 정지 구간 — RED 게이트가 tl_zone_red_min_height 로 내려간다
+        #    'T' 신호 정지 구간 — RED 게이트가 구간별 문턱(tl_zone_red_min_height_t)으로 바뀐다
         #    'A' 좌회전 구간   — 위와 같고, 빨강 등기구 안에 ★녹색 화살표가 보이면★ 진행(빨강+좌회전 화살표)
         #    'B' #400 구간     — 위와 같고, 버스 신호를 빼고 차량 박스의 좌회전 화살표가 켜져야 진행(_decision_boxes)
-        #    그 밖·끊김(tl_zone_stale_s) = tl_red_stop_min_height
-        #  9 = 본선 정지선 앞 맞은편 신호 9~12px. 0 이면 구간 신호를 무시한다.
-        self.declare_parameter('tl_zone_red_min_height', 9)
+        #    그 밖·끊김(tl_zone_stale_s) = tl_red_stop_min_height · tl_near_release_ratio
+        #  ★[2026-10-19] 구간별 문턱·정지 중 배율 6개★ — 기본값은 tl_params.ZONE_GATE 하나가 소유한다(근거는 그 파일).
+        #    T 12px · 0.75 / A 9px · 0.7 / B 9px · 0.7. 종전 하나뿐이던 tl_zone_red_min_height(9) 는 없앴다 —
+        #    T 에 서 있을 때 다음 교차로 빨강 6~7px 이 9 × 0.7 = 6.3px 를 넘어 초록에 못 풀었다(10/17 15:49, 15 s).
+        #    A(#1100) 는 정지선 앞에서도 9~10px 라 T 와 한 값으로 둘 수 없다. 문턱 0 이하 = 그 구간도 구간 밖 값.
+        for _k, _v in tl_params.ZONE_GATE.items():
+            self.declare_parameter(_k, _v)
         self.declare_parameter('tl_zone_stale_s', 1.0)
         #  [2026-10-09] 'A' 화살표 판독 — 모델 클래스가 아니라 ★박스 안 녹색 픽셀★ 로 읽는다.
         #    근거(docs/kcity) : 본선 4번 #1100 동좌 접근의 '진행' 표시는 적색 원등 + 좌회전 화살표뿐이다.
@@ -735,7 +740,9 @@ class TrafficLight(Node):
                        int(g('tl_roi_xmax')), int(g('tl_roi_ymax')))
         self.tl_min_area   = int(g('tl_min_area'))
         self.tl_max_h_frac = max(0.0, float(g('tl_max_height_frac')))
-        self.tl_zone_red_min_height = max(0, int(g('tl_zone_red_min_height')))
+        self.zone_gates = {z: (float(g(f'tl_zone_red_min_height_{z.lower()}')),
+                               min(1.0, max(0.1, float(g(f'tl_near_release_ratio_{z.lower()}')))))
+                           for z in ('T', 'A', 'B')}      # 구간 → (근접 문턱 px, 정지 중 배율)
         self.tl_zone_stale_s   = max(0.1, float(g('tl_zone_stale_s')))
         self.bus_detect   = bool(g('tl_bus_detect'))
         self.bus_min_veh_h = float(g('tl_bus_min_veh_h'))
@@ -945,7 +952,8 @@ class TrafficLight(Node):
             f"🚦 traffic_light | img={self.image_topic} dev={self.device} "
             f"conf={self.tl_conf} ROI={self.tl_roi} | 근접도 게이트="
             f"박스높이≥{self.tl_red_stop_min_height}px"
-            f"(물고 있는 동안 ×{self.tl_near_release_ratio:.2f})"
+            f"(물고 있는 동안 ×{self.tl_near_release_ratio:.2f}) · 구간 "
+            + ' '.join(f"{z} {h:g}px×{r:.2f}" for z, (h, r) in self.zone_gates.items())
             + f" | 확정 hold={self.tl_hold_s}s grace={self.tl_gap_grace_s}s "
             f"age≤{self.tl_state_max_age}s | 정지=리니어 {self.brake_level}단"
             + (f" + /cmd_vel_raw 0/0 @{self.stop_cmd_hz:.0f}Hz"
@@ -1265,25 +1273,30 @@ class TrafficLight(Node):
             return 0.0
         return float(max(b.get('box_h', 0) for b in red))
 
+    def _zone_gate(self):
+        """(근접 문턱 px, 정지 중 배율) — 신호 구간이 신선하면 그 구간 값(tl_params.ZONE_GATE),
+        아니면(구간 밖·끊김·그 구간 문턱 0 이하) 구간 밖 값 tl_red_stop_min_height · tl_near_release_ratio [2026-10-19]."""
+        if self._zone_active():
+            h, r = self.zone_gates[self.tl_zone]
+            if h > 0.0:
+                return h, r
+        return float(self.tl_red_stop_min_height), self.tl_near_release_ratio
+
     def _near_gate_base(self):
         """히스테리시스를 뺀 근접 게이트[px] — 게이지의 자도 여기에 맞춘다(무는 순간 안 튀게)."""
-        if self._zone_active():
-            return float(self.tl_zone_red_min_height)     # 신호 구간 안에서만 낮춘다
-        return float(self.tl_red_stop_min_height)
+        return self._zone_gate()[0]
 
     def _zone_active(self):
         """driving 이 '지금 신호 정지 구간(T/A/B)' 이라고 ★신선하게★ 알려 주고 있는가.
         __init__ 의 경고 검사가 상태 변수보다 먼저 부르므로 getattr 로 받는다."""
-        if getattr(self, 'tl_zone_red_min_height', 0) <= 0:
-            return False
         if getattr(self, 'tl_zone', '') not in ('T', 'A', 'B'):
             return False
         return (time.time() - self.tl_zone_t) <= self.tl_zone_stale_s
 
     def _near_gate(self):
         """지금 '가깝다' 로 인정할 높이[px] — 물고 있는 동안은 낮춘다(히스테리시스)."""
-        base = self._near_gate_base()
-        return base * self.tl_near_release_ratio if self.stopping else base
+        base, ratio = self._zone_gate()
+        return base * ratio if self.stopping else base
 
     def _log_release_hold(self, dec, state):
         """[진단] 서 있는데 초록이 보이고, 그 높이 × tl_hold_log_ratio 이하의 작은 빨강이 RED 로 해제를 막는 프레임.

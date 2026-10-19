@@ -145,9 +145,10 @@ def declare_args(cam_dev):
                         '차가 굴러간다. 상한은 gold/tl_tune.py 가 기록으로 계산해 준다'),
         DeclareLaunchArgument(
             'tl_near_release_ratio', default_value='0.7',
-            description='★근접도 히스테리시스★ 이미 물고 있는 동안에는 위 임계를 이 비율로 '
+            description='★근접도 히스테리시스 — [2026-10-19] 구간 밖 전용★ 이미 물고 있는 동안에는 위 임계를 이 비율로 '
                         '낮춰서 본다. 같은 신호등이 인식 흔들림으로 몇 px 작아졌다고 놓으면 '
-                        '리니어가 왕복한다. 1.0 이면 히스테리시스 없음'),
+                        '리니어가 왕복한다. 1.0 이면 히스테리시스 없음. 신호 구간(T·A·B) 안은 '
+                        'tl_zone_red_min_height_{t,a,b} · tl_near_release_ratio_{t,a,b} 를 쓴다'),
         DeclareLaunchArgument(
             'sl_enable', default_value='true',
             description='★정지선 앞 정지★ 켜면 빨간불이 확정돼도 정지선이 보이는 동안은 '
@@ -303,7 +304,17 @@ def declare_args(cam_dev):
                         '170 으로 준다. cam_testbed 전수 회귀(오탐 유무)로 확정 전까지는 '
                         '이 인자로 두 값을 나란히 돌려 비교한다'),
     ] + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_B_DESC[k])
-         for k, v in tl_params.B_ARROW.items()]
+         for k, v in tl_params.B_ARROW.items()] \
+      + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_ZONE_DESC[k[-1]].format(k=k))
+         for k, v in tl_params.ZONE_GATE.items()]
+
+
+#  [2026-10-19] 구간별 RED 근접 문턱·정지 중 배율 — 기본값·근거는 tl_params.ZONE_GATE (노드와 같은 값).
+_TL_ZONE_DESC = {
+    't': "{k} — 구간 'T' 값. 문턱 [px]: 박스 높이 이상이면 RED(정지 대상) · 배율: 2단을 문 동안 문턱 × 이 값. TL_TUNING.md '구간별 문턱'",
+    'a': "{k} — 구간 'A'(#1100 좌회전) 값. 정지선 앞에서도 내 신호 9~10px — 문턱을 올리면 빨간불에 안 선다",
+    'b': "{k} — 구간 'B'(#400) 값. 판단 박스는 차량 박스 하나",
+}
 
 
 #  [2026-10-18] 구간 'B'(#400) 좌회전 화살표 판독 — 기본값은 tl_params.B_ARROW (노드와 같은 값).
@@ -321,10 +332,10 @@ def _launch_str(v):
 
 
 def tl_b_params():
-    """traffic_light 에 넘길 'B' 파라미터 — ★형을 고정해 넘긴다★: `tl_b_arrow_min_h:=20` 처럼 정수로 줘도
-    float 로 바꿔 넘겨 노드가 형 오류로 안 뜨는 일이 없게 한다."""
+    """traffic_light 에 넘길 'B' 화살표 + 구간별 문턱 파라미터 — ★형을 고정해 넘긴다★: `tl_b_arrow_min_h:=20` ·
+    `tl_zone_red_min_height_t:=12` 처럼 정수로 줘도 float 로 바꿔 넘겨 노드가 형 오류로 안 뜨는 일이 없게 한다."""
     return {k: ParameterValue(LaunchConfiguration(k), value_type=type(v))
-            for k, v in tl_params.B_ARROW.items()}
+            for k, v in {**tl_params.B_ARROW, **tl_params.ZONE_GATE}.items()}
 
 
 def camera_params():
@@ -508,7 +519,7 @@ def actions(package_name, cam_format, node_env, respawn_delay):
             'stop_latch':             LaunchConfiguration('tl_stop_latch'),
             'publish_cmd_vel':        LaunchConfiguration('tl_publish_cmd_vel'),
             'hsv_red_h2_low':         LaunchConfiguration('tl_hsv_red_h2_low'),
-            **tl_b_params(),          # 'B' 화살표 — tl_b_arrow_frac · tl_b_arrow_min_h · tl_b_veh_min_ar · tl_b_clip_hold
+            **tl_b_params(),          # 'B' 화살표 4 + 구간별 문턱·배율 6 (tl_params.B_ARROW · ZONE_GATE)
             # ★카메라 기하는 한 벌로 받는다★ 차선 인지가 붙으면 같은 dict 를 넘긴다.
             **camera_params(),
         }],

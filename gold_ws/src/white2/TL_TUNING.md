@@ -11,6 +11,7 @@
    - 런치 인자로 열린 것: `ros2 launch white2 one_launch.py tl_conf:=0.4` — 열린 것은 `tl_device` `tl_conf` `tl_red_stop_min_height`
      `tl_near_release_ratio` `sl_enable` `sl_trigger_bev_y` `tl_solo_stop_min_height` `sl_conf` `sl_gate_red_s` `tl_show_window`
      `tl_record_video` `tl_window_width` `tl_stop_latch` `tl_publish_cmd_vel` `tl_hsv_red_h2_low` (+ 녹화 `tl_video_*`, 카메라 기하는 `camera_model`)
+     · [2026-10-19] 구간별 근접 문턱·배율 `tl_zone_red_min_height_{t,a,b}` `tl_near_release_ratio_{t,a,b}` — 예 `ros2 launch white2 one_launch.py tl_zone_red_min_height_t:=9 tl_near_release_ratio_t:=0.7`(T 를 종전으로). 기본값은 `tl_params.ZONE_GATE`.
      · [2026-10-18] 'B' 화살표 `tl_b_arrow_frac` `tl_b_arrow_min_h` `tl_b_veh_min_ar` `tl_b_clip_hold` — 예 `ros2 launch white2 one_launch.py tl_b_arrow_frac:=0.25`. 기본값은 `white2/tl_params.py` 의 `B_ARROW` 한 곳(노드·런치가 같이 읽는다).
    - 그 밖: 코드 기본값을 고치고 `colcon build --packages-select white1 white2`(★`--symlink-install` 금지★ — 다시 빌드해야 반영).
    - 시험: 테스트베드 `--param traffic_light.<이름>=<값>` (코드를 안 고치고 대조군을 만든다).
@@ -24,10 +25,10 @@
 
 | 증상 | 먼저 볼 것 | 방향 |
 |---|---|---|
-| 먼 신호를 늦게 본다(늦게 선다) | `tl_zone_red_min_height` · `tl_conf` | 문턱을 내리면 일찍 보지만 먼 오검출에도 문다 |
+| 먼 신호를 늦게 본다(늦게 선다) | `tl_zone_red_min_height_{t,a,b}` · `tl_conf` | 문턱을 내리면 일찍 보지만 먼 오검출에도 문다 |
 | 엉뚱한 빨강에 선다 | `hsv_min_color_pixels` · `tl_max_height_frac` · `tl_roi_*` | 관문을 올리거나 ROI 를 좁힌다 |
 | 정지선 너무 앞/뒤에 선다 | `sl_trigger_bev_y` · `tl_solo_stop_min_height` | 2절 '정지 위치' |
-| 서 있다 풀렸다 다시 문다(떨림) | `red_release_hold_s` · `red_release_hold_lost_s` · `tl_near_release_ratio` | 해제 유예를 늘린다 |
+| 서 있다 풀렸다 다시 문다(떨림) | `red_release_hold_s` · `red_release_hold_lost_s` · `tl_near_release_ratio_{t,a,b}`(구간 밖은 `tl_near_release_ratio`) | 해제 유예를 늘린다 |
 | 초록인데 늦게 출발한다 | `green_hold_s` · `red_release_hold_s` · 로그 `⏳ 해제 보류` | 유예를 줄이면 떨림 위험 |
 | 수풀·사람을 초록으로 본다 | `tl_green_max_y2` | 2절 |
 | #400 화살표를 못 읽거나 잘못 읽는다 | `tl_b_arrow_frac` · `tl_b_arrow_min_h` · 코드 상수 `ARROW` | 2절 'B' |
@@ -66,9 +67,10 @@
 
 | 파라미터 | 기본(런치) | 뜻 | 올리면 / 내리면 | 근거·주의 |
 |---|---|---|---|---|
-| `tl_zone_red_min_height` | 9 | 신호 구간(T·A·B) 안 RED 근접 문턱 px | 올리면 늦게 확정 / 내리면 먼 오검출 확정 | 본선 정지선 앞 맞은편 신호 9~12px. #1100('A')은 정지선 앞에서도 9~10px — **올리면 'A' 순수 빨강에 안 선다**. 0 = 구간 무시 |
+| `tl_zone_red_min_height_t` · `_a` · `_b` [2026-10-19] | 12 · 9 · 9 (런치 같음) | 신호 구간 T·A·B 안 RED 근접 문턱 px | 올리면 늦게 확정 / 내리면 먼 오검출·다음 교차로 빨강을 RED 로 | T : 체결 순간 내 빨강 20~27px(13건) · 다음 교차로 빨강 4~7px → 12 는 위아래 여유 8·5px. **A(#1100)는 정지선 앞에서도 9~10px — 올리면 'A' 순수 빨강에 안 선다**(전 구간 12 로 시험하면 v1f 5/5 → 4/5). 0 이하 = 그 구간도 구간 밖 25px. ★종전 `tl_zone_red_min_height`(9, 세 구간 공통)는 없앴다★ |
 | `tl_red_stop_min_height` | 25 (25) | 구간 밖 근접 문턱 | | white2 주행 중에는 구간 안이라 거의 안 쓰인다(수동 체크박스·기록용) |
-| `tl_near_release_ratio` | 0.7 (0.7) | 서 있는 동안 근접 문턱 배율 | 내리면 떨림↓ 하지만 **남의 작은 빨강이 해제를 막을** 위험↑ | 9→6.3px. 본선 T1 에서 T2 신호 5~6px — 0.6 이하로 내리면 그것이 해제를 막기 시작한다 |
+| `tl_near_release_ratio_t` · `_a` · `_b` [2026-10-19] | 0.75 · 0.7 · 0.7 (런치 같음) | 신호 구간 안에서 서 있는 동안 근접 문턱 배율 | 내리면 **남의 작은 빨강이 해제를 막을** 위험↑ / 올리면 **내 신호가 화면 위로 빠진 정지에서 건너편 등기구를 놓쳐 빨간불에 풀릴** 위험↑ | T : 9×0.7 = 6.3px 이 다음 교차로 빨강 6~7px 에 걸려 초록에 15 s 못 풀었다(10/17 15:49). 12×1.0 = 12px 은 140401 288~293 에서 건너편 같은 현시 등기구 11px 을 놓쳐 빨간불에 풀렸다 → 12×0.75 = **9px**. 다음 교차로 빨강 4~7px ↔ 건너편 등기구 8~12px 사이라 여유 2px · −1px(8px 등기구는 못 붙잡는다) |
+| `tl_near_release_ratio` | 0.7 (0.7) | ★구간 밖 전용★ 서 있는 동안 근접 문턱 배율 (25 → 17.5px) | | [2026-10-19] 전에는 구간 안에도 썼다 |
 | `tl_hold_s` | 0.1 | RED 확정 시간 | 올리면 늦게 문다 | |
 | `tl_gap_grace_s` | 0.15 | 이 이하 끊김은 확정 유지 | 내리면 먼 신호 확정이 매번 리셋 | 0.05 일 때 제동 0.8 s 늦었다(10-06) |
 | `tl_arm_hold_s` | 1.0 | 확정 뒤 대기를 잇는 시간 | | 0 = 끔 |
@@ -137,12 +139,12 @@
 
 | 바꾸는 것 | 같이 볼 것 |
 |---|---|
-| ROI 크기·위치 | 확대 배율 → 박스 높이 → `tl_zone_red_min_height`·`tl_solo_stop_min_height`·`tl_b_arrow_min_h`·`tl_green_max_y2`(y 기준) |
+| ROI 크기·위치 | 확대 배율 → 박스 높이 → `tl_zone_red_min_height_{t,a,b}`·`tl_solo_stop_min_height`·`tl_b_arrow_min_h`·`tl_green_max_y2`(y 기준) |
 | 카메라(틸트·높이·보정 `cam_undistort`) | 위 px 문턱 전부 + `tl_green_max_y2` + BEV 사다리꼴 → `sl_trigger_bev_y` |
 | `sl_trigger_bev_y` | `sl_lost_min_bev_y`(발화선보다 작아야 안전망이 산다) |
-| `tl_near_release_ratio` | T1 의 T2 신호 5~6px — 문턱이 6px 밑으로 내려가면 해제를 막는다(`⏳ 해제 보류` 로그로 확인) |
+| `tl_near_release_ratio_t` · `tl_zone_red_min_height_t` | 정지 중 문턱(= 둘의 곱)이 다음 교차로 빨강(4~7px) 이하로 내려가면 해제를 막는다(`⏳ 해제 보류` 로그로 확인). 위로는 체결 순간 내 빨강(20px~) |
 | HSV 초록 범위·채도·밝기·`hsv_crop_center_ratio` | 'A' 화살표 판독(`tl_a_arrow_min_px`) — 같은 녹색 화소 수를 쓴다 |
-| `tl_zone_red_min_height` | 'A' #1100 등 크기(정지선 앞 9~10px) · `tl_a_arrow_min_h` |
+| `tl_zone_red_min_height_a` | 'A' #1100 등 크기(정지선 앞 9~10px) · `tl_a_arrow_min_h` — ★작은 신호 교차로를 경로 CSV 에 'T' 로 적지 말 것★(T 는 서기 전 12px 라 안 선다) |
 | 시간 문턱 전부(`tl_hold_s`·`tl_gap_grace_s`·`tl_arm_hold_s`·`red_release_hold_s`/`_lost_s`·`green_hold_s`·`sl_hold_s`·`sl_stale_s`) | 벽시계 초다 — **realtime 으로 확인**. lockstep 은 2.8 fps 예선 영상(140401)에서 해제 324 vs realtime 311 처럼 늦어 보인다 |
 | `tl_weights` / `tl_imgsz` | 엔진을 다시 만들면 conf 분포도 다시 잰다 |
 | 기본값 | white1·white2 두 파일 같은 줄 — 짝 diff 16줄 확인 |
