@@ -195,6 +195,7 @@ TRAFFIC_TIMER_COLUMNS: Tuple[str, ...] = (
     'tt_armed', 'tt_init', 'tt_phase_s', 'tt_go_t1', 'tt_go_t3', 'tt_go_t4',
     'tt_watch', 'tt_t0',
     'tt_go_t2', 'tt_init_by',        # [2026-10-07] 끝에 붙였다 — init_by 0 아직 / 1 T1 / 2 T2
+    'tt_go_t5',                      # [2026-10-19] 끝에 붙였다 — T5 도 타이머(0~37 · 40~57초)
 )
 assert len(TRAFFIC_TIMER_COLUMNS) == tt.N_FIELDS, \
     "record.TRAFFIC_TIMER_COLUMNS 와 traffic_timer 배열 길이가 다르다"

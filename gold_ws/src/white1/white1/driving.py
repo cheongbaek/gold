@@ -1570,7 +1570,9 @@ TL_ZONE_CHARS = ('T', 't')
 #          (전환을 보기 전이면 녹색이어도 정지 신호 · 서는 도중 전환이면 그 순간 재가속).
 #          T1 에서 잡았으면 타이머(0~32초)로 판단한다(사용자 결정 — 종전에는 무시했다).
 #      T3·T4  ★카메라 없이 타이머만★ — 타이머상 녹색이면 진행, 아니면 정지 신호
-#      T5  카메라 — 빨간불을 확정했으면 정지 신호 (아래 '신호 접근' 의 카메라 구간)
+#      T5  ★[2026-10-19] 타이머만★ (0~37 · 40~57초 — 사용자 지시). 종전에는 카메라였는데 #1400
+#          등기구가 정지선 3.9 m 안에서 화면 위로 빠져, 서 있는 동안 녹색을 못 보고 영영 안
+#          떠났다(2026-10-17 실차 · CHANGELOG 2026-10-19).
 #  ★정지·감속의 방법은 아래 '신호 접근' 절이 소유한다★ [2026-10-01] (구간 끝 = 정지선)
 #
 #  ★T1·T2 를 안 지나고 T3·T4 에 오는 일은 없다★ (사용자 지시 — 본선 코스의 순서다).
@@ -1588,7 +1590,7 @@ TL_ZONE_CHARS = ('T', 't')
 #                                      제때 물고, ★끝단 1 m 에 닿는 즉시 2단★ → 그 뒤는 S
 #                                      서브페이즈(정지 확인 → 녹색 대기 → 0단 → 3펄스 재출발)
 #    · 감속하다가 녹색으로 바뀌면     → ★감속을 풀고 다시 가속★ (1단이면 최소 물림 뒤에 푼다)
-#  누가 판단하나 — 본선 코스 T1·T3·T4 는 타이머, T5 와 그 밖 경로의 T 는 ★카메라 색★
+#  누가 판단하나 — 본선 코스 T1~T5 는 타이머([2026-10-19] T5 도), 그 밖 경로의 T 는 ★카메라 색★
 #  (/tl/state → traffic_timer.LightFilter). ★카메라에는 제동을 맡기지 않는다★ —
 #  /tl_permit 을 내주지 않는다. traffic_light 가 자기 정지선 판단으로 따로 2단을 물면
 #  '정지선 1 m 앞에 맞춰 서기' 와 싸운다(두 주인). 카메라는 이제 ★색만 본다★.
@@ -2347,7 +2349,7 @@ class DrivingNode(Node):
         #  ★본선 코스 신호 타이머 [2026-09-30]★ maincourse.csv 에서만 읽는다(tl_go).
         self.create_subscription(Float64MultiArray, tt.TOPIC,
                                  self.cb_traffic_timer, 10)
-        #  ★카메라 색 [2026-10-01]★ 카메라 구간(T5·그 밖 경로의 T)의 유일한 입력.
+        #  ★카메라 색 [2026-10-01]★ 카메라 구간(그 밖 경로의 T — [2026-10-19] T5 는 타이머)의 유일한 입력.
         #  traffic_light 는 RELIABLE·depth 10 으로 낸다 — 기본 QoS 로 붙는다.
         self.create_subscription(String, tt.TL_STATE_TOPIC, self.cb_tl_state, 10)
         self.create_subscription(Float32,   '/speed',        self.cb_speed,   10)
@@ -2703,7 +2705,7 @@ class DrivingNode(Node):
     def signal_kind(self, label):
         """이 신호를 누가 판단하나 → 'timer' | 'camera' | None(아무것도 안 한다). [2026-10-01]
 
-        본선 코스 : T1~T4 타이머 · T5 와 번호 없는 T 카메라 · 모르는 번호 None.
+        본선 코스 : T1~T5 타이머([2026-10-19] T5 도) · 번호 없는 T 카메라 · 모르는 번호 None.
         ([2026-10-07] T2 도 타이머다 — T1 0초 전의 '카메라 녹색이면 통과' 는 signal_stop_wanted.)
         그 밖 경로 : T 전부 카메라(종전 그대로 — 번호는 select_route 가 이미 접었다).
         ★TRAFFIC_LIGHT_ENABLE 이 False 면 카메라 구간도 None★ — 카메라 없이 종전처럼 돈다.
@@ -2992,7 +2994,7 @@ class DrivingNode(Node):
 
     def _say_timer_init(self):
         """0초가 새로 잡히면 ★한 번★ 이벤트로 남긴다 — record 의 drive_event 에
-        '언제 0초가 잡혔나' 가 남아야 T3·T4 판단을 사후에 대조할 수 있다.
+        '언제 0초가 잡혔나' 가 남아야 T3~T5 판단을 사후에 대조할 수 있다.
         ★기준 시각이 바뀔 때만★ 말한다(토픽이 잠깐 끊겼다 이어져도 되풀이하지 않게)."""
         if not self._maincourse or not self._tt_fresh():
             return
@@ -3657,7 +3659,7 @@ class DrivingNode(Node):
                    f"({', '.join(f'{lab} {i0}~{i1}' for lab, i0, i1 in segs)}) — "
                    f"{LIDAR_ZONE_COLUMN} 열의 'T'"
                    + (". 본선 코스 — T1 전환으로 타이머 0초(T1 이 처음부터 녹색이면 T2 에서) · "
-                      "T2~T4 타이머 · T5 카메라" if self._maincourse
+                      "T2~T5 타이머" if self._maincourse
                       else ". 이 구간에서만 빨간불 2단이 유효하다"))
         if self._maincourse:
             self._warn_maincourse_order(segs)
@@ -3692,7 +3694,7 @@ class DrivingNode(Node):
         """본선 코스의 T 라벨이 ★타이머가 돌 수 있는 순서★ 인가.  [2026-09-30]
 
         타이머는 T1(못 잡으면 T2 — [2026-10-07])의 전환으로만 0초를 잡으므로, 그보다 앞에
-        T3·T4 가 있으면 그 자리에서 영영 녹색이 안 될 수 있다(= 거기서 서서 끝난다). 사람이 손으로 적는
+        T3~T5 가 있으면 그 자리에서 영영 녹색이 안 될 수 있다(= 거기서 서서 끝난다). 사람이 손으로 적는
         열이라 여기서 말해 둔다 — ★고치지는 않는다★ (무엇이 맞는지는 사람이 안다).
         """
         labels = [lab for lab, _, _ in segs]
@@ -3700,11 +3702,11 @@ class DrivingNode(Node):
         first = {lab: labels.index(lab) for lab in tt.INIT_SIGNALS if lab in labels}
         if not first:
             self.event(f"❌ 본선 코스인데 {t1}·{t2} 가 없다 — 타이머가 0초를 못 잡아 "
-                       f"T3·T4 에서 ★영영 출발하지 못한다★")
+                       f"T3~T5 에서 ★영영 출발하지 못한다★")
         elif t2 not in first:
             #  [2026-10-07] T1 이 처음부터 녹색이면 T2 에서 잡는다 — 그 자리가 없다
             self.event(f"⚠️ 본선 코스에 {t2} 가 없다 — {t1} 이 처음부터 녹색이면 0초를 잡을 곳이 "
-                       f"없어 T3·T4 에서 ★영영 출발하지 못한다★")
+                       f"없어 T3~T5 에서 ★영영 출발하지 못한다★")
         elif t1 in first and first[t2] < first[t1]:
             self.event(f"❌ {t2}(WP {segs[first[t2]][1]}) 가 {t1} 보다 앞이다 — "
                        f"0초는 {t1} → {t2} 순서로 잡는다")
@@ -3799,7 +3801,7 @@ class DrivingNode(Node):
         self._stop_idx = [i for i, z in enumerate(self.wp_zone)
                           if z in STOP_ZONE_CHARS]
         self._stop_done = set()
-        #  ★[2026-09-30] T 구간 표★ 라벨별 토막. 본선 코스의 T1·T3·T4 판단과 /tl_zone 이 쓴다.
+        #  ★[2026-09-30] T 구간 표★ 라벨별 토막. 본선 코스의 T1~T5 판단과 /tl_zone 이 쓴다.
         self._tl_segs = self._tl_segments(self.wp_zone)
         self._tl_done = set()
         self._cam_latch = None

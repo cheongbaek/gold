@@ -11,8 +11,9 @@ driving(DrivingNode) 와 traffic_timer(TrafficTimerNode) 를 ★한 프로세스
            사본은 follow_sim 과 ★다른 임시 폴더★ 에 둔다(그쪽은 terrain 을 전부 지운 같은
            이름의 사본을 쓴다)
   · 신호 : 진짜 0초 = 출발 + offset.
-      maincourse — T1·T2 0~32 · T5 0~57 녹색(카메라에 보인다) · T3·T4 는 타이머 몫이라 카메라는
-                   UNKNOWN 만 낸다
+      maincourse — T1·T2 0~32 녹색(카메라에 보인다) · T3·T4·T5 는 타이머 몫이라 카메라는
+                   UNKNOWN 만 낸다 ([2026-10-19] T5 0~37 · 40~57 도 타이머 — 실차에서 #1400 등기구가
+                   정지선 3.9 m 안에서 화면 위로 빠졌다)
       subcourse  — 시각표가 없다. 구간 k 마다 ★가짜★ 녹색 [0, 40) 초를 (30·k) 초씩 밀어 쓴다
     카메라는 [구간 시작 − 35 m, 구간 끝 + 2 m] 에서만 그 구간의 신호등을 본다(9/13 기록),
     15 Hz, 15% 는 UNKNOWN.
@@ -152,7 +153,7 @@ class SignalSim(fs.Sim):
         for k, (lab, i0, i1) in enumerate(self.segs):
             if not (self.s[i0] - VISIBLE_PRE_M <= here <= self.s[i1] + 2.0):
                 continue
-            if self.main and lab in ('T3', 'T4'):
+            if self.main and lab in ('T3', 'T4', 'T5'):
                 break                          # 카메라가 못 읽는 곳 (그래서 타이머다)
             if self.cam_rng.random() >= CAM_DROP:
                 st = 'GREEN' if self.true_green(k) else 'RED'
