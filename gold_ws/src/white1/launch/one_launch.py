@@ -63,6 +63,9 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
     T1 ~ T5    ★본선 코스(maincourse.csv)에서만★        white1/driving + traffic_timer
                T1 타이머 0초 · T2 무시 · T3·T4 타이머   (prompt 와 한 프로세스)
                · T5 카메라 [2026-09-30] — 다른 경로에서는 번호를 버리고 T 로 본다
+    Y / y      ★감속구간★ (★여러 행 연속★, L 과 같은 마킹) white1/driving (GPS 추종 그대로,
+               [2026-10-19] 상한 y_pulse(3)펄스 ·         /lstatus '0')
+               진입 때 빠르면(16.4 km/h 초과) 1단
     그 밖       GPS 추종                               white1/driving
     (빈 칸·'0'·숫자·열 없음 — ★기존 CSV 가 그대로 돈다★)
 
@@ -486,6 +489,11 @@ def generate_launch_description():
                         '남은 호길이와 직선거리가 둘 다 이 안일 때만 걸린다 — 순환 '
                         '코스 출발점 오작동 방지'),
         DeclareLaunchArgument(
+            'y_pulse', default_value='3',
+            description='★terrain Y 감속구간의 목표펄스 상한★ [2026-10-19] 구간 안에서 늘 건다. '
+                        '진입할 때 빠르면(해제선 + a1×최소물림 = 3펄스 기준 16.4 km/h 초과) 1단으로 '
+                        '내린다 — L 인계 서행과 같은 판단 함수. 기본값의 소유자는 driving.Y_PULSE'),
+        DeclareLaunchArgument(
             'goal_brake1_ms2', default_value='1.30',
             description='★종점 1단 제동의 가정 감속도 [m/s²]★ 체결 지점이 이 값으로 '
                         '정해진다(작을수록 일찍 문다). 기본 1.30 은 2026-08-19 실차의 '
@@ -685,6 +693,7 @@ def generate_launch_description():
             'goal_brake_m':   LaunchConfiguration('goal_brake_m'),
             'goal_creep_kmh': LaunchConfiguration('goal_creep_kmh'),
             'goal_brake1_ms2': LaunchConfiguration('goal_brake1_ms2'),
+            'y_pulse':       LaunchConfiguration('y_pulse'),
             'goal_brake2_backstop': LaunchConfiguration('goal_brake2_backstop'),
             'wp_reach_m':    LaunchConfiguration('wp_reach_m'),
             'require_rtk':   LaunchConfiguration('require_rtk'),

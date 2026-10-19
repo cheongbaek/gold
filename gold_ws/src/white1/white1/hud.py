@@ -121,6 +121,7 @@ EVENT_LOG_MAX = 40
 # driving.py 의 LIDAR_ZONE_CHARS / STOP_ZONE_CHARS / TL_ZONE_CHARS 와 같은 문자.
 # 그 외(빈 칸 · '0' · 모르는 글자)는 GPS 추종이다.
 ZONE_GPS, ZONE_LIDAR, ZONE_STOP, ZONE_TL = '0', 'L', 'S', 'T'
+ZONE_Y = 'Y'                     # [2026-10-19] 감속구간 (driving.Y_ZONE_CHARS)
 
 # ── 색 ──────────────────────────────────────────────────────────────────────
 BG = '#07090d'
@@ -144,8 +145,9 @@ ZONE_COLOR = {
     ZONE_LIDAR: ORANGE,
     ZONE_STOP: YELLOW,
     ZONE_TL: '#d46bff',
+    ZONE_Y: '#7fd17f',
 }
-ZONE_NAME = {ZONE_GPS: 'GPS', ZONE_LIDAR: 'L', ZONE_STOP: 'S', ZONE_TL: 'T'}
+ZONE_NAME = {ZONE_GPS: 'GPS', ZONE_LIDAR: 'L', ZONE_STOP: 'S', ZONE_TL: 'T', ZONE_Y: 'Y'}
 
 
 def _clamp(x, lo, hi):
@@ -183,13 +185,16 @@ def _yaw_from_quat(x, y, z, w):
 
 
 def _zone_char(raw):
-    """CSV terrain 한 칸 → '0'|'L'|'S'|'T'. driving 이 구간으로 인정하는 문자만.
-    [2026-09-30] 본선 코스의 'T1'~'T5' 도 'T' 로 접는다(판정은 driving.tl_label)."""
+    """CSV terrain 한 칸 → '0'|'L'|'S'|'T'|'Y'. driving 이 구간으로 인정하는 문자만.
+    [2026-09-30] 본선 코스의 'T1'~'T5' 도 'T' 로 접는다(판정은 driving.tl_label).
+    [2026-10-19] 'Y' 감속구간 (driving.Y_ZONE_CHARS)."""
     if dv.tl_label(raw):
         return ZONE_TL
     z = str(raw or '').strip().upper()
     if z in (ZONE_LIDAR, ZONE_STOP):
         return z
+    if z in {c.upper() for c in dv.Y_ZONE_CHARS}:
+        return ZONE_Y
     return ZONE_GPS
 
 
@@ -740,7 +745,7 @@ class HudNode(Node):
         self.get_logger().info(
             f'HUD 경로 로드 {base}  WP {len(wps)}  '
             f"L {zone.count(ZONE_LIDAR)}  S {zone.count(ZONE_STOP)}  "
-            f"T {zone.count(ZONE_TL)}")
+            f"T {zone.count(ZONE_TL)}  Y {zone.count(ZONE_Y)}")
 
     def _cb_cmd(self, m):
         now = time.monotonic()
@@ -2197,7 +2202,7 @@ class HudApp:
     def _draw_zone_legend(self, c, x, y):
         xx = x
         for z, name in ((ZONE_GPS, 'GPS'), (ZONE_LIDAR, 'L'),
-                        (ZONE_STOP, 'S'), (ZONE_TL, 'T')):
+                        (ZONE_STOP, 'S'), (ZONE_TL, 'T'), (ZONE_Y, 'Y')):
             c.create_rectangle(xx, y, xx + 10, y + 10,
                                fill=ZONE_COLOR[z], outline='')
             c.create_text(xx + 14, y + 5, text=name, fill=DIM, anchor='w',

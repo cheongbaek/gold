@@ -1688,12 +1688,83 @@ LIDAR_HOLD_PULSE = GOAL_HOLD_PULSE  # 인계 속도 = 종점 유지속도 = 2펄
 #    왕복한다. 그때는 목표를 2펄스로 내리기만 하고 코스트(0.41 m/s²)에 맡긴다.
 #    문턱을 넘어도 남은 거리 안에 코스트로 2펄스가 되면 역시 물지 않는다.
 #  ★한 L 구간에 한 번만 판단한다★ 물지 않기로 했거나 한 번 풀었으면 그 구간이
-#  끝날 때까지 다시 물지 않는다(_lz_done_s0). 물면 최소물림 동안은 풀지 않는다.
-#  ★GPS 속도를 못 읽으면 물지 않는다★ — 코너 1단과 같은 규칙(gps_ms 참고).
+#  끝날 때까지 다시 물지 않는다(SlowZone.done). 물면 최소물림 동안은 풀지 않는다.
+#  ~~★GPS 속도를 못 읽으면 물지 않는다★~~ → [2026-10-19] ★모르면 빠르다고 보고 문다★ (아래 절)
 LIDAR_BRAKE_MIN_HOLD_S = CORNER_BRAKE_MIN_HOLD_S   # [s] 1단 행정을 끝까지 낸다
 #  ★신선도 = 상대의 생존★ 이보다 낡으면 이양하지 않고, 구간 중이면 정지한다.
 #  mppi 는 20Hz 로 내므로 1.0s 는 20틱 여유다.
 LIDAR_ACTIVE_STALE_S = 1.0
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-10-19] 감속 창은 ★속도로★ 잰다 · 빠르면 1단을 문 채 인계한다 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  사용자 : "라이다 진입 시점에 속도가 빠르면 1단제동, 적당하면 그냥 진입이 내 의도였다"
+#  실측 white2 ros2bag/maincourse-20261017_172835 (7펄스 순항으로 L 에 다가간 첫 주행) :
+#      t=144.64  🔻 인계 서행 — L 구간 ★4.3m 앞★, 1단 (20.2 km/h)
+#      t=145.34  🛞 이양 — begin_lidar_zone 의 _clear_transients 가 0.7 s 만에 1단을 풀었다
+#                → ★22.8 km/h 로 인계★ (설계 6.4 km/h 의 3.6배). 행정 지연 0.55 s 라 감속 0
+#      t=146.6   mppi(앞보기 3.2 m — 2펄스 기준) 가 좌우로 휘청이다 왼쪽 끝(+3 m)을 골라 ±40 포화
+#  원인 ① 창이 LIDAR_DECEL_M(5 m) 고정 — 7펄스면 1단으로 2펄스까지 ≈25 m 가 필요하다
+#       ② 인계 순간 1단을 무조건 놓는다 — 아직 빠른데도
+#  → ① 창 = max(LIDAR_DECEL_M, slow_need_m(v, 2펄스)) — 매 틱 GPS 속도로 다시 잰다.
+#       감속도는 ★보수 하한 A_BRAKE1_MS2(0.88)★ (BRAKING.md 1단 0.62~1.05, 10/17 실측 0.77·0.85·1.19).
+#       약하게 잡을수록 일찍 열린다 = 틀리는 방향이 안전하다. 여유는 코너와 같은 BRAKE_GATE_MARGIN.
+#         v=22.8 km/h → 창 ≈ 26 m  ·  13.2 km/h(체결문턱) → ≈ 9 m  ·  4펄스 ≈ 8.8 m  ·  3펄스 이하 → 5 m (종전)
+#    ★판단은 그대로 한 번★ (lidar_brake_need → slow_brake_need) : 체결문턱 이하면 '적당' = 리니어
+#       없이 2펄스로만 내리고, 넘으면 1단. ★GPS 속도를 모르면 빠르다고 본다★ — 창은 최고속도
+#       (MAX_PULSE_LIMIT)로 열고 1단을 문다(풀기는 엔코더·시간상한이 받는다).
+#    ② 인계 순간 아직 1단을 물고 있으면 ★문 채로 인계한다★(_lz_carry_t). /brake_level 은
+#       '내 리니어' 라 driving 이 계속 재확인하고(keep_brake), /cmd_vel_raw·/control_state 는
+#       종전대로 침묵한다 — ★조종권(lstatus 'L') 계약과 겹치지 않는다★. arduino (4) 가 brake>0 이면
+#       mppi 펄스를 0 으로 덮으므로 그동안 mppi 는 조향만 한다. 푸는 조건은 서행 해제와 같다
+#       (최소물림 뒤 엔코더 ≤ 2펄스 · 해제선 · 시간상한). ★mppi 가 2단을 물면 0 을 내지 않고 조용히
+#       내려놓는다★(cb_brake_level) — 0 을 내면 남의 정지를 푼다(1.4 불변식 3).
+SLOW_A1_MS2      = A_BRAKE1_MS2     # [m/s²] 창 계산 감속도 — 보수 하한(일찍 열린다)
+SLOW_MARGIN_M    = BRAKE_GATE_MARGIN  # [m] 목표 펄스에 이만큼 앞서 도달 (코너와 같은 값)
+SLOW_BRAKE_MIN_HOLD_S = LIDAR_BRAKE_MIN_HOLD_S   # [s] L·Y 공통 최소 물림
+BRAKE_OTHER_FRESH_S = 0.5           # [s] 남이 낸 2단을 이만큼 안에 봤으면 '남이 물고 있다'
+
+
+class SlowZone:
+    """감속 접근 하나의 과도 상태 — L 인계 서행·(white1) Y 감속구간이 ★같은 함수★
+    (slow_step·slow_release)를 쓴다. [2026-10-19] 상태 이름만 갈라 둔 것이다."""
+    __slots__ = ('name', 'slow', 't', 'done')
+
+    def __init__(self, name):
+        self.name = name
+        self.slow = False     # 1단을 물고 있는가
+        self.t = 0.0          # 문 시각 (최소물림·시간상한)
+        self.done = None      # 이미 판단을 끝낸 구간의 열쇠(시작 호길이) — 구간마다 한 번
+
+    def clear(self):          # 과도 상태만 (E-STOP·이양) — 판단 기록은 남긴다
+        self.slow = False
+        self.t = 0.0
+
+    def reset(self):          # 경로·상태가 바뀌면 전부
+        self.clear()
+        self.done = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-10-19] terrain 'Y' — 감속구간 (사용자 지시, white1 만) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  사용자 : "3펄스로 주행하는 감속구간 도입 (terrain에 Y라고 표기된 영역만큼, 마킹방식은 L과
+#           동일, 제한속도를 3펄스로 하며 Y구간 진입 당시 속도가 너무 빠를 경우 1단제동을 통해
+#           적절히 감속)"
+#  · 마킹 = L 과 같다 (여러 행 연속, _zone_segments). ★GPS 추종은 그대로 이 노드가 한다★ —
+#    /lstatus 는 '0' 이고 mppi 와 무관하다.
+#  · 구간 안 목표펄스 상한 = y_pulse (런치, 기본 Y_PULSE). ★소유권과 무관하게 늘 건다★ (상한이다).
+#  · 1단은 ★진입한 첫 틱에 한 번★ 판단한다('진입 당시') — L 인계와 ★같은 함수★(slow_step ·
+#    slow_brake_need)·같은 문턱 공식 : 체결문턱 = 해제선(3펄스 + 선행량 = 14.1 km/h)
+#    + a1×최소물림 = ★16.4 km/h★. 7펄스(≈20~22 km/h)면 1단, 5펄스(15.9 km/h) 이하면 리니어 없이
+#    3펄스로만 내린다(코스트). 풀기 : 최소물림 뒤 엔코더 ≤ 3펄스 · 해제선 · 시간상한 · 구간 끝.
+#    ★미리 줄이지 않는 이유★ 사용자 문구가 '진입 당시' 이고, Y 는 '여기서부터 3펄스' 라는
+#    제한이지 L 처럼 '이 속도로 넘겨라' 가 아니다. 그래서 7펄스로 들어오면 진입 뒤 ≈12 m
+#    (1단 1.30 m/s² 로 해제선까지)는 3펄스를 넘는다 — Y 는 그만큼 앞에서 시작하게 적는다.
+#  · 소유권 : 종점 > S > 신호(T) > L 인계 > ★Y★ > 코너 1단 (run_follow 의 호출 순서가 곧 순서).
+#  · 다음에 넣을 구간(예 X 고속)도 SlowZone 하나 + 같은 slow_step 으로 붙인다.
+Y_ZONE_CHARS = ('Y', 'y')
+Y_PULSE = 3                         # [펄스] Y 구간 상한 — 런치 y_pulse 가 이긴다
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-10] 주행은 ★라이다가 켜진 뒤에★ 시작한다 (사용자 지시) ★★
@@ -2001,6 +2072,7 @@ class DrivingNode(Node):
         #   ★실차 로그로 갱신하는 값이다★ goal_phase=1 구간의 gps_kmh 기울기가 참값이고
         #   (물린 뒤 0.6초 이후에서 잰다), 그 값을 여기에 넣으면 체결 지점이 따라온다.
         self.declare_parameter('goal_brake1_ms2', GOAL_BRAKE1_MS2)
+        self.declare_parameter('y_pulse', Y_PULSE)          # [2026-10-19] terrain 'Y' 상한
         self.declare_parameter('goal_brake2_backstop', GOAL_BACKSTOP)
         # ── 코너 1단 선행제동 [2026-08-18] ── 상단 '코너 1단 선행제동' 절 참고
         #   ★실차 첫 확인은 false 로 시작할 수 있게 열어 둔다★ 끄면 종전 거동
@@ -2250,9 +2322,15 @@ class DrivingNode(Node):
         self._rejoin_cte0 = 0.0       # 복귀 순간의 CTE (로그 — 얼마나 벗어나 돌아왔나)
         # ── 라이다 인계 전 서행 [2026-09-07] ──
         self._lz_starts = []          # L 구간 시작들의 누적 호길이 [m] (주행 직전 계산)
-        self._lz_slow = False         # 인계 서행(1단 + 유지펄스) 중인가
-        self._lz_slow_t = 0.0         # 그 시작 시각 (시간 상한)
-        self._lz_done_s0 = None       # 이미 판단을 끝낸 L 구간의 시작 호길이 [2026-09-28]
+        #  [2026-10-19] 인계 서행의 slow·시작 시각·판단한 구간(종전 _lz_slow·_lz_slow_t·_lz_done_s0)
+        self._lzs = SlowZone('L 인계 서행')
+        self._lz_carry_t = None       # ★1단을 문 채 인계했다★ — 그 1단을 문 시각 [2026-10-19]
+        self._brake_full_other_t = 0.0  # 남이 낸 /brake_level 2 를 마지막으로 본 시각 [2026-10-19]
+        # ── terrain 'Y' 감속구간 [2026-10-19] (상수절 'terrain Y') ──
+        self._yzs = SlowZone('Y 감속구간')
+        self._yz_spans = []           # [(시작idx, 끝idx)] — build_waypoints 가 주행 직전에 만든다
+        self.y_pulse = max(1, min(MAX_PULSE_LIMIT, int(self.get_parameter('y_pulse').value)))
+        self._slow_zones = (self._lzs, self._yzs)   # ★리니어 소유자 목록★ (_slow_brake_owned_elsewhere)
         # ── S 일시정지 서브페이즈 [2026-09-07] ──
         self._sp_state = SP_NONE
         self._sp_idx = -1             # 지금 처리 중인 S 의 WP 인덱스
@@ -2346,6 +2424,8 @@ class DrivingNode(Node):
                                  self.cb_steer_measured, 10)
         # 신호등 노드의 브레이크 요구 — 내 요청과 max 로 합쳐서 낸다(cb_tl_brake_req)
         self.create_subscription(Int32,     '/tl_brake_req', self.cb_tl_brake_req, 10)
+        #  [2026-10-19] 남이 2단을 물었는가만 본다 — 문 채 인계한 1단을 0 없이 내려놓으려고
+        self.create_subscription(Int32,     '/brake_level',  self.cb_brake_level, 10)
         #  ★본선 코스 신호 타이머 [2026-09-30]★ maincourse.csv 에서만 읽는다(tl_go).
         self.create_subscription(Float64MultiArray, tt.TOPIC,
                                  self.cb_traffic_timer, 10)
@@ -3101,35 +3181,120 @@ class DrivingNode(Node):
                 return s0
         return None
 
-    def lidar_brake_need(self, v, left):
-        """인계 서행에서 ★리니어를 물어야 하는가★ → (bool, 이유). [2026-09-28]
-        근거는 상수절 '이미 느리면 리니어를 물지 않는다'. ★푸는 쪽 판정과 같은
-        해제선에서 유도한다★ — 둘이 따로 놀면 물자마자 풀리는 왕복이 다시 생긴다."""
-        v_hold = LIDAR_HOLD_PULSE * MS_PER_PULSE
+    # ══════════════════════════════════════════════════════════════════════════
+    #  감속 접근 공통 — L 인계 서행 · Y 감속구간 [2026-10-19] (상수절 '감속 창은 속도로')
+    # ══════════════════════════════════════════════════════════════════════════
+    def slow_release_kmh(self, hold_pulse):
+        """hold_pulse 로 내려놓을 때 1단을 풀 속도 [km/h] — 해제 뒤에도 줄어드는 선행량을 얹는다.
+        ★2펄스면 종점·L 인계의 goal_release_kmh() 그대로★ (런치 goal_creep_kmh 하한 포함)."""
+        if hold_pulse == GOAL_HOLD_PULSE:
+            return self.goal_release_kmh()
+        return (hold_pulse * MS_PER_PULSE + self.release_lead_ms()) * 3.6
+
+    def slow_need_m(self, v, hold_pulse):
+        """v [m/s] → hold_pulse 를 ★1단(보수 SLOW_A1_MS2)★ 으로 내리는 거리 + 여유 [m].
+        ★v 를 모르면 최고속도(MAX_PULSE_LIMIT)로 본다★ — 모르는 채 늦게 여는 것보다 낫다."""
         if v is None:
-            return False, "GPS 속도 미수신 — 모르면 물지 않는다"
-        v_rel = self.goal_release_kmh() / 3.6
-        v_gate = v_rel + self.goal_a1 * LIDAR_BRAKE_MIN_HOLD_S
+            v = MAX_PULSE_LIMIT * MS_PER_PULSE
+        return self.decel_dist(v, hold_pulse * MS_PER_PULSE, SLOW_A1_MS2,
+                               GOAL_BRAKE1_LAG_S) + SLOW_MARGIN_M
+
+    def slow_brake_need(self, v, left, hold_pulse):
+        """감속 접근에서 ★리니어를 물어야 하는가★ → (bool, 이유). [2026-09-28 → 2026-10-19 일반화]
+        근거는 상수절 '이미 느리면 리니어를 물지 않는다'. ★푸는 쪽 판정과 같은 해제선에서
+        유도한다★ — 둘이 따로 놀면 물자마자 풀리는 왕복이 다시 생긴다.
+        ★[2026-10-19] GPS 속도를 모르면 빠르다고 보고 문다★ (사용자 지시 — 종전에는 안 물었다)."""
+        v_hold = hold_pulse * MS_PER_PULSE
+        if v is None:
+            return True, "GPS 속도 미수신 — 모르면 빠르다고 본다"
+        v_rel = self.slow_release_kmh(hold_pulse) / 3.6
+        v_gate = v_rel + self.goal_a1 * SLOW_BRAKE_MIN_HOLD_S
         if v <= v_gate:
             return False, (f"{v * 3.6:.1f}km/h ≤ 체결문턱 {v_gate * 3.6:.1f}km/h "
                            f"(물어도 최소물림 안에 해제선 밑)")
         coast = self.decel_dist(v, v_hold, A_COAST_MS2, 0.0)
         if coast <= left:
-            return False, (f"코스트만으로 {coast:.1f}m 면 {LIDAR_HOLD_PULSE}펄스 "
+            return False, (f"코스트만으로 {coast:.1f}m 면 {hold_pulse}펄스 "
                            f"(남은 {left:.1f}m)")
         return True, ""
 
+    def slow_release_why(self, held, hold_pulse):
+        """물고 있는 1단을 풀 이유 — 없으면 None. ★최소물림 뒤에만★ 본다.
+        서행 중(slow_step)과 문 채 인계한 뒤(lidar_carry_step)가 같은 조건을 쓴다."""
+        if held < SLOW_BRAKE_MIN_HOLD_S:
+            return None
+        if self.enc_pulse <= hold_pulse:
+            return f"엔코더 {self.enc_pulse:.1f}펄스 도달"
+        kmh = self.measured_kmh()
+        rel = self.slow_release_kmh(hold_pulse)
+        if kmh is not None and kmh <= rel:
+            return f"{kmh:.1f}km/h ≤ 해제선 {rel:.1f}km/h"
+        if held >= GOAL_BRAKE1_MAX_S:
+            return f"★{GOAL_BRAKE1_MAX_S:.0f}초 초과★ — 굳지 않게 푼다"
+        return None
+
+    def _slow_brake_owned_elsewhere(self, z):
+        """z 말고 ★다른 소유자★ 가 지금 리니어를 쥐고 있는가 — 그러면 z 를 풀 때 0 을 내지 않는다.
+        [2026-10-19] 종전 _lz_release 는 이것을 안 봐서, 같은 틱에 종점이 1단을 물면 그 1단을 풀었다."""
+        return (self._goal_phase != GOAL_PHASE_NONE
+                or self._sp_state != SP_NONE
+                or self._sa_phase != SA_NONE
+                or any(o.slow for o in self._slow_zones if o is not z))
+
+    def slow_release(self, z, why, hold_pulse):
+        z.clear()
+        if not self._slow_brake_owned_elsewhere(z):
+            self.set_brake(BRAKE_NONE)
+        self.event(f"🟢 {z.name} 1단 해제 — {why}. {hold_pulse}펄스")
+
+    def slow_step(self, z, pulse, hold_pulse, ok, armed, left, key, label):
+        """감속 접근 한 틱 → 이번 틱 목표펄스. ★세우지 않는다★ (L 인계·Y 공통)
+        · armed : 지금 판단할 자리인가 (L = 남은 거리 ≤ 창, Y = 구간 안)
+        · 판단 : armed 가 된 ★첫 틱에 한 번★ (구간 열쇠 key 마다) — slow_brake_need
+        · 해제 : 최소물림 뒤 엔코더·해제선·시간상한 (slow_release_why), 소유권을 잃으면 즉시
+        · 판단한 뒤로는 목표만 hold_pulse 로 묶는다(다시 물지 않는다)
+        """
+        if not z.slow:
+            if not ok:
+                return pulse
+            #  ★판단한 구간은 armed 와 무관하게 끝까지 묶는다★ — 창은 속도로 재므로 줄인 뒤에는
+            #  창이 남은 거리보다 짧아진다. 그때 풀어 주면 L 바로 앞에서 다시 가속한다(모의에서 6펄스).
+            if z.done is not None and key is not None and abs(z.done - key) < 1e-6:
+                return min(pulse, hold_pulse)
+            if not armed:
+                return pulse
+            z.done = key
+            v = self.gps_ms()
+            need, why = self.slow_brake_need(v, max(0.0, left), hold_pulse)
+            if not need:
+                self.event(f"🛞 {label}, {why}. 리니어 없이 {hold_pulse}펄스로 내린다")
+                return min(pulse, hold_pulse)
+            z.slow = True
+            z.t = time.time()
+            self.set_brake(BRAKE_SOFT)
+            vs = "속도 모름" if v is None else f"지금 {v * 3.6:.1f}km/h"
+            self.event(f"🔻 {label}, 1단 + {hold_pulse}펄스 ({vs}"
+                       f"{' — ' + why if why else ''})")
+            return 0
+        # ── 물고 있는 중 : 푸는 판정만 본다 (무는 쪽은 위 판단이 이미 정했다) ──
+        if not ok:
+            self.slow_release(z, "소유권을 넘긴다", hold_pulse)
+            return pulse
+        why = self.slow_release_why(time.time() - z.t, hold_pulse)
+        if why:
+            self.slow_release(z, why, hold_pulse)
+            return min(pulse, hold_pulse)
+        return 0                       # 제동 유지 — 구동은 내지 않는다
+
     def lidar_approach(self, pulse):
-        """L 구간 진입 LIDAR_DECEL_M 앞부터 ★유지펄스★ 로 내려놓는다. 필요할 때만 1단.
+        """L 구간 앞 ★속도로 잰 창★ 부터 유지펄스(2)로 내려놓는다. 빠르면 1단, 적당하면 그냥.
         → 돌려주는 값이 이번 틱의 목표펄스다. ★세우지 않는다★
         [2026-09-07 신설 — 사용자 지시 '완전 정지하지 않고 2펄스로 인계']
         [2026-09-28] 이미 느리면 리니어를 물지 않는다 — 상수절의 실측(1단 50ms 왕복)
-
-        구조는 goal_approach 와 같고 ★끝에서 서지 않는다★는 것만 다르다.
-        · 판단 : 남은 호길이 ≤ LIDAR_DECEL_M 에 들어온 ★첫 틱에 한 번★ (lidar_brake_need)
-        · 해제 : 최소물림 뒤 엔코더·GPS 가 유지속도로 내려왔거나, 시간 상한
-        · 한 번 풀면(또는 안 물기로 했으면) 그 L 구간이 끝날 때까지 다시 물지 않는다
-        · 소유권 : 종점·S·신호등이 리니어를 잡고 있으면 손을 뗀다(아래 ok)
+        [2026-10-19] 창 = max(LIDAR_DECEL_M, slow_need_m(v)) — 5 m 고정이라 7펄스에서 22.8 km/h 로
+                     인계됐다(상수절 '감속 창은 속도로'). 판단·해제는 slow_step (Y 와 같은 함수).
+        · 소유권 : 종점·S·신호가 리니어를 잡고 있으면 손을 뗀다(아래 ok)
+        · 인계 순간 아직 물고 있으면 begin_lidar_zone 이 ★문 채로★ 넘긴다(lidar_carry_step)
         """
         left = self.lidar_zone_left_m()
         ok = (self.state == S_DRIVE_RUN
@@ -3138,53 +3303,71 @@ class DrivingNode(Node):
               and self._sa_phase == SA_NONE            # [2026-10-01] 신호 접근
               and self.tl_brake_req() == 0
               and not self.estop)
+        win = max(LIDAR_DECEL_M, self.slow_need_m(self.gps_ms(), LIDAR_HOLD_PULSE))
+        return self.slow_step(self._lzs, pulse, LIDAR_HOLD_PULSE, ok, left <= win, left,
+                              self.lidar_zone_next_start(),
+                              f"라이다 인계 서행 — L 구간 {left:.1f}m 앞 (창 {win:.1f}m)")
 
-        if not self._lz_slow:
-            if not ok or left > LIDAR_DECEL_M:
-                return pulse
-            #  ★구간마다 한 번만 판단한다★ 판단한 뒤로는 목표만 유지펄스로 묶는다.
-            s0 = self.lidar_zone_next_start()
-            if self._lz_done_s0 is not None and s0 is not None \
-                    and abs(self._lz_done_s0 - s0) < 1e-6:
-                return min(pulse, LIDAR_HOLD_PULSE)
-            self._lz_done_s0 = s0
-            v = self.gps_ms()
-            need, why = self.lidar_brake_need(v, left)
-            if not need:
-                self.event(f"🛞 라이다 인계 — L 구간 {left:.1f}m 앞, {why}. "
-                           f"리니어 없이 {LIDAR_HOLD_PULSE}펄스로 내린다")
-                return min(pulse, LIDAR_HOLD_PULSE)
-            self._lz_slow = True
-            self._lz_slow_t = time.time()
-            self.set_brake(BRAKE_SOFT)
-            self.event(f"🔻 라이다 인계 서행 — L 구간 {left:.1f}m 앞, 1단 + "
-                       f"{LIDAR_HOLD_PULSE}펄스 (지금 {v * 3.6:.1f}km/h)")
-            return 0
+    def y_zone_here(self):
+        """지금 포인터가 든 Y 토막 (i0, i1) — 없으면 None. [2026-10-19]"""
+        i = self.wp_idx
+        for i0, i1 in self._yz_spans:
+            if i0 <= i <= i1:
+                return i0, i1
+        return None
 
-        # ── 서행 중 : 푸는 판정만 본다 (무는 쪽은 위 판단이 이미 정했다) ──
-        held = time.time() - self._lz_slow_t
-        if not ok:
-            self._lz_release("소유권을 넘긴다")
+    def y_zone_step(self, pulse):
+        """terrain 'Y' 감속구간 한 틱 → 이번 틱 목표펄스. [2026-10-19 — 사용자 지시]
+        · 구간 안 : 상한 y_pulse (늘). 진입 첫 틱에 한 번 '빠른가' 를 판단해 빠르면 1단 —
+          L 인계와 ★같은 slow_step★ (left=0 → 체결문턱만 본다)
+        · 구간 밖으로 나가면서 아직 물고 있으면 최소물림 뒤 놓는다"""
+        z = self._yzs
+        seg = self.y_zone_here()
+        if seg is None:
+            if z.slow:
+                if time.time() - z.t < SLOW_BRAKE_MIN_HOLD_S:
+                    return 0                       # ★행정을 끝까지 낸다★
+                self.slow_release(z, "Y 구간 끝", self.y_pulse)
             return pulse
-        if held < LIDAR_BRAKE_MIN_HOLD_S:
-            return 0                   # ★행정을 끝까지 낸다★ (그 전에 풀면 왕복만 한다)
-        if self.enc_pulse <= GOAL_HOLD_ENC_PULSE:
-            self._lz_release(f"엔코더 {self.enc_pulse:.1f}펄스 도달")
-            return min(pulse, LIDAR_HOLD_PULSE)
-        kmh = self.measured_kmh()
-        if kmh is not None and kmh <= self.goal_release_kmh():
-            self._lz_release(f"{kmh:.1f}km/h ≤ 해제선 {self.goal_release_kmh():.1f}km/h")
-            return min(pulse, LIDAR_HOLD_PULSE)
-        if held >= GOAL_BRAKE1_MAX_S:
-            self._lz_release(f"★{GOAL_BRAKE1_MAX_S:.0f}초 초과★ — 굳지 않게 푼다")
-            return min(pulse, LIDAR_HOLD_PULSE)
-        return 0                       # 제동 유지 — 구동은 내지 않는다
+        ok = (self.state == S_DRIVE_RUN
+              and self._goal_phase == GOAL_PHASE_NONE
+              and self._sp_state == SP_NONE
+              and self._sa_phase == SA_NONE
+              and self.tl_brake_req() == 0
+              and not self._lzs.slow                 # L 인계가 리니어를 쥐었으면 그쪽이 먼저
+              and not self.estop)
+        i0, i1 = seg
+        out = self.slow_step(z, pulse, self.y_pulse, ok, True, 0.0,
+                             self.wp_s[i0] if i0 < len(self.wp_s) else None,
+                             f"Y 감속구간 WP {i0}~{i1} 진입 (상한 {self.y_pulse}펄스)")
+        return min(out, self.y_pulse)
 
-    def _lz_release(self, why):
-        self._lz_slow = False
-        if self._sa_phase == SA_NONE:            # [2026-10-01] 신호 접근의 1단은 안 푼다
+    def lidar_carry_step(self):
+        """★1단을 문 채 인계했다★ — L 구간 안에서 그 1단을 언제 놓을지. [2026-10-19]
+        /brake_level 만 쥔다(keep_brake 가 재확인) — /cmd_vel_raw·/control_state 는 침묵 그대로다.
+        · 푸는 조건은 서행 해제와 같다(slow_release_why) — 놓을 때는 0 을 한 번 낸다.
+        · ★mppi(또는 누구든) 가 2단을 물었으면 0 을 내지 않고 조용히 내려놓는다★ — 0 을 내면
+          남의 정지를 푼다. 그 뒤 2단을 푸는 것은 그것을 문 쪽의 몫이다(mppi releaseBrake)."""
+        if self._lz_carry_t is None:
+            return
+        now = time.time()
+        if now - self._brake_full_other_t <= BRAKE_OTHER_FRESH_S:
+            self._lz_carry_t = None
+            self.brake_now = BRAKE_NONE
+            self._brake_out = BRAKE_NONE            # ★0 을 내지 않는다★ (재확인도 멈춘다)
+            self.event("🟢 L 이월 1단 내려놓음 — 남이 2단을 물었다(0 은 내지 않는다)")
+            return
+        why = self.slow_release_why(now - self._lz_carry_t, LIDAR_HOLD_PULSE)
+        if why:
+            self._lz_carry_t = None
             self.set_brake(BRAKE_NONE)
-        self.event(f"🛞 인계 서행 해제 — {why}. {LIDAR_HOLD_PULSE}펄스로 인계 대기")
+            self.event(f"🟢 L 이월 1단 해제 — {why}. 이제 mppi 의 펄스가 듣는다")
+
+    def cb_brake_level(self, msg):
+        """/brake_level 을 엿본다 — ★남이 2단을 물었는가★ 만 본다. [2026-10-19]
+        내 값은 _brake_out 과 같아서 걸러진다. 쓰는 곳은 lidar_carry_step 하나다."""
+        if int(msg.data) >= BRAKE_FULL and self._brake_out < BRAKE_FULL:
+            self._brake_full_other_t = time.time()
 
     # ══════════════════════════════════════════════════════════════════════════
     #  terrain 'S' — 일시정지 후 재출발 [2026-09-07]
@@ -3262,7 +3445,8 @@ class DrivingNode(Node):
         self._sp_t = time.time()
         self._sp_zero_t = 0.0
         self._sp_ready_t = 0.0
-        self._lz_slow = False                    # 서행 중이었다면 소유권을 넘긴다
+        for z in self._slow_zones:               # 서행(L·Y) 중이었다면 소유권을 넘긴다
+            z.clear()
         self._sa_phase = SA_NONE                 # 신호 접근 중이었다면 여기서 넘겨받는다
         self.set_brake(BRAKE_FULL)
         self._publish_brake(force=True)
@@ -3441,7 +3625,7 @@ class DrivingNode(Node):
         """
         self._clear_transients()
 
-    def _clear_transients(self):
+    def _clear_transients(self, keep_brake=False):
         """★과도 상태 + 리니어를 놓는다★ 상태·WP 인덱스·헤딩은 건드리지 않는다.
 
         [2026-09-01] E-STOP 일시정지(_estop_pause_reset)와 라이다 구간 이양
@@ -3468,7 +3652,10 @@ class DrivingNode(Node):
         self._cb_lock_gate = 0.0
         #  ★[2026-09-07] 새 과도 상태 둘도 같은 이유로 지운다★ 둘 다 '내가 지금 v 로
         #  굴러가며 목표까지 d 가 남았다' 는 전제 위에 서 있다.
-        self._lz_slow = False
+        #  [2026-10-19] 감속 접근(L·Y)은 판단 기록(done)을 남기고 과도 상태만 지운다 — 종전과 같다.
+        for z in self._slow_zones:
+            z.clear()
+        self._lz_carry_t = None
         self._sp_state = SP_NONE
         #  ★[2026-10-01] 신호 접근도 지운다 — 재개한 첫 틱에 다시 판단한다★
         #  ★카메라 빨간불 래치(_cam_latch)는 지우지 않는다★ 정지선 앞에 서 있는 동안
@@ -3477,7 +3664,10 @@ class DrivingNode(Node):
         #  바뀌었을 수 있으니, 낡은 '녹색' 으로 출발하지 않고 녹색을 다시 봐야 간다(모르면 적색).
         self._cam_green_latch = None
         self._sa_phase = SA_NONE
-        self.set_brake(BRAKE_NONE)
+        #  ★keep_brake★ [2026-10-19] — begin_lidar_zone 이 '아직 빠르면 1단을 문 채 인계' 할 때만
+        #  True. 그때는 0 을 내지 않는다(0 다음 1 이면 리니어가 한 번 왕복한다).
+        if not keep_brake:
+            self.set_brake(BRAKE_NONE)
 
     def cb_drive_cmd(self, msg: String):
         """prompt 하달. 'STOP' = 즉시 정지+리니어 2단 / 'MAP_START'·'DRIVE_START' =
@@ -3596,6 +3786,8 @@ class DrivingNode(Node):
         self.event(f"📁 경로 선택: {name} (WP {len(wps)}개) — 스위치를 자율로 올리면 출발")
         self._warn_stop_zones(zone)
         self._warn_tl_zones(zone)
+        self._warn_lidar_room(zone)               # [2026-10-19] 6.4③
+        self._warn_y_zones(zone)                  # [2026-10-19] terrain 'Y'
         if n_lidar:
             # ★몇 개인지가 아니라 몇 토막인지를 말한다★ 사람이 손으로 적은 열이라
             #   오타 하나가 구간을 둘로 쪼개는데, 개수만 보면 그것이 안 드러난다.
@@ -3607,6 +3799,54 @@ class DrivingNode(Node):
         else:
             self.event(f"🛰️ 라이다 구간 없음 — 전 구간 GPS 추종 "
                        f"({LIDAR_ZONE_COLUMN} 열에 'L' 이 없다)")
+
+    def _warn_lidar_room(self, zone):
+        """L 구간 앞에 ★1단으로 2펄스까지 내릴 거리★ 가 있는가 (CLAUDE.md 6.4③). [2026-10-19]
+
+        drive_pulse 로 다가온다고 보고 slow_need_m(= 감속 창) 과, 바로 앞 '느린 자리'
+        (경로 시작 · S · 신호 구간 끝 · 앞 L 끝 · Y 끝)에서 L 시작까지의 호길이를 비교한다.
+        코너는 세지 않는다(코너 감속이 있으면 실제로는 더 여유롭다 — 경고가 많은 쪽으로 틀린다).
+        모자라면 주행은 그대로 하되 ★아직 빠른 채 1단을 문 채 인계★ 하게 된다 — 그것을 미리 말한다.
+        """
+        segs = self._zone_segments(zone)
+        if not segs:
+            return
+        need = self.slow_need_m(self.drive_pulse * MS_PER_PULSE, LIDAR_HOLD_PULSE)
+        slow_pts = [0] + [i for i, z in enumerate(zone) if z in STOP_ZONE_CHARS]
+        slow_pts += [i1 for _, _, i1 in self._tl_segments(zone)]
+        slow_pts += [i1 for _, i1 in segs]
+        slow_pts += [i1 for _, i1 in self._zone_segments(zone, Y_ZONE_CHARS)]
+        for i0, _ in segs:
+            prev = max((p for p in slow_pts if p < i0), default=0)
+            room = self._span_m(prev, i0) if prev < i0 else 0.0
+            if math.isfinite(room) and room < need:
+                self.event(f"⚠️ L 구간 WP {i0} 앞 감속 여유 {room:.1f}m (WP {prev} 부터) — "
+                           f"{self.drive_pulse}펄스로 다가오면 1단으로 {LIDAR_HOLD_PULSE}펄스까지 "
+                           f"{need:.1f}m 가 필요하다. 모자라면 ★1단을 문 채 인계★ 한다 — "
+                           f"L 시작이나 앞 지점을 옮길지 볼 것")
+            else:
+                self.event(f"🛞 L 구간 WP {i0} 앞 감속 여유 {room:.1f}m (WP {prev} 부터) ≥ "
+                           f"{self.drive_pulse}펄스 감속 창 {need:.1f}m")
+
+    def _warn_y_zones(self, zone):
+        """terrain 'Y'(감속구간)를 세고 ★겹침★ 을 말한다. [2026-10-19]
+        Y 안의 L 은 mppi 가 몰아 Y 상한이 안 듣고, Y 안의 S·T 는 그쪽이 리니어를 쥐어 Y 1단이 손을 뗀다
+        (소유권 순서) — 고치지는 않고 알린다."""
+        segs = self._zone_segments(zone, Y_ZONE_CHARS)
+        if not segs:
+            return
+        n = sum(i1 - i0 + 1 for i0, i1 in segs)
+        self.event(f"🟡 감속구간 {len(segs)}곳 / WP {n}개 "
+                   f"({', '.join(f'{i0}~{i1}' for i0, i1 in segs)}) — {LIDAR_ZONE_COLUMN} 열의 'Y'. "
+                   f"구간 안 상한 {self.y_pulse}펄스, 진입 때 빠르면 1단")
+        for i0, i1 in segs:
+            inner = {('L' if z in LIDAR_ZONE_CHARS else 'S' if z in STOP_ZONE_CHARS else 'T')
+                     for z in zone[i0:i1 + 1]
+                     if z in LIDAR_ZONE_CHARS or z in STOP_ZONE_CHARS or tl_label(z)}
+            if inner:
+                self.event(f"⚠️ Y 구간 WP {i0}~{i1} 안에 {'·'.join(sorted(inner))} 가 있다 — "
+                           f"L 이면 mppi 가 몰아 Y 상한이 안 듣고, S·T 는 그쪽이 리니어를 쥔다 "
+                           f"(Y 1단은 손을 뗀다). 겹치지 않게 적을 것")
 
     def _warn_stop_zones(self, zone):
         """terrain 'S' 를 세고 ★사람이 손으로 적은 열의 실수★ 를 그 자리에서 말한다.
@@ -3798,6 +4038,9 @@ class DrivingNode(Node):
         #  제어 루프에서는 이 표로 뺄셈만 한다 — lidar_zone_left_m / stop_zone_hit.
         self._lz_starts = [self.wp_s[i0] for i0, _ in self._zone_segments(self.wp_zone)
                            if i0 < len(self.wp_s)]
+        #  [2026-10-19] Y 감속구간 토막 — 열쇠는 시작 호길이(구간마다 한 번 판단)
+        self._yz_spans = [(i0, i1) for i0, i1 in self._zone_segments(self.wp_zone, Y_ZONE_CHARS)
+                          if i0 < len(self.wp_s)]
         self._stop_idx = [i for i, z in enumerate(self.wp_zone)
                           if z in STOP_ZONE_CHARS]
         self._stop_done = set()
@@ -3810,8 +4053,9 @@ class DrivingNode(Node):
         self._wp_idx_prev = 0
         self._sp_state = SP_NONE
         self._sp_kind = ''
-        self._lz_slow = False
-        self._lz_done_s0 = None
+        for z in self._slow_zones:
+            z.reset()
+        self._lz_carry_t = None
         return True
 
     def build_curve_profile(self):
@@ -3985,8 +4229,9 @@ class DrivingNode(Node):
         #  ★여기서 set_brake 를 부르지 않는다★ 아래 '브레이크' 절이 DRIVE_DONE 이면
         #  2단, 아니면 0단을 무조건 내므로 리니어 처리는 그 한 곳이 소유한다.
         self._sp_state = SP_NONE
-        self._lz_slow = False
-        self._lz_done_s0 = None
+        for z in self._slow_zones:
+            z.reset()
+        self._lz_carry_t = None
         self._sa_phase = SA_NONE          # [2026-10-01] 신호 접근도 (리니어는 아래 한 곳이)
         # ★라이다 이양도 함께 내린다 [2026-09-01]★ 도착·이탈·정지명령·수동전환으로
         #   상태가 바뀌면 조종권은 무조건 이 노드로 돌아온다. 내리지 않으면 도착해
@@ -4386,13 +4631,21 @@ class DrivingNode(Node):
         self._lidar_zone = True
         self._lidar_zone_t0 = time.time()
         self._rejoin = False                 # 재수렴 중에 다시 L 로 들어갈 수 있다
-        self._clear_transients()             # ★리니어를 놓는다★ (그쪽 docstring)
+        #  ★[2026-10-19] 아직 1단을 물고 있으면(= 빠르다) 문 채로 넘긴다★ (사용자 '빠르면 1단')
+        #  종전에는 여기서 무조건 놓아 0.7 s 물린 1단이 감속 0 으로 끝났다(상수절 실측).
+        carry_t = self._lzs.t if self._lzs.slow else None
+        self._clear_transients(keep_brake=carry_t is not None)   # ★리니어를 놓는다★ (그쪽 docstring)
+        self._lz_carry_t = carry_t
         self.send(0, 0.0, control=True)      # ★마지막 한 번★ — 그 뒤로는 침묵이다
         self.publish_lstatus(LSTATUS_LIDAR)              # 한 틱 먼저 알린다
         cte = self.signed_cte()
+        kmh = self.measured_kmh()
         self.event(f"🛞 라이다 구간 진입 — WP {self.wp_idx}/{len(self.waypoints)} "
-                   f"에서 조종권 이양 (CTE {cte:+.2f}m). "
-                   f"이제 /cmd_vel_raw 는 mppi 가 낸다")
+                   f"에서 조종권 이양 (CTE {cte:+.2f}m, "
+                   f"{'속도 모름' if kmh is None else f'{kmh:.1f}km/h'}). "
+                   f"이제 /cmd_vel_raw 는 mppi 가 낸다"
+                   + (" — ★아직 빠르다, 1단을 문 채 넘긴다★ (풀릴 때까지 mppi 펄스는 0)"
+                      if carry_t is not None else ""))
         return True
 
     def hold_for_lidar(self):
@@ -4423,6 +4676,7 @@ class DrivingNode(Node):
                        f"🎯 도착 — 라이다 구간 안에서 경로가 끝났다 "
                        f"(WP {self.wp_idx}/{len(self.waypoints)}). 정지 + 리니어 2단")
             return
+        self.lidar_carry_step()              # [2026-10-19] 문 채 넘긴 1단을 놓을 때인가
         self.throttle_event(
             f"🛞 라이다 조종 중 — WP {self.wp_idx}/{len(self.waypoints)}, "
             f"mppi {'구동' if self._lidar_active else '대기'}")
@@ -4454,6 +4708,7 @@ class DrivingNode(Node):
         #  mppi 쪽도 하강엣지에서 releaseBrake() 를 부르지만, 그쪽은 최소 물림 안이면
         #  건너뛰므로 소유권을 되받는 이쪽에서 한 번 못 박는다. (주기적 재확인이
         #  아니라 ★이양 경계에서 한 번★ 이므로 그 규칙과 충돌하지 않는다)
+        self._lz_carry_t = None              # [2026-10-19] 이월 1단도 여기서 끝 (아래 0 이 놓는다)
         self.set_brake(BRAKE_NONE)
         self._publish_brake(force=True)
         self.publish_lstatus(LSTATUS_GPS)                # 한 틱 먼저 알린다
@@ -4618,6 +4873,11 @@ class DrivingNode(Node):
         #   goal_approach 가 이번 틱에 리니어를 물었으면 그쪽 _goal_phase 가 이미
         #   NONE 이 아니므로 이 함수가 스스로 손을 뗀다(그쪽 ok 조건).
         pulse = self.lidar_approach(pulse)
+
+        # ── 판단 3-3. Y 감속구간 [2026-10-19] — ★L 인계 뒤·코너 앞★ (상수절 'terrain Y') ──
+        #   종점 > S > 신호 > L 인계 > ★Y★ > 코너 1단. 상한(y_pulse)은 소유권과 무관하게 늘 걸고,
+        #   1단은 위 넷이 리니어를 쥐지 않았을 때만 문다. 코너 1단은 Y 가 물고 있으면 손을 뗀다.
+        pulse = self.y_zone_step(pulse)
 
         # ── 판단 4. 코너 1단 선행제동 [2026-08-18] ──
         #   ★반드시 goal_approach 뒤에 둔다★ 그쪽이 이번 틱에 종점 제동을 물었다면
@@ -4817,11 +5077,15 @@ class DrivingNode(Node):
         런치 goal_creep_kmh 는 ★하한★ 으로만 남는다(둘 중 큰 쪽을 쓴다) — 사람이
         내려 잡아도 '해제했는데 그대로 서는' 상태로는 돌아가지 않게 하기 위해서다.
         """
-        lead = (self.goal_a1 * GOAL_RELEASE_HOLD_S
+        return max(self.goal_creep_kmh,
+                   (GOAL_HOLD_PULSE * MS_PER_PULSE + self.release_lead_ms()) * 3.6)
+
+    def release_lead_ms(self):
+        """1단 해제 명령 뒤에도 더 줄어드는 속도 [m/s] — goal_release_kmh 의 선행량.
+        [2026-10-19 분리] L 인계·Y 감속구간의 해제선(slow_release_kmh)이 같은 값을 쓴다."""
+        return (self.goal_a1 * GOAL_RELEASE_HOLD_S
                 + 0.5 * (self.goal_a1 + A_COAST_MS2) * GOAL_RELEASE_RETRACT_S
                 + A_COAST_MS2 * GOAL_RELEASE_TORQUE_S)
-        return max(self.goal_creep_kmh,
-                   (GOAL_HOLD_PULSE * MS_PER_PULSE + lead) * 3.6)
 
     def _goal_stopped(self, now):
         """제동 중 '완전정지' 판정 — ★엔코더로만 본다★ (근거는 상수 GOAL_STOP_HOLD_S 절).
@@ -5117,7 +5381,8 @@ class DrivingNode(Node):
               and self.state == S_DRIVE_RUN
               and self._goal_phase == GOAL_PHASE_NONE   # 종점이 소유권을 가졌으면 손 뗀다
               and self._sp_state == SP_NONE             # ★S 일시정지★ [2026-09-07]
-              and not self._lz_slow                     # ★라이다 인계 서행★ [2026-09-07]
+              and not self._lzs.slow                    # ★라이다 인계 서행★ [2026-09-07]
+              and not self._yzs.slow                    # ★Y 감속구간★ [2026-10-19]
               and self._sa_phase == SA_NONE             # ★신호 접근★ [2026-10-01]
               and self.tl_brake_req() == 0              # 신호등이 소유권을 가졌으면 손 뗀다
               and not self.estop
@@ -6240,8 +6505,21 @@ class DrivingNode(Node):
             #   2단이 물린 행의 sig_left_m 이 0 근처면 정지선 1 m 앞에서 섰다는 뜻이다.
             float(self._sa_phase),                    # sig_phase
             float(self._sa_left),                     # sig_left_m
+            # ── [2026-10-19] 감속 접근 1종 ── 0 없음 / 1 L 인계 서행 1단 / 2 L 이월 1단(인계 뒤)
+            #   / 3 Y 구간 안(상한만) / 4 Y 1단. lstatus·brake_level 과 나란히 읽는다.
+            float(self.slow_zone_code()),             # slow_zone
         ]
         self.pub_diag.publish(diag)
+
+    def slow_zone_code(self):
+        """record 의 slow_zone 열 (publish_state_topics 주석). [2026-10-19]"""
+        if self._lz_carry_t is not None:
+            return 2
+        if self._lzs.slow:
+            return 1
+        if self._yzs.slow:
+            return 4
+        return 3 if self.y_zone_here() is not None else 0
 
     def event(self, text):
         self.pub_event.publish(String(data=text))
