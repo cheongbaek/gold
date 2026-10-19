@@ -323,12 +323,27 @@ _TL_B_DESC = {
     'tl_b_arrow_min_h': "'B' 화살표를 읽는 차량 박스 최소 높이 [px] — 밑이면 못 읽음 = 정지",
     'tl_b_veh_min_ar':  "'B' 화살표를 읽을 박스 최소 가로세로비 — 버스 박스(1.47~1.80)를 거른다",
     'tl_b_clip_hold':   "'B' 차량 박스가 화면 가장자리에 잘리면 직전 판독 유지(true) / 종전처럼 읽기(false)",
+    #  [2026-10-19] 화살표 판독 창(차량 박스 비율)과 녹색 HSV — tl_params.B_ARROW 주석
+    'tl_b_arrow_x0':    "'B' 화살표 칸 왼쪽 (차량 박스 폭 비율)",
+    'tl_b_arrow_x1':    "'B' 화살표 칸 오른쪽 (차량 박스 폭 비율 — 0.66 넘으면 원등 번짐이 들어온다)",
+    'tl_b_arrow_y0':    "'B' 화살표 칸 위 (차량 박스 높이 비율)",
+    'tl_b_arrow_y1':    "'B' 화살표 칸 아래 (차량 박스 높이 비율)",
+    'tl_b_arrow_h_lo':  "'B' 화살표 녹색 H 하한 (OpenCV 0~180)",
+    'tl_b_arrow_h_hi':  "'B' 화살표 녹색 H 상한 (OpenCV 0~180)",
+    'tl_b_arrow_s_lo':  "'B' 화살표 녹색 S 하한 (0~255)",
+    'tl_b_arrow_v_lo':  "'B' 화살표 녹색 V 하한 (0~255) — 가까우면 등화가 V 60~90 로 어둡다",
+    'tl_b_go_mode':     "'B' 진행 근거 — arrow(화살표만, 10/18 까지) · bus(버스 빨강 확정+차량 녹색만) · either(둘 중 하나) · and(둘 다)",
+    'tl_b_bus_red_s':   "'B' 버스 빨강 확정 시간 [s] — 버스 빨강이 화살표보다 0.15~0.23 s 먼저 켜진다(실측)",
+    'tl_b_round_min':   "'B' 차량 녹색 = 라벨 GREEN AND 원등 칸 녹색 비율 ≥ 이것",
+    'tl_b_amber_max':   "'B' 차량 녹색 = … AND 황색 칸 비율 < 이것 (황색 현시를 녹색으로 읽지 않게)",
 }
 
 
 def _launch_str(v):
-    """런치 인자 기본값 문자열 — bool 은 'true'/'false', 실수는 소수점을 남긴다(20 → '20.0')."""
-    return str(v).lower() if isinstance(v, bool) else repr(float(v))
+    """런치 인자 기본값 문자열 — bool 은 'true'/'false', 글자는 그대로, 실수는 소수점을 남긴다(20 → '20.0')."""
+    if isinstance(v, bool):
+        return str(v).lower()
+    return v if isinstance(v, str) else repr(float(v))
 
 
 def tl_b_params():

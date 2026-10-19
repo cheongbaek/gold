@@ -13,6 +13,7 @@
      `tl_record_video` `tl_window_width` `tl_stop_latch` `tl_publish_cmd_vel` `tl_hsv_red_h2_low` (+ 녹화 `tl_video_*`, 카메라 기하는 `camera_model`)
      · [2026-10-19] 구간별 근접 문턱·배율 `tl_zone_red_min_height_{t,a,b}` `tl_near_release_ratio_{t,a,b}` — 예 `ros2 launch white2 one_launch.py tl_zone_red_min_height_t:=9 tl_near_release_ratio_t:=0.7`(T 를 종전으로). 기본값은 `tl_params.ZONE_GATE`.
      · [2026-10-18] 'B' 화살표 `tl_b_arrow_frac` `tl_b_arrow_min_h` `tl_b_veh_min_ar` `tl_b_clip_hold` — 예 `ros2 launch white2 one_launch.py tl_b_arrow_frac:=0.25`. 기본값은 `white2/tl_params.py` 의 `B_ARROW` 한 곳(노드·런치가 같이 읽는다).
+     · [2026-10-19] 'B' 화살표 창·HSV `tl_b_arrow_{x0,x1,y0,y1,h_lo,h_hi,s_lo,v_lo}` · 진행 근거 `tl_b_go_mode`(arrow·bus·either·and) `tl_b_bus_red_s` `tl_b_round_min` `tl_b_amber_max` — 예 `tl_b_go_mode:=arrow`(10/18 까지와 같은 판단). 같은 `B_ARROW` 한 곳.
    - 그 밖: 코드 기본값을 고치고 `colcon build --packages-select white1 white2`(★`--symlink-install` 금지★ — 다시 빌드해야 반영).
    - 시험: 테스트베드 `--param traffic_light.<이름>=<값>` (코드를 안 고치고 대조군을 만든다).
 3. **바꾸기 전에 근거, 바꾼 뒤에 검증** — 측정 분포(최소·최대)와 여유로 값을 정하고, `cam-test` 스킬로 회귀를 돌려 디버그 영상을 남긴다
@@ -121,8 +122,13 @@
 | `tl_b_arrow_frac` | 0.30 | 셋째 칸 초록 비율 문턱 | 켜짐 최소 0.42 / 꺼짐 최대 0.14 |
 | `tl_b_veh_min_ar` | 1.75 | 화살표를 읽을 최소 가로세로비 | 버스 박스 1.47~1.80 을 거른다 |
 | `tl_b_clip_hold` [2026-10-18] | true | 차량 박스가 ROI·화면 가장자리(1px)에 닿으면 판독하지 않고 직전(잘리지 않은) 판독 유지 | 잘린 박스는 셋째 칸이 어긋나 켜진 화살표를 0.27~0.30 으로 읽었다(10/17 17:29 재제동 2회) |
-| `tl_bus_min_veh_h` · `tl_bus_dark_t` · `tl_bus_open_k` · `tl_bus_iso_below` · `tl_bus_iso_left` | 10 · 0.5 · 0.40 · 0.12 · 0.20 | 버스 몸체 영상처리 | **표시용** — 판단에 안 쓴다 |
-| (코드 상수) `ARROW` | x 0.50~0.66 · y 0.15~0.85 · HSV 45~100/45/40 | 판독 창 | 노드 HSV(S55·V60)로는 가까운 화살표(V60~90)를 놓쳐 따로 둔다 |
+| `tl_bus_min_veh_h` · `tl_bus_dark_t` · `tl_bus_open_k` · `tl_bus_iso_below` · `tl_bus_iso_left` | 10 · 0.5 · 0.40 · 0.12 · 0.20 | 버스 몸체 영상처리 | 버스 박스를 판단에서 빼는 데는 안 쓴다. ★[2026-10-19] 그 몸체의 색(HSV)은 `tl_b_go_mode` 의 '버스 빨강' 근거로 쓴다★(모델이 버스를 못 잡을 때 — 실측 버스 박스의 ≈70% 가 이쪽) |
+| `tl_b_arrow_x0` · `x1` · `y0` · `y1` [2026-10-19] | 0.50 · 0.66 · 0.15 · 0.85 | 화살표 판독 창(차량 박스 비율) — 디버그 화면 타일의 주황 사각형 | 셋째 칸. 0.66 넘기면 원등 번짐이 들어온다 |
+| `tl_b_arrow_h_lo` · `h_hi` · `s_lo` · `v_lo` [2026-10-19] | 45 · 100 · 45 · 40 | 화살표 녹색 HSV(OpenCV 0~180·0~255). 같은 녹색으로 원등 칸도 잰다(`tl_b_round_min`) | 노드 HSV(S55·V60)로는 가까운 화살표(V60~90)를 놓쳐 따로 둔다. 종전 코드 상수 `ARROW` |
+| `tl_b_go_mode` [2026-10-19] | either | 진행 근거 — `arrow` 화살표만(10/18 까지) · `bus` 버스 빨강 확정+차량 녹색만 · `either` 둘 중 하나 · `and` 둘 다 | 버스 전용신호는 1현시만 녹색 → '버스 빨강 + 차량 원등 녹색' = 2현시(좌회전)뿐(현시표). ★'버스 빨강만' 은 쓰지 않는다★ — 3·4현시(차량 빨강)에도 버스는 빨강(녹화 4곳). `either` 는 황혼 화살표 오판(172742 1802~1840, 버스 황색 중)을 그대로 남긴다 — 그게 싫으면 `bus` |
+| `tl_b_bus_red_s` [2026-10-19] | 0.3 | 버스 RED 를 이만큼(그리고 3장 이상) 봐야 '버스 빨강' 기억 | 버스 빨강이 화살표보다 0.15~0.23 s 먼저 켜진다 · 버스 황색을 빨강으로 읽은 것은 전환 경계 1프레임(143장 중) |
+| `tl_b_round_min` · `tl_b_amber_max` [2026-10-19] | 0.10 · 0.20 | 차량 녹색 = 라벨 GREEN AND 넷째 칸 녹색 ≥ round_min AND 둘째 칸 황색 < amber_max | 녹색 현시 원등 칸 ≥0.10 776/778 · 황색 칸 최대 0.09. ⚠️ 차량 황색(47~50 s) 녹화가 없어 황색 쪽은 미검증 |
+| (코드 상수) `tl_params.BUS_GO` [2026-10-19] | 버스/차량 높이 0.6~1.5 · dy/h −1.0~0.4 · RED 3장 · 칸 검사 8px 이상 | 버스 빨강을 근거로 쓸 자리·크기 | 실측 0.73~1.25 · −0.71~0.08 (1137 프레임) |
 
 ### 정지 동작·표시
 

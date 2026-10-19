@@ -517,13 +517,56 @@ def _bus_split(mask, x0, y0, cx, cy, h, P):
 #    화살표 켜짐 최소 0.42(85프레임) / 꺼짐 최대 0.14(146프레임) → 문턱 0.30(tl_b_arrow_frac).
 #    ⚠️ 20px 밑은 원등 번짐이 셋째 칸까지 퍼져 꺼짐이 0.60 까지 나온다 → 읽지 않는다(모름 = 정지, tl_b_arrow_min_h).
 #    ⚠️ 빨강+화살표 현시 녹화는 없다 — 원등과 무관하게 셋째 칸만 보므로 같은 식으로 읽힐 것으로 본다(미검증).
-ARROW = dict(x=(0.50, 0.66), y=(0.15, 0.85), lo=(45, 45, 40), hi=(100, 255, 255))
+#  ★[2026-10-19] 창·HSV 8개는 파라미터다★ — 기본값은 tl_params.B_ARROW(tl_b_arrow_x0…v_lo) 한 곳, arrow_window() 가 묶는다.
+def arrow_window(g):
+    """tl_b_arrow_{x0,x1,y0,y1,h_lo,h_hi,s_lo,v_lo} → arrow_frac 의 창 dict. g = 이름 → 값."""
+    c = lambda v, lo, hi: int(round(min(hi, max(lo, float(v)))))
+    return dict(x=(float(g('tl_b_arrow_x0')), float(g('tl_b_arrow_x1'))),
+                y=(float(g('tl_b_arrow_y0')), float(g('tl_b_arrow_y1'))),
+                lo=(c(g('tl_b_arrow_h_lo'), 0, 180), c(g('tl_b_arrow_s_lo'), 0, 255), c(g('tl_b_arrow_v_lo'), 0, 255)),
+                hi=(c(g('tl_b_arrow_h_hi'), 0, 180), 255, 255))
+
+
+#  ★[2026-10-19] 'B' 차량 녹색 칸 검사★ — 버스 빨강을 진행 근거로 쓸 때(_bus_go) 차량 박스가 정말 '원등 녹색' 인가.
+#    모델 클래스는 green·red 둘뿐이라 황색 등화를 GREEN 으로 낼 수 있다 → 넷째 칸(원등) 녹색과 둘째 칸(황색) 황색을 직접 본다.
+#    실측(1359 프레임): 녹색 현시 원등 칸 ≥0.10 776/778 · 빨강 현시 원등 칸 ≥0.05 3장 · 황색 칸 최대 0.09(황색 현시 녹화는 없다).
+#    칸 높이 범위·황색 HSV·버스 기하는 tl_params.BUS_GO 가 소유한다.
+def head_cells(img, box, arrow_hsv, P=tl_params.BUS_GO):
+    """#400 차량 박스 → (넷째 칸 원등 녹색 비율, 둘째 칸 황색 비율). 녹색 HSV 는 화살표 창과 같은 것(arrow_hsv)을 쓴다."""
+    x1, y1, x2, y2 = [int(round(v)) for v in box[:4]]
+    c = img[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+    if c.size == 0:
+        return 0.0, 0.0
+    h, w = c.shape[:2]
+    hsv = cv2.cvtColor(c[int(round(P['cell_y'][0] * h)):max(1, int(round(P['cell_y'][1] * h)))],
+                       cv2.COLOR_BGR2HSV)
+
+    def frac(xa, xb, lo, hi):
+        sub = hsv[:, int(round(xa * w)):max(int(round(xa * w)) + 1, int(round(xb * w)))]
+        m = cv2.inRange(sub, np.array(lo, np.uint8), np.array(hi, np.uint8))
+        return float(cv2.countNonZero(m)) / max(1, m.size)
+    return (frac(0.75, 1.0, arrow_hsv['lo'], arrow_hsv['hi']),
+            frac(0.25, 0.5, P['amber_lo'], P['amber_hi']))
+
+
+def bus_go_geom_ok(bus_box, veh_box, P=tl_params.BUS_GO):
+    """버스 빨강을 진행 근거로 쓸 만한 자리·크기인가 — 둘 다 [x1,y1,x2,y2] 같은 좌표계."""
+    hv = max(1.0, veh_box[3] - veh_box[1])
+    r = (bus_box[3] - bus_box[1]) / hv
+    dy = ((bus_box[1] + bus_box[3]) / 2 - (veh_box[1] + veh_box[3]) / 2) / hv
+    return P['h_ratio'][0] <= r <= P['h_ratio'][1] and P['dy'][0] <= dy <= P['dy'][1]
+
+
+#  'B' 진행 근거 모드 — tl_b_go_mode (기본값과 근거는 tl_params.B_ARROW)
+B_GO_MODES = ('arrow', 'bus', 'either', 'and')
+
+
 #  잘림 판정 여유 [px] — 차량 박스가 ROI 가장자리에서 이 안이면 잘린 것으로 본다(tl_b_clip_hold).
 #    실측(10/17 17:29) 잘린 박스는 y1 = 0 이었다. 잘리기 직전 프레임은 y1 = 2~9.
 CLIP_MARGIN_PX = 1
 
 
-def arrow_frac(img, box, P=ARROW):
+def arrow_frac(img, box, P):
     """img: 보정된 원본 BGR, box: #400 차량 박스 [x1,y1,x2,y2](같은 좌표) → 셋째 칸(화살표) 녹색 화소 비율 0~1."""
     x1, y1, x2, y2 = [int(round(v)) for v in box[:4]]
     c = img[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
@@ -696,8 +739,10 @@ class TrafficLight(Node):
         self.declare_parameter('tl_bus_detect', True)        # 끄면 'B' 도 'T' 와 똑같다(버스 찾기·화살표 둘 다 꺼진다)
         self.declare_parameter('tl_bus_min_veh_h', 10.0)     # 이보다 작은 차량 박스로는 버스 몸체를 영상처리로 찾지 않는다 [px]
         self.declare_parameter('tl_b_need_arrow', True)      # false = 버스만 빼고 원등에도 간다(직진 경로일 때)
-        #   아래 넷의 기본값은 tl_params.B_ARROW 하나가 소유한다 — camera_launch 가 같은 값으로 런치 인자를 연다 [2026-10-18]
-        #   (tl_b_arrow_min_h 20 px · tl_b_arrow_frac 0.30 · tl_b_veh_min_ar 1.75 · tl_b_clip_hold 켬).
+        #   아래 기본값은 tl_params.B_ARROW 하나가 소유한다 — camera_launch 가 같은 값으로 런치 인자를 연다 [2026-10-18]
+        #   (tl_b_arrow_min_h 20 px · tl_b_arrow_frac 0.30 · tl_b_veh_min_ar 1.75 · tl_b_clip_hold 켬 ·
+        #    [2026-10-19] 화살표 창·HSV 8개 tl_b_arrow_{x0,x1,y0,y1,h_lo,h_hi,s_lo,v_lo} ·
+        #    진행 근거 tl_b_go_mode 'either' · tl_b_bus_red_s 0.3 · tl_b_round_min 0.10 · tl_b_amber_max 0.20 — _bus_go).
         #   tl_b_clip_hold : 차량 박스가 ROI·화면 가장자리에 닿으면(잘리면) 셋째 칸이 어긋나 화살표를 꺼짐으로 읽는다 —
         #   정지선 앞에서 신호등이 화면 위로 벗어날 때 실차가 다시 2단을 물었다(10/17 17:29, CHANGELOG 2026-10-18).
         #   잘린 박스는 판독하지 않고 직전(잘리지 않은) 판독을 유지한다. 직전 판독이 없으면 종전대로 읽는다.
@@ -745,6 +790,20 @@ class TrafficLight(Node):
         self.b_arrow_frac  = float(g('tl_b_arrow_frac'))
         self.b_veh_min_ar  = float(g('tl_b_veh_min_ar'))
         self.b_clip_hold   = bool(g('tl_b_clip_hold'))
+        self.b_arrow_P     = arrow_window(g)    # [2026-10-19] 화살표 창·녹색 HSV (tl_b_arrow_x0…v_lo)
+        self.b_go_mode     = str(g('tl_b_go_mode')).strip().lower()
+        if self.b_go_mode not in B_GO_MODES:
+            self.get_logger().error(f"tl_b_go_mode '{self.b_go_mode}' 은 모르는 값 — 'arrow'(화살표만) 로 둔다. "
+                                    f"쓸 수 있는 값: {', '.join(B_GO_MODES)}")
+            self.b_go_mode = 'arrow'
+        self.b_bus_red_s   = max(0.0, float(g('tl_b_bus_red_s')))
+        self.b_round_min   = float(g('tl_b_round_min'))
+        self.b_amber_max   = float(g('tl_b_amber_max'))
+        self.b_bus_mem     = False    # '버스 빨강 확정 + 그동안 차량 녹색' 기억 — _bus_go
+        self.b_bus_red_t0  = None     # 이번 버스 RED 줄이 시작된 시각
+        self.b_bus_red_n   = 0        # 그 뒤 본 버스 RED 프레임 수
+        self.last_bus_go   = None     # (진행?, 근거 글자) — HUD·로그용
+        self.b_bus_go_prev = None     # 로그용 — 버스 근거가 바뀔 때만 한 줄
         self.b_lit_last    = None     # 잘리지 않은 차량 박스로 마지막에 읽은 화살표(켜짐?) — tl_b_clip_hold
         self.b_clip_prev   = False    # 로그용 — 잘림 보류가 바뀔 때만 한 줄
         self.last_bus = []            # 이번 프레임 버스 신호 [{'box':원본좌표,'src':'model'|'cv','color':…}]
@@ -1218,9 +1277,12 @@ class TrafficLight(Node):
         """★판단에 쓸 박스★ — 구간 'B' 밖이면 boxes 그대로다(종전과 한 글자도 같은 판단).
         'B' 에서는 ① 버스 신호(모델 박스)를 뺀다 ② tl_b_need_arrow 면 차량 박스(last_veh) 하나만 남겨
         좌회전 화살표로 읽는다 — 켜짐 = GREEN, 그 밖(원등만·빨강·황색·작아서 못 읽음·버스 모양) = RED.
+        ③ [2026-10-19] tl_b_go_mode 로 둘째 근거(_bus_go — 버스 빨강 확정 + 차량 녹색)를 합친다 :
+        'arrow' 화살표만(10/18 까지와 같다) · 'bus' 버스 근거만 · 'either' 둘 중 하나(기본) · 'and' 둘 다.
         RED 는 높이로 RED/RED_FAR 가 갈리고(_resolve_tl_state) 근접 높이·정지선 추론도 이 박스를 본다.
         ★원본 박스는 건드리지 않고 사본을 낸다★ — 그림과 /tl/boxes 의 라벨은 모델·HSV 가 본 그대로다."""
         self.last_arrow = None
+        self.last_bus_go = None
         if not self._b_active():
             return boxes
         drop = {id(b['_ref']) for b in bus if b['src'] == 'model'}
@@ -1232,12 +1294,12 @@ class TrafficLight(Node):
         bh = veh.get('box_h', y2 - y1)
         frac = None
         if bh >= self.b_arrow_min_h and (x2 - x1) / max(1.0, bh) >= self.b_veh_min_ar:
-            frac = arrow_frac(frame, (x1 + xmin, y1 + ymin, x2 + xmin, y2 + ymin))
+            frac = arrow_frac(frame, (x1 + xmin, y1 + ymin, x2 + xmin, y2 + ymin), self.b_arrow_P)
         lit = frac is not None and frac >= self.b_arrow_frac
+        # 잘림 = 박스가 ROI 가장자리(ROI 윗변이 화면 윗변이면 그것도)에 CLIP_MARGIN_PX 안으로 닿았다.
+        m = CLIP_MARGIN_PX
+        clipped = x1 <= m or y1 <= m or x2 >= roi_w - 1 - m or y2 >= roi_h - 1 - m
         if self.b_clip_hold:
-            # 잘림 = 박스가 ROI 가장자리(ROI 윗변이 화면 윗변이면 그것도)에 CLIP_MARGIN_PX 안으로 닿았다.
-            m = CLIP_MARGIN_PX
-            clipped = x1 <= m or y1 <= m or x2 >= roi_w - 1 - m or y2 >= roi_h - 1 - m
             if clipped and self.b_lit_last is not None:
                 lit = self.b_lit_last
             elif not clipped and frac is not None:
@@ -1254,7 +1316,70 @@ class TrafficLight(Node):
                 f"{'⬅️🟢 좌회전 화살표 켜짐 — 진행' if lit else '⬅️⚫ 좌회전 화살표 없음 — 정지 신호'} "
                 f"(#400 차량 박스 {bh}px · 셋째 칸 녹색 {frac:.2f}/{self.b_arrow_frac:.2f} · 모델 {veh['label']})")
             self.arrow_lit_prev = lit
-        return [dict(veh, label='GREEN' if lit else 'RED', b_arrow=frac)]
+        bus_go = self._bus_go(frame, veh, bus, xmin, ymin, clipped)
+        go = {'arrow': lit, 'bus': bus_go, 'either': lit or bus_go, 'and': lit and bus_go}[self.b_go_mode]
+        self.last_arrow = (frac, lit, go, self.last_bus_go[1])      # 그리기 스레드에 한 묶음으로 넘긴다(HUD)
+        return [dict(veh, label='GREEN' if go else 'RED', b_arrow=frac)]
+
+    def _bus_go(self, frame, veh, bus, xmin, ymin, clipped):
+        """[2026-10-19] 'B' 의 둘째 진행 근거 — ★버스 빨강을 확정했고 그동안 차량 등기구가 줄곧 녹색★ 이면 True.
+        현시표(docs/kcity)상 버스 전용신호는 1현시(0~32 s)만 녹색이고 35 s 부터 빨강이다. 차량 원등은 0~47 s 녹색이므로
+        '버스 빨강 + 차량 녹색' 은 2현시(우리 좌회전 35~47 s)에만 성립한다 — 화살표 칸을 못 읽어도(정지 거리 0.10~0.17) 간다.
+          기억 켬 : 버스 RED 를 tl_b_bus_red_s 이상 · BUS_GO['min_red_n'] 장 이상 봤고, 그동안 차량이 녹색(_veh_green)
+          기억 끔 : 차량이 녹색이 아니게 보임(빨강·황색·칸 검사 실패) 또는 버스 GREEN — ★버스가 안 보이는 것만으로는 안 지운다★
+                    (정지선 앞에서 버스가 화면 위로 먼저 빠진다 — 172742 1927~). 그래서 기억은 1현시로 넘어갈 수 없다
+                    (2현시 → 황(차량 황) → 3·4현시(차량 빨강) 를 반드시 거친다).
+        버스 RED 는 bus_go_geom_ok(크기·높이 차)를 지나야 센다 — 남의 작은 빨강이 버스 자리에 걸려도 근거가 되지 않게."""
+        now = time.time()
+        vbox = (veh['box'][0] + xmin, veh['box'][1] + ymin, veh['box'][2] + xmin, veh['box'][3] + ymin)
+        vg, why = self._veh_green(frame, veh, vbox, clipped)
+        bcol = None
+        for b in bus:
+            if bus_go_geom_ok(b['box'], vbox):
+                bcol = b['color']
+                break
+        if not vg:
+            self.b_bus_mem, self.b_bus_red_t0, self.b_bus_red_n = False, None, 0
+        elif bcol == 'RED':
+            if self.b_bus_red_t0 is None:
+                self.b_bus_red_t0, self.b_bus_red_n = now, 0
+            self.b_bus_red_n += 1
+            if (now - self.b_bus_red_t0) >= self.b_bus_red_s and self.b_bus_red_n >= tl_params.BUS_GO['min_red_n']:
+                self.b_bus_mem = True
+        elif bcol == 'GREEN':
+            self.b_bus_mem, self.b_bus_red_t0, self.b_bus_red_n = False, None, 0
+        go = vg and self.b_bus_mem
+        if go:
+            txt = '버스적+차량녹'
+        elif not vg:
+            txt = f'차량 {why}'
+        elif self.b_bus_red_t0 is not None:
+            txt = f'버스적 {now - self.b_bus_red_t0:.1f}s'
+        else:
+            txt = f"버스 {'-' if bcol is None else bcol[0]}"
+        self.last_bus_go = (go, txt)
+        if go != self.b_bus_go_prev:
+            if go or self.b_bus_go_prev:
+                self.get_logger().info(
+                    f"{'🚌🔴➡️🟢 버스 빨강 확정 + 차량 녹색 — 2현시(좌회전) 근거' if go else '🚌 버스 근거 꺼짐'} "
+                    f"(차량 {veh.get('box_h', 0)}px · {txt} · 모드 {self.b_go_mode})")
+            self.b_bus_go_prev = go
+        return go
+
+    def _veh_green(self, frame, veh, vbox, clipped):
+        """#400 차량 박스가 '원등 녹색' 인가 → (bool, 아니면 그 이유 글자). 라벨 GREEN 이 먼저이고,
+        잘리지 않았고 BUS_GO['cell_min_h'] 이상이면 원등 칸 녹색 ≥ tl_b_round_min · 황색 칸 < tl_b_amber_max 까지 본다
+        (잘린 박스는 칸이 어긋나 라벨만 본다)."""
+        if veh['label'] != 'GREEN':
+            return False, veh['label'][0]
+        if clipped or veh.get('box_h', 0) < tl_params.BUS_GO['cell_min_h']:
+            return True, ''
+        rnd, amb = head_cells(frame, vbox, self.b_arrow_P)
+        if amb >= self.b_amber_max:
+            return False, f'황 {amb:.2f}'
+        if rnd < self.b_round_min:
+            return False, f'원등 {rnd:.2f}'
+        return True, ''
 
     def _near_metric(self, boxes):
         """빨간 박스 높이의 최대 [px]. 없으면 0. 단독 문턱 비교와 기록에 쓴다."""
@@ -1816,8 +1941,9 @@ class TrafficLight(Node):
                 bw, bh = x2 - x1, y2 - y1
                 for f in (0.25, 0.5, 0.75):
                     cv2.line(canvas, (X(x1 + f * bw), Y(y1)), (X(x1 + f * bw), Y(y2)), C_DIM, 1)
-                cv2.rectangle(canvas, (X(x1 + ARROW['x'][0] * bw), Y(y1 + ARROW['y'][0] * bh)),
-                              (X(x1 + ARROW['x'][1] * bw), Y(y1 + ARROW['y'][1] * bh)), C_AMBER, 1)
+                P = self.b_arrow_P
+                cv2.rectangle(canvas, (X(x1 + P['x'][0] * bw), Y(y1 + P['y'][0] * bh)),
+                              (X(x1 + P['x'][1] * bw), Y(y1 + P['y'][1] * bh)), C_AMBER, 1)
             cv2.rectangle(canvas, (tx, ty), (tx + t - 1, ty + t - 1), col, 2 if hit else 1)
             chip(canvas, tx + 2, ty + 2, lab, col)
 
@@ -1848,17 +1974,19 @@ class TrafficLight(Node):
         gate, near = self._near_gate(), self._near_metric(boxes)
         solo = self.tl_solo_stop_min_height
         near_txt = f"근접 {near:.0f}  RED≥{gate:.0f} 단독≥{solo:.0f}px"
-        # 구간 — 'B' 면 화살표 판독이 곧 근거다.
+        # 구간 — 'B' 면 화살표 판독과 버스 근거(tl_b_go_mode)가 곧 근거다.
         z = self.tl_zone if self._zone_active() else ''
         zcol = C_TXT
         if z == 'B' and self.bus_detect and self.b_need_arrow:
             if not arrow:
                 ztxt, zcol = 'B 차량박스 없음', C_DIM
-            elif arrow[0] is None:
-                ztxt, zcol = f"B 화살표 판독 전(<{self.b_arrow_min_h:.0f}px) 정지", C_AMBER
             else:
-                ztxt = f"B 화살표 {arrow[0]:.2f}/{self.b_arrow_frac:.2f} {'진행' if arrow[1] else '없음'}"
-                zcol = C_GREEN if arrow[1] else C_RED
+                a = (f"화살표 판독 전(<{self.b_arrow_min_h:.0f}px)" if arrow[0] is None
+                     else f"화살표 {arrow[0]:.2f}/{self.b_arrow_frac:.2f}")
+                go = arrow[2] if len(arrow) > 2 else arrow[1]
+                b = f" · {arrow[3]}" if len(arrow) > 3 and self.b_go_mode != 'arrow' else ''
+                ztxt = f"B {a}{b} {'진행' if go else '정지'}"
+                zcol = C_GREEN if go else (C_AMBER if arrow[0] is None else C_RED)
         else:
             ztxt = f"구간 {z or '-'}"
         cur = self.sl_bev_y if sl_fresh else SL_NONE
@@ -2069,6 +2197,8 @@ class TrafficLight(Node):
             self.arrow_lit_prev = None
             self.b_lit_last = None
             self.b_clip_prev = False
+            self.b_bus_mem, self.b_bus_red_t0, self.b_bus_red_n = False, None, 0
+            self.b_bus_go_prev = None
         self.tl_zone   = z
         self.tl_zone_t = time.time()
 
