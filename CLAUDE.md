@@ -687,6 +687,7 @@ throttle_pulse,wheel_pulse,wheel_speed,steer_measured,throttle_raw,auto_mode,est
 | **`T1`~`T5`** [2026-09-30] | ★본선 코스(`maincourse.csv`)만★ — T1 타이머 0초(처음부터 녹색이면 T2 에서 — [2026-10-07]) · T2~T5 타이머(★[2026-10-19] T5 도★) (4.10). ★다른 경로에서는 번호를 버리고 `T` 로 본다★ | `white1/driving` + `traffic_timer` |
 | **`A` / `B`** [white2 만] | `A` 좌회전 신호 구간 · **`B` #400 교차로(버스 신호 + 차량 가로 4구, 좌회전)** [2026-10-07 · 10-08] — T 와 같이 개입을 허락하고, `B` 에서는 traffic_light 가 ① 차량 박스 왼쪽의 **버스 신호를 판단에서 빼고** ② 차량 박스 하나의 셋째 칸(←화살표)을 읽어 **화살표가 켜져야만 진행**한다 — 원등만·빨강·황색·20px 미만(못 읽음)은 정지 신호(`tl_b_need_arrow` · white2 CHANGELOG 10-08 · TODO-9). white1 driving 은 `A`·`B` 를 내지 않는다. ★white2 본선 = `white2/gps_data/maincourse.csv` · 서브 = `white2/gps_data/subcourse.csv`★ [2026-10-17 개명] — 본선은 사용자가 다시 딴 15열 경로(종전 `route_20200202_222222.csv`, 라벨 T·T·B(#400)·A(좌회전)·T + S·L), 서브는 white1 `subcourse.csv` 와 같은 파일(종전 `route_20200101_111111.csv`). 종전 `maincourse_b400.csv`(white1 본선 사본, T3 → `B` · T4 → `A` · 나머지 `T` [2026-10-08])는 2026-10-17 사용자가 지웠다. ★white2 에서 `maincourse.csv` 라는 이름은 신호 타이머를 켜지 않는다★(white2 에 traffic_timer 가 없다) — white2 prompt 가 맨 위에 고정할 뿐. ★white1 `gps_data/maincourse.csv` 는 손대지 않는다(사용자)★ | `white2/driving` + `traffic_light` |
 | **`Y` / `y`** [2026-10-19, white1 만] | **감속구간** (★여러 행 연속★ — L 과 같은 마킹) — 구간 안 목표펄스 상한 **`y_pulse`(3)**, 진입한 첫 틱에 GPS 속도가 체결문턱(3펄스 해제선 14.1 + a1×최소물림 = **16.4 km/h**)을 넘으면 **1단**(L 인계와 같은 `slow_step` — 4.6). 미리 줄이지 않는다(사용자 '진입 당시') — 7펄스로 들어오면 진입 뒤 ≈12 m 는 3펄스를 넘는다. GPS 추종은 그대로 driving, `/lstatus` 는 `'0'`. L·S·T 와 겹치게 적으면 경로 선택 때 경고 | `white1/driving` |
+| **`Xa` … `Xb`** [2026-10-19, white1 만] | **고속구간** — 진입 행 하나에 `Xa`, 끝 행 하나에 `Xb`(★대소문자 무관★, ★일직선에만★). Xa 를 지나거나 지나치는 틱부터 Xb 를 바라보는 직선을 braketest 와 같은 식(`line_steer`)으로 15펄스 출발 → GPS 33 km/h 에서 `x_pulse`(12) · Xb 앞 1단 창(마지막 가능 지점)에서 관성 또는 1단으로 복귀 속도까지 · Xb 를 지나는 틱부터 기존 로직(4.11). 짝 없음·순서 뒤집힘·20 m 미만·현 편차 > 0.5 m(곡선)·안에 L/S/T/Y·종점이 Xb 뒤 `goal_brake_m` 안이면 그 X 는 쓰지 않는다(경로 선택 때 ❌). `/lstatus` 는 `'0'` | `white1/driving` |
 | 그 밖 (빈 칸 · `0` · 숫자 · 열 없음) | GPS 추종 | `white1/driving` |
 
 `driving.py:963-964`, 판정은 `zone_at()`(:1511), 읽는 곳은 `select_route()`(:1678).
@@ -1533,6 +1534,28 @@ driving ──────/tl_zone ('T1' …)──▶ traffic_timer ◀──/d
 앞범퍼는 그보다 앞) · 카메라가 정지선 1 m 앞에서 녹색을 보는가(못 보면 서브 코스에서 영영 안 떠난다 — ★본선 T5 는 2026-10-17 에 실제로 못 봐서 [2026-10-19] 타이머로 바꿨다★) ·
 `🚦 신호 타이머 초기화` 와 실제 녹색 시작의 차이.
 
+### 4.11 ★terrain `Xa`…`Xb` 고속구간 — braketest 와 같은 직선 질주를 one_launch 주행 안에서★ [2026-10-19, white1 만]
+
+사용자 지시 : "white1 one_launch 로도 braketest 와 유사하게 고속 주행하는 고속구간 … Xa 에 도달하거나 지나치는 시점부터
+시작, Xb 에 도달하거나 지나치는 시점부터 종료 … 진입시 Xb 를 바라보고 고속으로 … Xb 에 도달하면 자연스럽게 기존 로직으로 …
+관성으로 속도를 맞출수도, 1단제동을 걸 수도 … Xb 도달 직전까지 고속주행을 유지 … 오로지 일직선 구간에서만".
+
+| 무엇 | 어떻게 | 근거 |
+|---|---|---|
+| 표기·감지 | `Xa`·`Xb` 각 한 행(대소문자 무관). Xa·Xb 모두 S 와 같은 '지나온 범위 (prev, wp_idx]' 검사 + Xb 는 기준선 투영 `s ≥ |S→Xb|` 로도 | 한 틱 5 WP 도약에도 놓치지 않는다 |
+| 기준선 | **S = Xa 를 지나는 순간 차(안테나) 위치**, G = Xb 점 | e(0)=0 — Xa 점으로 잡으면 진입 순간 CTE 가 그대로 첫 틱 조향이 된다 |
+| 조향 | ★`white1/line_steer.py`★ — braketest 와 **같은 함수·같은 상수**(프리뷰 `δ = atan(2L·e_p/L_p²)`, `L_p = 1.5 s × v`, 언더스티어 v 클램프 4.42, 횡가속 2.0 m/s² 상한, 요레이트 가드, 슬루 35°/s, 영점 적분). 다른 점 넷 : ① 전달비 추정이 없어 pot 상한 `POT_START_MAX_DEG` 6° ② driving 의 추정 트림 + **X 직전의 CTE 적분 기여를 얼려 더한다**(선 추종 이득이 v² 에 반비례라 직진 편향을 횡오차로 버틴다 — 모의 2 m) ③ **조향 백래시 선보상(A)을 건다**(안 걸면 보정 지령 1~2° 가 유격 안에서 사라져 헤딩 4° 로 굳었다 — 모의) ④ **요레이트 댐핑 기본 끔**(`x_rate_damp`) — 켜면 모의 서보 반전 114~186 회/분(끄면 26~44, 일반 7펄스 24), driving 의 댐핑 C 를 같은 이유로 2026-10-19 에 껐다 | braketest 거동은 바이트 단위로 그대로(무작위 20000 틱 동치 시험) |
+| 속도 | 출발 `x_launch_pulse` 15 → GPS `x_switch_kmh` 33 에서 `x_pulse` 12 (래치, `line_steer.launch_switch_why`). ★`MAX_PULSE_LIMIT`(10)는 일반 주행 상한 그대로, X 안에서만 `send(limit=X_PULSE_LIMIT 15)`★ — 펌웨어 `kasa_1017` `TARGET_MAX` 15 · arduino `PULSE_MAX` 15 | braketest 상단과 같은 근거(2026-10-17 통합 보드 실측비 0.80 → 12펄스 ≈ 30.5 km/h) |
+| Xb 접근 | 복귀 속도 = min(drive_pulse, Xb 뒤 `curve_far` 안 코너를 기존 코너 1단 규칙(`decel_dist × cb_late_k + 1.5`)으로 받을 수 있는 속도) — 정수 펄스로 내림. **직전까지 고속 유지** : 1단으로 거기 닿는 마지막 지점(`decel_dist(v, v_ret, 0.88, 0.55) + 1.5`)에서 L 인계와 같은 `slow_step` 이 한 번 판단 — 속도 차가 작으면(체결문턱 이하) 또는 코스트로 되면 ★관성★(목표만 복귀 펄스), 아니면 ★1단★. GPS 속도를 모르면 15펄스 속도로 본다 | 코스트(0.41)로 처음부터 줄이면 30 → 22 km/h 에 ≈90 m — '직전까지 유지' 와 어긋난다 |
+| 복귀 | Xb 를 지나는 틱부터 기존 로직. driving 의 CTE 적분은 X 동안 손대지 않아(경로 기준 편향) 그대로, 백래시·댐핑 상태만 지운다. 아직 1단이면 해제선까지(`x_tail_step`) | |
+| 안전 | 경로이탈(2.0 m)·종점 판정이 X 보다 먼저 돈다. 종점 접근이 걸리면 X 를 끝낸다. E-STOP 이면 X 를 그만두고 재개는 기존 로직. 시작할 때 `x_pulse` 2단 정지거리를 말한다 | 소유권 : 종점 > S > 신호 > L 인계 > Y > **X** > 코너 1단 (X 안에는 앞의 것이 없게 검증) |
+| 기록 | record `slow_zone` 5 질주 · 6 내려놓는 중 · 7 1단 · 8 Xb 뒤 1단 · hud `ZONE_X`(지점) · 이벤트 🚀 ⏬ 🔻 🟢 🏁 | |
+
+**모의** (도메인 77, `follow_sim.Sim` — 가짜 경로 : 직선 155 m 안 Xa 30 m · Xb 170 m, 뒤 15 m 에 R 8 m 우 90°, 차량 모델 k_over 1.0 이라 12펄스 ≈ 38 km/h) —
+7펄스 시드 3 × 트림 −2.1·−0.3 : X 안 최고 38.2 km/h · 횡편차 최대 0.25~0.61 m · 서보 반전 28~46 회/분(같은 직선 기존 로직 7펄스 18~24) · Xb 통과 19.2 km/h(목표 6펄스 19.1) ·
+코너 진입 14.5 km/h · 1단 1회 · 4펄스 Xb 12.6(목표 12.7) · 10펄스 29.2(목표 28.6) · 실측비 0.80 이면 최고 34.4 · Xb 18.0 ·
+경고 : Xa 만·Xb 먼저·Xa 두 번·곡선(현 편차 1.0 m)·안에 S·T·20 m 미만 전부 '쓰지 않는다'. ⚠️ **실차 미검증** — 처음에는 짧은 직선·낮은 `x_pulse` 로.
+
 ---
 
 ## 5. 실행
@@ -1562,6 +1585,7 @@ lidar_pulse:=2     ← ★L 구간 순항 [펄스]. 이것 하나만 고치면 �
 lfd_omega_n:=0.97  lfd_omega_n_fast:=0.78  lfd_min_m:=4.04  ← ★ω_n 속도 스케줄 (4.1)★
 steer_backlash_deg:=0.8  pp_rear_axle:=true  gps_ant_x_m:=1.25  yaw_damp_k:=0.0  ← ★4.1e A·B 기본 켬 · C 는 [2026-10-19] 다시 끔(1 Hz 한계순환)★
 corner_ay_max:=0.0  curve_preview_far_m:=24.0  lfd_max_m:=11.3                   ← ★4.1e D·E (8펄스 이상)★
+y_pulse:=3  x_pulse:=12  x_launch_pulse:=15  x_switch_kmh:=33.0  x_rate_damp:=false  ← ★terrain Y·X (3.4 · 4.6 · 4.11)★
 steer_plant_gain:=1.26  steer_understeer:=5.17  cte_ki:=0.30
 understeer_v_clamp_pulse:=4   ← ★언더스티어 항의 v 를 여기서 묶는다 (4.1b)★
 goal_brake_m:=20.0  goal_brake1_ms2:=1.30  goal_brake2_backstop:=true
@@ -2136,6 +2160,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | `/lstatus` 기록 열 · HUD 표시 | `record.py` · `hud.py` |
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
 | **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
+| **terrain `Xa`…`Xb` 고속구간 (4.11, white1) · braketest 직선 추종 공용화 [2026-10-19]** | `white1/line_steer.py`(신설 — braketest 조향·출발 래치 상수와 순수 함수) · `braketest.py`(같은 이름 메서드가 그것을 부른다) · `driving.py` `X_*` 상수 · `_warn_x_zones` · `x_zone_step` · `begin_x` · `end_x` · `x_ret_speed` · `x_tail_step` · `demand_speed`(corner_speed 의 중첩 함수를 메서드로) · `send(limit=)` · `slow_zone_code` 5~8 · `hud.py ZONE_X` · `one_launch.py x_*` |
 | **감속 창을 속도로 · 빠르면 1단을 문 채 인계 (4.6) · terrain `Y` 감속구간 (3.4, white1) [2026-10-19]** | white1·white2 `driving.py` `SlowZone` · `slow_need_m` · `slow_brake_need` · `slow_release_why` · `slow_step` · `slow_release` · `lidar_approach` · `lidar_carry_step` · `cb_brake_level` · `begin_lidar_zone`(carry) · `_clear_transients(keep_brake)` · `release_lead_ms` · `_warn_lidar_room` · white1 만 `Y_ZONE_CHARS`·`Y_PULSE`·`y_zone_step`·`_warn_y_zones`·`slow_zone_code` · `record.py slow_zone` · `hud.py ZONE_Y` · `one_launch.py y_pulse` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
 | **B 상태 칸 0/1/2 · `STOP` 폐지 · 상태 1·2 = A 쓰로틀 0 · A 의 STOP 무시 [2026-10-16]** | `nxde/arduino.py` `B_STATE_*` · `parse_b` · `update_estop` · `compose`(→ `_compose_modes`) · `_drop_board` · `../mad-code/kasa_1016_{A,B}.ino` |
@@ -3279,6 +3304,8 @@ ping -c2 192.168.6.11
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
 | **감속 접근 (L 인계 · Y)** [2026-10-19] | white1·white2 `driving.py` 의 `SlowZone`·`slow_*` 함수 묶음은 ★두 판이 같은 줄★(white1 만 `_sa_phase` 한 줄씩 더 — 신호 접근) — Y 는 white1 만. 문턱은 전부 `goal_a1`·`release_lead_ms()`·`A_BRAKE1_MS2`·`BRAKE_GATE_MARGIN` 에서 유도한다(새 숫자 없음) — 종점 접근·코너와 ★같은 값★. 새 감속 구간(예: X 고속)은 `SlowZone` 하나를 `_slow_zones` 에 더하고 같은 `slow_step` 을 run_follow 의 소유권 순서 자리(종점 > S > 신호 > L 인계 > Y > 코너)에 끼운다 — `_slow_brake_owned_elsewhere` 가 그 목록을 보고 남의 1단을 풀지 않는다. `y_pulse` 기본값의 소유자는 `driving.Y_PULSE` — `one_launch.py` 와 같은 값 |
+| **직선 프리뷰 추종 (braketest · X 고속구간)** [2026-10-19] | `white1/line_steer.py` 하나가 상수(T_PREVIEW·LP·RATE_T·언더스티어 클램프·pot 상한들·CTE 적분·출발 래치 문턱)와 식의 소유자 — `braketest.py` 와 `driving.x_zone_step` 이 같이 쓴다. ★한쪽에 식을 따로 적지 말 것★. 고치면 braketest 동치 시험(옛/새 메서드에 같은 입력열)과 X 모의를 다시 돈다. X 만의 차이(pot 상한 6° · 트림+얼린 적분 · 백래시 선보상 · 댐핑 끔)는 `driving.py` 상수절 'terrain Xa' 에만 |
+| **X 고속구간 펄스 상한** [2026-10-19] | `driving.X_PULSE_LIMIT`(15) **+** 펌웨어 `kasa_1017.ino TARGET_MAX`(15) **+** `nxde/arduino.py PULSE_MAX`(15) — 셋이 같아야 한다. `MAX_PULSE_LIMIT`(10)는 일반 주행 상한으로 그대로이고 `send(limit=)` 를 X 만 넘긴다. `x_pulse`·`x_launch_pulse`·`x_switch_kmh` 기본값은 braketest 상단 `DRIVE_PULSE`·`LAUNCH_PULSE`·`CRUISE_SWITCH_KMH` 와 같은 근거 — 한쪽을 실측으로 바꾸면 다른 쪽도 본다 |
 | **통합 보드 입출력 한 줄 (`I,` 8칸 · 명령 4칸)** [2026-10-17] | `../mad-code/kasa_1017.ino` `sendOutput`·`handleCommandLine`(`[1017-2]`·`[1017-3]`) **+** `nxde/arduino.py` `TELEM_PREFIX`·`TELEM_FIELDS`·`parse_i`·`command_line` **+** `nxde/check.py` `TELEM_PREFIX` — **짝이다.** 칸을 늘리면 셋을 함께 고친다(칸 수가 다르면 줄 통째로 버려 값이 조용히 얼어붙는다). 조향 다시 걸기 `STEER_REARM_MS`(0.9 s)는 상위 `KEEPALIVE_S`(1.0 s)보다 짧고 `SETTLE_MS`(0.5 s)보다 길어야 한다 |
 | **정지 중 조향 힘빼기 (x)** [2026-10-17] | `nxde/arduino.py` `STEER_REST_*`·`_rest_steer`(자율 (3)·(4) 분기만 — 2단 + 양 바퀴 0 이 0.5 s) **+** `../mad-code/kasa_1017.ino` `[1017-2]`(조향 칸이 바뀌면 곧바로 다시 건다 — x → 각도 복귀가 그것에 기댄다) — 펌웨어가 '같은 값이면 다시 안 건다' 를 바꾸면 해제 줄의 각도 복귀가 0.9 s 늦는다. 수동·조이스틱·E-STOP·AEB 줄은 이 함수를 타지 않는다 |
 | **정차 헤딩 적분 멈춤 (ZUPT)** [2026-10-17] | white1·white2 `driving.py` `cb_imu` + 상수 `ZUPT_GPS_KMH`·`ZUPT_HOLD_S` — ★두 판이 같은 줄★. white2 `run_follow` 의 신호등 정지 묶음(`_tl_held`)이 `self.zupt` 를 '섰다' 로 쓴다 — 조건을 바꾸면 그쪽도 본다 |

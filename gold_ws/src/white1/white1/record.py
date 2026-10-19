@@ -187,7 +187,7 @@ DRIVE_DIAG_COLUMNS: Tuple[str, ...] = (
     'lidar_zone', 'rejoin',
     'steer_trim_deg', 'steer_bl_dir', 'yaw_damp_deg', 'corner_ay_cap_ms',
     'sig_phase', 'sig_left_m',                   # [2026-10-01] 신호 접근 (driving 상수절)
-    'slow_zone',                                 # [2026-10-19] 0 / 1 L 서행 1단 / 2 L 이월 1단 / 3 Y 안 / 4 Y 1단
+    'slow_zone',                                 # [2026-10-19] 0 / 1 L 서행 1단 / 2 L 이월 1단 / 3 Y 안 / 4 Y 1단 / 5 X 질주 / 6 X 관성 / 7 X 1단 / 8 X 끝 뒤 1단
 )
 
 #  ★/traffic_timer 열 이름 [2026-09-30]★ 배열 규약의 소유자는 traffic_timer.py 헤더다 —

@@ -66,6 +66,11 @@ one_launch.py ― white1 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
     Y / y      ★감속구간★ (★여러 행 연속★, L 과 같은 마킹) white1/driving (GPS 추종 그대로,
                [2026-10-19] 상한 y_pulse(3)펄스 ·         /lstatus '0')
                진입 때 빠르면(16.4 km/h 초과) 1단
+    Xa … Xb    ★고속구간★ (각 ★한 행★, 대소문자 무관)      white1/driving (/lstatus '0')
+               [2026-10-19] ★일직선에만★ — Xa 를 지나면 Xb 를 바라보는 직선을 braketest 와 같은
+               식(line_steer)으로 15펄스 출발 → 33 km/h 에서 x_pulse(12) · Xb 앞에서 관성(필요하면
+               1단)으로 복귀 속도까지 · Xb 부터 기존 로직. 짝 없음·곡선(현 편차 > 0.5 m)·안에
+               L/S/T/Y·종점 근처면 그 X 는 쓰지 않는다(경로 선택 때 말한다)
     그 밖       GPS 추종                               white1/driving
     (빈 칸·'0'·숫자·열 없음 — ★기존 CSV 가 그대로 돈다★)
 
@@ -494,6 +499,20 @@ def generate_launch_description():
                         '진입할 때 빠르면(해제선 + a1×최소물림 = 3펄스 기준 16.4 km/h 초과) 1단으로 '
                         '내린다 — L 인계 서행과 같은 판단 함수. 기본값의 소유자는 driving.Y_PULSE'),
         DeclareLaunchArgument(
+            'x_pulse', default_value='12',
+            description='★terrain Xa…Xb 고속구간 순항 펄스★ [2026-10-19] 기본값 소유자 driving.X_PULSE — '
+                        'braketest DRIVE_PULSE 와 같은 근거(2026-10-17 통합 보드 실측비 0.80 → ≈30.5 km/h). '
+                        '★X 안에서만★ MAX_PULSE_LIMIT(10)을 넘어 15 까지 열린다'),
+        DeclareLaunchArgument(
+            'x_launch_pulse', default_value='15',
+            description='X 고속구간 출발 펄스 — x_switch_kmh 를 GPS 로 보면 x_pulse 로 내린다(래치, braketest 와 같은 식)'),
+        DeclareLaunchArgument(
+            'x_rate_damp', default_value='false',
+            description='X 고속구간에서 braketest 의 요레이트 댐핑을 켠다 — 기본 끔(모의 조향 서보 반전 114~186 → 26~44 회/분, driving.X_RATE_DAMP 주석)'),
+        DeclareLaunchArgument(
+            'x_switch_kmh', default_value='33.0',
+            description='X 고속구간 순항 전환 GPS 속도 [km/h] — braketest CRUISE_SWITCH_KMH 와 같은 근거'),
+        DeclareLaunchArgument(
             'goal_brake1_ms2', default_value='1.30',
             description='★종점 1단 제동의 가정 감속도 [m/s²]★ 체결 지점이 이 값으로 '
                         '정해진다(작을수록 일찍 문다). 기본 1.30 은 2026-08-19 실차의 '
@@ -694,6 +713,10 @@ def generate_launch_description():
             'goal_creep_kmh': LaunchConfiguration('goal_creep_kmh'),
             'goal_brake1_ms2': LaunchConfiguration('goal_brake1_ms2'),
             'y_pulse':       LaunchConfiguration('y_pulse'),
+            'x_pulse':       LaunchConfiguration('x_pulse'),
+            'x_launch_pulse': LaunchConfiguration('x_launch_pulse'),
+            'x_switch_kmh':  LaunchConfiguration('x_switch_kmh'),
+            'x_rate_damp':   LaunchConfiguration('x_rate_damp'),
             'goal_brake2_backstop': LaunchConfiguration('goal_brake2_backstop'),
             'wp_reach_m':    LaunchConfiguration('wp_reach_m'),
             'require_rtk':   LaunchConfiguration('require_rtk'),

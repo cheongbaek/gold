@@ -257,35 +257,8 @@ DRIVE_PWM   = 0           # 0 아니면 이쪽이 이긴다. A보드 직접 PWM 
 #     올렸다 내렸다 하면 그것이 곧 속도 되먹임이고, 이 시험이 재려는 것이 아니다.
 LAUNCH_PULSE      = 15    # 출발 구간 목표펄스 (A보드 상한과 같다)
 CRUISE_SWITCH_KMH = 33.0  # ★GPS 속도★ 가 이 값을 넘으면 순항(DRIVE_PULSE)으로 내린다 [2026-10-17] 30 → 33
-#  ── 내려오는 방벽 둘 — 어느 쪽이든 ★내리는 방향★ 이라 안전하다 ──
-#  ⓐ GPS 가 끝내 안 오면 엔코더로도 본다. 엔코더는 기동 허수로 ★위로★ 튀므로
-#     (실측 중앙 16, 최대 34) 이쪽이 먼저 걸리면 조금 일찍 내려가는 것뿐이다.
-#  ⓑ 그래도 안 걸리면 시간으로 내린다. 15펄스로 무한정 달리지 않게 하는 마지막 줄.
-LAUNCH_SWITCH_ENC_PULSE = 10.0  # 엔코더(바퀴 기준) 이 펄스를 넘어도 내린다
-#  ★[2026-09-13 저녁] 엔코더 폴백에 기동 블랭킹을 건다★
-#  ⚠️ 이것을 빼먹어서 첫 시험에서 ★출발 1초 만에 순항으로 내려갔다.★
-#     로그(111151·111403) :
-#         t=1.09s  엔코더 ★19.0펄스★ → 순항 전환   그런데 GPS 는 0.59 km/h
-#         t=0.99s  엔코더 ★14.0펄스★ → 순항 전환   그런데 GPS 는 0.69 km/h
-#     ★차는 서 있었다.★ 이 19·14 는 CLAUDE.md 1.2절의 ★기동 초반 허수 펄스★ 다
-#     ("코일에 힘은 들어갔는데 바퀴가 아직 안 도는" 구간, 실측 중앙 16 · 최대 34).
-#     그래서 15펄스 구간이 1초뿐이었고 30 km/h 도달이 전혀 앞당겨지지 않았다.
-#  ★고친 방법★ 엔코더 폴백은 ★출발 후 이 시간이 지나야★ 본다. A보드 기동
-#  블랭킹의 타임아웃(LAUNCH_MAX_MS = 3000)과 같은 값이라, 그 구간이 끝난 뒤에만
-#  엔코더를 믿는다는 뜻이 된다. GPS 본선은 이 블랭킹을 받지 않는다 —
-#  GPS 는 허수 펄스와 무관하고, 애초에 그쪽이 사용자가 지시한 판정이다.
-#  ★[2026-10-16] 블랭킹으로도 모자랐다 — GPS 가 살아 있으면 엔코더를 아예 안 본다★
-#  ⚠️ 2026-10-16 두 주행(033740·034110)이 ★출발 3.0 초 만에★ 순항으로 내려갔다:
-#         t=3.04s  엔코더 ★25.5펄스★ → 순항 전환   그런데 GPS 는 11.4 km/h (≈3.6펄스)
-#         t=3.04s  엔코더 ★16.5펄스★ → 순항 전환   그런데 GPS 는 11.6 km/h
-#     허수 펄스가 3 초 뒤에도 이어졌다(t=2.5s 좌 22 · 우 9, GPS 10.9 km/h). 그 뒤 9펄스로
-#     7 초를 더 갔지만 라이다가 세운 순간 ★24.2 km/h★ — 30 을 한 번도 못 넘겼다.
-#  ★고친 방법★ GPS 속도가 신선하면(GPS_SPEED_FRESH_S) ★GPS 하나로만★ 내린다. 엔코더 폴백은
-#  ★GPS 속도를 모를 때만★ 본다(블랭킹도 그대로 받는다). GPS 가 GPS_TIMEOUT_S 넘게 끊기면
-#  loop 가 시험을 접으므로, 그 폴백이 실제로 쓰일 일은 거의 없다.
-LAUNCH_ENC_BLANK_S      = 3.0   # [s] 이 시간 전에는 엔코더 폴백을 보지 않는다
-GPS_SPEED_FRESH_S       = 0.5   # [s] /gps_fused 가 이 안에 왔으면 GPS 속도를 믿는다
-LAUNCH_MAX_S            = 12.0  # [s] 이 시간이 지나면 무조건 순항으로 내린다
+#  ── 내려오는 방벽(LAUNCH_SWITCH_ENC_PULSE · LAUNCH_ENC_BLANK_S · GPS_SPEED_FRESH_S · LAUNCH_MAX_S)과
+#     그 근거(2026-09-13 저녁 · 2026-10-16 허수 펄스)는 white1/line_steer.py 로 옮겼다 [2026-10-19] ──
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-13 저녁] 기준선을 옆으로 평행이동한다 ★★
 # ══════════════════════════════════════════════════════════════════════════════
@@ -303,130 +276,18 @@ LATERAL_OFFSET_M = 0.20   # [m] ★왼쪽으로 20 cm★ (런치 인자 lateral_
 # ── 그 밖의 상수 ──
 CONTROL_HZ = 20.0         # driving.py 와 같은 주기 (A보드 텔레메트리도 20Hz)
 
-MS_PER_PULSE  = 0.884
-KMH_PER_PULSE = 3.182
-
-WHEELBASE_M      = 1.25   # 축거
-STEER_PLANT_GAIN = 1.26   # pot 지령 / 도로휠각 (링키지비)
-STEER_UNDERSTEER = 5.17   # [deg/(m/s²)] 언더스티어 보정
-# ══════════════════════════════════════════════════════════════════════════════
-#  ★★ [2026-09-13] 언더스티어 항의 속도를 다시 묶는다 — 조향이 포화한 채 떨었다 ★★
-# ══════════════════════════════════════════════════════════════════════════════
-#  ★2026-09-13 로그 실측★ 조향 부호반전 ★129.9 회/분★ (같은 날 driving 7펄스가
-#  22.8, 4펄스가 0.6). 요레이트 std 15.97 °/s, 진동 주기 ★1.00 s = 6.28 rad/s★.
-#  횡오차는 작았다(max 0.56 m) — ★궤적은 맞는데 조향만 계속 떨었다.★
-#
-#  ★원인은 포화다★ 이벤트 로그가 그대로 말한다 — t=2.3~9.5 s 내내 :
-#      조향 -6.0°/6.0   (조준 -0.92 + 댐핑 -0.80 도로휠)
-#      조향 -5.7°/5.7   (조준 -1.14 + 댐핑 -0.22 도로휠)
-#  요구는 도로휠 1~2° 인데 pot 지령이 상한에 ★붙박이★ 다. 포화한 제어기는
-#  계전기(bang-bang)가 되고, 계전기는 반드시 떤다.
-#
-#  ★왜 포화하나 — 이 식이 고속에서 pot 을 4~5배로 부풀린다★
-#      v=8.3 m/s, 도로휠 1.62° 요구 :
-#        pot = 1.26×1.62 + 5.17×69×tan1.62°/1.25 = 2.04 + 8.07 = ★10.1°★
-#      그런데 ★이 노드가 주행 중에 스스로 잰 전달비★(update_plant_estimate)는
-#      같은 구간에서 ★g_est 2.1 → 3.2 (표본 51)★ 였다. 모델 7.1 의 ★1/2.6★ 이다.
-#      즉 pot 10.1 은 실제로 도로휠 ★3.7°★ 를 만든다 — 요구의 2.3배.
-#  ⚠️ 헤더 '전달비' 절의 회귀 5.89 는 ★고속 직선의 1~2° 표본★ 이라 조향 불감대
-#     아티팩트다(같은 날 driving 21340표본 회귀: 1~2° 에서 G 5.5, 7~12° 에서
-#     ★1.4~1.5 로 수렴★ — 물리 전달비라면 각도와 무관해야 한다). 그 값을 근거로
-#     [2026-09-12] 에 클램프를 없앤 것이 이번 진동을 만들었다. ★되살린다.★
-#
-#  ★값의 근거★ 이 노드가 잰 g_est 중앙 ≈2.7 에 모델을 맞춘다:
-#      G(v_eff) = 1.26 + 5.17·v_eff²·0.01745/1.25 = 1.26 + 0.0724·v_eff²
-#      v_eff = 4.42 (5펄스) → G = ★2.67★   ← 실측 2.7 과 일치
-#  4.42 m/s 이하에서는 ★식이 한 글자도 바뀌지 않는다.★
-UNDERSTEER_V_CLAMP_MS = 4.42   # [m/s] 언더스티어 항의 v 를 여기서 묶는다(5펄스)
-#                                (0 이하면 클램프를 끈다 = [2026-09-12] 거동)
-STEER_MAX_DEG    = 40     # B보드 수용 상한 (여기까지 갈 일은 없다)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ★★ 조향 — 프리뷰 추종 (헤더 '멀리 본다' 절이 근거 전부다) ★★
-# ══════════════════════════════════════════════════════════════════════════════
-#  ★이득을 정하는 값은 이것 하나다★ L_p = T_PREVIEW_S × v.
-#  1.5 s → 8.84 m/s 에서 13.3 m, ω_n 0.94 rad/s, 헤딩루프 위상여유 +48°.
-#  ★키우면 매끄럽지만 벌어진 채로 가고, 줄이면 정밀하지만 위상여유를 먹는다.★
-T_PREVIEW_S = 1.5
-LP_MIN_M    = 5.0         # 출발 직후 v≈0 에서 L_p 가 0 이 되는 것만 막는다
-LP_MAX_M    = 25.0        # 그 위로는 이득이 의미 없이 0 에 가까워진다
-
-#  ★요레이트 댐핑 = 예견시간★ 지연 보상이다. 자이로는 ★지연이 없어서★ 오차가 0 을
-#  지나기 전에 미리 힘을 뺀다 — 포화가 반대편으로 넘어가는 것을 막는 장치다.
-#  이득을 따로 두지 않고 ★프리뷰 이득에 비례★ 시킨다(K_r = 2L/L_p × RATE_T_S) —
-#  그래야 T_PREVIEW 를 바꿔도 감쇠비가 그대로 따라온다.
-RATE_T_S = 0.30           # ≈ B보드 조향 불감시간 0.250 s
-
-#  ★전달비 하한★ pot/도로휠. 로그 회귀 실측이 저속에서 4.96 인데 모델은 1.9 라,
-#  가속 구간에서 지령이 불감대 밑으로 죽는 것을 막는다(헤더 '전달비' 절).
-#  ★[2026-09-13] 4.0 → 2.6★ 위 클램프를 되살리면 모델이 전 속도대역에서 2.67 로
-#  평평해지는데, 하한이 4.0 이면 ★하한이 늘 이겨★ 클램프가 무의미해진다(4.0/2.7 =
-#  1.5배 과조향이 그대로 남는다). 2.6 은 이 노드가 실제로 잰 g_est(2.1~3.2, 중앙
-#  2.7)의 아래쪽이고, 전달비 추정의 하한(PLANT_EST_CLAMP 1.5)보다는 위다.
-#  ⚠️ 종전 근거였던 '저속 회귀 4.96' 도 작은 각 표본이라 위 불감대 아티팩트다.
-PLANT_GAIN_MIN = 2.6
-
-#  ══════════════════════════════════════════════════════════════════════════════
-#  ★★ 전달비를 주행 중에 ★잰다★ — 이 시험 최대의 미지수를 스스로 지운다 ★★
-#  ══════════════════════════════════════════════════════════════════════════════
-#  실측 조향각(/steer_angle_measured = pot)과 투영 요레이트가 둘 다 있으므로
-#      δ_실제 = atan(r·L / v)          G_est = |pot실측| / |δ_실제|
-#  를 주행 중에 그대로 계산할 수 있다. ★이 값은 두 가지로 쓰인다★
-#    ① pot 상한을 ★조이는 쪽으로만★ 쓴다 — 차가 모델보다 예민한 것으로 드러나면
-#       권한을 줄이고, 둔한 것으로 드러나면 모델값을 그대로 둔다(한쪽으로만 움직이는
-#       보정이라 추정이 튀어도 위험해지지 않는다).
-#    ② 결과 표에 찍는다 — ★다음 시험의 튜닝 근거가 이 한 줄에서 확정된다.★
-PLANT_EST_MIN_V_MS   = 4.0    # 이 밑에서는 요레이트가 작아 비율이 지저분하다
-PLANT_EST_MIN_POT    = 3.0    # 불감대(1.78°)보다 확실히 큰 지령일 때만
-PLANT_EST_MIN_DPS    = 2.0    # 실제로 돌고 있을 때만
-PLANT_EST_ALPHA      = 0.12   # EMA (≈8표본 시정수)
-PLANT_EST_MIN_N      = 15     # 이만큼 모이기 전에는 쓰지 않는다
-PLANT_EST_CLAMP      = (1.5, 15.0)
-POT_LIMIT_FLOOR_DEG  = 3.0    # 추정이 아무리 작아도 이 밑으로는 권한을 뺏지 않는다
-
-#  ★횡가속도 상한★ 이것이 사람이 정할 값이다. 직선 보정에는 넉넉하고 급선회는
-#  원천적으로 불가능하다. 8.84 m/s 에서 pot ≈ 12.6° 에 해당한다.
-AY_MAX_MS2 = 2.0
-#  ★pot 절대 상한★ AY 유도값이 저속에서 커지는 것을 자른다(런치 steer_limit_deg).
-POT_HARD_MAX_DEG = 12.0
-#  ★전달비를 재기 전까지의 상한★ — ★모르면 낮게 본다★
-#  전달비가 모델만큼 예민할 가능성이 남아 있는 동안에는 권한을 열지 않는다.
-#  종전 시험이 실제로 달린 권한(5°)과 같은 수준이고, 출발 직후 몇 초는 e ≈ 0 이라
-#  이것으로 충분하다. 차가 스스로 둔하다는 것을 증명하면(PLANT_EST_MIN_N 표본)
-#  그때 AY_MAX 가 허락하는 데까지 열린다.
-POT_START_MAX_DEG = 6.0
-#  ★자이로가 없으면 이만큼만★ 요레이트 가드가 못 도니 권한을 줄인다 — 모르면 낮게.
-POT_NOIMU_MAX_DEG = 6.0
-#  ★[2026-09-13] 속도를 모를 때도 같은 상한으로 묶는다★ pot_limit 은 δ_max 를
-#  atan(ay_max·L/v²) 로 얻는데, v 를 모르면 하한 2.0 m/s 로 보므로 δ_max 가 32° 까지
-#  열려 ★상한이 pot_hard_max(12°) 로 최대가 된다.★ 2026-09-13 로그에서 GPS 가
-#  게이트에 막힌 t=10.5 s 부터 정확히 그렇게 됐다(상한 5.7 → ★12.0★).
-#  '모르면 낮게 본다' 를 여기에도 적용한다 — 속도를 모르는 동안은 권한을 주지 않는다.
-POT_NOSPEED_MAX_DEG = 6.0
-
-#  ★조향 저역통과를 쓰지 않는다★ (1.0 = 통과) 기준에서 계단이 사라졌으므로
-#  거를 것이 없고, 필터는 곧 지연이다(τ = dt/α). 슬루만 안전용으로 남긴다.
-STEER_LPF        = 1.0
-STEER_SLEW_DEG_S = 35.0   # B보드 서보 실측 슬루 70°/s 의 절반
-
-# ── CTE 적분 = ★조향 영점 트림★ (수렴용이 아니다) ──────────────────────────────
-#  ⚠️ 8초짜리 주행에서 적분이 수렴에 기여할 수는 없다. 그렇게 만들려면(T_i ≈ 1.3s)
-#  교차주파수에서 위상을 크게 먹어 오히려 흔들린다. 그래서 ★T_i ≈ 5/ω_c★ 로 느리게
-#  두고, 이 항의 일은 ★휠얼라인먼트·조향 영점 같은 진짜 정상편차를 지우는 것★ 으로
-#  한정한다. 한 번의 주행 안에서 효과를 기대하지 말 것.
-#  ★영점이 실제로 치우쳐 있다면★ 지난 로그의 직진 구간 평균 pot 을 읽어
-#  STEER_TRIM_POT_DEG 에 적는 편이 정직하고 빠르다.
-CTE_KI            = 0.15   # [deg(도로휠)/(m·s)]
-CTE_I_CLAMP       = 3.0    # [m·s]
-CTE_I_MAX_DEG     = 0.5    # [deg] 도로휠 기여 상한 (pot 기준 ≈3.5°)
-CTE_I_DEADBAND_M  = 0.05
-CTE_I_DECAY_PER_S = 0.5
-CTE_I_FLIP_SCALE  = 0.35
-CTE_I_MIN_PULSE   = 0.3    # 실측이 이 밑이면 ★동결★
-
-#  ★조향 영점 트림 [pot deg]★ + 면 우, − 면 좌. 직진인데 한쪽으로 계속 밀리면
-#  지난 로그의 steer_measured_deg 평균을 부호 반대로 적는다. 기본은 0(보정 없음).
-STEER_TRIM_POT_DEG = 0.0
+#  ── MS_PER_PULSE ~ STEER_TRIM_POT_DEG : 조향 상수 전부 → white1/line_steer.py [2026-10-19] ──
+#  ★[2026-10-19] 아래 상수들은 white1/line_steer.py 로 옮겼다★ — driving 의 X 고속구간과 같이 쓴다
+#  (근거 주석도 그쪽에 글자 그대로). 이름은 그대로 import 해서 쓴다 — 거동 불변.
+from white1.line_steer import (  # noqa: E402
+    GPS_SPEED_FRESH_S, LAUNCH_MAX_S,
+    MS_PER_PULSE, KMH_PER_PULSE, WHEELBASE_M,
+    T_PREVIEW_S, LP_MIN_M, PLANT_EST_MIN_V_MS,
+    PLANT_EST_MIN_POT, PLANT_EST_MIN_DPS, PLANT_EST_ALPHA,
+    PLANT_EST_CLAMP, AY_MAX_MS2, POT_HARD_MAX_DEG,
+    CTE_KI, CTE_I_MIN_PULSE, STEER_TRIM_POT_DEG,
+    IMU_FRESH_S)
+from white1 import line_steer as ls  # noqa: E402
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★★ 헤딩 — 자이로(빠르다) + GPS 코스(안 흘러간다) 상보필터 ★★
@@ -444,7 +305,7 @@ IMU_TOPIC            = '/imu'
 IMU_AXIS_MIN_SAMPLES = 20      # 중력축·자이로 바이어스를 재는 최소 표본
 IMU_AXIS_G_TOL       = 1.2     # ||a|−9.81| 이 이보다 크면 그 표본은 버린다
 IMU_G                = 9.80665
-IMU_FRESH_S          = 0.5
+#  IMU_FRESH_S → white1/line_steer.py [2026-10-19]
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★라이다 정지는 ★관찰만★ 한다 — 사슬에 끼어들지 않는다★
@@ -990,11 +851,10 @@ class BrakeTestNode(Node):
         self.gx, self.gy = latlon_to_xy(self.goal_lat, self.goal_lon,
                                         self.lat0, self.lon0)
         self.sx, self.sy = self.x, self.y
-        dx, dy = self.gx - self.sx, self.gy - self.sy
-        d = math.hypot(dx, dy)
-        if d < 1e-6:
+        fr = ls.line_frame(self.sx, self.sy, self.gx, self.gy)   # [2026-10-19] 공용
+        if fr is None:
             return False
-        self.ux, self.uy = dx / d, dy / d
+        self.ux, self.uy, d, line_brg = fr
         self.dist_total = d
         #  ★S 지점을 이 선에 투영한다★ — 판정은 끝점과 같은 단조 스칼라 문턱(s ≥ D_S).
         self.dist_smark, self.e_smark = float('inf'), float('nan')
@@ -1004,7 +864,7 @@ class BrakeTestNode(Node):
             self.e_smark = -(mx - self.sx) * self.uy + (my - self.sy) * self.ux
             if STOP_MARK_MIN_M <= ds < d:
                 self.dist_smark = ds
-        self.line_brg = math.degrees(math.atan2(dy, dx))
+        self.line_brg = line_brg
         #  ★폭주 방벽★ 예상 주행시간의 두 배 + 여유. GPS 가 이상해져 s 가 자라지
         #  않아도 이 시간이 지나면 세운다(런치 = 출발이라 사람이 없을 수 있다).
         v = self.nominal_ms if math.isfinite(self.nominal_ms) and self.nominal_ms > 0.5 \
@@ -1022,9 +882,7 @@ class BrakeTestNode(Node):
         판정 s ≥ D 도 종전 그대로다). 이 함수 하나만 고치면 조준·적분·중단 방벽·
         진단 출력이 전부 같은 새 기준을 쓴다 — ★영점의 단일 소유자다.★
         """
-        dx, dy = self.x - self.sx, self.y - self.sy
-        s = dx * self.ux + dy * self.uy
-        e = -dx * self.uy + dy * self.ux
+        s, e = ls.line_se(self.x, self.y, self.sx, self.sy, self.ux, self.uy)   # [2026-10-19] 공용
         return s, e - self.lateral_offset
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1334,21 +1192,14 @@ class BrakeTestNode(Node):
         """
         if self._cruise_latched:
             return self.cmd_value
-        why = None
         gps_fresh = (self.gps_kmh is not None
                      and now - self.fix_time <= GPS_SPEED_FRESH_S)
-        if gps_fresh and self.gps_kmh >= self.cruise_switch_kmh:
-            why = f"GPS {self.gps_kmh:.1f} km/h ≥ {self.cruise_switch_kmh:.0f}"
-        elif (not gps_fresh and self._launch_t0 > 0.0
-              and (now - self._launch_t0) >= LAUNCH_ENC_BLANK_S
-              and self.enc_pulse >= LAUNCH_SWITCH_ENC_PULSE):
-            #  ★기동 블랭킹을 지난 뒤에만 엔코더를 믿는다★ 출발 직후의 허수 펄스
-            #  (실측 중앙 16 · 최대 34)가 이 문턱을 그냥 넘긴다 — 상수절 참고.
-            why = (f"엔코더 {self.enc_pulse:.1f}펄스 ≥ "
-                   f"{LAUNCH_SWITCH_ENC_PULSE:.0f} (★GPS 속도 없음★ — 폴백, "
-                   f"기동 블랭킹 {LAUNCH_ENC_BLANK_S:.0f}s 경과)")
-        elif self._launch_t0 > 0.0 and (now - self._launch_t0) >= self.launch_max_s:
-            why = f"출발 {now - self._launch_t0:.1f}s 경과 ≥ {self.launch_max_s:.0f}s"
+        #  ★[2026-10-19] 판정식은 line_steer.launch_switch_why 하나★ — driving X 고속구간과 같이 쓴다.
+        #  엔코더 폴백은 기동 블랭킹 뒤·GPS 속도를 모를 때만이다(그쪽 주석).
+        why = ls.launch_switch_why(
+            self.gps_kmh, gps_fresh,
+            (now - self._launch_t0) if self._launch_t0 > 0.0 else None,
+            self.enc_pulse, self.cruise_switch_kmh, self.launch_max_s)
         if why is None:
             return self.launch_value
         self._cruise_latched = True
@@ -1377,59 +1228,30 @@ class BrakeTestNode(Node):
     #  ★★ 조향 — 프리뷰 추종 (헤더 '멀리 본다' 절이 근거 전부다) ★★
     # ══════════════════════════════════════════════════════════════════════════
     def preview_len(self, v_ms):
-        """★L_p = T_PREVIEW × v★ 정속 프리뷰. 속도가 변해도 안정도가 같다."""
-        v = v_ms if (v_ms is not None and math.isfinite(v_ms)) else 0.0
-        return clamp(self.t_preview * abs(v), LP_MIN_M, LP_MAX_M)
+        """★L_p = T_PREVIEW × v★ — 식은 line_steer.preview_len [2026-10-19 공용]."""
+        return ls.preview_len(self.t_preview, v_ms)
 
     def aim_deg(self, e, psi_deg, lp):
-        """선 위 L_p 앞의 점을 겨눈 도로휠각 [deg]. ★− 좌 / + 우★
+        """선 위 L_p 앞의 점을 겨눈 도로휠각 [deg]. ★− 좌 / + 우★ — line_steer.aim_deg.
 
             e_p = e + L_p·sin ψ        δ = atan(2·L·e_p / L_p²)
 
         ★부호★ e + = 차가 선의 왼쪽 → 오른쪽으로 꺾어야 한다 → +.
                 psi + = 차가 선방위보다 왼쪽을 향한다 → 오른쪽 → +.
-        둘 다 뒤집지 않고 그대로 쓴다(steer_command 가 부호를 다시 뒤집지 않는다).
         """
-        if not math.isfinite(e):
-            return 0.0
-        e_p = e + lp * math.sin(math.radians(psi_deg))
-        return math.degrees(math.atan2(2.0 * WHEELBASE_M * e_p, lp * lp))
+        return ls.aim_deg(e, psi_deg, lp)
 
     def rate_damp_deg(self, lp, now):
-        """★요레이트 댐핑★ 지금 실제로 돌고 있는 속도를 조향에서 뺀다 [도로휠 deg].
-
-        ★부호★ yaw_rate + = 좌회전 중 → 오른쪽으로 되돌려야 한다 → + (그대로 더한다).
-        ★이득을 프리뷰에 비례시킨다★ K_r = (2L/L_p)·RATE_T_S — T_PREVIEW 를 바꿔도
-        감쇠비가 그대로 따라오게 하려는 것이다. 자이로는 ★지연이 없어서★ 오차가 0 을
-        지나기 전에 미리 힘을 뺀다 — 포화가 반대편으로 넘어가는 것을 막는 유일한 항이다.
-        """
+        """★요레이트 댐핑★ [도로휠 deg] — line_steer.rate_damp_deg. 자이로가 낡았으면 0.
+        이득을 프리뷰에 비례시킨다 K_r = (2L/L_p)·RATE_T_S — T_PREVIEW 를 바꿔도 감쇠비가 따라온다."""
         if not self.imu_fresh(now):
             return 0.0
-        return (2.0 * WHEELBASE_M / lp) * RATE_T_S * self.yaw_rate
+        return ls.rate_damp_deg(lp, self.yaw_rate)
 
     def plant_pot(self, road_deg, v_ms):
-        """도로휠각 → pot 지령의 크기 [deg]. ★[2026-09-13] 속도를 다시 자른다★
-
-        pot = 1.26·δ + 5.17·v_eff²·tan δ / L,  v_eff = min(v, UNDERSTEER_V_CLAMP_MS)
-        단 ★PLANT_GAIN_MIN·δ 를 하한★ 으로 둔다.
-
-        ★[2026-09-12] 에 이 클램프를 없앴다가 [2026-09-13] 에 되살렸다★ — 없앤
-        근거였던 '회귀 실측 5.89' 가 ★고속 직선의 1~2° 표본★ 이라 조향 불감대
-        아티팩트였기 때문이다(상수절 UNDERSTEER_V_CLAMP_MS 주석에 전말). 클램프
-        없는 식은 v=8.3 m/s 에서 도로휠 1.62° 요구에 pot 10.1° 를 내는데, 이 노드가
-        같은 구간에서 스스로 잰 전달비는 g_est 2.7 이라 실제로 도로휠 3.7° 가 된다 —
-        요구의 2.3배. 그 결과가 ★조향 부호반전 129.9회/분★ 이었다.
-        """
-        d = abs(road_deg)
-        if d < 1e-9:
-            return 0.0
-        v = abs(v_ms) if (v_ms is not None and math.isfinite(v_ms)) else 0.0
-        if UNDERSTEER_V_CLAMP_MS > 0.0:
-            v = min(v, UNDERSTEER_V_CLAMP_MS)
-        pot_model = (STEER_PLANT_GAIN * d
-                     + STEER_UNDERSTEER * v * v * math.tan(math.radians(d))
-                     / WHEELBASE_M)
-        return max(pot_model, PLANT_GAIN_MIN * d)
+        """도로휠각 → pot 지령의 크기 [deg] — line_steer.plant_pot.
+        ★언더스티어 항의 v 를 UNDERSTEER_V_CLAMP_MS 에서 묶는다★ (그쪽 상수절에 2026-09-13 전말)."""
+        return ls.plant_pot(road_deg, v_ms)
 
     def update_plant_estimate(self, v_ms, now):
         """★전달비를 주행 중에 잰다★ G = |pot실측| / |atan(r·L/v)|  (상단 절)
@@ -1459,92 +1281,30 @@ class BrakeTestNode(Node):
         self._g_n += 1
 
     def pot_limit(self, v_ms, now):
-        """★상한을 '각도' 가 아니라 '횡가속도' 로 정한다★ [pot deg]
-
-        δ_max = atan(AY_MAX·L / v²) 를 pot 으로 환산한 값과 pot_hard_max 중 작은 것.
-        자이로가 없으면 요레이트 가드가 못 도니 POT_NOIMU_MAX_DEG 로 더 조인다.
-        """
-        known = v_ms is not None and math.isfinite(v_ms) and abs(v_ms) > 1e-6
-        v = abs(v_ms) if known else 0.0
-        v = max(v, 2.0)                       # 저속에서 δ_max 가 발산하는 것만 막는다
-        d_max = math.degrees(math.atan(self.ay_max * WHEELBASE_M / (v * v)))
-        lim = min(self.plant_pot(d_max, v), self.pot_hard_max, float(STEER_MAX_DEG))
-        #  ★잰 전달비는 조이는 쪽으로만 쓴다★ 차가 모델보다 예민한 것으로 드러나면
-        #  같은 pot 이 더 많이 꺾인다는 뜻이므로 권한을 줄인다. 둔한 쪽으로 드러나면
-        #  아무것도 하지 않는다(min). 추정이 튀어도 위험해지지 않는 유일한 쓰임새다.
-        if math.isfinite(self.g_est) and self._g_n >= PLANT_EST_MIN_N:
-            lim = min(lim, max(self.g_est * d_max, POT_LIMIT_FLOOR_DEG))
-        else:
-            #  ★아직 못 쟀다 — 모르면 낮게 본다★ (상단 POT_START_MAX_DEG)
-            lim = min(lim, POT_START_MAX_DEG)
-        if not self.imu_fresh(now):
-            lim = min(lim, POT_NOIMU_MAX_DEG)
-        #  ★[2026-09-13] 속도를 모르면 권한을 주지 않는다★ 상수절 POT_NOSPEED 참고.
-        #  v 를 모르면 위 하한 2.0 m/s 때문에 δ_max 가 32° 로 열려 상한이 최대가
-        #  된다 — 2026-09-13 로그에서 GPS 가 게이트에 막힌 뒤 5.7° → ★12.0°★ 가
-        #  그것이다. '모르면 낮게 본다' 를 여기에도 적용한다.
-        if not known:
-            lim = min(lim, POT_NOSPEED_MAX_DEG)
-        return lim
+        """★상한을 '각도' 가 아니라 '횡가속도' 로 정한다★ [pot deg] — line_steer.pot_limit.
+        잰 전달비는 조이는 쪽으로만 · 못 쟀으면 POT_START_MAX_DEG · 자이로·속도를 모르면 더 조인다."""
+        return ls.pot_limit(v_ms, self.ay_max, self.pot_hard_max, self.g_est, self._g_n,
+                            self.imu_fresh(now))
 
     def yaw_rate_max(self, v_ms):
-        """지금 속도에서 AY_MAX 를 내는 요레이트 [deg/s]."""
-        v = abs(v_ms) if (v_ms is not None and math.isfinite(v_ms)) else 0.0
-        v = max(v, 2.0)
-        return min(math.degrees(self.ay_max / v), 40.0)
+        """지금 속도에서 AY_MAX 를 내는 요레이트 [deg/s] — line_steer.yaw_rate_max."""
+        return ls.yaw_rate_max(v_ms, self.ay_max)
 
     def yaw_guard(self, pot, v_ms, now):
-        """★최종 방벽★ 실제로 도는 속도가 상한을 넘으면 그 방향 지령을 깎는다.
-
-        ★전달비를 몰라도 횡가속도가 상한을 넘지 못한다★ 는 것이 이 함수의 전부다.
-        모델이 실측보다 예민한 쪽으로 틀려 있어도(= 같은 pot 이 더 많이 꺾여도)
-        자이로는 ★실제로 돌고 있는 값★ 을 지연 없이 알려 준다.
-
-        ★부호★ pot − = 좌조향, yaw_rate + = 좌회전. 즉 ★pot·r < 0 이면 지령이
-        지금의 회전을 더 키우는 방향★ 이다 — 그때만 깎는다. 되돌리는 쪽(카운터
-        스티어)은 절대 막지 않는다.
-        """
-        if not self.imu_fresh(now):
-            return pot
-        r = abs(self.yaw_rate)
-        r_max = self.yaw_rate_max(v_ms)
-        if r <= r_max or r < 1e-6:
-            return pot
-        if pot * self.yaw_rate < 0.0:
-            return pot * (r_max / r)
-        return pot
+        """★최종 방벽★ 실제로 도는 속도가 상한을 넘으면 ★그 방향★ 지령만 깎는다 — line_steer.yaw_guard.
+        카운터스티어(되돌리는 쪽)는 절대 막지 않는다."""
+        return ls.yaw_guard(pot, self.yaw_rate, self.yaw_rate_max(v_ms), self.imu_fresh(now))
 
     def apply_cte_integral(self, road_deg, cte, saturated):
-        """도로휠각에 ★CTE 적분항★ 을 더한다 (Ki 단독, P·D 없음).
-
-        ★이 항의 일은 수렴이 아니라 '조향 영점 트림' 이다★ (상단 상수절 참고).
-        driving.apply_cte_integral 의 와인드업 방어를 같은 순서로 옮겼다:
-          ① 부호반전 → 소프트 감쇠  ② 불감대 안 → 감쇠 / 밖 → 적분
-          ③ 적분값 클램프  ④ 기여 클램프  ⑤ 차가 안 구르면 동결
-          ⑥ ★포화 중 같은 방향 적분 금지★ (이 시험은 상한이 낮아 실질 포화가 있다)
+        """도로휠각에 ★CTE 적분항★ 을 더한다 (Ki 단독) — 한 틱 식은 line_steer.cte_integral_step.
+        ★이 항의 일은 수렴이 아니라 '조향 영점 트림' 이다★ (line_steer 상수절 참고).
         """
         if not math.isfinite(cte) or CTE_KI <= 0.0:
             self._cte_i_term = 0.0
             return road_deg
-
-        dt = 1.0 / CONTROL_HZ
-        moving = self.enc_pulse > CTE_I_MIN_PULSE
-
-        if (cte * self._cte_prev) < 0.0 \
-                and abs(cte) > CTE_I_DEADBAND_M \
-                and abs(self._cte_prev) > CTE_I_DEADBAND_M:
-            self._cte_i *= CTE_I_FLIP_SCALE
-        self._cte_prev = cte
-
-        blocked = saturated and (cte * self._cte_i >= 0.0)
-        if moving:
-            if abs(cte) < CTE_I_DEADBAND_M:
-                self._cte_i -= self._cte_i * min(1.0, CTE_I_DECAY_PER_S * dt)
-            elif not blocked:
-                self._cte_i += cte * dt
-            self._cte_i = clamp(self._cte_i, -CTE_I_CLAMP, CTE_I_CLAMP)
-
-        i_term = clamp(CTE_KI * self._cte_i, -CTE_I_MAX_DEG, CTE_I_MAX_DEG)
+        self._cte_i, self._cte_prev, i_term = ls.cte_integral_step(
+            self._cte_i, self._cte_prev, cte, saturated,
+            self.enc_pulse > CTE_I_MIN_PULSE, 1.0 / CONTROL_HZ)
         self._cte_i_term = i_term
         return road_deg + i_term
 
@@ -1554,18 +1314,11 @@ class BrakeTestNode(Node):
         self._cte_prev = 0.0
 
     def smooth_steer(self, pot, now, lim):
-        """슬루 제한. ★저역통과는 쓰지 않는다★ (STEER_LPF = 1.0)
-
-        기준이 선이라 지령에 계단이 없다 — 거를 것이 없고, 필터는 곧 지연이다.
-        슬루는 평활이 아니라 ★안전용★ 이다(지령이 한 틱에 튀는 것을 막는다).
-        """
+        """슬루 제한(★저역통과는 쓰지 않는다★) — 한 틱 식은 line_steer.smooth_step."""
         dt = (now - self._steer_t) if self._steer_t > 0.0 else (1.0 / CONTROL_HZ)
         dt = clamp(dt, 1e-3, 0.2)
         self._steer_t = now
-        want = self._steer_out + STEER_LPF * (pot - self._steer_out)
-        slew = STEER_SLEW_DEG_S * dt
-        self._steer_out += clamp(want - self._steer_out, -slew, slew)
-        self._steer_out = clamp(self._steer_out, -lim, lim)
+        self._steer_out = ls.smooth_step(self._steer_out, pot, dt, lim)
         return self._steer_out
 
     # ══════════════════════════════════════════════════════════════════════════

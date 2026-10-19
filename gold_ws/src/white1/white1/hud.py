@@ -122,6 +122,7 @@ EVENT_LOG_MAX = 40
 # 그 외(빈 칸 · '0' · 모르는 글자)는 GPS 추종이다.
 ZONE_GPS, ZONE_LIDAR, ZONE_STOP, ZONE_TL = '0', 'L', 'S', 'T'
 ZONE_Y = 'Y'                     # [2026-10-19] 감속구간 (driving.Y_ZONE_CHARS)
+ZONE_X = 'X'                     # [2026-10-19] 고속구간 Xa·Xb 한 행씩 (driving.X_TAG_A/B)
 
 # ── 색 ──────────────────────────────────────────────────────────────────────
 BG = '#07090d'
@@ -146,8 +147,9 @@ ZONE_COLOR = {
     ZONE_STOP: YELLOW,
     ZONE_TL: '#d46bff',
     ZONE_Y: '#7fd17f',
+    ZONE_X: '#ff5c8a',
 }
-ZONE_NAME = {ZONE_GPS: 'GPS', ZONE_LIDAR: 'L', ZONE_STOP: 'S', ZONE_TL: 'T', ZONE_Y: 'Y'}
+ZONE_NAME = {ZONE_GPS: 'GPS', ZONE_LIDAR: 'L', ZONE_STOP: 'S', ZONE_TL: 'T', ZONE_Y: 'Y', ZONE_X: 'X'}
 
 
 def _clamp(x, lo, hi):
@@ -185,9 +187,9 @@ def _yaw_from_quat(x, y, z, w):
 
 
 def _zone_char(raw):
-    """CSV terrain 한 칸 → '0'|'L'|'S'|'T'|'Y'. driving 이 구간으로 인정하는 문자만.
+    """CSV terrain 한 칸 → '0'|'L'|'S'|'T'|'Y'|'X'. driving 이 구간으로 인정하는 문자만.
     [2026-09-30] 본선 코스의 'T1'~'T5' 도 'T' 로 접는다(판정은 driving.tl_label).
-    [2026-10-19] 'Y' 감속구간 (driving.Y_ZONE_CHARS)."""
+    [2026-10-19] 'Y' 감속구간 (driving.Y_ZONE_CHARS) · 'Xa'/'Xb' 고속구간 지점 → 'X'."""
     if dv.tl_label(raw):
         return ZONE_TL
     z = str(raw or '').strip().upper()
@@ -195,6 +197,8 @@ def _zone_char(raw):
         return z
     if z in {c.upper() for c in dv.Y_ZONE_CHARS}:
         return ZONE_Y
+    if z in (dv.X_TAG_A, dv.X_TAG_B):
+        return ZONE_X
     return ZONE_GPS
 
 
@@ -224,6 +228,8 @@ def _zone_status(xy, zone, wp_idx):
         dist += seg
     if here == ZONE_STOP:
         return 'S 지점', ZONE_COLOR[ZONE_STOP]
+    if here == ZONE_X:
+        return 'X 지점', ZONE_COLOR[ZONE_X]
     if nxt is None:
         if here == ZONE_GPS:
             return '끝까지 GPS', DIM
@@ -246,7 +252,7 @@ def _kept_indices(n, zone, wp_idx, limit=NAV_DRAW_MAX):
     keep.add(n - 1)
     keep.add(max(0, min(int(wp_idx), n - 1)))
     for i in range(n):
-        if zone[i] == ZONE_STOP or (i > 0 and zone[i] != zone[i - 1]):
+        if zone[i] in (ZONE_STOP, ZONE_X) or (i > 0 and zone[i] != zone[i - 1]):
             keep.add(i)
             if i > 0:
                 keep.add(i - 1)
@@ -745,7 +751,7 @@ class HudNode(Node):
         self.get_logger().info(
             f'HUD 경로 로드 {base}  WP {len(wps)}  '
             f"L {zone.count(ZONE_LIDAR)}  S {zone.count(ZONE_STOP)}  "
-            f"T {zone.count(ZONE_TL)}  Y {zone.count(ZONE_Y)}")
+            f"T {zone.count(ZONE_TL)}  Y {zone.count(ZONE_Y)}  X {zone.count(ZONE_X)}")
 
     def _cb_cmd(self, m):
         now = time.monotonic()
@@ -2202,7 +2208,7 @@ class HudApp:
     def _draw_zone_legend(self, c, x, y):
         xx = x
         for z, name in ((ZONE_GPS, 'GPS'), (ZONE_LIDAR, 'L'),
-                        (ZONE_STOP, 'S'), (ZONE_TL, 'T'), (ZONE_Y, 'Y')):
+                        (ZONE_STOP, 'S'), (ZONE_TL, 'T'), (ZONE_Y, 'Y'), (ZONE_X, 'X')):
             c.create_rectangle(xx, y, xx + 10, y + 10,
                                fill=ZONE_COLOR[z], outline='')
             c.create_text(xx + 14, y + 5, text=name, fill=DIM, anchor='w',

@@ -284,6 +284,7 @@ from white1.gps import (GPS_FUSED_FIELDS, GPS_FUSED_TOPIC, Q_FIXED, Q_LABEL,
 # ★[2026-09-30] 본선 코스 신호 타이머★ 파일 이름·신호 시각표·/traffic_timer 배열 규약의
 #   단일 소유자는 traffic_timer.py 다(그 파일 헤더). 여기서는 읽기만 한다.
 from white1 import traffic_timer as tt
+from white1 import line_steer as ls        # [2026-10-19] X 고속구간 직선 추종 — braketest 와 같은 식
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1767,6 +1768,52 @@ Y_ZONE_CHARS = ('Y', 'y')
 Y_PULSE = 3                         # [펄스] Y 구간 상한 — 런치 y_pulse 가 이긴다
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-10-19] terrain 'Xa' … 'Xb' — 고속구간 (사용자 지시, white1 만) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  사용자 : "white1 one_launch 로도 braketest와 유사하게 고속 주행하는 고속구간 도입. terrain열에
+#           고속 진입하는 행 하나에 Xa, 고속구간 종료되는 행에 Xb … Xa에 도달하거나 지나치는 시점부터
+#           고속구간 시작, Xb에 도달하거나 지나치는 시점부터 고속구간 종료 … 진입시 Xb 마킹지점을
+#           바라보고 고속으로 주행 시작하며, Xb에 도달하면 자연스럽게 기존 로직으로 복귀 … 관성으로
+#           속도를 맞출수도, 1단제동을 걸 수도 … Xb 도달 직전까지 고속주행을 유지 … 오로지 일직선 구간"
+#  · 표기 : 'Xa'·'Xb' 각 한 행 — ★대소문자 무관★('XA'·'xa' 도 같다. 'X' 한 글자는 아무것도 아니다).
+#    통과 감지는 S 와 같은 '지나온 범위' 검사(한 틱 5 WP 도약에도 놓치지 않는다) + Xb 는 기준선 투영
+#    s ≥ |S→Xb| 로도 본다(먼저 오는 쪽).
+#  · 조향 : ★braketest 와 같은 직선 프리뷰 추종★ — 식·상수의 단일 소유자는 white1/line_steer.py.
+#    S = ★Xa 를 지나는 순간 차(안테나) 위치★ — e(0) = 0 이 설계상 보장된다(Xa 점으로 잡으면 진입
+#    순간의 CTE 가 그대로 e(0) 가 되어 첫 틱에 꺾는다). G = Xb 점. 트림은 driving 의 추정 트림.
+#    braketest 와 다른 점 : 전달비 추정이 없으므로 pot 상한은 POT_START_MAX_DEG(6°)에 묶인다(모르면
+#    낮게 — 일직선이라 충분하다), 기준선 평행이동은 0, 중단 방벽은 driving 의 경로이탈(2.0 m) 그대로.
+#  · 속도 : braketest 와 같은 래치 — 출발 x_launch_pulse(15) → GPS x_switch_kmh(33) 에서 x_pulse(12),
+#    판정식은 line_steer.launch_switch_why. 값의 근거도 braketest 와 같다(2026-10-17 통합 보드 실측비
+#    0.80 — 12펄스 ≈ 30.5 km/h). ★MAX_PULSE_LIMIT(10)은 일반 주행 상한으로 그대로 두고, X 안에서만
+#    X_PULSE_LIMIT(15) = 펌웨어 kasa_1017 TARGET_MAX · arduino PULSE_MAX 까지 연다★ (send(limit=)).
+#  · Xb 접근 ('직전까지 고속 유지') — 복귀 속도 v_ret = min(drive_pulse, Xb 뒤 curve_far 안 코너가
+#    1단(A_BRAKE1_MS2)으로 허락하는 속도). 남은 거리 ≤ 코스트로 v_ret 이 되는 거리(+여유)부터 ★펄스 0★,
+#    그래도 모자라면 L 인계와 같은 slow_step 으로 ★1단 창(마지막 가능 지점)★ 에서 1단. GPS 속도를
+#    모르면 빠르다고(X_LAUNCH_PULSE) 본다 = 일찍 줄인다.
+#  · 복귀 : Xb 통과 틱부터 기존 로직(순수추종·corner_speed·CTE 적분). driving 의 CTE 적분은 X 동안
+#    건드리지 않아(경로 기준 편향이라 그대로 유효) 리셋하지 않고, 백래시·댐핑 상태만 지운다
+#    (reset_steer_shaping — 그 사이 조향은 다른 식이 냈다). 아직 1단이면 해제선까지 물고 간다.
+#  · 쓰지 않는 X(경로 선택 때 말한다) : 짝이 안 맞음 · 순서 뒤집힘 · 20 m 미만 · ★직선이 아님★
+#    (Xa–Xb 현과 경로의 최대 횡편차 > X_STRAIGHT_MAX_M) · 안에 L/S/T/Y · 종점이 Xb 뒤 goal_brake_m 안.
+#    직선 문턱 0.5 m 근거 — 세 경로의 80 m 직선 창(가장 곧은 5~10 %) 실측 0.06~0.23 m 의 2배쯤이고,
+#    현을 따라가면 그 편차가 그대로 경로 CTE 가 되므로 이탈 문턱 2.0 m 의 1/4 이다.
+#  · 소유권 : 종점 > S > 신호 > L 인계 > Y > ★X★ > 코너 1단 (X 안에는 앞의 것들이 없게 검증한다).
+X_TAG_A, X_TAG_B = 'XA', 'XB'       # terrain 칸을 대문자로 접어 비교한다
+X_PULSE = 12                        # [펄스] X 순항 — braketest DRIVE_PULSE 와 같은 근거 (런치 x_pulse)
+X_LAUNCH_PULSE = 15                 # [펄스] X 출발 — braketest LAUNCH_PULSE (런치 x_launch_pulse)
+X_SWITCH_KMH = 33.0                 # [km/h] GPS 가 이걸 넘으면 순항으로 — braketest CRUISE_SWITCH_KMH
+X_PULSE_LIMIT = 15                  # ★X 안에서만★ send 상한 (kasa_1017 TARGET_MAX · arduino PULSE_MAX)
+X_STRAIGHT_MAX_M = 0.5              # [m] Xa–Xb 현과 경로의 최대 횡편차 — 넘으면 그 X 를 쓰지 않는다
+X_MIN_LEN_M = 20.0                  # [m] braketest GOAL_MIN_M 과 같다 — 가속할 거리도 없다
+#  ★요레이트 댐핑(line_steer.rate_damp_deg)은 X 에서 기본 끔★ (런치 x_rate_damp) — braketest 와 다른 유일한
+#  식 차이다. 모의(7펄스 → 38 km/h, 직선 140 m, 시드 3 × 트림 −2.1·−0.3·+0.5) : 켜면 조향 서보 반전
+#  114~186 회/분(일반 7펄스 주행 24) — 자이로 잡음이 댐핑으로 지령에 실리고 백래시 선보상(A)이 그것을 ±0.8°
+#  로 키운다. 끄면 26~44 회/분 · 횡편차 최대 0.24~0.62 m. 실차 근거도 같은 쪽이다 — driving 의 요레이트
+#  댐핑(C)은 18 km/h 위에서 1.0 s 주기 한계순환이라 2026-10-19 에 껐다(CHANGELOG).
+X_RATE_DAMP = False
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-10] 주행은 ★라이다가 켜진 뒤에★ 시작한다 (사용자 지시) ★★
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★실측 — 조종권은 넘어갔는데 mppi 가 아무것도 못 냈다★
@@ -2073,6 +2120,10 @@ class DrivingNode(Node):
         #   (물린 뒤 0.6초 이후에서 잰다), 그 값을 여기에 넣으면 체결 지점이 따라온다.
         self.declare_parameter('goal_brake1_ms2', GOAL_BRAKE1_MS2)
         self.declare_parameter('y_pulse', Y_PULSE)          # [2026-10-19] terrain 'Y' 상한
+        self.declare_parameter('x_pulse', X_PULSE)          # [2026-10-19] terrain X 고속구간
+        self.declare_parameter('x_launch_pulse', X_LAUNCH_PULSE)
+        self.declare_parameter('x_switch_kmh', X_SWITCH_KMH)
+        self.declare_parameter('x_rate_damp', X_RATE_DAMP)
         self.declare_parameter('goal_brake2_backstop', GOAL_BACKSTOP)
         # ── 코너 1단 선행제동 [2026-08-18] ── 상단 '코너 1단 선행제동' 절 참고
         #   ★실차 첫 확인은 false 로 시작할 수 있게 열어 둔다★ 끄면 종전 거동
@@ -2330,7 +2381,18 @@ class DrivingNode(Node):
         self._yzs = SlowZone('Y 감속구간')
         self._yz_spans = []           # [(시작idx, 끝idx)] — build_waypoints 가 주행 직전에 만든다
         self.y_pulse = max(1, min(MAX_PULSE_LIMIT, int(self.get_parameter('y_pulse').value)))
-        self._slow_zones = (self._lzs, self._yzs)   # ★리니어 소유자 목록★ (_slow_brake_owned_elsewhere)
+        # ── terrain 'Xa'…'Xb' 고속구간 [2026-10-19] (상수절 'terrain Xa') ──
+        self._xzs = SlowZone('X 고속구간 끝')   # Xb 앞 1단 (slow_step)
+        self._x_pairs = []            # [(ia, ib)] — 쓸 수 있는 X (select_route 가 검증)
+        self._x_done = set()          # 처리한 Xa
+        self._xs = None               # 진행 중 X 의 상태 (dict) — 없으면 None
+        self._x_ret_pulse = 0         # 마지막 X 의 복귀 펄스 (Xb 뒤 1단 꼬리 해제에 쓴다)
+        self.x_pulse = max(1, min(X_PULSE_LIMIT, int(self.get_parameter('x_pulse').value)))
+        self.x_launch_pulse = max(self.x_pulse, min(X_PULSE_LIMIT,
+                                  int(self.get_parameter('x_launch_pulse').value)))
+        self.x_switch_kmh = float(self.get_parameter('x_switch_kmh').value)
+        self.x_rate_damp = bool(self.get_parameter('x_rate_damp').value)
+        self._slow_zones = (self._lzs, self._yzs, self._xzs)   # ★리니어 소유자 목록★
         # ── S 일시정지 서브페이즈 [2026-09-07] ──
         self._sp_state = SP_NONE
         self._sp_idx = -1             # 지금 처리 중인 S 의 WP 인덱스
@@ -3342,6 +3404,176 @@ class DrivingNode(Node):
                              f"Y 감속구간 WP {i0}~{i1} 진입 (상한 {self.y_pulse}펄스)")
         return min(out, self.y_pulse)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  terrain 'Xa'…'Xb' 고속구간 [2026-10-19] — 근거는 상수절 'terrain Xa'
+    # ══════════════════════════════════════════════════════════════════════════
+    def x_ret_speed(self, ib):
+        """Xb 에서 내려놓을 속도 [m/s] — min(drive_pulse, Xb 뒤 curve_far 안 코너가 허락하는 속도).
+        코너 속도 v_c 는 corner_speed 와 같은 식(demand_speed · PEAK_SPEED_BLEND). 허락 속도는 Xb 뒤를 받는
+        ★기존 코너 1단의 체결 규칙★ 그대로 — decel_dist(v, v_c, A_BRAKE1_MS2, 0.55) × cb_late_k
+        + BRAKE_GATE_MARGIN ≤ d 를 v 로 푼 값(일찍 줄이는 쪽)."""
+        v_ret = self.drive_pulse * MS_PER_PULSE
+        n = len(self.waypoints)
+        if not self.wp_req_win or ib >= n:
+            return v_ret
+        s0 = self.wp_s[ib]
+        for j in range(ib, n):
+            d = self.wp_s[j] - s0
+            if d > self.curve_far:
+                break
+            w, p = self.wp_req_win[j], self.wp_req_peak[j]
+            vc = self.demand_speed(w + PEAK_SPEED_BLEND * max(0.0, p - w))
+            d_eff = max(0.0, d - BRAKE_GATE_MARGIN) / self.cb_late_k
+            al = A_BRAKE1_MS2 * GOAL_BRAKE1_LAG_S
+            v_ret = min(v_ret, -al + math.sqrt(al * al + vc * vc + 2.0 * A_BRAKE1_MS2 * d_eff))
+        return v_ret
+
+    def _x_ok(self):
+        return (self.state == S_DRIVE_RUN
+                and not self._rejoin
+                and self._goal_phase == GOAL_PHASE_NONE
+                and self._sp_state == SP_NONE
+                and self._sa_phase == SA_NONE
+                and self.tl_brake_req() == 0
+                and not self._lzs.slow and not self._yzs.slow
+                and not self.estop)
+
+    def begin_x(self, pair):
+        ia, ib = pair
+        gx, gy = self.waypoints[ib]
+        fr = ls.line_frame(self.x, self.y, gx, gy)     # ★S = 지금 차 위치★ → e(0) = 0
+        self._x_done.add(ia)
+        if fr is None:
+            self.event(f"⚠️ X 고속구간 WP {ia}~{ib} — 이미 Xb 위다. 건너뛴다")
+            return
+        ux, uy, dist, brg = fr
+        v_ret = self.x_ret_speed(ib)
+        ret_pulse = max(1, min(self.drive_pulse, int(v_ret / MS_PER_PULSE + 1e-9)))
+        self._x_ret_pulse = ret_pulse
+        now = time.time()
+        self._xs = dict(pair=pair, sx=self.x, sy=self.y, ux=ux, uy=uy, dist=dist, brg=brg,
+                        t0=now, latched=False, coast=False, out=float(self._last_steer),
+                        steer_t=0.0, cte_i=0.0, cte_prev=0.0, i_term=0.0, sat=False,
+                        v_ret=ret_pulse * MS_PER_PULSE, ret_pulse=ret_pulse,
+                        bias=float(self._cte_i_term))
+        self.reset_steer_shaping()
+        psi = wrap180(self.heading - brg) if self.heading is not None else float('nan')
+        self.event(f"🚀 X 고속구간 진입 — WP {ia}→{ib} 직선 {dist:.1f}m (방위차 {psi:+.1f}°, "
+                   f"트림 {self.steer_trim:+.2f}° · 편향 {self._cte_i_term:+.2f}° 이어받음). "
+                   f"{self.x_launch_pulse}펄스 출발 → GPS {self.x_switch_kmh:.0f} km/h 에서 "
+                   f"{self.x_pulse}펄스, Xb 에서 {ret_pulse}펄스로 내려놓는다")
+
+    def end_x(self, why):
+        xs = self._xs
+        self._xs = None
+        self.reset_steer_shaping()               # 그 사이 조향은 직선 프리뷰 식이 냈다
+        kmh = self.measured_kmh()
+        self.event(f"🏁 X 고속구간 끝 — {why} "
+                   f"({'속도 모름' if kmh is None else f'{kmh:.1f}km/h'}, 목표 {xs['ret_pulse']}펄스). "
+                   f"기존 로직으로 복귀" + (" — 1단은 해제선까지 물고 간다" if self._xzs.slow else ""))
+
+    def x_zone_step(self, prev_idx):
+        """X 고속구간 한 틱. 이번 틱을 이 함수가 냈으면 True (run_follow 는 거기서 끝난다)."""
+        xs = self._xs
+        if xs is None:
+            hit = next((p for p in self._x_pairs
+                        if prev_idx < p[0] <= self.wp_idx and p[0] not in self._x_done), None)
+            if hit is None:
+                return False
+            if self.wp_idx >= hit[1]:
+                self._x_done.add(hit[0])
+                self.event(f"⚠️ X 고속구간 WP {hit[0]}~{hit[1]} — Xa·Xb 를 한 틱에 지났다. 건너뛴다")
+                return False
+            if not self._x_ok():
+                self._x_done.add(hit[0])
+                self.event(f"⚠️ X 고속구간 WP {hit[0]}~{hit[1]} 건너뜀 — 종점·S·신호·L·Y·재수렴·"
+                           f"E-STOP 중 하나가 쥐고 있다. 기존 로직 그대로")
+                return False
+            self.begin_x(hit)
+            xs = self._xs
+            if xs is None:
+                return False
+        ia, ib = xs['pair']
+        s_, e = ls.line_se(self.x, self.y, xs['sx'], xs['sy'], xs['ux'], xs['uy'])
+        if self.wp_idx >= ib or s_ >= xs['dist']:
+            self.end_x("Xb 도달" if self.wp_idx >= ib else "Xb 투영 통과")
+            return False
+        if self.heading is None or self._goal_phase != GOAL_PHASE_NONE:
+            self.end_x("종점 접근이 넘겨받는다" if self.heading is not None else "헤딩 없음")
+            return False
+        now = time.time()
+        v = self.gps_ms()
+        vv = v if v is not None else 0.0
+        v_fast = v if v is not None else self.x_launch_pulse * MS_PER_PULSE   # 모르면 빠르게
+        # ── 속도 : 출발 → 순항 래치 (braketest 와 같은 판정식) ──
+        if not xs['latched']:
+            why = ls.launch_switch_why(
+                None if v is None else v * 3.6, v is not None, now - xs['t0'],
+                self.enc_pulse, self.x_switch_kmh, ls.LAUNCH_MAX_S)
+            if why:
+                xs['latched'] = True
+                self.event(f"⏬ X 순항 전환 — {why} → {self.x_pulse}펄스")
+        base = self.x_pulse if xs['latched'] else self.x_launch_pulse
+        # ── Xb 접근 : ★직전까지 고속 유지★ — 1단으로 복귀 속도에 닿는 마지막 지점(창)에서 한 번 판단 ──
+        #   창 = decel_dist(v, v_ret, SLOW_A1_MS2 0.88 보수, 0.55) + 여유 — L 인계와 같은 식.
+        #   그 자리에서 slow_step 이 고른다 : 속도 차가 작으면(체결문턱 이하) 또는 코스트로 남은 거리 안에
+        #   되면 ★관성★(목표만 복귀 펄스 — A보드가 구동을 빼 코스트), 아니면 ★1단★.
+        #   (코스트 0.41 m/s² 로 처음부터 줄이면 30 km/h → 22 km/h 에 ≈90 m — '직전까지 유지' 와 어긋난다)
+        left = xs['dist'] - s_
+        win = self.decel_dist(v_fast, xs['v_ret'], SLOW_A1_MS2, GOAL_BRAKE1_LAG_S) + SLOW_MARGIN_M
+        armed = left <= win
+        if armed and not xs['coast'] and not self._xzs.slow:
+            xs['coast'] = True                   # 창에 들어왔다 (record slow_zone 6 = 내려놓는 중)
+        pulse = self.slow_step(self._xzs, base, xs['ret_pulse'], self._x_ok(), armed, left,
+                               self.wp_s[ib] if ib < len(self.wp_s) else None,
+                               f"X 고속구간 끝 — Xb {left:.1f}m 앞 (1단 창 {win:.1f}m)")
+        # ── 조향 : 직선 프리뷰 추종 (line_steer — braketest 와 같은 식) ──
+        psi = wrap180(self.heading - xs['brg'])
+        imu_ok = self.imu_time > 0.0 and (now - self.imu_time) <= ls.IMU_FRESH_S
+        r_dps = math.degrees(self.gyro_z)
+        lp = ls.preview_len(ls.T_PREVIEW_S, vv if vv > 0.1 else self.x_pulse * MS_PER_PULSE)
+        aim = ls.aim_deg(e, psi, lp)
+        damp = ls.rate_damp_deg(lp, r_dps) if (imu_ok and self.x_rate_damp) else 0.0   # 상수절 X_RATE_DAMP
+        xs['cte_i'], xs['cte_prev'], xs['i_term'] = ls.cte_integral_step(
+            xs['cte_i'], xs['cte_prev'], e, xs['sat'], self.enc_pulse > ls.CTE_I_MIN_PULSE,
+            1.0 / CONTROL_HZ)
+        #  ★driving 이 X 직전까지 배운 편향(CTE 적분 기여)을 얼려서 더한다★ — 선 추종 이득은 v² 에 반비례라
+        #  (L_p ∝ v) 직진 편향을 횡오차로 버틴다(도로휠 1.3° 면 30 km/h 에서 ≈2 m — 모의). line_steer 의
+        #  적분은 상한 0.5° 라 못 메운다. 트림(_with_trim)과 함께 '직진을 만드는 조향' 을 그대로 가져간다.
+        road = aim + damp + xs['i_term'] + xs['bias']
+        lim = ls.pot_limit(v, ls.AY_MAX_MS2, ls.POT_HARD_MAX_DEG, float('nan'), 0, imu_ok)
+        pot = self._with_trim(math.copysign(ls.plant_pot(road, vv), road))
+        pot = ls.clamp(pot, -lim, lim)
+        pot = ls.yaw_guard(pot, r_dps, ls.yaw_rate_max(vv, ls.AY_MAX_MS2), imu_ok)
+        xs['sat'] = abs(pot) >= lim - 1e-6
+        dt = ls.clamp((now - xs['steer_t']) if xs['steer_t'] > 0.0 else 1.0 / CONTROL_HZ, 1e-3, 0.2)
+        xs['steer_t'] = now
+        xs['out'] = ls.smooth_step(xs['out'], pot, dt, lim)
+        self._diag_target_dist = lp
+        self._last_road_deg = float(road)
+        #  ★조향 백래시 선보상(A)은 X 에서도 건다★ — 식(line_steer)이 아니라 이 차 조향 서보의 성질이다.
+        #  안 걸면 직선 보정 지령(pot 1~2°)이 유격 ±1° 안에서 사라져 헤딩 오차가 남는다(모의 : 4° 로 굳어
+        #  2 m 를 흘렀다). braketest 는 이것이 없다 — 그쪽 거동은 그대로 둔다.
+        self.send(pulse, self._backlash_comp(xs['out']), control=True, limit=X_PULSE_LIMIT)
+        self.throttle_event(
+            f"🚀 X 질주 — Xb 까지 {left:.1f}m, {vv * 3.6:.1f}km/h, 지령 {pulse}, e {e:+.2f}m, "
+            f"ψ {psi:+.1f}°, L_p {lp:.1f}m, 조향 {xs['out']:+.1f}°/{lim:.1f}")
+        return True
+
+    def x_tail_step(self, pulse):
+        """Xb 를 지났는데 아직 1단이면 — 해제선(복귀 펄스)까지 물고 간다. 소유권을 잃으면 놓는다."""
+        z = self._xzs
+        if not z.slow or self._xs is not None:
+            return pulse
+        hold = max(1, self._x_ret_pulse)
+        why = self.slow_release_why(time.time() - z.t, hold)
+        if why or not (self.state == S_DRIVE_RUN and self._goal_phase == GOAL_PHASE_NONE
+                       and self._sp_state == SP_NONE and self._sa_phase == SA_NONE
+                       and not self.estop):
+            self.slow_release(z, why or "소유권을 넘긴다", hold)
+            return pulse
+        return 0
+
     def lidar_carry_step(self):
         """★1단을 문 채 인계했다★ — L 구간 안에서 그 1단을 언제 놓을지. [2026-10-19]
         /brake_level 만 쥔다(keep_brake 가 재확인) — /cmd_vel_raw·/control_state 는 침묵 그대로다.
@@ -3656,6 +3888,9 @@ class DrivingNode(Node):
         for z in self._slow_zones:
             z.clear()
         self._lz_carry_t = None
+        if self._xs is not None:                 # [2026-10-19] X 는 그만둔다(재개는 기존 로직으로)
+            self._x_done.add(self._xs['pair'][0])
+            self._xs = None
         self._sp_state = SP_NONE
         #  ★[2026-10-01] 신호 접근도 지운다 — 재개한 첫 틱에 다시 판단한다★
         #  ★카메라 빨간불 래치(_cam_latch)는 지우지 않는다★ 정지선 앞에 서 있는 동안
@@ -3788,6 +4023,7 @@ class DrivingNode(Node):
         self._warn_tl_zones(zone)
         self._warn_lidar_room(zone)               # [2026-10-19] 6.4③
         self._warn_y_zones(zone)                  # [2026-10-19] terrain 'Y'
+        self._warn_x_zones(zone)                  # [2026-10-19] terrain 'Xa'…'Xb'
         if n_lidar:
             # ★몇 개인지가 아니라 몇 토막인지를 말한다★ 사람이 손으로 적은 열이라
             #   오타 하나가 구간을 둘로 쪼개는데, 개수만 보면 그것이 안 드러난다.
@@ -3847,6 +4083,64 @@ class DrivingNode(Node):
                 self.event(f"⚠️ Y 구간 WP {i0}~{i1} 안에 {'·'.join(sorted(inner))} 가 있다 — "
                            f"L 이면 mppi 가 몰아 Y 상한이 안 듣고, S·T 는 그쪽이 리니어를 쥔다 "
                            f"(Y 1단은 손을 뗀다). 겹치지 않게 적을 것")
+
+    def _warn_x_zones(self, zone):
+        """terrain 'Xa'…'Xb' 짝을 맞추고 ★쓸 수 있는 것만★ raw_x_pairs 에 담는다. [2026-10-19]
+        쓰지 않는 경우 — 짝 없음 · 순서 뒤집힘 · X_MIN_LEN_M 미만 · 직선 아님(X_STRAIGHT_MAX_M) ·
+        안에 L/S/T/Y · 종점이 Xb 뒤 goal_brake_m 안. 사람이 손으로 적은 열이라 이유를 다 말한다."""
+        self.raw_x_pairs = []
+        tags = [(i, str(z).strip().upper()) for i, z in enumerate(zone)
+                if str(z).strip().upper() in (X_TAG_A, X_TAG_B)]
+        if not tags:
+            return
+        pairs, open_a = [], None
+        for i, t in tags:
+            if t == X_TAG_A:
+                if open_a is not None:
+                    self.event(f"⚠️ Xa(WP {open_a}) 뒤에 Xb 없이 또 Xa(WP {i}) — 앞의 Xa 는 쓰지 않는다")
+                open_a = i
+            elif open_a is None:
+                self.event(f"⚠️ 짝 없는 Xb(WP {i}) — 앞에 Xa 가 없다. 쓰지 않는다")
+            else:
+                pairs.append((open_a, i))
+                open_a = None
+        if open_a is not None:
+            self.event(f"⚠️ Xa(WP {open_a}) 뒤에 Xb 가 없다 — 쓰지 않는다")
+        wps = self.raw_wps
+        n = len(zone)
+        v = self.x_pulse * MS_PER_PULSE
+        stop2 = self.stop_dist(v, GOAL_BRAKE2_MS2, GOAL_BRAKE2_LAG_S)
+        for ia, ib in pairs:
+            span = self._span_m(ia, ib)
+            lat0 = wps[ia][0]
+            pts = [latlon_to_xy(la, lo, lat0, wps[ia][1]) for la, lo in wps[ia:ib + 1]]
+            fr = ls.line_frame(pts[0][0], pts[0][1], pts[-1][0], pts[-1][1])
+            dev = (max(abs(ls.line_se(px, py, pts[0][0], pts[0][1], fr[0], fr[1])[1])
+                       for px, py in pts) if fr else float('inf'))
+            inner = {('L' if z in LIDAR_ZONE_CHARS else 'S' if z in STOP_ZONE_CHARS
+                      else 'Y' if z in Y_ZONE_CHARS else 'T')
+                     for z in zone[ia:ib + 1]
+                     if z in LIDAR_ZONE_CHARS or z in STOP_ZONE_CHARS or z in Y_ZONE_CHARS
+                     or tl_label(z)}
+            tail = self._span_m(ib, n - 1) if ib < n - 1 else 0.0
+            why = None
+            if not math.isfinite(span) or span < X_MIN_LEN_M:
+                why = f"{span:.1f}m — {X_MIN_LEN_M:.0f}m 보다 짧다"
+            elif dev > X_STRAIGHT_MAX_M:
+                why = (f"★직선이 아니다★ — Xa–Xb 현에서 경로가 최대 {dev:.2f}m 벗어난다 "
+                       f"(문턱 {X_STRAIGHT_MAX_M:.1f}m)")
+            elif inner:
+                why = f"안에 {'·'.join(sorted(inner))} 가 있다 — 고속으로 그 판단을 할 수 없다"
+            elif self.goal_brake_m > 0.0 and tail < self.goal_brake_m:
+                why = f"종점이 Xb 뒤 {tail:.1f}m — 종점 접근({self.goal_brake_m:.0f}m)과 겹친다"
+            if why:
+                self.event(f"❌ X 고속구간 WP {ia}~{ib} 쓰지 않는다 — {why}")
+                continue
+            self.raw_x_pairs.append((ia, ib))
+            self.event(f"🚀 X 고속구간 WP {ia}~{ib} — 직선 {span:.1f}m (현 편차 {dev:.2f}m). "
+                       f"{self.x_launch_pulse}펄스 출발 → {self.x_switch_kmh:.0f} km/h 에서 "
+                       f"{self.x_pulse}펄스. ⚠️ {self.x_pulse}펄스 2단 정지거리 ≈{stop2:.1f}m"
+                       f"(+통합 보드 실측비 0.80 이면 그보다 짧다) — 앞이 비어 있을 것")
 
     def _warn_stop_zones(self, zone):
         """terrain 'S' 를 세고 ★사람이 손으로 적은 열의 실수★ 를 그 자리에서 말한다.
@@ -4038,6 +4332,8 @@ class DrivingNode(Node):
         #  제어 루프에서는 이 표로 뺄셈만 한다 — lidar_zone_left_m / stop_zone_hit.
         self._lz_starts = [self.wp_s[i0] for i0, _ in self._zone_segments(self.wp_zone)
                            if i0 < len(self.wp_s)]
+        #  [2026-10-19] X 고속구간 짝 — select_route 가 검증해 둔 것만 (raw 인덱스 = WP 인덱스)
+        self._x_pairs = [p for p in getattr(self, 'raw_x_pairs', []) if p[1] < len(self.wp_s)]
         #  [2026-10-19] Y 감속구간 토막 — 열쇠는 시작 호길이(구간마다 한 번 판단)
         self._yz_spans = [(i0, i1) for i0, i1 in self._zone_segments(self.wp_zone, Y_ZONE_CHARS)
                           if i0 < len(self.wp_s)]
@@ -4056,6 +4352,8 @@ class DrivingNode(Node):
         for z in self._slow_zones:
             z.reset()
         self._lz_carry_t = None
+        self._xs = None                          # [2026-10-19] X 고속구간
+        self._x_done = set()
         return True
 
     def build_curve_profile(self):
@@ -4232,6 +4530,8 @@ class DrivingNode(Node):
         for z in self._slow_zones:
             z.reset()
         self._lz_carry_t = None
+        self._xs = None                          # [2026-10-19] X 고속구간
+        self._x_done = set()
         self._sa_phase = SA_NONE          # [2026-10-01] 신호 접근도 (리니어는 아래 한 곳이)
         # ★라이다 이양도 함께 내린다 [2026-09-01]★ 도착·이탈·정지명령·수동전환으로
         #   상태가 바뀌면 조종권은 무조건 이 노드로 돌아온다. 내리지 않으면 도착해
@@ -4839,6 +5139,11 @@ class DrivingNode(Node):
                            f"조향 0 + 리니어 2단")
                 return
 
+        # ── X 고속구간 [2026-10-19] — 안이면 직선 프리뷰 추종이 이번 틱을 낸다 (상수절 'terrain Xa') ──
+        #   ★경로이탈·종점 판정 뒤★ 에 둔다 — 둘 다 X 안에서도 그대로 산다.
+        if self.x_zone_step(prev_idx):
+            return
+
         # ── 인지 : 전방 곡률 (근거리=현재 코너 / 원거리=다가오는 코너) ──
         #   구 white 와 같은 2단 스캔. 근거리 스캔거리는 LFD 에 비례하므로 직전
         #   주기의 LFD(_lfd_out)를 쓴다 — 구 white 도 같은 이유로 저역값을 썼다.
@@ -4878,6 +5183,7 @@ class DrivingNode(Node):
         #   종점 > S > 신호 > L 인계 > ★Y★ > 코너 1단. 상한(y_pulse)은 소유권과 무관하게 늘 걸고,
         #   1단은 위 넷이 리니어를 쥐지 않았을 때만 문다. 코너 1단은 Y 가 물고 있으면 손을 뗀다.
         pulse = self.y_zone_step(pulse)
+        pulse = self.x_tail_step(pulse)          # [2026-10-19] Xb 를 지나서도 1단이면 해제선까지
 
         # ── 판단 4. 코너 1단 선행제동 [2026-08-18] ──
         #   ★반드시 goal_approach 뒤에 둔다★ 그쪽이 이번 틱에 종점 제동을 물었다면
@@ -5218,6 +5524,12 @@ class DrivingNode(Node):
                 peak_max, peak_d = self.wp_req_peak[i], d
         return win_max, win_d, peak_max, peak_d
 
+    def demand_speed(self, demand_deg):
+        """요구 도로휠각 → 목표속도 [m/s] (corner_speed (a)(b) 의 선형 감속). [2026-10-19 메서드로 —
+        X 고속구간이 Xb 뒤 코너의 복귀 속도를 같은 식으로 잰다]"""
+        r = max(0.0, min(1.0, demand_deg / STEER_FULL_SLOWDOWN_DEG))
+        return self.max_speed_ms - (self.max_speed_ms - self.min_speed_ms) * r
+
     def _ay_speed(self, demand_deg):
         """[2026-09-30] 요구 도로휠각 → 횡가속 상한 속도 √(corner_ay_max · R) [m/s].
         R = L / tan(요구각). 곧으면(요구각 ≈ 0) inf — 상한이 없다."""
@@ -5246,9 +5558,7 @@ class DrivingNode(Node):
         BRAKE_GATE_MARGIN(1.5m) 앞에서 이미 목표속도에 도달하도록 거꾸로 계산한다:
             v_brake = √(v_corner² + 2·a·(게이트거리 − 1.5))   a = 2.0 m/s²
         """
-        def demand_to_speed(demand_deg):
-            r = max(0.0, min(1.0, demand_deg / STEER_FULL_SLOWDOWN_DEG))
-            return self.max_speed_ms - (self.max_speed_ms - self.min_speed_ms) * r
+        demand_to_speed = self.demand_speed       # [2026-10-19] X 복귀 속도와 같은 식
 
         # (a) 현재 코너 — 피크는 절반만 반영(곡률캡이 이미 컷을 막으므로)
         near_for_speed = near_win + PEAK_SPEED_BLEND * max(0.0, near_peak - near_win)
@@ -5383,6 +5693,7 @@ class DrivingNode(Node):
               and self._sp_state == SP_NONE             # ★S 일시정지★ [2026-09-07]
               and not self._lzs.slow                    # ★라이다 인계 서행★ [2026-09-07]
               and not self._yzs.slow                    # ★Y 감속구간★ [2026-10-19]
+              and not self._xzs.slow                    # ★X 고속구간 끝 1단★ [2026-10-19]
               and self._sa_phase == SA_NONE             # ★신호 접근★ [2026-10-01]
               and self.tl_brake_req() == 0              # 신호등이 소유권을 가졌으면 손 뗀다
               and not self.estop
@@ -6124,7 +6435,7 @@ class DrivingNode(Node):
     # ══════════════════════════════════════════════════════════════════════════
     #  출력
     # ══════════════════════════════════════════════════════════════════════════
-    def send(self, target_pulse, steer_deg, control):
+    def send(self, target_pulse, steer_deg, control, limit=MAX_PULSE_LIMIT):
         """목표펄스·조향을 그대로 내보낸다.
 
         ★[2026-08-11] 여기서 브레이크를 만지지 않는다★ 예전에는 상태에 따라
@@ -6136,7 +6447,8 @@ class DrivingNode(Node):
         에서만 물린다(enter() 가 직접 set_brake(BRAKE_FULL))."""
         # ★기준속도(REF) 상한 [2026-08-11]★ 파라미터·계산 결과가 무엇이든 여기서 잘린다.
         #   예전 상한은 프로토콜 상한(15)이라 사실상 없는 것과 같았다.
-        ref = int(max(0, min(MAX_PULSE_LIMIT, target_pulse)))
+        #   [2026-10-19] limit 은 X 고속구간만 X_PULSE_LIMIT(15)로 연다 — 그 밖은 늘 MAX_PULSE_LIMIT.
+        ref = int(max(0, min(limit, target_pulse)))
         if self.state == S_DRIVE_DONE:
             ref = 0                                # 도착 후에는 무조건 0
 
@@ -6506,7 +6818,7 @@ class DrivingNode(Node):
             float(self._sa_phase),                    # sig_phase
             float(self._sa_left),                     # sig_left_m
             # ── [2026-10-19] 감속 접근 1종 ── 0 없음 / 1 L 인계 서행 1단 / 2 L 이월 1단(인계 뒤)
-            #   / 3 Y 구간 안(상한만) / 4 Y 1단. lstatus·brake_level 과 나란히 읽는다.
+            #   / 3 Y 구간 안(상한만) / 4 Y 1단 / 5 X 질주 / 6 X 관성 / 7 X 1단 / 8 X 끝 뒤 1단.
             float(self.slow_zone_code()),             # slow_zone
         ]
         self.pub_diag.publish(diag)
@@ -6517,6 +6829,10 @@ class DrivingNode(Node):
             return 2
         if self._lzs.slow:
             return 1
+        if self._xs is not None:                 # [2026-10-19] X : 5 질주 · 6 내려놓는 중(관성) · 7 1단
+            return 7 if self._xzs.slow else (6 if self._xs['coast'] else 5)
+        if self._xzs.slow:
+            return 8                             # Xb 를 지나서도 1단 (x_tail_step)
         if self._yzs.slow:
             return 4
         return 3 if self.y_zone_here() is not None else 0
