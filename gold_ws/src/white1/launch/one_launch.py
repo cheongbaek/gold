@@ -428,6 +428,7 @@ def generate_launch_description():
                         'driving.py 의 CTE_I_MAX_DEG(2.5°)로 한 번 더 잘린다'),
         # ── ★흔들림 감소 + 10펄스 증속 [2026-09-30]★ (CHANGELOG TODO-1, driving.py 상수절) ──
         #   ★[2026-10-17] 1·2단계(A·B·C)는 기본 켬★ — 저속 직선 흔들림(CHANGELOG 2026-10-17). 끄려면 0.0 / false 로.
+        #   ★[2026-10-19] C(yaw_damp_k)는 다시 0.0★ — 18 km/h 위 1 Hz 조향 한계순환(CHANGELOG 2026-10-19). 기본 = A·B.
         #   D·E 는 기본 꺼짐 그대로(8펄스 이상용). 단계 :
         #     1단계 steer_backlash_deg:=0.8 yaw_damp_k:=0.15                  (7펄스)
         #     2단계 + pp_rear_axle:=true gps_ant_x_m:=1.25                     (7펄스)
@@ -445,19 +446,20 @@ def generate_launch_description():
             description='A 의 방향 판정 히스테리시스 [pot deg]. 지령이 극값에서 이만큼 '
                         '되돌아와야 방향을 뒤집는다(잡음 반전 방지)'),
         DeclareLaunchArgument(
-            'pp_rear_axle', default_value='true',   # [2026-10-17] 기본 켬 (B — C 와 함께)
+            'pp_rear_axle', default_value='true',   # [2026-10-17] 기본 켬 (B) · [2026-10-19] C 없이
             description='B 순수추종을 뒷차축에서 겨눈다. 코너 안쪽 파고듦(9/13 +0.19~+0.30 m)의 '
-                        '원인 제거. ★yaw_damp_k 와 함께 켤 것★ — 혼자 켜면 직선 흔들림이 는다. '
+                        '원인 제거. [2026-10-19] 기본은 C(yaw_damp_k) 없이 — C 를 켜면 18 km/h 위에서 1 Hz 로 흔들린다. '
                         'CTE·진행 포인터·종점 판정은 안테나 자리 그대로다'),
         DeclareLaunchArgument(
             'gps_ant_x_m', default_value='1.25',
             description='B 의 뒷차축 → GPS 안테나 진행방향 거리 [m]. GPS 안테나는 앞차축 위라 '
                         '축거 1.25 m 다(라이다는 뒷차축 위 — mppi handover.gps_antenna_x_m 과 같은 값)'),
         DeclareLaunchArgument(
-            'yaw_damp_k', default_value='0.15',   # [2026-10-17] 기본 켬 (C)
+            'yaw_damp_k', default_value='0.0',   # [2026-10-17] 켬 → [2026-10-19] 다시 끔 (C — 1 Hz 한계순환)
             description='C 요레이트 댐핑 [도로휠 deg/(deg/s)]. 0 = 끔. 설계값 0.15 — 경로가 '
                         '요구하지 않은 요레이트(r − v·κ)만 누른다. 백래시가 만든 위상지연을 '
-                        '되돌리는 선행 성분이다'),
+                        '되돌리는 선행 성분이다. ★[2026-10-19] 기본 0.0★ — 0.15 로 켜면 10/17 실차 18 km/h 위에서 '
+                        '1.0 s 주기 한계순환(요레이트 1 Hz RMS 7.3 °/s)이 났다'),
         DeclareLaunchArgument(
             'corner_ay_max', default_value='0.0',
             description='D 코너 속도 횡가속 상한 [m/s²]. 0 = 끔. 설계값 2.0 — v = √(a·R). '

@@ -525,7 +525,27 @@ def stats(tr, wps, skip_s=20.0):
         out['servo'] = float(np.sum(np.abs(np.diff(tr['pot'][m0]))) / max(1.0, t[m0][-1] - t[m0][0]))
     if np.sum(m0) > 2:
         out['rev'] = _reversals(tr['cmd'][m0], 0.5) / max(1.0, t[m0][-1] - t[m0][0]) * 60
+    #  ★[2026-10-19] 1 Hz 대역★ — 위 'wob' 는 1 s 이동평균 뒤라 1 Hz 를 못 본다(상자필터 영점).
+    #  10/17 C(요레이트 댐핑)의 1.0 s 주기 한계순환이 거기 숨었다. 0.6~1.6 Hz 대역 RMS 를 따로 낸다.
+    #  r1hz_fast = >18 km/h · r1hz_mid = 8~18 km/h [deg/s], c1hz_fast = 조향 지령(pot) 같은 대역 [deg].
+    out.update(_band_1hz(tr, m0))
     return out
+
+
+def _band_1hz(tr, m0, lo=0.6, hi=1.6, fs=20.0):
+    """0.6~1.6 Hz 2차 버터워스 대역(앞뒤 필터) RMS. 기록은 20 Hz 행이다 — 그 밖의 간격이면 nan."""
+    t = tr['t']
+    if len(t) < 50 or abs(float(np.median(np.diff(t))) - 1.0 / fs) > 0.01:
+        return dict(r1hz_fast=float('nan'), r1hz_mid=float('nan'), c1hz_fast=float('nan'))
+    from scipy.signal import butter, filtfilt
+    b, a = butter(2, [lo / (fs / 2), hi / (fs / 2)], btype='band')
+    r = filtfilt(b, a, np.degrees(np.nan_to_num(tr['r'])))
+    c = filtfilt(b, a, np.nan_to_num(tr['cmd']))
+    kmh = tr['v'] * 3.6
+    fast = m0 & (kmh > 18.0)
+    mid = m0 & (kmh > 8.0) & (kmh <= 18.0)
+    rms = lambda x, m: float(np.sqrt(np.mean(x[m] ** 2))) if np.sum(m) > 50 else float('nan')   # noqa: E731
+    return dict(r1hz_fast=rms(r, fast), r1hz_mid=rms(r, mid), c1hz_fast=rms(c, fast))
 
 
 def _f(x):

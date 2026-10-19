@@ -1085,6 +1085,25 @@ pot→요레이트 지연 0.10 s 에서 상관 최대 `r`=0.95):
 
 ### 4.1e ★흔들림 감소 + 10펄스 증속 — A·B·C 조향 성형 · D 코너 횡가속 · E LFD 상한★ [2026-09-30]
 
+> ★**[2026-10-19] C(요레이트 댐핑)는 다시 끈다 — 기본 = A·B**★ (사용자 승인) — 10/17 실차 두 주행(white1 17:22 · white2 17:28, 7펄스)이
+> **18 km/h 위에서 1.0 s 주기 조향 한계순환**을 냈다: 20–26 km/h 요레이트 1 Hz 대역 RMS **7.3 · 6.0 °/s**(같은 통합 보드·IMU 로 ABC 끈 14:21 주행 1.1 ·
+> 9/13 0.8), 조향 지령 ±5°. 지령→실측 pot 0.35 s + 실측→요레이트 0.05 s + 요레이트→지령(C 의 LPF) 0.10 s = **0.50 s = 반주기**이고,
+> C 이득은 v 에 비례하며 `steer_command` 전달비 2.16(4펄스 언더스티어 클램프)이 실측 1.45 보다 커 1.5배 과하다. A(±0.8 pot 계단)가 남은 몫을 채운다.
+> ★10/17 에 놓친 이유 — `follow_sim stats` 의 '흔들림' 이 1 s 이동평균 뒤 값이라 1 Hz 를 못 본다(상자필터 영점)★ → `1Hz` 열을 더했다(`r1hz_fast`·`c1hz_fast`).
+> 모의 (9/13 식별 차량, 7펄스, 경로 A·B·C × 시드 2) :
+>
+> | | 흔들림 A·B·C | 1 Hz 요레이트 >18 km/h | 조향 지령 1 Hz | 평균 \|CTE\| | 코너 최대 | 직선 std (B) |
+> |---|---|---|---|---|---|---|
+> | 종전(끔) | 2.79 · 2.57 · 1.89 | 0.5 · 0.4 · 0.4 | 0.20 · 0.09 · 0.11 | 0.14 · 0.25 · 0.16 | 0.74 · 0.72 · 0.61 | 0.30 |
+> | A+B+C (10/17 기본) | 1.75 · 1.33 · 1.71 | **2.1 · 1.1 · 1.3** | 1.24 · 0.85 · 0.83 | 0.05 · 0.11 · 0.05 | 0.21 · 0.27 · 0.19 | 0.17 |
+> | **A+B (기본)** | 2.58 · 1.82 · 2.36 | **0.5 · 0.4 · 0.4** | 0.39 · 0.26 · 0.31 | **0.06 · 0.09 · 0.05** | 0.22 · 0.18 · 0.24 | 0.16 |
+>
+> 10/17 식별 차량(G 1.45 · T 0.30 · b 0.5)에서는 1 Hz 요레이트 A+B+C 2.2~3.6 → A+B 0.6~0.8 (실차는 모의보다 약 2.6배 크게 났다).
+> 대가 — 1 s 아래 느린 흔들림 지표는 A+B 가 크다(위 표 · 3·4펄스도 0.97~2.17 대 0.83~1.66). 평균 \|CTE\|·직선 std 는 같다.
+> ⚠️ 실차 미검증 — 볼 것 : 20–26 km/h 요레이트 1 Hz RMS ≤ 1.5 °/s(`follow_design log` 의 `1Hz` 앞 값) · 직선 \|CTE\| p95 ≤ 0.53 m · 저속 직선 흔들림.
+> 같은 주행의 '자잘한 편향' 은 C 와 무관한 새 IMU 장착의 자이로 바이어스(헤딩 추정 +2~+10°) 탓이다 — 실증은 IMU 를 다시 붙인 뒤(white1 CHANGELOG TODO-19).
+> C 를 다시 켜려면 `yaw_damp_k:=0.15`(빠르면 시작할 때 경고가 나온다).
+>
 > ★**[2026-10-17] A·B·C 를 기본으로 켰다**★ (사용자 — 저속 직선 흔들림, white2 둘째 신호 정지 CTE +0.84 m). D·E 는 꺼짐 그대로(8펄스 이상용 —
 > 7펄스에서는 코너 이득이 없고 D 는 경로 B 횡가속 p99 0.97 → 1.33). 근거 모의 (7펄스, 경로 A·B·C × 시드 2 · 그날 직선 WP 200~440 1 m 옆 출발):
 >
@@ -1115,7 +1134,7 @@ pot→요레이트 지연 0.10 s 에서 상관 최대 `r`=0.95):
 
 ```bash
 ros2 launch white1 one_launch.py steer_backlash_deg:=0.8 yaw_damp_k:=0.15       # 1단계 (7펄스)
-#  2단계 + pp_rear_axle:=true gps_ant_x_m:=1.25            ★B 는 C 없이 켜지 말 것★
+#  2단계 + pp_rear_axle:=true gps_ant_x_m:=1.25            ★B 는 C 없이 켜지 말 것★  ← [2026-10-19] 철회 — 1 s 평균 지표 근거였다(4.1e 머리)
 #  3단계 + corner_ay_max:=2.0 curve_preview_far_m:=40.0
 #  4단계 + lfd_max_m:=14.0 drive_pulse:=8 → 9 → 10          ★A·C 없이 E 만 올리지 말 것 (유격 ∝ LFD²)★
 ```
@@ -1520,7 +1539,7 @@ tl_show_window:=false  ← ★기본 false★ (9/13 부터) — 화면을 보며
 drive_pulse:=7     heading_pulse:=3  wheelbase_m:=1.25
 lidar_pulse:=2     ← ★L 구간 순항 [펄스]. 이것 하나만 고치면 된다 (6.4②)★
 lfd_omega_n:=0.97  lfd_omega_n_fast:=0.78  lfd_min_m:=4.04  ← ★ω_n 속도 스케줄 (4.1)★
-steer_backlash_deg:=0.8  yaw_damp_k:=0.15  pp_rear_axle:=true  gps_ant_x_m:=1.25  ← ★4.1e A·C·B — [2026-10-17] 기본 켬★
+steer_backlash_deg:=0.8  pp_rear_axle:=true  gps_ant_x_m:=1.25  yaw_damp_k:=0.0  ← ★4.1e A·B 기본 켬 · C 는 [2026-10-19] 다시 끔(1 Hz 한계순환)★
 corner_ay_max:=0.0  curve_preview_far_m:=24.0  lfd_max_m:=11.3                   ← ★4.1e D·E (8펄스 이상)★
 steer_plant_gain:=1.26  steer_understeer:=5.17  cte_ki:=0.30
 understeer_v_clamp_pulse:=4   ← ★언더스티어 항의 v 를 여기서 묶는다 (4.1b)★
@@ -3233,7 +3252,7 @@ ping -c2 192.168.6.11
 | **카메라 색 문턱** [2026-10-01] | `traffic_timer.py` 의 `RED_MIN_S`·`GREEN_MIN_S`·`GAP_S`·`CAMERA_STALE_S` — 타이머의 T1 전환 판정과 driving 의 `LightFilter` 가 **같은 값**을 쓴다 |
 | **`/tl_zone` 관찰 창** [2026-09-30] | `driving.tl_zone_now` 가 `tt.WATCH_PRE_M`(40 m)로 만든다 — traffic_timer 는 그 라벨이 `tt.INIT_SIGNALS` 인 동안(T2 는 0초가 없거나 T2 가 잡았을 때만) 전환을 본다 |
 | **`/drive_diag` 배열** [2026-09-30] | `driving.publish_state_topics()` 배열 **끝에** 붙이고 `record.py DRIVE_DIAG_COLUMNS` **끝에** 이름 — 길이는 튜플에서 유도한다(종전 `_array(23)` 이 25개 중 두 열을 조용히 버렸다). `hud.py` 는 앞쪽 인덱스(0·1·4)를 읽으므로 ★중간에 끼우지 말 것★ |
-| **TODO-1 파라미터** [2026-09-30] | `driving.py` 상수절(기본값) **+** `one_launch.py` 런치 인자(같은 기본값) **+** `sim/follow_design.py` 의 A~E 표(설계값) — 어긋나면 모의가 실차와 다른 것을 잰다. `lfd_max_m` 은 `LFD_MAX_M` 을 대신하므로 **상수만 고치면 런치 기본값(11.3)이 이긴다** — ★[2026-10-17] A·B·C 기본 켬★ : 상수 `STEER_BACKLASH_DEG` 0.8 · `PP_REAR_AXLE` True · `YAW_DAMP_K` 0.15 = 런치 기본값, `follow_design` '현행' = 그 조합 · '종전' = 끔 (white1·white2 같은 줄) |
+| **TODO-1 파라미터** [2026-09-30] | `driving.py` 상수절(기본값) **+** `one_launch.py` 런치 인자(같은 기본값) **+** `sim/follow_design.py` 의 A~E 표(설계값) — 어긋나면 모의가 실차와 다른 것을 잰다. `lfd_max_m` 은 `LFD_MAX_M` 을 대신하므로 **상수만 고치면 런치 기본값(11.3)이 이긴다** — ★[2026-10-17] A·B·C 기본 켬 → [2026-10-19] C 끔★ : 상수 `STEER_BACKLASH_DEG` 0.8 · `PP_REAR_AXLE` True · `YAW_DAMP_K` 0.0 = 런치 기본값, `follow_design` '현행' = 그 조합(= 'A+B') · 'A+B+C' = 10/17 기본 · '종전' = 끔 (white1·white2 같은 줄). ★모의 비교는 '흔들림' 과 함께 `1Hz` 열을 볼 것★ — 흔들림은 1 s 이동평균이라 1 Hz 를 못 본다 |
 | **미리보기 ↔ `/lidar_ref[3]`** [2026-09-28] | mppi 미리보기는 driving 의 `zone_left`(다음 L 구간까지 호길이)로 켜진다. **그 열의 뜻을 바꾸면 미리보기가 조용히 꺼진다** |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |

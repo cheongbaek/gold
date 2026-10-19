@@ -16,6 +16,11 @@ follow_design.py ― TODO-1(흔들림 감소 + 10펄스 증속) 설계를 모의
 
   기각한 대안 둘(전달비 1.55 · LFD 실측속도)은 코드에 없으므로 패치로 남긴다.
 
+★[2026-10-19] '흔들림' 은 1 s 이동평균 뒤의 값이라 ★1 Hz 를 못 본다★ (상자필터의 영점이 정확히 1 Hz)★
+  10/17 에 켠 C 가 실차 18 km/h 위에서 1.0 s 주기 한계순환을 냈는데 이 지표로는 '가장 좋음' 이었다.
+  그래서 '1Hz' 열(0.6~1.6 Hz 대역 요레이트 RMS, >18 km/h · 8~18 km/h)과 '지령1Hz'(조향 지령 같은 대역)를 함께 찍는다.
+  현행 = A·B 켬 · C 끔 (CHANGELOG 2026-10-19). 10/17 기본은 'A+B+C' 후보로 본다.
+
 사용 (ROS 환경만 source — 빌드 불필요. 소스트리의 driving.py 를 그대로 쓴다):
     source /opt/ros/humble/setup.bash
     cd gold_ws/src/white1/sim
@@ -51,12 +56,12 @@ E = {'lfd_max_m': 14.0}
 def candidate(name):
     """→ (mods, params). mods 는 기각한 대안(코드에 없는 것)만 쓴다."""
     table = {
-        '현행': ([], {}),          # [2026-10-17] = driving 기본값 = A+B+C 켬
+        '현행': ([], {}),          # = driving 기본값 = [2026-10-19] A·B 켬 · C 끔 (10/17 의 A+B+C 는 'A+B+C')
         '종전': ([], {'steer_backlash_deg': 0.0, 'pp_rear_axle': False, 'yaw_damp_k': 0.0}),   # 10-17 이전 기본 (A·B·C 끔)
         'A': ([], dict(A)),
         'C': ([], dict(C)),
         'A+C': ([], {**A, **C}),
-        'A+B': ([], {**A, **B}),
+        'A+B': ([], {**A, **B, 'yaw_damp_k': 0.0}),   # [2026-10-19] = 현행 (C 를 명시해 기본값이 바뀌어도 같은 뜻)
         'A+B+C': ([], {**A, **B, **C}),
         'A+B+C+D': ([], {**A, **B, **C, **D}),
         'A+B+C+D+E': ([], {**A, **B, **C, **D, **E}),
@@ -172,6 +177,7 @@ def cmd_compare(a):
                 print(f"{p:2d}p {r} {c:12s} 흔들림 {_mean(L, 'wob'):4.2f}°/s | |CTE| {_mean(L, 'cte_abs'):.2f} "
                       f"최대 {max(o['cte_max'] for o in L):.2f} | 코너 최대 {max(o.get('c_max', 0) for o in L):.2f} "
                       f"안쪽 {_mean(L, 'c_in'):+.2f} | 직선 std {_mean(L, 's_std'):.2f} | 횡가속 p99 {_mean(L, 'ay_p99'):.2f} "
+                      f"| 1Hz {_mean(L, 'r1hz_fast'):4.1f}/{_mean(L, 'r1hz_mid'):3.1f}°/s 지령1Hz {_mean(L, 'c1hz_fast'):.2f} "
                       f"| 서보 {_mean(L, 'servo'):.1f} | {_mean(L, 'v'):4.1f} km/h{'  ⛔ ' + str(bad) if bad else ''}")
             print()
 
@@ -207,7 +213,8 @@ def _print_log(name, tr, wps):
     print(f"{name}: 흔들림 {o['wob']:.2f}°/s | |CTE| {o['cte_abs']:.2f} 최대 {o['cte_max']:.2f} | "
           f"코너 최대 {o.get('c_max', float('nan')):.2f} 안쪽 {o.get('c_in', float('nan')):+.2f} | "
           f"직선 std {o.get('s_std', float('nan')):.2f} 주기 {o.get('s_per', float('nan')):.1f}s | "
-          f"횡가속 p99 {o['ay_p99']:.2f} | {o['v']:.1f} km/h || 조향 식별 : 백래시 {b[1]:.2f}° "
+          f"횡가속 p99 {o['ay_p99']:.2f} | 1Hz {o.get('r1hz_fast', float('nan')):.1f}/{o.get('r1hz_mid', float('nan')):.1f}°/s "
+          f"지령1Hz {o.get('c1hz_fast', float('nan')):.2f} | {o['v']:.1f} km/h || 조향 식별 : 백래시 {b[1]:.2f}° "
           f"τ {b[2]:.2f}s T {b[3]:.2f}s 전달비 {b[4]:.2f} 트림 {b[5]:+.2f}")
 
 
