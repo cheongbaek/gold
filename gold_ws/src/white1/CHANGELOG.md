@@ -94,6 +94,13 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-20 (2) — ★`traffic_light.py` 구간 T·A 녹색 HSV 확인 — 녹색 화소 없는 GREEN 은 버린다★ (white2 와 같은 줄)
+
+> 구간 T·A 에서 모델 GREEN 박스는 이 규칙 전용 HSV(H 45~100 · S≥55 · V≥35, 중앙 85 %·3×3 열림)의 녹색 화소가 3px 이상이어야 남는다(`tl_green_hsv_confirm` · `tl_green_hsv_min_px`).
+> ★white1 에도 듣는다★ — driving 의 카메라 신호(`LightFilter`, 서브 코스 T)는 `/tl/state` 의 GREEN 0.4 s 로 빨간불 래치를 푼다. 10/17 white1 sub 094820 7094 정지에서
+> 모델이 어두운 빨강을 GREEN 으로 7273~7281(0.55 s) 등 여러 번 냈다 — 그 GREEN 이 이제 `/tl/state` 에 안 나온다(white1 driving 폐루프는 미검증).
+> 원인·근거·검증의 정본은 **white2 CHANGELOG 2026-10-20 (2)**. 바꾼 파일 `traffic_light.py` · `tl_params.py`(`GREEN_HSV`·`GREEN_HSV_H`·`GREEN_HSV_V_LO`) · `camera_launch.py`. 두 판 diff 13줄 그대로.
+
 ## 2026-10-20 — ★`traffic_light.py` 구간 T 16px 미만 박스 버리기 · 내 신호 잠금(T·A)★ (white2 와 같은 줄)
 
 > white1 driving 은 `/tl_permit` 이 늘 False 라 traffic_light 의 정지·해제는 쓰이지 않는다. 다만 ★구간 T 의 16px 미만 박스 버리기는 `/tl/state` 를 바꾼다★ —

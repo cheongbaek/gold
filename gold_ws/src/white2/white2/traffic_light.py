@@ -729,6 +729,9 @@ class TrafficLight(Node):
         #  ★[2026-10-20] T 작은 박스 버리기 · 내 신호 잠금★ — 기본값·근거는 tl_params.TL_LOCK(_lock_start · _lock_track · _lock_green_confirmed)
         for _k, _v in tl_params.TL_LOCK.items():
             self.declare_parameter(_k, _v)
+        #  ★[2026-10-20] 구간 T·A 녹색 HSV 확인★ — 기본값·근거는 tl_params.GREEN_HSV(_all_tl_boxes · _green_hsv_px)
+        for _k, _v in tl_params.GREEN_HSV.items():
+            self.declare_parameter(_k, _v)
         self.declare_parameter('tl_zone_stale_s', 1.0)
         #  [2026-10-09] 'A' 화살표 판독 — 모델 클래스가 아니라 ★박스 안 녹색 픽셀★ 로 읽는다.
         #    근거(docs/kcity) : 본선 4번 #1100 동좌 접근의 '진행' 표시는 적색 원등 + 좌회전 화살표뿐이다.
@@ -784,6 +787,8 @@ class TrafficLight(Node):
         self.tl_zone_stale_s   = max(0.1, float(g('tl_zone_stale_s')))
         self.zone_min_box_h_t  = max(0.0, float(g('tl_zone_min_box_h_t')))
         self.lock_enable       = bool(g('tl_lock_enable'))
+        self.green_hsv_confirm = bool(g('tl_green_hsv_confirm'))
+        self.green_hsv_min_px  = max(0, int(round(float(g('tl_green_hsv_min_px')))))
         self.lock_track_k      = max(0.1, float(g('tl_lock_track_k')))
         self.lock_lost_s       = max(0.1, float(g('tl_lock_lost_s')))
         self.lock = None              # 내 신호 잠금 — _lock_start 가 만들고 _reset_stop_line_wait·구간 변경이 지운다
@@ -932,6 +937,7 @@ class TrafficLight(Node):
         self.last_raw      = 0        # 필터 전 박스 수 (-1 = 추론 예외)
         self.last_red_drop = 0        # HSV 적색 관문에 걸려 버려진 RED 수
         self.last_green_drop = 0      # GREEN 아랫변 관문(tl_green_max_y2)에 걸려 버려진 GREEN 수
+        self.last_green_hsv_drop = 0  # [2026-10-20] 구간 T·A 에서 HSV 녹색이 없어 버려진 GREEN 수(tl_green_hsv_confirm)
         self.fps           = 0.0
         self.fps_t         = time.monotonic()
 
@@ -1190,11 +1196,22 @@ class TrafficLight(Node):
             return 'GREEN', r, gr
         return 'UNKNOWN', r, gr
 
+    def _green_hsv_px(self, crop_bgr):
+        """[2026-10-20] 구간 T·A 녹색 확인 — 박스 크롭의 녹색 화소 수. 이 규칙 전용 H 45~100 · V≥35(tl_params.GREEN_HSV_H ·
+        GREEN_HSV_V_LO), S 하한·중앙 잘라내기·3×3 열림은 _hsv_state 와 같다. _hsv_state 의 녹색 범위(45~90·V≥60)와 별개다."""
+        if crop_bgr is None or crop_bgr.size == 0:
+            return 0
+        hsv = cv2.cvtColor(self._central_crop(crop_bgr, self.hsv_crop_center_ratio), cv2.COLOR_BGR2HSV)
+        m = cv2.inRange(hsv, np.array([tl_params.GREEN_HSV_H[0], self.hsv_sat_low, tl_params.GREEN_HSV_V_LO], dtype=np.uint8),
+                        np.array([tl_params.GREEN_HSV_H[1], 255, 255], dtype=np.uint8))
+        return cv2.countNonZero(cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)))
+
     def _all_tl_boxes(self, result, roi_img, ymin=0):
         """YOLO 결과 → 필터링·색보정된 신호등 박스 목록. ymin = ROI 윗변(보정 영상 y) — GREEN 아랫변 관문용."""
         out = []
         self.last_red_drop = 0
         self.last_green_drop = 0
+        self.last_green_hsv_drop = 0
         if result is None or result.boxes is None or len(result.boxes) == 0:
             return out
         # ROI 를 통째로 덮는 박스를 거르는 자 — ROI 높이 기준이라 ROI 를 바꿔도 산다.
@@ -1202,6 +1219,8 @@ class TrafficLight(Node):
         # [2026-10-20] 구간 'T' 에서는 작은 박스를 아예 만들지 않는다(tl_zone_min_box_h_t — tl_params.TL_LOCK 주석).
         min_bh = self.zone_min_box_h_t if (self.zone_min_box_h_t > 0.0 and self._zone_active()
                                             and self.tl_zone == 'T') else 0.0
+        # [2026-10-20] 구간 T·A 에서는 GREEN 에 HSV 녹색 화소를 요구한다(tl_green_hsv_confirm — tl_params.GREEN_HSV 주석).
+        green_confirm = (self.green_hsv_confirm and self._zone_active() and self.tl_zone in ('T', 'A'))
         for b in result.boxes:
             conf   = float(b.conf[0].item()) if hasattr(b, 'conf') else 0.0
             cls_id = int(b.cls[0].item())    if hasattr(b, 'cls')  else -1
@@ -1233,6 +1252,10 @@ class TrafficLight(Node):
             # GREEN 아랫변 관문 — 지평선 아래(길가 수풀·사람)의 GREEN 은 신호등이 아니다.
             if label == 'GREEN' and self.green_max_y2 > 0 and (y2 + ymin) >= self.green_max_y2:
                 self.last_green_drop += 1
+                continue
+            # 녹색 근거 없는 GREEN 관문 — 어두운 황색 등화를 모델이 GREEN 으로 내면 HSV 녹색이 0 이다(094820 7105~7117).
+            if label == 'GREEN' and green_confirm and self._green_hsv_px(crop) < self.green_hsv_min_px:
+                self.last_green_hsv_drop += 1
                 continue
 
             out.append({
@@ -1718,6 +1741,7 @@ class TrafficLight(Node):
                 self.last_raw = -1
                 self.last_red_drop = 0
                 self.last_green_drop = 0
+                self.last_green_hsv_drop = 0
 
         # 구간 'B' — 버스·차량 박스를 가르고(_find_bus), 판단에 쓸 박스를 따로 만든다(_decision_boxes).
         #   'B' 밖에서는 dec 가 boxes 그 자체라 판단이 종전과 같다.
@@ -2523,7 +2547,7 @@ class TrafficLight(Node):
         if self.stopping:
             self.get_logger().info(
                 f"🛑 신호등 정지 유지 중 [{self.stop_why}] {self.stop_level}단 | tl={self.tl_state} "
-                f"raw={self.last_raw} drop={self.last_red_drop} gdrop={self.last_green_drop} fps={self.fps:.1f}"
+                f"raw={self.last_raw} drop={self.last_red_drop} gdrop={self.last_green_drop} ghsv={self.last_green_hsv_drop} fps={self.fps:.1f}"
                 + (f" sl={self._sl_px_txt()}" if self._sl_present(now) else " sl=없음"),
                 throttle_duration_sec=2.0)
 

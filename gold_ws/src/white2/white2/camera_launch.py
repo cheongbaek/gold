@@ -308,7 +308,16 @@ def declare_args(cam_dev):
       + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_ZONE_DESC[k[-1]].format(k=k))
          for k, v in tl_params.ZONE_GATE.items()] \
       + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_LOCK_DESC[k])
-         for k, v in tl_params.TL_LOCK.items()]
+         for k, v in tl_params.TL_LOCK.items()] \
+      + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_GREEN_DESC[k])
+         for k, v in tl_params.GREEN_HSV.items()]
+
+
+#  [2026-10-20] 구간 T·A 녹색 HSV 확인 — 기본값·근거는 tl_params.GREEN_HSV (노드와 같은 값).
+_TL_GREEN_DESC = {
+    'tl_green_hsv_confirm': "구간 'T'·'A' 에서 GREEN 박스는 HSV 녹색(H 45~100·V≥35) 화소가 있어야 GREEN — false = 종전",
+    'tl_green_hsv_min_px':  "위 규칙의 녹색 화소 문턱(H 45~100·V≥35·중앙 85 %·3×3 열림 뒤) — 16px 이상 진짜 GREEN 은 32px 이상(실측)",
+}
 
 
 #  [2026-10-20] T 구간 작은 박스 버리기 · 내 신호 잠금 — 기본값·근거는 tl_params.TL_LOCK (노드와 같은 값).
@@ -361,7 +370,8 @@ def tl_b_params():
     """traffic_light 에 넘길 'B' 화살표 + 구간별 문턱 파라미터 — ★형을 고정해 넘긴다★: `tl_b_arrow_min_h:=20` ·
     `tl_zone_red_min_height_t:=12` 처럼 정수로 줘도 float 로 바꿔 넘겨 노드가 형 오류로 안 뜨는 일이 없게 한다."""
     return {k: ParameterValue(LaunchConfiguration(k), value_type=type(v))
-            for k, v in {**tl_params.B_ARROW, **tl_params.ZONE_GATE, **tl_params.TL_LOCK}.items()}
+            for k, v in {**tl_params.B_ARROW, **tl_params.ZONE_GATE, **tl_params.TL_LOCK,
+                                      **tl_params.GREEN_HSV}.items()}
 
 
 def camera_params():
