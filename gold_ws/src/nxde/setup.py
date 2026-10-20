@@ -33,6 +33,10 @@ setup(
             #  실행 대상 9개 — 전부 ros2 run 으로 띄운다 (런치파일 없음)
             #    ※ tts·kill·panel 은 ROS 노드가 아닌 작업용 도구다
             # ══════════════════════════════════════════════════════════════
+            # ★차량 구동의 필수 노드★ A/B 2보드 통신 전담. 이게 없으면 아무것도 안 움직인다.
+            #   자율주행 시에는 white one_launch.py 가 이 노드를 함께 띄운다.
+            #   단독 조종 시에는 손으로: ros2 run nxde arduino
+            'arduino  = nxde.arduino:main',
             # 마우스·키보드 GUI 조종 (하드웨어 검증용).  ros2 run nxde master
             #   ⚠️ joystick / one_launch.py(driving_node) 와 동시에 쓰지 말 것 —
             #      /cmd_vel_raw 발행자가 겹친다(창 상단에 경고가 뜬다).

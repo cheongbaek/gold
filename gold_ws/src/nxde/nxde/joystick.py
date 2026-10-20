@@ -69,7 +69,7 @@ from nxde import joyread
 from nxde.proc_guard import watch_parent
 # 포트 후보 목록의 소유자는 arduino.py 다 — GPS/IMU VID/PID 와 udev 링크
 # (/dev/gps · /dev/imu)가 그쪽에서 이미 빠진다. 표를 두 벌로 만들지 않는다.
-from nxde.arduino_old import candidate_ports
+from nxde.arduino import candidate_ports
 
 
 BAUD = 115200
