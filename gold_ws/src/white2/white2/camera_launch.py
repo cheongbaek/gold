@@ -306,7 +306,18 @@ def declare_args(cam_dev):
     ] + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_B_DESC[k])
          for k, v in tl_params.B_ARROW.items()] \
       + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_ZONE_DESC[k[-1]].format(k=k))
-         for k, v in tl_params.ZONE_GATE.items()]
+         for k, v in tl_params.ZONE_GATE.items()] \
+      + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_LOCK_DESC[k])
+         for k, v in tl_params.TL_LOCK.items()]
+
+
+#  [2026-10-20] T 구간 작은 박스 버리기 · 내 신호 잠금 — 기본값·근거는 tl_params.TL_LOCK (노드와 같은 값).
+_TL_LOCK_DESC = {
+    'tl_zone_min_box_h_t': "구간 'T' 에서 이 높이[px] 미만 박스는 만들지 않는다(빨강·초록 모두) — 0 = 끔",
+    'tl_lock_enable':      "2단을 무는 순간 내 빨강 박스를 잠그고 그 박스의 초록 확정으로만 푼다(T·A) — false = 종전 해제 규칙",
+    'tl_lock_track_k':     "잠금을 따라가는 거리 — 중심 거리 ≤ k × 잠금 높이",
+    'tl_lock_lost_s':      "잠금을 이만큼 못 보면 '잃음' 표시 [s] — 해제는 하지 않는다(계속 정지)",
+}
 
 
 #  [2026-10-19] 구간별 RED 근접 문턱·정지 중 배율 — 기본값·근거는 tl_params.ZONE_GATE (노드와 같은 값).
@@ -350,7 +361,7 @@ def tl_b_params():
     """traffic_light 에 넘길 'B' 화살표 + 구간별 문턱 파라미터 — ★형을 고정해 넘긴다★: `tl_b_arrow_min_h:=20` ·
     `tl_zone_red_min_height_t:=12` 처럼 정수로 줘도 float 로 바꿔 넘겨 노드가 형 오류로 안 뜨는 일이 없게 한다."""
     return {k: ParameterValue(LaunchConfiguration(k), value_type=type(v))
-            for k, v in {**tl_params.B_ARROW, **tl_params.ZONE_GATE}.items()}
+            for k, v in {**tl_params.B_ARROW, **tl_params.ZONE_GATE, **tl_params.TL_LOCK}.items()}
 
 
 def camera_params():

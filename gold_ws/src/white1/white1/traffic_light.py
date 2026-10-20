@@ -736,6 +736,9 @@ class TrafficLight(Node):
         #    A(#1100) 는 정지선 앞에서도 9~10px 라 T 와 한 값으로 둘 수 없다. 문턱 0 이하 = 그 구간도 구간 밖 값.
         for _k, _v in tl_params.ZONE_GATE.items():
             self.declare_parameter(_k, _v)
+        #  ★[2026-10-20] T 작은 박스 버리기 · 내 신호 잠금★ — 기본값·근거는 tl_params.TL_LOCK(_lock_start · _lock_track · _lock_green_confirmed)
+        for _k, _v in tl_params.TL_LOCK.items():
+            self.declare_parameter(_k, _v)
         self.declare_parameter('tl_zone_stale_s', 1.0)
         #  [2026-10-09] 'A' 화살표 판독 — 모델 클래스가 아니라 ★박스 안 녹색 픽셀★ 로 읽는다.
         #    근거(docs/kcity) : 본선 4번 #1100 동좌 접근의 '진행' 표시는 적색 원등 + 좌회전 화살표뿐이다.
@@ -789,6 +792,12 @@ class TrafficLight(Node):
                                min(1.0, max(0.1, float(g(f'tl_near_release_ratio_{z.lower()}')))))
                            for z in ('T', 'A', 'B')}      # 구간 → (근접 문턱 px, 정지 중 배율)
         self.tl_zone_stale_s   = max(0.1, float(g('tl_zone_stale_s')))
+        self.zone_min_box_h_t  = max(0.0, float(g('tl_zone_min_box_h_t')))
+        self.lock_enable       = bool(g('tl_lock_enable'))
+        self.lock_track_k      = max(0.1, float(g('tl_lock_track_k')))
+        self.lock_lost_s       = max(0.1, float(g('tl_lock_lost_s')))
+        self.lock = None              # 내 신호 잠금 — _lock_start 가 만들고 _reset_stop_line_wait·구간 변경이 지운다
+        self.last_near_red = None     # (마지막으로 본 근접 RED 박스, 시각) — 무는 틱에 그 프레임 RED 가 없을 때 잠금 후보
         self.bus_detect   = bool(g('tl_bus_detect'))
         self.bus_min_veh_h = float(g('tl_bus_min_veh_h'))
         self.bus_P = dict(BUS_BODY, dark_t=float(g('tl_bus_dark_t')), open_k=float(g('tl_bus_open_k')),
@@ -1200,6 +1209,9 @@ class TrafficLight(Node):
             return out
         # ROI 를 통째로 덮는 박스를 거르는 자 — ROI 높이 기준이라 ROI 를 바꿔도 산다.
         max_bh = (roi_img.shape[0] * self.tl_max_h_frac) if self.tl_max_h_frac > 0 else 0
+        # [2026-10-20] 구간 'T' 에서는 작은 박스를 아예 만들지 않는다(tl_zone_min_box_h_t — tl_params.TL_LOCK 주석).
+        min_bh = self.zone_min_box_h_t if (self.zone_min_box_h_t > 0.0 and self._zone_active()
+                                            and self.tl_zone == 'T') else 0.0
         for b in result.boxes:
             conf   = float(b.conf[0].item()) if hasattr(b, 'conf') else 0.0
             cls_id = int(b.cls[0].item())    if hasattr(b, 'cls')  else -1
@@ -1213,6 +1225,7 @@ class TrafficLight(Node):
             if area   < self.tl_min_area:                                  continue
             if aspect < self.tl_min_aspect or aspect > self.tl_max_aspect: continue
             if max_bh and bh > max_bh:                                     continue
+            if bh < min_bh:                                                continue
 
             label = self.TL_LABEL.get(cls_id, str(cls_id))
             # HSV 는 항상 돌리되 라벨을 뒤집는 조건은 방향에 따라 다르다(오류 비용이 비대칭).
@@ -1390,6 +1403,115 @@ class TrafficLight(Node):
         if rnd < self.b_round_min:
             return False, f'원등 {rnd:.2f}'
         return True, ''
+
+    # ── [2026-10-20] 내 신호 잠금 (구간 T·A) — 근거·기본값 tl_params.TL_LOCK ─────────────────────────────
+    #  만든다 : _set_stop_level 이 0 → 2단으로 무는 순간(_lock_start) — 정지 근거가 된 근접 RED 박스 중 가장 큰 것.
+    #  지운다 : _reset_stop_line_wait(해제 완료 · 허락 상실 · 확정 끊김) · cb_tl_zone(구간이 바뀜). E-STOP 은 driving 의 일시정지라
+    #           DRIVE_RUN·구간이 그대로면 잠금도 그대로다(풀린 뒤 같은 신호를 다시 본다).
+    #  해제 : 잠금이 있으면 tick 은 _lock_green_confirmed 만 본다(남의 빨강·초록 무시, '빨강 1.5 s 미감지' 해제 없음).
+    def _lock_color(self, b):
+        """잠근 박스의 색 — 'G'(진행) 또는 'R'. 구간 A 의 '빨강 + 좌회전 화살표' 는 _resolve_tl_state 와 같은 규칙으로 진행."""
+        if b['label'] == 'GREEN':
+            return 'G'
+        if self.tl_zone == 'A' and (b.get('hsv_green', 0) >= self.a_arrow_min_px
+                                    or (b.get('box_h', 0) < self.a_arrow_min_h and b.get('cls_label') == 'GREEN')):
+            return 'G'
+        return 'R'
+
+    def _lock_start(self, now):
+        """2단을 무는 순간 — 근접 RED 박스 하나를 잠근다(이번 프레임에 없으면 마지막으로 본 근접 RED, tl_hold 안)."""
+        self.lock = None
+        if not (self.lock_enable and self._zone_active() and self.tl_zone in ('T', 'A')):
+            return
+        gate = self._near_gate()
+        reds = [b for b in self.last_dec if b['label'] == 'RED' and b.get('box_h', 0) >= gate]
+        src = max(reds, key=lambda b: b.get('box_h', 0)) if reds else None
+        if src is None and self.last_near_red is not None and (now - self.last_near_red[1]) <= self.tl_arm_hold_s:
+            src = self.last_near_red[0]
+        if src is None:
+            self.get_logger().warn("🔒 잠금할 근접 빨강이 없다 — 종전 해제 규칙으로 간다")
+            return
+        x1, y1, x2, y2 = src['box']
+        self.lock = {'cx': (x1 + x2) / 2.0, 'cy': (y1 + y2) / 2.0, 'h': float(max(1, y2 - y1)), 'h0': src.get('box_h', 0),
+                     'y1': y1, 'seen_t': now, 'col': 'R', 'r_last': now, 'g_since': None, 'g_last': None, 'lost': False}
+        self.get_logger().info(f"🔒 내 신호 잠금 — {src.get('box_h', 0)}px @({x1},{y1}) · 해제는 이 박스의 초록 "
+                               f"{self.green_hold_s:.2f}s 확정(그 박스 빨강 {self.red_release_hold_s:.1f}s 미감지)만 본다")
+
+    def _lock_track(self, dec):
+        """프레임마다 잠금을 따라간다 — 중심 거리 ≤ tl_lock_track_k·h · 높이비 LOCK_GEOM['h_ratio'] 인 박스 중 가장 가까운 것.
+        못 찾으면 자리는 그대로 두므로 같은 자리에 다시 나오면 다시 붙는다. 초록 줄은 _feed_state 와 같은 틈 유예(tl_gap_grace_s)."""
+        now = time.time()
+        gate = self._near_gate()
+        reds = [b for b in dec if b['label'] == 'RED' and b.get('box_h', 0) >= gate]
+        if reds:
+            self.last_near_red = (max(reds, key=lambda b: b.get('box_h', 0)), now)
+        L = self.lock
+        if L is None:
+            return
+        lo, hi = tl_params.LOCK_GEOM['h_ratio']
+        # 못 본 시간만큼 찾는 거리를 넓힌다 — 2단을 문 뒤 차가 구르는 동안 검출이 1 s 끊기고 등기구가 3.8·h 옮겨 나타났다
+        #   (101543 1800→1817, 16 fps). 등기구는 다가갈수록 위로 가므로 아래로 h 넘게 내려간 박스는 받지 않는다.
+        gap = max(0.0, now - L['seen_t'])
+        dmax = self.lock_track_k * L['h'] * (1.0 + tl_params.LOCK_GEOM['gap_grow'] * min(1.0, gap / self.lock_lost_s))
+        best = None
+        for b in dec:
+            x1, y1, x2, y2 = b['box']
+            h = float(max(1, y2 - y1))
+            cy = (y1 + y2) / 2.0
+            d = (((x1 + x2) / 2.0 - L['cx']) ** 2 + (cy - L['cy']) ** 2) ** 0.5
+            if (d <= dmax and lo <= h / L['h'] <= hi and cy <= L['cy'] + L['h']
+                    and (best is None or d < best[0])):
+                best = (d, b, h)
+        if best is not None:
+            _, b, h = best
+            x1, y1, x2, y2 = b['box']
+            if L['lost'] and not L.get('released'):
+                self.get_logger().info(f"🔒 잠금 다시 붙음 — {b.get('box_h', 0)}px @({x1},{y1})")
+            L.update(cx=(x1 + x2) / 2.0, cy=(y1 + y2) / 2.0, h=h, y1=y1, seen_t=now, lost=False, col=self._lock_color(b))
+            if L['col'] == 'G':
+                L['g_since'] = L['g_since'] if L['g_since'] is not None else now
+                L['g_last'] = now
+                return
+            L['r_last'] = now
+        if L['g_last'] is None or (now - L['g_last']) > self.tl_gap_grace_s:
+            L['g_since'] = None
+        if best is None and not L['lost'] and (now - L['seen_t']) > self.lock_lost_s:
+            L['lost'] = True
+            if not L.get('released'):
+                top = L['y1'] <= tl_params.LOCK_GEOM['top_px']
+                self.get_logger().warn(f"🔒 잠금 잃음({'화면 윗변으로 빠짐' if top else '미검출'}) — "
+                                       f"초록을 볼 때까지 계속 정지한다(빨강 미감지 해제를 쓰지 않는다)")
+
+    def _lock_green_confirmed(self, now):
+        """잠근 박스의 초록이 green_hold_s 이어졌고, ★그 박스의★ 빨강을 red_release_hold_s 못 봤고, 판정이 신선한가
+        (영상이 끊겼으면 아니다 — tl_img_stale_s). 빨강 조건은 종전 _release_ready 와 같은 값을 잠근 박스에만 건다 —
+        역광에서 내 빨강이 GREEN 으로 6~7장(0.23 s) 이어진 장면이 있다(094820 7111~7117, 다시 빨강 7126) — 초록만 보면
+        0.3 s 확정이 틈 유예까지 더해 빨간불에 풀린다. 남의 빨강은 여기서도 보지 않는다."""
+        L = self.lock
+        if L is None or L['g_since'] is None or not self._fresh(now):
+            return False
+        if self.tl_img_stale_s > 0.0 and (now - self.img_time) > self.tl_img_stale_s:
+            return False
+        return (now - L['g_since']) >= self.green_hold_s and (now - L['r_last']) >= self.red_release_hold_s
+
+    def _lock_blocks_rearm(self, now):
+        """잠금으로 풀어 준 뒤 — 잠근 내 신호가 아직 초록으로 보이는 동안(tl_lock_lost_s 안)은 남의 빨강으로 다시 물지 않는다.
+        내 신호가 빨강으로 바뀌거나 잃으면(차가 출발해 화면 위로 빠짐) 종전 규칙으로 돌아간다."""
+        L = self.lock
+        return (L is not None and L.get('released') and not L['lost'] and L['col'] == 'G'
+                and (now - L['seen_t']) <= self.lock_lost_s)
+
+    def _lock_txt(self, now):
+        """HUD 한 조각 — '잠금 35px 녹 0.2s' / '잠금 35px 잃음' / '' (잠금 없음)."""
+        L = self.lock
+        if L is None:
+            return ''
+        if L.get('released'):
+            return f"잠금 {L['h0']}px 풀림"
+        if L['lost']:
+            return f"잠금 {L['h0']}px 잃음"
+        g = f" 녹 {now - L['g_since']:.1f}s" if L['g_since'] is not None else (' 적' if L['col'] == 'R' else '')
+        return f"잠금 {L['h0']}px{g}"
 
     def _near_metric(self, boxes):
         """빨간 박스 높이의 최대 [px]. 없으면 0. 단독 문턱 비교와 기록에 쓴다."""
@@ -1633,6 +1755,7 @@ class TrafficLight(Node):
         self.pub_near.publish(Float32(data=float(self._near_metric(dec))))
         self.pub_red_far.publish(Bool(data=(state == 'RED_FAR')))
         self._feed_state(state)
+        self._lock_track(dec)
         # 정지선은 신호등 판정 뒤에 — 빨간 박스를 봤는지가 추론 조건이라 순서가 바뀌면 한 프레임 늦는다.
         self._update_stop_line(frame, dec)
         self.img_time = time.time()
@@ -1998,7 +2121,8 @@ class TrafficLight(Node):
                 ztxt = f"B {a}{b} {'진행' if go else '정지'}"
                 zcol = C_GREEN if go else (C_AMBER if arrow[0] is None else C_RED)
         else:
-            ztxt = f"구간 {z or '-'}"
+            lk = self._lock_txt(time.time())          # [2026-10-20] 내 신호 잠금(T·A)
+            ztxt = f"구간 {z or '-'}" + (f" · {lk}" if lk else '')
         cur = self.sl_bev_y if sl_fresh else SL_NONE
         if not sl_live:
             sl_txt, sl_col = '정지선 OFF', C_DIM
@@ -2210,6 +2334,9 @@ class TrafficLight(Node):
             self.b_clip_prev = False
             self.b_bus_mem, self.b_bus_red_t0, self.b_bus_red_n = False, None, 0
             self.b_bus_go_prev = None
+            if self.lock is not None:
+                self.get_logger().info("🔒 구간이 바뀌어 잠금을 지운다")
+                self.lock = None
         self.tl_zone   = z
         self.tl_zone_t = time.time()
 
@@ -2245,7 +2372,15 @@ class TrafficLight(Node):
         # ① 해제 — _red_confirmed(지금 RED)와 _red_gone(유예 동안 RED 없음)은 동시에 참일 수
         #    없으므로 순서가 판정을 바꾸지 않는다.
         if self.stopping:
-            if self.stop_latch:
+            if self.lock is not None:
+                # [2026-10-20] 잠금이 있으면 잠근 박스의 초록 확정만 본다(래치 여부와 무관).
+                if self._lock_green_confirmed(now):
+                    self.get_logger().info(f"🔒🟢 잠근 내 신호 초록 {self.green_hold_s:.2f}s 확정 — 리니어 해제")
+                    L = self.lock
+                    self._set_stop_level(0, '잠근 신호 초록')
+                    L['released'] = True      # 계속 따라간다 — 내 신호가 초록인 동안 남의 빨강으로 다시 물지 않게(_lock_blocks_rearm)
+                    self.lock = L
+            elif self.stop_latch:
                 # 래치 ON — 초록불을 확정해야 놓는다.
                 if self._green_confirmed(now):
                     self.get_logger().info("🟢 초록불 확정 — 리니어 해제, 주행 재개")
@@ -2255,7 +2390,7 @@ class TrafficLight(Node):
 
         # ② 계획 — 물기 전까지 매 틱 다시 본다(정지선이 발화선으로, 신호등이 단독 문턱으로 다가온다).
         if self.stop_level < self.brake_level:
-            if self._red_confirmed(now) or self._red_armed(now):
+            if (self._red_confirmed(now) or self._red_armed(now)) and not self._lock_blocks_rearm(now):
                 level, why = self._stop_plan(now)
                 if level <= 0:
                     # 기다린다 — 아무것도 내지 않고 차는 원래 명령대로 간다.
@@ -2306,6 +2441,8 @@ class TrafficLight(Node):
         self.sl_engaged = False
         self.sl_engaged_max_y = SL_NONE
         self.red_conf_t = None
+        if self.lock is not None and not self.lock.get('released'):
+            self.lock = None          # 풀린 잠금(released)은 구간이 바뀌거나 다음 체결까지 남긴다 — _lock_blocks_rearm
 
     def _publish_sl(self, now):
         """정지선 진단 토픽(기록용). sl_px 는 0 밑으로 안 낸다 — −1 이 '미검출' 하나만 뜻하게."""
@@ -2338,6 +2475,8 @@ class TrafficLight(Node):
         if level <= 0:
             self._reset_stop_line_wait()
             return
+        if prev <= 0:
+            self._lock_start(time.time())     # [2026-10-20] 내 신호 잠금(T·A)
         # 근거(정지선 앞 / 정지선 놓침 / 신호등 단독)를 남긴다 — cam_testbed 계약이 이 대괄호를 잡는다.
         self.get_logger().warn(
             f"🚦🛑 빨간불 확정 — 정지 [{why}] (리니어 {prev}단 → {level}단, "

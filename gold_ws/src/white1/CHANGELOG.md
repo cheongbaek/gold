@@ -94,6 +94,13 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-20 — ★`traffic_light.py` 구간 T 16px 미만 박스 버리기 · 내 신호 잠금(T·A)★ (white2 와 같은 줄)
+
+> white1 driving 은 `/tl_permit` 이 늘 False 라 traffic_light 의 정지·해제는 쓰이지 않는다. 다만 ★구간 T 의 16px 미만 박스 버리기는 `/tl/state` 를 바꾼다★ —
+> white1 driving 의 카메라 신호(`LightFilter`, T5·서브 코스 T)는 RED·RED_FAR 둘 다 정지 신호로 보므로, T 구간에서 16px 미만 빨강(먼 내 신호 포함)은 이제 정지 신호가 아니다
+> (서브 코스 T 체결 순간 내 빨강 20~27px · white1 sub 09:55 정지 중 31~39px — 정지 판단에는 영향 없을 것으로 본다, 미검증). 끄려면 `tl_zone_min_box_h_t:=0`.
+> 원인·근거·검증의 정본은 **white2 CHANGELOG 2026-10-20**. 바꾼 파일 `traffic_light.py` · `tl_params.py`(`TL_LOCK`·`LOCK_GEOM`) · `camera_launch.py`. 두 판 diff 13줄 그대로.
+
 ## 2026-10-19 (6) — ★`traffic_light.py` #400(B) 둘째 진행 근거 '버스 빨강 확정 + 차량 녹색' · 화살표 창 8개 파라미터화★ (white2 와 같은 줄)
 
 > white1 은 `B` 구간을 내지 않으므로(driving) 판단에는 영향이 없다 — 인지 코드를 white2 와 같은 줄로 둔다(CLAUDE.md 3.1). 원인·근거·검증의 정본은
