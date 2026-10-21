@@ -310,7 +310,20 @@ def declare_args(cam_dev):
       + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_LOCK_DESC[k])
          for k, v in tl_params.TL_LOCK.items()] \
       + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_GREEN_DESC[k])
-         for k, v in tl_params.GREEN_HSV.items()]
+         for k, v in tl_params.GREEN_HSV.items()] \
+      + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_GAMMA_DESC[k])
+         for k, v in tl_params.GAMMA.items()]
+
+
+#  [2026-10-21] 역광 감마 — 기본값·근거는 tl_params.GAMMA (노드와 같은 값).
+_TL_GAMMA_DESC = {
+    'tl_gamma':          "역광 감마 지수 — 구간 T·A 에서 서 있는데 신호등 박스 0 이면 모델 입력만 감마로 한 번 더 본다. 0 = 끔",
+    'tl_gamma_on_s':     "서 있는데 박스 0 이 이만큼 이어지면 감마를 켠다 [s]",
+    'tl_gamma_green_px': "감마 박스 GREEN 의 녹색 화소 하한(H 45~90 · V≥60, 원본 HSV)",
+    'tl_gamma_max_h':    "감마 박스 높이 상한 [px] — 우산·해 플레어(203~260px)를 버린다",
+    'tl_gamma_min_ar':   "감마 박스 가로/세로 하한 — 4구 등기구 1 백분위 2.21 · 플레어 0.6~0.8",
+    'tl_gamma_lock_k':   "잠금이 있으면 잠근 중심에서 이 값 × tl_lock_track_k × 잠금 높이 안의 감마 박스만",
+}
 
 
 #  [2026-10-20] 구간 T·A 녹색 HSV 확인 — 기본값·근거는 tl_params.GREEN_HSV (노드와 같은 값).
@@ -371,7 +384,7 @@ def tl_b_params():
     `tl_zone_red_min_height_t:=12` 처럼 정수로 줘도 float 로 바꿔 넘겨 노드가 형 오류로 안 뜨는 일이 없게 한다."""
     return {k: ParameterValue(LaunchConfiguration(k), value_type=type(v))
             for k, v in {**tl_params.B_ARROW, **tl_params.ZONE_GATE, **tl_params.TL_LOCK,
-                                      **tl_params.GREEN_HSV}.items()}
+                                      **tl_params.GREEN_HSV, **tl_params.GAMMA}.items()}
 
 
 def camera_params():

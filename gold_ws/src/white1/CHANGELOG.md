@@ -94,6 +94,13 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-21 (2) — ★`traffic_light.py` 역광 감마 — 서 있는데 신호등 박스 0 이면 모델 입력만 감마로 한 번 더★ (white1·white2 공용 한 벌)
+
+> 구간 T·A 에서 서 있는데(이 노드의 2단 또는 ★남이 낸 `/brake_level` 2 = white1 driving 의 신호 정지★) 판단 박스 0 이 0.5 s 이어지면 감마 1.8 입력으로 한 번 더 추론하고,
+> 감마 박스는 원본 HSV 로만 색을 정한다(`tl_params.GAMMA` · `tl_gamma:=0` 끔). white1 서브 코스 10/17 #300 역광 정지(녹색 창 둘을 놓쳐 우산으로 가린 뒤 출발)가 근거다.
+> white1 에서는 traffic_light 가 서지 않으므로 `/brake_level` 2 구독이 켜는 조건이다 — 시험(`GG-W1P4`)에서 `/tl/state` GREEN 이 녹색 시작 뒤 5.95 s 이어졌다(driving 폐루프는 미검증).
+> 원인·근거·검증의 정본은 **white2 CHANGELOG 2026-10-21 (3)**. 바꾼 파일 `white1/traffic_light.py` · `tl_params.py`(`GAMMA`·`GAMMA_IOU`·`GAMMA_EXT_BRAKE_S`) · `camera_launch.py`.
+
 ## 2026-10-21 — ★white2 가 이 패키지의 코드를 쓴다 (`paths.py` 스택) · TTS 합성 403 · E-STOP 해제음 교체★ (사용자 지시)
 
 - **white2 공용** — white2 패키지에는 driving·prompt·record 만 남고 gps·iahrs·speed·mapping·hud·traffic_light·paths·ports·camera_launch·camera_model·

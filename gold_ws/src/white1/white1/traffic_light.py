@@ -745,6 +745,9 @@ class TrafficLight(Node):
         #  ★[2026-10-20] 구간 T·A 녹색 HSV 확인★ — 기본값·근거는 tl_params.GREEN_HSV(_all_tl_boxes · _green_hsv_px)
         for _k, _v in tl_params.GREEN_HSV.items():
             self.declare_parameter(_k, _v)
+        #  ★[2026-10-21] 역광 감마★ — 기본값·근거는 tl_params.GAMMA(_gamma_update · _all_tl_boxes gamma=True)
+        for _k, _v in tl_params.GAMMA.items():
+            self.declare_parameter(_k, _v)
         self.declare_parameter('tl_zone_stale_s', 1.0)
         #  [2026-10-09] 'A' 화살표 판독 — 모델 클래스가 아니라 ★박스 안 녹색 픽셀★ 로 읽는다.
         #    근거(docs/kcity) : 본선 4번 #1100 동좌 접근의 '진행' 표시는 적색 원등 + 좌회전 화살표뿐이다.
@@ -802,6 +805,18 @@ class TrafficLight(Node):
         self.lock_enable       = bool(g('tl_lock_enable'))
         self.green_hsv_confirm = bool(g('tl_green_hsv_confirm'))
         self.green_hsv_min_px  = max(0, int(round(float(g('tl_green_hsv_min_px')))))
+        self.gamma         = max(0.0, float(g('tl_gamma')))
+        self.gamma_on_s    = max(0.0, float(g('tl_gamma_on_s')))
+        self.gamma_green_px = max(1, int(round(float(g('tl_gamma_green_px')))))
+        self.gamma_max_h   = float(g('tl_gamma_max_h'))
+        self.gamma_min_ar  = float(g('tl_gamma_min_ar'))
+        self.gamma_lock_k  = float(g('tl_gamma_lock_k'))
+        self.gamma_lut = (np.array([((i / 255.0) ** self.gamma) * 255 for i in range(256)], np.uint8)
+                          if self.gamma > 0.0 else None)
+        self.gamma_on = False         # 지금 감마로 한 번 더 추론하는가
+        self.gamma_nobox_t = None     # 서 있는데 판단 박스 0 이 시작된 시각
+        self.gamma_n = 0
+        self.ext_brake, self.ext_brake_t = 0, 0.0     # 남이 낸 /brake_level (white1 — driving 의 신호 정지)
         self.lock_track_k      = max(0.1, float(g('tl_lock_track_k')))
         self.lock_lost_s       = max(0.1, float(g('tl_lock_lost_s')))
         self.lock = None              # 내 신호 잠금 — _lock_start 가 만들고 _reset_stop_line_wait·구간 변경이 지운다
@@ -1019,6 +1034,9 @@ class TrafficLight(Node):
                                  callback_group=self.cg_ctrl)
         self.create_subscription(String, '/tl_zone', self.cb_tl_zone, qos,
                                  callback_group=self.cg_ctrl)
+        # [2026-10-21] 남이 문 2단(white1 driving 의 신호 정지) — 역광 감마 켜는 조건(_gamma_update)에만 쓴다
+        self.create_subscription(Int32, '/brake_level', self.cb_ext_brake, qos,
+                                 callback_group=self.cg_ctrl)
 
         # 판단·발행은 영상 콜백이 아니라 타이머에서 — 프레임이 늦어도 주기가 흔들리지 않게.
         self.create_timer(1.0 / self.stop_cmd_hz, self.tick,
@@ -1219,8 +1237,9 @@ class TrafficLight(Node):
                         np.array([tl_params.GREEN_HSV_H[1], 255, 255], dtype=np.uint8))
         return cv2.countNonZero(cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)))
 
-    def _all_tl_boxes(self, result, roi_img, ymin=0):
-        """YOLO 결과 → 필터링·색보정된 신호등 박스 목록. ymin = ROI 윗변(보정 영상 y) — GREEN 아랫변 관문용."""
+    def _all_tl_boxes(self, result, roi_img, ymin=0, gamma=False):
+        """YOLO 결과 → 필터링·색보정된 신호등 박스 목록. ymin = ROI 윗변(보정 영상 y) — GREEN 아랫변 관문용.
+        gamma=True 면 감마 입력의 결과다 — 박스 크기·잠금 근처로 거르고 색은 원본 HSV 로만 정한다(tl_params.GAMMA 주석)."""
         out = []
         self.last_red_drop = 0
         self.last_green_drop = 0
@@ -1250,6 +1269,24 @@ class TrafficLight(Node):
             if bh < min_bh:                                                continue
 
             label = self.TL_LABEL.get(cls_id, str(cls_id))
+            if gamma:
+                if bh > self.gamma_max_h or (bw / float(bh)) < self.gamma_min_ar:
+                    continue
+                L = self.lock
+                if L is not None and ((((x1 + x2) / 2.0 - L['cx']) ** 2 + ((y1 + y2) / 2.0 - L['cy']) ** 2) ** 0.5
+                                      > self.gamma_lock_k * self.lock_track_k * L['h']):
+                    continue
+                crop = roi_img[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+                _, hsv_red, hsv_green = self._hsv_state(crop)     # 노드 범위(녹 H 45~90 · V≥60)
+                if hsv_red >= self.hsv_min_color_pixels and hsv_red >= hsv_green:
+                    label = 'RED'
+                elif hsv_green >= self.gamma_green_px and hsv_green > hsv_red:
+                    label = 'GREEN'
+                else:
+                    continue
+                out.append({'label': label, 'conf': conf, 'box': (x1, y1, x2, y2), 'box_h': bh,
+                            'cls_label': 'GAMMA', 'hsv_red': hsv_red, 'hsv_green': hsv_green})
+                continue
             # HSV 는 항상 돌리되 라벨을 뒤집는 조건은 방향에 따라 다르다(오류 비용이 비대칭).
             crop = roi_img[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
             hsv_label, hsv_red, hsv_green = self._hsv_state(crop)
@@ -1749,6 +1786,15 @@ class TrafficLight(Node):
                 boxes = self._all_tl_boxes(res, roi_img, ymin)
                 # "YOLO 가 못 봤다" vs "필터가 먹었다" 를 사후에 가르기 위한 값.
                 self.last_raw = 0 if res.boxes is None else len(res.boxes)
+                if self.gamma_on and self.gamma_lut is not None:
+                    # [2026-10-21] 역광 감마 — 원본 결과는 그대로 두고 감마 입력으로 한 번 더, 겹치지 않는 박스만 더한다.
+                    rg = self.model.predict(source=cv2.LUT(roi_img, self.gamma_lut), conf=self.tl_conf,
+                                            imgsz=self.tl_imgsz, device=self.device, verbose=False)[0]
+                    rd, gd, ghd = self.last_red_drop, self.last_green_drop, self.last_green_hsv_drop
+                    gb = self._all_tl_boxes(rg, roi_img, ymin, gamma=True)
+                    self.last_red_drop, self.last_green_drop, self.last_green_hsv_drop = rd, gd, ghd
+                    boxes = boxes + [b for b in gb if all(self._iou(b['box'], o['box']) < tl_params.GAMMA_IOU
+                                                          for o in boxes)]
             except Exception as e:
                 self.get_logger().error(f"YOLO TL error: {e}", throttle_duration_sec=5.0)
                 self.last_raw = -1
@@ -1761,6 +1807,7 @@ class TrafficLight(Node):
         bus = self._find_bus(frame, boxes, xmin, ymin)
         dec = self._decision_boxes(frame, boxes, bus, xmin, ymin, xmax - xmin, ymax - ymin)
         self.last_dec = dec
+        self._gamma_update(dec)
         # [진단] 이 프레임 박스(원본 좌표). ★/tl/state 보다 먼저★ — 테스트베드는 그것을
         #   동기 신호로 다음 프레임을 민다.
         #   8번째 칸 = 역할('' | 'BUS' | 'VEH'), 9번째 = 화살표 판독(셋째 칸 녹색 비율, 안 읽었으면 -1),
@@ -1796,6 +1843,41 @@ class TrafficLight(Node):
             with self._draw_lock:       # 그리기 스레드에 넘기기만 한다(_draw_loop)
                 self._draw_job = (frame, boxes, state, (xmin, ymin, xmax, ymax), bus, dec, veh, arrow)
             self._draw_evt.set()
+
+    @staticmethod
+    def _iou(a, b):
+        ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        u = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix * iy
+        return ix * iy / u if u > 0 else 0.0
+
+    def cb_ext_brake(self, msg: Int32):
+        """/brake_level — 남(white1 driving 의 신호 정지 등)이 2단을 무는가. 감마 켜는 조건에만 쓴다."""
+        self.ext_brake, self.ext_brake_t = int(msg.data), time.time()
+
+    def _gamma_update(self, dec):
+        """[2026-10-21] 역광 감마를 켜고 끈다 — 구간 T·A 에서 서 있는데(이 노드의 2단 또는 남의 /brake_level 2) 판단 박스 0 이
+        tl_gamma_on_s 이어지면 켜고, 서 있지 않게 되거나 구간을 벗어나면 끈다(tl_params.GAMMA 주석)."""
+        if self.gamma_lut is None:
+            return
+        now = time.time()
+        ext2 = self.ext_brake >= 2 and (now - self.ext_brake_t) <= tl_params.GAMMA_EXT_BRAKE_S
+        if not ((self.stopping or ext2) and self._zone_active() and self.tl_zone in ('T', 'A')):
+            if self.gamma_on:
+                self.get_logger().info(f"🌗 역광 감마 끔 ({self.gamma_n}장)")
+            self.gamma_on, self.gamma_nobox_t, self.gamma_n = False, None, 0
+            return
+        if self.gamma_on:
+            self.gamma_n += 1
+            return
+        if dec:
+            self.gamma_nobox_t = None
+            return
+        if self.gamma_nobox_t is None:
+            self.gamma_nobox_t = now
+        elif now - self.gamma_nobox_t >= self.gamma_on_s:
+            self.gamma_on = True
+            self.get_logger().info(f"🌗 서 있는데 신호등 박스 0 이 {now - self.gamma_nobox_t:.1f}s — 감마 {self.gamma} 입력으로도 본다")
 
     def _debug_wanted(self):
         """/tl/debug_image 를 낼 때인가 — 켜져 있고 ★구독자가 있을 때만★ [2026-10-18]."""
