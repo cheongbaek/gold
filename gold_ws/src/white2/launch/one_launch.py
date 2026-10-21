@@ -62,6 +62,9 @@ white1 의 실행 파일을 띄운다★ (white2/__init__.py). 폴더(gps_data·
     L / l      라바콘 회피 (★여러 행 연속★)             mppi_local_planner
     S / s      3초 일시정지 후 재출발 (★한 행★)         white2/driving 내부
     T / t      ★신호등 인지 구간★ (★여러 행 연속★)      white1/traffic_light (공용)
+    Y / y      ★감속구간★ (★여러 행 연속★, L 과 같은 마킹) white2/driving (GPS 추종 그대로,
+               [2026-10-21 white1 에서 이식] 상한 y_pulse(3)펄스 · /lstatus '0')
+               진입 때 빠르면(16.4 km/h 초과) 1단
     그 밖       GPS 추종                               white2/driving
     (빈 칸·'0'·숫자·열 없음 — ★기존 CSV 가 그대로 돈다★)
 
@@ -689,6 +692,7 @@ def generate_launch_description():
             'goal_brake2_backstop': LaunchConfiguration('goal_brake2_backstop'),
             'wp_reach_m':    LaunchConfiguration('wp_reach_m'),
             'require_rtk':   LaunchConfiguration('require_rtk'),
+            'y_pulse':       LaunchConfiguration('y_pulse'),
         }],
     )
 
@@ -774,6 +778,11 @@ def generate_launch_description():
             'flip_lidar_xy', default_value='true',
             description='라이다 xy 180° 반전. lidar cone_lidar.yaml 과 같은 값이다. '
                         '차 앞 3m 에 사람이 서서 코스트맵 전방에 점이 생기면 맞다'),
+        DeclareLaunchArgument(
+            'y_pulse', default_value='3',
+            description='★terrain Y 감속구간의 목표펄스 상한★ [2026-10-21 white1 에서 이식] 구간 안에서 늘 건다. '
+                        '진입할 때 빠르면(해제선 + a1×최소물림 = 3펄스 기준 16.4 km/h 초과) 1단으로 '
+                        '내린다 — L 진입과 같은 판단 함수. 기본값의 소유자는 driving.Y_PULSE'),
         DeclareLaunchArgument(
             'lidar_pulse', default_value='2',
             description='★L 구간 순항속도 [펄스] — 이것 하나만 고치면 된다★ '

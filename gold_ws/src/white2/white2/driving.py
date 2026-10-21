@@ -1661,6 +1661,30 @@ class SlowZone:
         self.done = None
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-10-19] terrain 'Y' — 감속구간 (사용자 지시 · white2 는 [2026-10-21] 이식) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  사용자 : "3펄스로 주행하는 감속구간 도입 (terrain에 Y라고 표기된 영역만큼, 마킹방식은 L과
+#           동일, 제한속도를 3펄스로 하며 Y구간 진입 당시 속도가 너무 빠를 경우 1단제동을 통해
+#           적절히 감속)"
+#  · 마킹 = L 과 같다 (여러 행 연속, _zone_segments). ★GPS 추종은 그대로 이 노드가 한다★ —
+#    /lstatus 는 '0' 이고 mppi 와 무관하다.
+#  · 구간 안 목표펄스 상한 = y_pulse (런치, 기본 Y_PULSE). ★소유권과 무관하게 늘 건다★ (상한이다).
+#  · 1단은 ★진입한 첫 틱에 한 번★ 판단한다('진입 당시') — L 진입과 ★같은 판단 함수★(slow_step ·
+#    slow_brake_need)·같은 문턱 공식 : 체결문턱 = 해제선(3펄스 + 선행량 = 14.1 km/h)
+#    + a1×최소물림 = ★16.4 km/h★. 7펄스(≈20~22 km/h)면 1단, 5펄스(15.9 km/h) 이하면 리니어 없이
+#    3펄스로만 내린다(코스트). 풀기 : 최소물림 뒤 엔코더 ≤ 3펄스 · 해제선 · 시간상한 · 구간 끝.
+#    ★미리 줄이지 않는 이유★ 사용자 문구가 '진입 당시' 이고, Y 는 '여기서부터 3펄스' 라는
+#    제한이지 L 처럼 '이 속도로 넘겨라' 가 아니다. 그래서 7펄스로 들어오면 진입 뒤 ≈12 m
+#    (1단 1.30 m/s² 로 해제선까지)는 3펄스를 넘는다 — Y 는 그만큼 앞에서 시작하게 적는다.
+#  · 소유권 : 종점 > S > ★Y★ > 코너 1단 (run_follow 의 호출 순서가 곧 순서. L 안에서는 driving 이 침묵).
+#    [white2] 신호(T·A·B)는 traffic_light 가 /tl_permit 구간에서 2단을 문다 — 신호등이 요구 중이면 Y 1단은
+#    새로 물지 않고(ok), 이미 물었으면 /brake_level = max(1, 2) 로 2단이 이긴다(_publish_brake).
+#  · X 고속구간은 white1 에만 있다.
+Y_ZONE_CHARS = ('Y', 'y')
+Y_PULSE = 3                         # [펄스] Y 구간 상한 — 런치 y_pulse 가 이긴다
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ★★ [2026-09-10] 주행은 ★라이다가 켜진 뒤에★ 시작한다 (사용자 지시) ★★
 # ══════════════════════════════════════════════════════════════════════════════
 #  ★실측 — 조종권은 넘어갔는데 mppi 가 아무것도 못 냈다★
@@ -1934,6 +1958,7 @@ class DrivingNode(Node):
 
         self.declare_parameter('data_dir', '')
         self.declare_parameter('drive_pulse', DRIVE_PULSE)
+        self.declare_parameter('y_pulse', Y_PULSE)          # [2026-10-21] terrain 'Y' 상한 (white1 과 같다)
         self.declare_parameter('heading_pulse', HEADING_PULSE)
         self.declare_parameter('wp_reach_m', WP_REACH_M)
         self.declare_parameter('require_rtk', True)
@@ -2217,7 +2242,11 @@ class DrivingNode(Node):
         self._lz_starts = []          # L 구간 시작들의 누적 호길이 [m] (주행 직전 계산)
         self._lz_carry_t = None       # ★L 진입 틱에 문 1단★ — 그 1단을 문 시각 [2026-10-19 (5)]
         self._brake_full_other_t = 0.0  # 남이 낸 /brake_level 2 를 마지막으로 본 시각 [2026-10-19]
-        self._slow_zones = ()             # ★리니어 소유자 목록★ (white1 은 Y·X) — L 진입 1단은 _lz_carry_t
+        # ── terrain 'Y' 감속구간 [2026-10-21 white1 에서 이식] (상수절 'terrain Y') ──
+        self._yzs = SlowZone('Y 감속구간')
+        self._yz_spans = []           # [(시작idx, 끝idx)] — build_waypoints 가 주행 직전에 만든다
+        self.y_pulse = max(1, min(MAX_PULSE_LIMIT, int(self.get_parameter('y_pulse').value)))
+        self._slow_zones = (self._yzs,)   # ★리니어 소유자 목록★ (white1 은 Y·X) — L 진입 1단은 _lz_carry_t
         # ── [2026-10-17] 신호등이 2단으로 세운 동안의 조향·펄스 묶음 (run_follow) ──
         self._tl_held = False         # 신호등 2단 + 정지로 묶었는가 (풀릴 때까지 유지)
         self._tl_rel_t = None         # 신호등이 풀린 시각 — STOP_RELEASE_WAIT_S 동안 펄스 0
@@ -2837,6 +2866,38 @@ class DrivingNode(Node):
             return min(pulse, hold_pulse)
         return 0                       # 제동 유지 — 구동은 내지 않는다
 
+    def y_zone_here(self):
+        """지금 포인터가 든 Y 토막 (i0, i1) — 없으면 None. [2026-10-19]"""
+        i = self.wp_idx
+        for i0, i1 in self._yz_spans:
+            if i0 <= i <= i1:
+                return i0, i1
+        return None
+
+    def y_zone_step(self, pulse):
+        """terrain 'Y' 감속구간 한 틱 → 이번 틱 목표펄스. [2026-10-19 — 사용자 지시 · white2 2026-10-21]
+        · 구간 안 : 상한 y_pulse (늘). 진입 첫 틱에 한 번 '빠른가' 를 판단해 빠르면 1단 —
+          slow_step(left=0 → 체결문턱만 본다) — L 진입 판단과 같은 slow_brake_need
+        · 구간 밖으로 나가면서 아직 물고 있으면 최소물림 뒤 놓는다"""
+        z = self._yzs
+        seg = self.y_zone_here()
+        if seg is None:
+            if z.slow:
+                if time.time() - z.t < SLOW_BRAKE_MIN_HOLD_S:
+                    return 0                       # ★행정을 끝까지 낸다★
+                self.slow_release(z, "Y 구간 끝", self.y_pulse)
+            return pulse
+        ok = (self.state == S_DRIVE_RUN
+              and self._goal_phase == GOAL_PHASE_NONE
+              and self._sp_state == SP_NONE
+              and self.tl_brake_req() == 0
+              and not self.estop)
+        i0, i1 = seg
+        out = self.slow_step(z, pulse, self.y_pulse, ok, True, 0.0,
+                             self.wp_s[i0] if i0 < len(self.wp_s) else None,
+                             f"Y 감속구간 WP {i0}~{i1} 진입 (상한 {self.y_pulse}펄스)")
+        return min(out, self.y_pulse)
+
     def lidar_entry_brake(self):
         """L 시작을 지나는(이양) 그 틱에 한 번 — ★빠르면 1단을 물고 그 시각을 돌려준다, 적당하면 None★.
         [2026-10-19 (5) — 사용자 '통과 즉시 감속'] 판단은 Y 진입과 같은 slow_brake_need(v, 0, 2펄스)
@@ -3220,6 +3281,7 @@ class DrivingNode(Node):
         self.event(f"📁 경로 선택: {name} (WP {len(wps)}개) — 스위치를 자율로 올리면 출발")
         self._warn_stop_zones(zone)
         self._warn_tl_zones(zone)
+        self._warn_y_zones(zone)                  # [2026-10-21] terrain 'Y'
         if n_lidar:
             # ★몇 개인지가 아니라 몇 토막인지를 말한다★ 사람이 손으로 적은 열이라
             #   오타 하나가 구간을 둘로 쪼개는데, 개수만 보면 그것이 안 드러난다.
@@ -3231,6 +3293,26 @@ class DrivingNode(Node):
         else:
             self.event(f"🛰️ 라이다 구간 없음 — 전 구간 GPS 추종 "
                        f"({LIDAR_ZONE_COLUMN} 열에 'L' 이 없다)")
+
+    def _warn_y_zones(self, zone):
+        """terrain 'Y'(감속구간)를 세고 ★겹침★ 을 말한다. [2026-10-19]
+        Y 안의 L 은 mppi 가 몰아 Y 상한이 안 듣고, Y 안의 S·T·A·B 는 그쪽이 리니어를 쥐어 Y 1단이 손을 뗀다
+        (소유권 순서) — 고치지는 않고 알린다."""
+        segs = self._zone_segments(zone, Y_ZONE_CHARS)
+        if not segs:
+            return
+        n = sum(i1 - i0 + 1 for i0, i1 in segs)
+        self.event(f"🟡 감속구간 {len(segs)}곳 / WP {n}개 "
+                   f"({', '.join(f'{i0}~{i1}' for i0, i1 in segs)}) — {LIDAR_ZONE_COLUMN} 열의 'Y'. "
+                   f"구간 안 상한 {self.y_pulse}펄스, 진입 때 빠르면 1단")
+        for i0, i1 in segs:
+            inner = {('L' if z in LIDAR_ZONE_CHARS else 'S' if z in STOP_ZONE_CHARS else z.upper())
+                     for z in zone[i0:i1 + 1]
+                     if z in LIDAR_ZONE_CHARS or z in STOP_ZONE_CHARS or z in TL_ZONE_CHARS}
+            if inner:
+                self.event(f"⚠️ Y 구간 WP {i0}~{i1} 안에 {'·'.join(sorted(inner))} 가 있다 — "
+                           f"L 이면 mppi 가 몰아 Y 상한이 안 듣고, S·T·A·B 는 그쪽이 리니어를 쥔다 "
+                           f"(Y 1단은 손을 뗀다). 겹치지 않게 적을 것")
 
     def _warn_stop_zones(self, zone):
         """terrain 'S' 를 세고 ★사람이 손으로 적은 열의 실수★ 를 그 자리에서 말한다.
@@ -3363,6 +3445,9 @@ class DrivingNode(Node):
         #  제어 루프에서는 이 표로 뺄셈만 한다 — lidar_zone_left_m / stop_zone_hit.
         self._lz_starts = [self.wp_s[i0] for i0, _ in self._zone_segments(self.wp_zone)
                            if i0 < len(self.wp_s)]
+        #  [2026-10-21] Y 감속구간 토막 — 열쇠는 시작 호길이(구간마다 한 번 판단)
+        self._yz_spans = [(i0, i1) for i0, i1 in self._zone_segments(self.wp_zone, Y_ZONE_CHARS)
+                          if i0 < len(self.wp_s)]
         self._stop_idx = [i for i, z in enumerate(self.wp_zone)
                           if z in STOP_ZONE_CHARS]
         self._stop_done = set()
@@ -4173,6 +4258,11 @@ class DrivingNode(Node):
 
         # ── (판단 3-2 'L 인계 전 서행' 은 [2026-10-19 (5)] 없앴다 — L 은 지나는 틱에 판단한다 : lidar_entry_brake) ──
 
+        # ── 판단 3-3. Y 감속구간 [2026-10-21 white1 에서 이식] — ★L 인계 뒤·코너 앞★ (상수절 'terrain Y') ──
+        #   종점 > S > ★Y★ > 코너 1단. 상한(y_pulse)은 소유권과 무관하게 늘 걸고,
+        #   1단은 위 둘과 신호등(tl_brake_req)이 리니어를 쥐지 않았을 때만 문다. 코너 1단은 Y 가 물고 있으면 손을 뗀다.
+        pulse = self.y_zone_step(pulse)
+
         # ── 판단 4. 코너 1단 선행제동 [2026-08-18] ──
         #   ★반드시 goal_approach 뒤에 둔다★ 그쪽이 이번 틱에 종점 제동을 물었다면
         #   _goal_phase 가 이미 NONE 이 아니므로 corner_brake 가 스스로 손을 뗀다.
@@ -4707,6 +4797,7 @@ class DrivingNode(Node):
               and self.state == S_DRIVE_RUN
               and self._goal_phase == GOAL_PHASE_NONE   # 종점이 소유권을 가졌으면 손 뗀다
               and self._sp_state == SP_NONE             # ★S 일시정지★ [2026-09-07]
+              and not self._yzs.slow                    # ★Y 감속구간★ [2026-10-21]
               and self.tl_brake_req() == 0              # 신호등이 소유권을 가졌으면 손 뗀다
               and not self.estop
               and v_now is not None)
@@ -5826,8 +5917,19 @@ class DrivingNode(Node):
             float(self._bl_dir),                      # steer_bl_dir −1/0/+1 (끄면 0)
             float(self._diag_yd),                     # yaw_damp_deg [도로휠 deg]
             float(self._diag_ay_cap),                 # corner_ay_cap_ms (끔·곧은 길 nan)
+            # ── [2026-10-21] 감속 접근 1종 ── 0 없음 / 2 L 진입 1단 / 3 Y 구간 안(상한만) / 4 Y 1단
+            #   (white1 과 같은 값 — white1 은 신호 접근 2열 뒤, 5~8 은 X)
+            float(self.slow_zone_code()),             # slow_zone
         ]
         self.pub_diag.publish(diag)
+
+    def slow_zone_code(self):
+        """record 의 slow_zone 열 (publish_state_topics 주석). [2026-10-21]"""
+        if self._lz_carry_t is not None:
+            return 2
+        if self._yzs.slow:
+            return 4
+        return 3 if self.y_zone_here() is not None else 0
 
     def event(self, text):
         self.pub_event.publish(String(data=text))

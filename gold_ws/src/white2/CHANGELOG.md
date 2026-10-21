@@ -98,6 +98,19 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-21 (2) — ★terrain `Y` 감속구간을 white2 에도 · subcourse.csv 에 Y (white1 과 같은 행)★ (사용자 지시)
+
+- **driving** — white1 의 Y 를 그대로 옮겼다 : 상수 `Y_ZONE_CHARS`·`Y_PULSE`(3) · 파라미터 `y_pulse` · `y_zone_here`·`y_zone_step`·`_warn_y_zones` ·
+  `_slow_zones = (Y,)`(공통 틀 `SlowZone`·`slow_step` 은 이미 같은 줄이었다) · 코너 1단은 Y 가 물고 있으면 손을 뗀다 · `/drive_diag` 끝에 `slow_zone`
+  (0 / 2 L 진입 1단 / 3 Y 안 / 4 Y 1단 — white1 과 같은 값) → `record.py` 에 `slow_zone` 열. 다른 점 하나 — white1 의 `_sa_phase`(신호 접근) 조건 줄이 없다.
+  신호(T·A·B)는 traffic_light 가 2단을 무니, 신호등이 요구 중이면 Y 1단은 새로 물지 않고 이미 물었으면 `/brake_level` 의 max 로 2단이 이긴다.
+  소유권 : 종점 > S > Y > 코너 1단. `one_launch.py` 에 `y_pulse`(기본 3).
+- **subcourse.csv** — white1 `subcourse.csv` 에 사용자가 적은 Y(데이터 행 1521~1648, 128행 ≈ 32 m — 두 번째 T 끝 1491 뒤)를 ★같은 행★ 에 옮겼다.
+  두 파일의 좌표가 행마다 같다(전 행 차이 0 m). 그 행의 white2 terrain 은 `-1`·`0`(구간 아님)이었고, terrain 칸만 바꿨다(나머지 바이트 그대로).
+- **확인 (모의, 도메인 77)** — `sim/follow_sim` 으로 maincourse 직선에 Y(41 m)를 넣어 white1·white2 를 같은 조건으로 : 7펄스 진입 22.3 km/h → 그 틱에 1단,
+  2.35 s 뒤 13.9 km/h 에서 해제, 진입 19.5 m 뒤 3펄스 · 4펄스 진입 12.7 km/h → 리니어 없이 3펄스 — ★두 스택 수치가 같다★.
+  Y 없는 경로 A·B·C(7펄스) 궤적 해시가 수정 전 white2 와 같다(회귀 없음). 경로 선택 로그 : '🟡 감속구간 1곳 / WP 128개 (1521~1648)'. ⚠️ 실차 미검증.
+
 ## 2026-10-21 — ★white2 는 white1 의 코드를 쓴다 — 패키지에 driving·prompt·record 만 · braketest 삭제★ (사용자 지시)
 
 - **지운 것** — `white2/white2/` 의 `braketest`·`camera_launch`·`camera_model`·`gps`·`hud`·`iahrs`·`mapping`·`paths`·`ports`·`speed`·`tl_params`·`traffic_light`
