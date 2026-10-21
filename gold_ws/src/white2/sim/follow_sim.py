@@ -46,6 +46,8 @@ os.environ['ROS_DOMAIN_ID'] = os.environ.get('WHITE2_SIM_DOMAIN', '77')
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG_ROOT = os.path.dirname(HERE)                    # gold_ws/src/white2 (소스트리)
 sys.path.insert(0, PKG_ROOT)
+#  [2026-10-21] white2.driving 이 white1 의 paths·gps 를 import 한다 — 소스트리 white1 을 같이 본다
+sys.path.insert(1, os.path.join(os.path.dirname(PKG_ROOT), 'white1'))
 
 import numpy as np                                   # noqa: E402
 import rclpy                                         # noqa: E402

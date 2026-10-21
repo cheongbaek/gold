@@ -98,6 +98,22 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-21 — ★white2 는 white1 의 코드를 쓴다 — 패키지에 driving·prompt·record 만 · braketest 삭제★ (사용자 지시)
+
+- **지운 것** — `white2/white2/` 의 `braketest`·`camera_launch`·`camera_model`·`gps`·`hud`·`iahrs`·`mapping`·`paths`·`ports`·`speed`·`tl_params`·`traffic_light`
+  (white1 판과 머리말·이름만 달랐다 — 2026-10-21 전수 대조, hud 는 white1 판이 Y·X 표시를 더한 상위집합) · `launch/braketest.launch.py` ·
+  `calibration/`(white1 과 같은 yaml — camera_model 이 share/white1 을 읽는다). **braketest 는 white1 에서만** 한다.
+- **남은 것** — `driving.py`(T·A·B · traffic_light 2단) · `prompt.py`(타이머 없음) · `record.py`(/traffic_timer 열 없음) · `__init__.py`(새로).
+- **런치** — `one_launch`·`master`·`joy` 가 gps·iahrs·speed·mapping·hud·traffic_light 를 **`package='white1'`** 로 띄운다. driving·record 만 white2.
+- **폴더는 그대로 white2 것이다** — `__init__.py` 가 `WHITE_STACK=white2` 를 걸고 `white1/paths.py` 가 그 값으로 `src/white2/{gps_data,ros2bag,video,sound}` 를 고른다
+  (런치는 `NODE_ENV` 로도 넘긴다). `ros2 run white2 hud` 는 진입점 `white2:hud` 로 그대로 된다.
+- **확인 (도메인 77, 아두이노·카메라·라이다·소리 끔)** — `ros2 launch white2 one_launch.py` : mapping·driving 경로 폴더 = `src/white2/gps_data`, record = `src/white2/ros2bag`,
+  런치 인자 기본값 sound_dir·tl_video_dir = `src/white2/{sound,video}` · 같은 조건 white1 은 전부 `src/white1/…`(회귀 없음) · `ros2 run white2 prompt` 가 white2 경로 2개·음원 폴더를 본다.
+  ⚠️ 실차(카메라·보드) 미검증 — 처음 띄울 때 hud 의 경로 그림과 인지 녹화가 `src/white2/video` 에 생기는지 본다.
+- 이 폴더의 `TRAFFIC_LIGHT.md`·`TL_TUNING.md` 가 가리키는 `white2/traffic_light.py`·`tl_params.py` 는 이제 **`white1/white1/` 의 같은 파일**이다.
+- 함께 : E-STOP 해제음 `sound/estop_re.wav` 를 `~/Documents/estop_out.wav` 로 바꿨다(white1 도) · TTS 가 소리를 못 내던 것은 edge-tts 7.2.8 의 403 —
+  7.3.1 로 올렸다(white1 CHANGELOG 2026-10-21).
+
 ## 2026-10-20 (2) — ★구간 T·A 녹색 HSV 확인 — 녹색 화소 없는 GREEN 은 버린다 (어두운 근거리 빨강·황색을 모델이 GREEN 으로 내 빨간불에 풀던 것)★ (사용자 승인 — 역광 조사 안 1, `traffic_light.py` white1·white2 같은 줄)
 
 **관측** (10/17 white1 sub 094820 — 정지선 앞 7094 정지, 디버그 그림 `~/tl_eval/fig_1020_backlight/`)

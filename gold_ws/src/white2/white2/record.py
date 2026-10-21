@@ -103,7 +103,7 @@ from sensor_msgs.msg import Imu, NavSatFix
 from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
 from nav_msgs.msg import Path as NavPath
 
-from white2 import paths
+from white1 import paths      # [2026-10-21] white1 공용 — 폴더는 WHITE_STACK=white2 (white2/__init__.py)
 
 
 # 이 상태들에서만 기록한다 (driving.py 의 상태 이름과 같아야 한다)

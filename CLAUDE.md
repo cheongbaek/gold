@@ -19,7 +19,7 @@
 > | 흔들림 감소 · 10펄스 증속 (A~E) — 원인·설계·모의·구현 [2026-09-30] | 요약 4.1e · 근거 CHANGELOG 2026-09-30 항목 · 모의 도구 `gold_ws/src/white1/sim/` |
 > | ★신호 구간 (T) — 본선 코스 타이머 T1~T5 [2026-09-30] · 신호 접근(정지선 1 m 앞) [2026-10-01]★ | 요약 4.10 · ★질문과 답 `gold_ws/src/white1/TRAFFIC_TIMER.md`★ [2026-10-12] · 신호 시각표·`/traffic_timer` 배열·`LightFilter` `gold_ws/src/white1/white1/traffic_timer.py` 헤더 · 정지 방법 `driving.py` 상수절 '신호 접근' · 모의 `sim/signal_sim.py` |
 > | ★**대회 규정 (2026 자작자율차 부문) · 점검 결과 · AS 상태** [2026-10-07]★ | 원문 = 저장소 최상단 PDF · 점검 = **8절** · AS 상태 구현 = **8.0** · 펌웨어 `../mad-code/kasa_1007_B.ino` 헤더 `[1007-1]`·`[1007-2]` |
-> | ★**white2 — 투트랙의 다른 한쪽** (타이머 없이 CSV 태그 · 카메라가 세운다) [2026-10-07]★ | **3.1 의 '투트랙' 문단** · `gold_ws/src/white2/CHANGELOG.md` 머리 |
+> | ★**white2 — 투트랙의 다른 한쪽** (타이머 없이 CSV 태그 · 카메라가 세운다) [2026-10-07]★ ★[2026-10-21] white2 패키지엔 driving·prompt·record 만 — 나머지는 white1 코드(`WHITE_STACK`)★ | **3.1 의 '투트랙' 문단** · `gold_ws/src/white2/CHANGELOG.md` 머리 · `white2/white2/__init__.py` |
 > | ★**신호등 인지·판단 설명 (질문과 답) · 파라미터 튜닝 가이드**★ [2026-10-08] | `gold_ws/src/white2/TRAFFIC_LIGHT.md` · `gold_ws/src/white2/TL_TUNING.md` (white1·white2 공통) |
 > | ★**K-City 맵·신호 현시·예선/본선 미션 신호등 — 대회 기준 문서**★ [2026-10-09 사용자 제공] | `docs/kcity/` — `260831_Mapdata_K-City.pdf`(교차로 기준점·SG↔차로·차로 노드) · `260331_신호현시정보.pdf`(주기 100 s 현시표) · `예선본선_미션신호등.xlsx` · ★값을 옮겨 적은 `README.md`★ — 경로 CSV·타이머와 어긋나면 이쪽이 정본 |
 > | 카메라 인지 시험 (cam_testbed · 스킬 `cam-test`) [2026-10-07] | `~/cam_testbed`(별도 저장소 Anjabom/cam_testbed) · 이 기계용 계약 `contracts/gold_white{1,2}_stopline.yaml` · ⚠️ `RMW_IMPLEMENTATION=rmw_fastrtps_cpp` 를 붙여 돌린다(3.1) |
@@ -418,7 +418,9 @@ gold_ws/src/
     gps_data/  ros2bag/  video/  sound/  calibration/
     BOARD_B.md  BRAKING.md  GPS_HEADING.md  STOPLINE_TEST.md  CHANGELOG.md
 
-  white2/     ★투트랙의 다른 한쪽★ [2026-10-07] (ament_python) — 구조·파일은 white1 과 같다(아래 '투트랙')
+  white2/     ★투트랙의 다른 한쪽★ [2026-10-07] (ament_python) — ★[2026-10-21] 신호 판단이 다른 셋만 남았다★
+    white2/  __init__.py(WHITE_STACK=white2 · hud 진입점) · driving.py · prompt.py · record.py
+    launch/  one_launch · master · joy · hud — 나머지 노드는 package='white1' 로 띄운다 (아래 '투트랙')
 
   nxde/       아두이노 계층 (런치파일 없음, 전부 ros2 run)
     arduino.py   ★차량 구동의 필수 노드★ ★[2026-10-17] 통합 보드(kasa_1017) + J★ 시리얼 브리지
@@ -504,16 +506,22 @@ gold_ws/src/
 > | `/tl_zone` | `T`·`T1`~`T5` (구간 시작 40 m 앞부터) | `T`·`A` (`/tl_permit` 과 같은 조건) |
 > | 출신 | 9/30 `c5657cd` 이후 main | 같은 `c5657cd` 에서 갈라진 USB 판(10/5~10/6 신호등 인지 개선) |
 >
-> - **traffic_light.py 는 두 판이 같다**(머리말·import 만 다르다 — [2026-10-07] white2 의 인지 개선을 white1 에 이식).
->   인지(ROI·엔진·게이트)를 고치면 **둘 다** 고친다. 제동 판단은 white2 에서만 쓰인다(white1 은 `/tl_permit` 이 늘 False).
-> - **타이머와 무관한 공통 수정은 양쪽에 넣는다** — 예: AS 필(hud)·E-STOP 해제 직후 출발 유예(driving)는 [2026-10-07] 둘 다 있다.
+> - ★**[2026-10-21] white2 는 white1 의 코드를 쓴다 (사용자 지시)**★ — white2 패키지에는 white1 과 다른 **`driving.py`·`prompt.py`·`record.py`** 만 남았다.
+>   `gps`·`iahrs`·`speed`·`mapping`·`hud`·`traffic_light`·`paths`·`ports`·`camera_launch`·`camera_model`·`tl_params` 는 white2 복사본을 지웠다
+>   (머리말·이름만 달랐다 — hud 는 white1 판이 Y·X 표시를 더한 상위집합). white2 런치는 그 노드를 **`package='white1'`** 로 띄운다.
+>   `braketest`(코드·런치)는 white2 에서 지웠다 — **white1 에서만** 한다(panel 의 braketest 버튼도 스택과 무관하게 white1).
+>   ★폴더는 그대로 갈린다★ — `white2/__init__.py` 가 `WHITE_STACK=white2` 를 걸고 `white1/paths.py` 가 그 값으로 `src/<스택>/{gps_data,ros2bag,video,sound}`
+>   와 환경변수 `<스택>_*_DIR` 을 고른다(없으면 white1). white2 의 어떤 모듈을 import 해도 먼저 걸리고, 런치는 `NODE_ENV` 로도 넘긴다.
+>   `ros2 run white2 hud` 는 그대로 된다(진입점 `white2:hud` → white1 hud). 카메라 캘리브는 share/white1 하나.
+> - 그래서 **인지(traffic_light·tl_params)·하드웨어 노드를 고치면 white1 한 곳만** 고친다. 제동 판단은 white2 에서만 쓰인다(white1 은 `/tl_permit` 이 늘 False).
+> - **타이머와 무관한 공통 수정 중 driving·prompt·record 에 들어가는 것은 양쪽에 넣는다** — 예: AS 필(hud)·E-STOP 해제 직후 출발 유예(driving)는 [2026-10-07] 둘 다 있다.
 > - ★**[2026-10-17] 일치 규칙 (사용자)** — 신호등 정지·인지와 CSV 규칙(경로 태그 해석·코스 이름·타이머)을 뺀 나머지는 두 판이 같아야 한다★.
->   점검은 `diff <(sed 's/white2/white1/g;s/WHITE2/WHITE1/g' white2/<파일>) white1/<파일>`. 2026-10-17 전수 대조에서 남은(허용된) 차이 :
+>   점검은 `diff <(sed 's/white2/white1/g;s/WHITE2/WHITE1/g' white2/<파일>) white1/<파일>` — [2026-10-21] 부터 대상은 driving·prompt·record·런치뿐. 2026-10-17 전수 대조에서 남은(허용된) 차이 :
 >   `driving.py`(T1~T5·신호 접근·타이머 ↔ T·A·B 와 traffic_light 2단 · white2 신호등 정지 묶음 `_tl_held`) · `prompt.py`(타이머 노드 · 고정 코스 설명) ·
 >   `record.py`(`/traffic_timer` 열 · `/tl_zone` 출처) · `hud.py _zone_char`(T1~T5 접기) · `one_launch.py` 머리말(T 설명) · `traffic_light.py` 머리말 13줄 ·
 >   white1 만 `traffic_timer.py`·`TRAFFIC_TIMER.md`·`sim/signal_sim.py` · white2 만 `TRAFFIC_LIGHT.md`·`TL_TUNING.md`·`doc/tl_debug_view.jpg`(두 판 공통 설명서) · `CHANGELOG.md`.
 > - ⚠️ **두 스택을 동시에 띄우지 말 것** — 노드 이름·토픽이 같다(`ros2 launch white2 one_launch.py` · `ros2 run white2 prompt`).
->   경로·기록 폴더와 환경변수는 갈라져 있다(`src/white2/{gps_data,ros2bag,video,sound}`, `WHITE2_*_DIR`).
+>   경로·기록 폴더와 환경변수는 갈라져 있다(`src/white2/{gps_data,ros2bag,video,sound}`, `WHITE2_*_DIR` — [2026-10-21] `WHITE_STACK` 으로 고른다).
 > - 신호등 1280 엔진(`/home/mad1/runs/detect/combined_light/weights_1280/best.engine`)은 이 PC 에서 [2026-10-07] 빌드했다
 >   (`tools/export_tl_1280.sh`). 엔진은 GPU·드라이버에 묶이므로 다른 기계에서는 거기서 다시 돌린다.
 > - **cam_testbed** — 이 기계의 `~/.bashrc` 는 CycloneDDS 다. 1080p 프레임이 안 넘어가 `/image_raw 수신 대기` 로 멈추므로
@@ -1557,6 +1565,7 @@ ros2 run white1 prompt                 # 2) CLI 메뉴 (별 터미널) — ★�
                                        #    목록 맨 위 = maincourse.csv · subcourse.csv
 ros2 run white1 hud                    # 2') 상면도 HUD (구독 전용, 선택)
 #  white2 로 달릴 때는 위 white1 을 전부 white2 로 (둘을 같이 띄우지 않는다 — 3.1 투트랙)
+#  ★braketest 는 white1 에만 있다★ [2026-10-21] — ros2 launch white1 braketest.launch.py
 ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때
 ros2 run nxde panel                    # ★터치 조작반★ 위 셋 + braketest 를 버튼으로 [2026-10-16] (white1/white2 전환)
 ```
@@ -2148,6 +2157,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | `/lstatus` 기록 열 · HUD 표시 | `record.py` · `hud.py` |
 | HUD 큰 숫자를 ★GPS 속도★ 로 (`/gps_fused[8]`, 폴백 IMU→ENC) [2026-09-09] | `hud.py _draw_speed` |
 | **HUD 하단 `LDR` LED 가 라이다 연결을 본다 [2026-09-16]** — 종전에는 `/cone_lidar_node/obstacle_distance`(AEB) 를 봤는데 `one_launch` 는 그 노드를 띄우지 않으므로(6.4⑦) **구조상 절대 켜지지 않았다**. 이제 `driving.lidar_wait_reason()` 과 **같은 판정**(`/ouster/imu` ≥ `LIDAR_SENSOR_MIN_N` + `/lidar_active` 신선)이라 **🟢 = 주행 게이트 통과**다. 상수는 `driving.py` 에서 가져온다 — 베끼면 어긋난다 | `hud.py _draw_leds` · `_cb_ouster_imu` |
+| **white2 → white1 코드 공용 · white2 braketest 삭제 · TTS 합성 403 (edge-tts 7.2.8 → 7.3.1) · E-STOP 해제음 교체 [2026-10-21]** | `white1/paths.py stack()` · `white1/hud.py _route_dirs` · `white2/__init__.py` · `white2/setup.py`(진입점 넷) · `white2/package.xml`(exec_depend white1) · white2 `launch/{one_launch,master,joy}.launch` · `nxde/panel.py BRAKETEST_STACK` · `nxde/tts.py`(403 안내) · `white{1,2}/sound/estop_re.wav`(= ~/Documents/estop_out.wav, 옛 것 ~/Documents/estop_re_before_20261021.wav) |
 | **terrain `Xa`…`Xb` 고속구간 (4.11, white1) · braketest 직선 추종 공용화 [2026-10-19]** | `white1/line_steer.py`(신설 — braketest 조향·출발 래치 상수와 순수 함수) · `braketest.py`(같은 이름 메서드가 그것을 부른다) · `driving.py` `X_*` 상수 · `_warn_x_zones` · `x_zone_step` · `begin_x` · `end_x` · `x_ret_speed` · `x_tail_step` · `demand_speed`(corner_speed 의 중첩 함수를 메서드로) · `send(limit=)` · `slow_zone_code` 5~8 · `hud.py ZONE_X` · `one_launch.py x_*` |
 | **L 진입 틱 1단 · 문 채 인계 (4.6, [2026-10-19 (5)] — L 앞 서행·속도 창 삭제) · terrain `Y` 감속구간 (3.4, white1) [2026-10-19]** | white1·white2 `driving.py` `lidar_entry_brake` · `begin_lidar_zone` · `lidar_carry_step` · `cb_brake_level` · `_clear_transients(keep_brake)` · `slow_brake_need` · `slow_release_why` · `release_lead_ms` · `SlowZone`·`slow_step`·`slow_release`(Y·X) · white1 만 `Y_ZONE_CHARS`·`Y_PULSE`·`y_zone_step`·`_warn_y_zones`·`slow_zone_code` · `record.py slow_zone` · `hud.py ZONE_Y` · `one_launch.py y_pulse` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
@@ -3268,10 +3278,10 @@ ping -c2 192.168.6.11
 | **음량 — 가상 배기음** [2026-09-18] | **`nxde/vess.py` 상단의 `VOLUME`(1.0)·`LOUDNESS`(2.5) 가 소유자**이고, `exhaust.py` 의 `MASTER_GAIN`·`SOFTCLIP_DRIVE` 를 **생성자로** 덮는다(모듈 전역을 밖에서 바꾸지 않는다 — 같은 프로세스의 다른 엔진까지 따라 바뀐다). `VOLUME` 은 tanh 뒤라 **1.0 이 상한**이고, 더 키우는 손잡이는 `LOUDNESS` 다(피크를 안 올리고 평균만 올린다, 실질 상한 ≈4.0). ⚠️ **안내 음성보다 크게 두지 말 것** — 말이 묻힌다 |
 | **가상 배기음 스레드** [2026-09-30] | `nxde/vess.py` 는 arduino 와 **같은 프로세스**다 — ① **자기 `SingleThreadedExecutor` 로 spin** 한다(`rclpy.spin(node)` = 전역 실행기를 쓰면 arduino 메인 스레드와 대기 생성기를 동시에 돌려 `ValueError: generator already executing` — vess 가 거의 늘 죽고, 드물게 arduino 가 exit 1) ② **`Node('vess', use_global_arguments=False)`** — 런치의 `__node:=arduino` 가 프로세스 전체에 걸린다 ③ arduino `main()` 의 `import nxde.vess` 는 **spin 의 try 안**에 둔다(import 0.2 s 동안의 Ctrl+C 가 포트 정리를 건너뛰지 않게). 시험은 sounddevice 를 가짜로 바꿔 도메인 77 에서 돌린다(차 스피커로 소리를 내지 않게) |
 | 인지 디버그 녹화 | **`tl_record_video` → traffic_light `tl_record`** — 그린 자리에서 `nxde/recorder.py` 로 직접 적는다 [2026-10-18]. `/tl/debug_image` 는 구독자가 있을 때만(`_debug_wanted`). `tl_video_topic` 이 다른 토픽일 때만 nxde video 노드가 뜬다(`camera_launch` 의 `rec_in_tl`). `nxde/kill.py RECORDER_COMMS` 에 `traffic_light` 가 있어야 nxde kill 이 SIGTERM 유예를 준다 |
-| **녹화 엔진** [2026-10-18] | `nxde/recorder.py SegmentRecorder` 하나 — `video.py` 와 white1·white2 `traffic_light.py` 가 쓴다. 상수(조각·채움·디스크)는 여기만. feed 는 넘긴 배열을 반복용으로 참조만 든다 — 부르는 쪽이 다음 feed 전에 덮어쓰면 안 된다(traffic_light 의 `CanvasPool` 두 장 번갈아가 그 조건을 지킨다) |
-| **OpenCV 스레드 (traffic_light)** [2026-10-18] | white1·white2 `traffic_light.py TL_CV_THREADS`(8) — ★`from ultralytics import YOLO` 뒤에서★ 부른다(ultralytics 가 import 때 1로 묶는다). 앞에 두면 다시 1스레드가 되어 어안 보정이 9.7 ms 로 돌아간다 |
+| **녹화 엔진** [2026-10-18] | `nxde/recorder.py SegmentRecorder` 하나 — `video.py` 와 white1 `traffic_light.py`(white2 공용 — [2026-10-21]) 가 쓴다. 상수(조각·채움·디스크)는 여기만. feed 는 넘긴 배열을 반복용으로 참조만 든다 — 부르는 쪽이 다음 feed 전에 덮어쓰면 안 된다(traffic_light 의 `CanvasPool` 두 장 번갈아가 그 조건을 지킨다) |
+| **OpenCV 스레드 (traffic_light)** [2026-10-18] | white1 `traffic_light.py TL_CV_THREADS`(8) (white2 공용 — [2026-10-21]) — ★`from ultralytics import YOLO` 뒤에서★ 부른다(ultralytics 가 import 때 1로 묶는다). 앞에 두면 다시 1스레드가 되어 어안 보정이 9.7 ms 로 돌아간다 |
 | **녹화 폴더 구조 · 조각 합본** [2026-10-16] | `nxde/videomerge.py` 의 `PARTS_DIR`·`LOCK_RECORDING`·`LOCK_MERGING` 이 단일 소유자 — `video.py` 가 import 한다. 조각 이름(`<세션>-NN`)·최종본 이름(`<세션>.mp4` = record CSV 와 시각 맞춤 규칙)을 바꾸면 둘을 함께 고친다. 합본 프로세스는 ★ROS 를 import 하지 말 것★ — 하면 `nxde kill` 의 maps 판정에 걸려 합본 도중 죽는다 |
-| **카메라 영상 DDS 수신 버퍼** [2026-10-16] | `nxde/config/cyclonedds.xml`(`max` 만 — ★`min` 금지★) **+** `white1`·`white2` `camera_launch.dds_env()`(세 노드에만, 기존 `CYCLONEDDS_URI` 우선) **+** 기계별 `nxde/tools/setup_dds_buffer.sh`(sysctl `rmem_max`) **+** `nxde/check.py DDS_RMEM_MIN` — xml 만 있고 sysctl 이 없으면 효력이 없고, xml 에 min 을 쓰면 sysctl 없는 기계에서 노드가 안 뜬다 |
+| **카메라 영상 DDS 수신 버퍼** [2026-10-16] | `nxde/config/cyclonedds.xml`(`max` 만 — ★`min` 금지★) **+** `white1` `camera_launch.dds_env()`(white2 공용 — [2026-10-21]) (세 노드에만, 기존 `CYCLONEDDS_URI` 우선) **+** 기계별 `nxde/tools/setup_dds_buffer.sh`(sysctl `rmem_max`) **+** `nxde/check.py DDS_RMEM_MIN` — xml 만 있고 sysctl 이 없으면 효력이 없고, xml 에 min 을 쓰면 sysctl 없는 기계에서 노드가 안 뜬다 |
 | `terrain` 규약 | `driving.py:963` **+** `one_launch.py` 헤더 **+** `lidar/README.md` **+** 이 문서 |
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |
 | **헤딩 출처** | **mppi = OS1 자체 IMU(`params.yaml` 의 `imu_topic`·`use_os1_imu`·`imu_yaw_sign`) / driving = 외장 iAHRS(`/imu`)** — ★섞지 않는다★. `one_launch.py` 는 mppi 에 IMU 를 **넘기지 않는다**(넘기면 `use_os1_imu` 가 무시하고 경고만 남는다). mppi 의 IMU 설정 단일 소유자는 `params.yaml` [2026-09-12] |
@@ -3299,10 +3309,11 @@ ping -c2 192.168.6.11
 | **정차 헤딩 적분 멈춤 (ZUPT)** [2026-10-17] | white1·white2 `driving.py` `cb_imu` + 상수 `ZUPT_GPS_KMH`·`ZUPT_HOLD_S` — ★두 판이 같은 줄★. white2 `run_follow` 의 신호등 정지 묶음(`_tl_held`)이 `self.zupt` 를 '섰다' 로 쓴다 — 조건을 바꾸면 그쪽도 본다 |
 | **B 텔레메트리 상태 칸 (0 평상 / 1 제동등 조건 / 2 E-STOP)** [2026-10-16] | `../mad-code/kasa_1016_B.ino` `sendOutput`(`[1016-C]`) **+** `nxde/arduino.py` `B_STATE_*`·`parse_b`·`update_estop`·`compose`(상태 1·2 → A 쓰로틀 0) — **짝이다.** 값을 바꾸면 둘을 함께 고친다. `/brake_pot` 은 이 상태를 싣는다(record·hud·master 는 옛 이름 그대로 표시만 한다) |
 | **`STOP` 의 뜻 = 자율주행 + E-STOP** [2026-10-07] — ★1015 이하 B 펌웨어 호환으로만 남았다★ | `../mad-code/kasa_1007_B.ino` `[1007-1]`(효력 = D12 AND D5 자율) **+** `nxde/arduino.py` `poll_port`(STOP → 모드 자율, `_set_switch_mode`) — **짝이다.** 구 펌웨어(0909 이하)를 꽂은 채 두면 수동+E-STOP 이 '자율' 로 보인다. 펌웨어가 STOP 에 다른 뜻을 싣게 되면 그 줄도 함께 고친다 |
-| **신호등 인지 · 공통 수정** [2026-10-07] | `white1/white1/traffic_light.py` **+** `white2/white2/traffic_light.py` — 두 파일은 머리말·import 만 다르다(`diff <(sed s/white2/white1/g white2/…) white1/…`). 타이머와 무관한 수정(hud AS 필 · driving 출발 유예 같은 것)도 **양쪽에** 넣는다 — 3.1 투트랙 |
+| **신호등 인지 · 공통 수정** [2026-10-07 → 2026-10-21] | ★[2026-10-21] 파일이 하나다★ — `white1/white1/traffic_light.py`(white2 도 이것을 띄운다 · white2 복사본은 지웠다). 인지 수정은 그 한 곳. 타이머와 무관한 수정이 driving·prompt·record 에 들어가면 그것만 **양쪽에** 넣는다 — 3.1 투트랙 |
+| **스택 폴더 (`WHITE_STACK`)** [2026-10-21] | `white1/paths.py` 의 `stack()`·`STACK_ENV` **+** `white2/__init__.py`(`STACK`·`STACK_ENV` — white1 을 import 하지 않으려고 이름을 따로 적었다) **+** white2 런치 4개의 `import white2`(★`from white1 import …` 보다 먼저★)·`NODE_ENV` — 셋이 짝이다. white2 에 새 모듈을 더하면 그 모듈도 white2 패키지 안이라 자동으로 걸린다. ★white1 모듈에 폴더 리터럴('white1')을 적지 말 것★ — `paths.stack()` 을 쓴다(hud `_route_dirs` 가 그 예) |
 | **AS 상태 판정** [2026-10-07] | `white1/hud.py as_state()` 하나 — 입력은 `/vehicle_mode`·`/estop`·`/board_status` 의 B 칸. `/estop` 이 '효력' 이라는 전제(위 짝)에 기대므로 펌웨어의 E-STOP 게이트를 바꾸면 이 함수도 본다. 다른 화면·기록이 AS 상태를 쓰게 되면 이 함수를 가져간다 — 베끼지 말 것 |
-| **HUD 의 카메라 영상 구독** [2026-10-18] | `white1`·`white2` `hud.py` — `/tl/debug_image` 는 메뉴 `'camera'` 화면일 때만(`HudApp._goto` → `want_tl_debug` → 노드 타이머 `_sync_cam_sub` 가 구독 생성·해제), `/image_raw` 는 받지 않는다. CAM LED 는 usb_cam 의 `/camera_info`. ★영상을 늘 받는 새 화면·LED 를 붙이지 말 것★ — 1080p·3 MB 영상의 구독자가 늘면 usb_cam·traffic_light 가 같은 프레임을 한 번 더 보내야 해 인지 fps 가 33 ms 문턱을 넘는다(CHANGELOG 2026-10-18). 카메라 화면 페이지 이름을 바꾸면 `_goto` 의 비교도 함께 |
-| **'B' 화살표 · 진행 근거 · 구간별 근접 문턱 · T 박스 버리기 · 내 신호 잠금 · T·A 녹색 HSV 확인 파라미터 기본값** [2026-10-18 · 10-19 · 10-20] | `white1`·`white2` `tl_params.py` 의 `B_ARROW`(`tl_b_arrow_frac`·`tl_b_arrow_min_h`·`tl_b_veh_min_ar`·`tl_b_clip_hold` · ★[2026-10-19] 화살표 창 8개 `tl_b_arrow_{x0,x1,y0,y1,h_lo,h_hi,s_lo,v_lo}` · 진행 근거 `tl_b_go_mode`(arrow·bus·★either★·and)·`tl_b_bus_red_s` 0.3·`tl_b_round_min` 0.10·`tl_b_amber_max` 0.20★ — 버스 기하·장수·황색 HSV 는 런치 인자 아닌 `BUS_GO`) · `ZONE_GATE`(`tl_zone_red_min_height_{t,a,b}` 12·9·9 · `tl_near_release_ratio_{t,a,b}` 0.75·0.7·0.7 — 구간 밖은 종전 `tl_red_stop_min_height`·`tl_near_release_ratio`) 하나 — `traffic_light.py` 가 그 값으로 선언하고 `camera_launch.tl_b_params()` 가 같은 값으로 런치 인자를 연다(`ParameterValue` 로 형 고정). ★노드나 런치에 숫자를 따로 적지 말 것★ — 두 기본값이 갈라진다. 새 파라미터를 런치로 열 때도 이 표에 더한다. ★작은 신호 교차로(#1100 처럼 정지선 앞 9~10px)를 경로 CSV 에 'T' 로 적지 말 것★ — T 는 12px 라 안 선다('A' 로 적는다). ★[2026-10-20] `TL_LOCK`★ — `tl_zone_min_box_h_t` 16(구간 T 에서 16px 미만 YOLO 박스를 빨강·초록 모두 ★만들지 않는다★ — 다음 교차로 4~7px · 건너편 8~12px 제거, 0 = 끔) · `tl_lock_enable`(T·A 구간, 체결 순간 근접 RED 박스 하나를 잠그고 해제는 그 박스의 빨강 0.7 s 미감지 + 초록 `green_hold_s` 만 본다 — 남의 빨강·초록 무시, ★잃으면 계속 정지★) · `tl_lock_track_k` 1.2 · `tl_lock_lost_s` 1.0 · 추적 기하는 런치 인자 아닌 `LOCK_GEOM`. ★박스 버리기와 잠금은 짝★ — 버리기만 켜면 내 신호가 화면 위로 빠진 정지에서 빨간불에 풀린다(140401 288). white1 도 같은 `/tl/state` 를 내므로 white1 서브 코스 T 의 첫 빨강이 늦다 — 예선 영상 실측 2.1~2.4 s(≈6 m @9~10 km/h, 감속 시작이 그만큼 늦다). white2 체결은 늦어지지 않는다(6건 0~2장 · 체결 순간 내 빨강 23~31px). ★[2026-10-20] 사용자 결정 : white1 도 그대로 둔다★ — 끄려면 `tl_zone_min_box_h_t:=0` · ★[2026-10-20 (2)] `GREEN_HSV`★ — `tl_green_hsv_confirm` true · `tl_green_hsv_min_px` 3.0(구간 T·A 에서 모델 GREEN 박스는 녹색 화소가 있어야 남는다 — 어두운 근거리 빨강·황색을 GREEN 으로 내 빨간불에 풀던 것, 094820). ★범위 `GREEN_HSV_H`(45~100)·`GREEN_HSV_V_LO`(35)는 이 규칙 전용★ — 노드 `hsv_green_h_high`(90)·`hsv_val_low`(60)와 묶지 말 것(묶으면 교정·RED 관문·A 화살표가 함께 바뀐다). S 하한만 노드 `hsv_sat_low` 를 쓴다 |
+| **HUD 의 카메라 영상 구독** [2026-10-18] | `white1` `hud.py`(white2 공용 — [2026-10-21]) — `/tl/debug_image` 는 메뉴 `'camera'` 화면일 때만(`HudApp._goto` → `want_tl_debug` → 노드 타이머 `_sync_cam_sub` 가 구독 생성·해제), `/image_raw` 는 받지 않는다. CAM LED 는 usb_cam 의 `/camera_info`. ★영상을 늘 받는 새 화면·LED 를 붙이지 말 것★ — 1080p·3 MB 영상의 구독자가 늘면 usb_cam·traffic_light 가 같은 프레임을 한 번 더 보내야 해 인지 fps 가 33 ms 문턱을 넘는다(CHANGELOG 2026-10-18). 카메라 화면 페이지 이름을 바꾸면 `_goto` 의 비교도 함께 |
+| **'B' 화살표 · 진행 근거 · 구간별 근접 문턱 · T 박스 버리기 · 내 신호 잠금 · T·A 녹색 HSV 확인 파라미터 기본값** [2026-10-18 · 10-19 · 10-20] | `white1` `tl_params.py`(white2 공용 — [2026-10-21]) 의 `B_ARROW`(`tl_b_arrow_frac`·`tl_b_arrow_min_h`·`tl_b_veh_min_ar`·`tl_b_clip_hold` · ★[2026-10-19] 화살표 창 8개 `tl_b_arrow_{x0,x1,y0,y1,h_lo,h_hi,s_lo,v_lo}` · 진행 근거 `tl_b_go_mode`(arrow·bus·★either★·and)·`tl_b_bus_red_s` 0.3·`tl_b_round_min` 0.10·`tl_b_amber_max` 0.20★ — 버스 기하·장수·황색 HSV 는 런치 인자 아닌 `BUS_GO`) · `ZONE_GATE`(`tl_zone_red_min_height_{t,a,b}` 12·9·9 · `tl_near_release_ratio_{t,a,b}` 0.75·0.7·0.7 — 구간 밖은 종전 `tl_red_stop_min_height`·`tl_near_release_ratio`) 하나 — `traffic_light.py` 가 그 값으로 선언하고 `camera_launch.tl_b_params()` 가 같은 값으로 런치 인자를 연다(`ParameterValue` 로 형 고정). ★노드나 런치에 숫자를 따로 적지 말 것★ — 두 기본값이 갈라진다. 새 파라미터를 런치로 열 때도 이 표에 더한다. ★작은 신호 교차로(#1100 처럼 정지선 앞 9~10px)를 경로 CSV 에 'T' 로 적지 말 것★ — T 는 12px 라 안 선다('A' 로 적는다). ★[2026-10-20] `TL_LOCK`★ — `tl_zone_min_box_h_t` 16(구간 T 에서 16px 미만 YOLO 박스를 빨강·초록 모두 ★만들지 않는다★ — 다음 교차로 4~7px · 건너편 8~12px 제거, 0 = 끔) · `tl_lock_enable`(T·A 구간, 체결 순간 근접 RED 박스 하나를 잠그고 해제는 그 박스의 빨강 0.7 s 미감지 + 초록 `green_hold_s` 만 본다 — 남의 빨강·초록 무시, ★잃으면 계속 정지★) · `tl_lock_track_k` 1.2 · `tl_lock_lost_s` 1.0 · 추적 기하는 런치 인자 아닌 `LOCK_GEOM`. ★박스 버리기와 잠금은 짝★ — 버리기만 켜면 내 신호가 화면 위로 빠진 정지에서 빨간불에 풀린다(140401 288). white1 도 같은 `/tl/state` 를 내므로 white1 서브 코스 T 의 첫 빨강이 늦다 — 예선 영상 실측 2.1~2.4 s(≈6 m @9~10 km/h, 감속 시작이 그만큼 늦다). white2 체결은 늦어지지 않는다(6건 0~2장 · 체결 순간 내 빨강 23~31px). ★[2026-10-20] 사용자 결정 : white1 도 그대로 둔다★ — 끄려면 `tl_zone_min_box_h_t:=0` · ★[2026-10-20 (2)] `GREEN_HSV`★ — `tl_green_hsv_confirm` true · `tl_green_hsv_min_px` 3.0(구간 T·A 에서 모델 GREEN 박스는 녹색 화소가 있어야 남는다 — 어두운 근거리 빨강·황색을 GREEN 으로 내 빨간불에 풀던 것, 094820). ★범위 `GREEN_HSV_H`(45~100)·`GREEN_HSV_V_LO`(35)는 이 규칙 전용★ — 노드 `hsv_green_h_high`(90)·`hsv_val_low`(60)와 묶지 말 것(묶으면 교정·RED 관문·A 화살표가 함께 바뀐다). S 하한만 노드 `hsv_sat_low` 를 쓴다 |
 
 ### 설계 원칙 (코드 전반에서 반복되는 것)
 

@@ -111,7 +111,7 @@ from sensor_msgs.msg import Imu
 
 from std_msgs.msg import Bool, String
 
-from white2 import paths
+from white1 import paths      # [2026-10-21] white1 공용 — 폴더는 WHITE_STACK=white2 (white2/__init__.py)
 #  ★라이다 준비 판정의 상수·토픽은 driving.py 가 소유자다★ 여기서 다시 적으면
 #  두 곳이 어긋나 '화면은 출발, driving 은 거절' 이 된다(gate_for 의 lidar_ready).
 from white2 import driving as dv

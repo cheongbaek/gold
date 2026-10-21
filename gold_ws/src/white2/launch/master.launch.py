@@ -11,13 +11,13 @@ master.launch.py ― white2 ★수동 계측★ 런치 (마우스 레버 창 + �
 
 띄우는 것:
     nxde/arduino          A/B 2보드 시리얼 브리지
-    white2/iahrs          6축 IMU 드라이버 → /imu
-    white2/speed          /imu 적분 속도계 → /speed [km/h]
+    white1/iahrs          6축 IMU 드라이버 → /imu
+    white1/speed          /imu 적분 속도계 → /speed [km/h]
     nmea_navsat_driver    GPS → /fix
     nxde/master           ★레버 창 → /cmd_vel_raw · /control_state · /brake_level★
     white2/record         전 토픽 → CSV (force_record — 뜨는 즉시 manual-<시각>.csv)
     usb_cam               카메라 → /image_raw                        (use_camera)
-    white2/traffic_light  신호등 인지 — 빨간불이면 리니어 2단          (use_camera)
+    white1/traffic_light  신호등 인지 — 빨간불이면 리니어 2단          (use_camera)
     nxde/sound            ★음성 안내★ (use_sound)  ← [2026-09-15] 이 런치에도 추가
                           런치 시작(one_launch_1) · A/B 보드 연결(one_launch_2) ·
                           ★E-STOP 경고음/해제음★ · 라이다 AEB 반복 경고
@@ -89,16 +89,19 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from white2 import camera_launch, paths, ports
+import white2      # ★먼저★ — WHITE_STACK=white2 (white1.paths 가 white2 폴더를 고른다) [2026-10-21]
+from white1 import camera_launch, paths, ports      # [2026-10-21] white1 공용
 
 
 NODE_ENV = {'PYTHONUNBUFFERED': '1',
-            'RCUTILS_LOGGING_BUFFERED_STREAM': '0'}
+            'RCUTILS_LOGGING_BUFFERED_STREAM': '0',
+            white2.STACK_ENV: white2.STACK}
 RESPAWN_DELAY = 2.0
 
 
 def generate_launch_description():
-    package_name = 'white2'
+    package_name = 'white2'      # record — 신호 판단이 다른 것만
+    shared_pkg = 'white1'        # [2026-10-21] iahrs·speed·traffic_light 는 white1 실행 파일
 
     print("\n=====================================================")
     print(" 🖱️  white2 수동 계측 런치 (master 레버 창 + 기록)")
@@ -207,7 +210,7 @@ def generate_launch_description():
     )
 
     iahrs = Node(
-        package=package_name,
+        package=shared_pkg,
         executable='iahrs',
         name='iahrs_node',
         output='screen',
@@ -225,7 +228,7 @@ def generate_launch_description():
     )
 
     speed = Node(
-        package=package_name,
+        package=shared_pkg,
         executable='speed',
         name='speed_node',
         output='screen',
@@ -297,4 +300,4 @@ def generate_launch_description():
         master,
         record,
         sound,
-    ] + camera_launch.actions(package_name, cam_format, NODE_ENV, RESPAWN_DELAY))
+    ] + camera_launch.actions(shared_pkg, cam_format, NODE_ENV, RESPAWN_DELAY))

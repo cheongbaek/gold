@@ -17,8 +17,8 @@ joy.launch.py ― white2 ★수동 계측★ 런치 (조이스틱 + 전 센서 +
 
 띄우는 것:
     nxde/arduino          A/B/★J★ 3보드 시리얼 브리지 — ★조이스틱도 이 노드가 몬다★
-    white2/iahrs          6축 IMU 드라이버 → /imu
-    white2/speed          /imu 적분 속도계 → /speed [km/h]
+    white1/iahrs          6축 IMU 드라이버 → /imu
+    white1/speed          /imu 적분 속도계 → /speed [km/h]
     nmea_navsat_driver    GPS → /fix
     white2/record         전 토픽 → CSV  (force_record — 아래 참고)
 
@@ -71,12 +71,14 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from white2 import ports
+import white2      # ★먼저★ — WHITE_STACK=white2 (white1 노드가 white2 폴더를 고른다) [2026-10-21]
+from white1 import ports      # [2026-10-21] white1 공용
 
 
 # 파이썬 stdout 버퍼링을 끄지 않으면 노드 로그가 뭉쳐서 늦게 나온다
 NODE_ENV = {'PYTHONUNBUFFERED': '1',
-            'RCUTILS_LOGGING_BUFFERED_STREAM': '0'}
+            'RCUTILS_LOGGING_BUFFERED_STREAM': '0',
+            white2.STACK_ENV: white2.STACK}
 RESPAWN_DELAY = 2.0
 #  조이스틱 기동 지연 [s] — arduino 가 A/B 보드를 먼저 붙잡게 한다(아래 근거).
 #  보드 탐색은 포트당 몇 초가 걸리므로 넉넉히 준다. 조이스틱을 꽂아 두었다면
@@ -84,7 +86,8 @@ RESPAWN_DELAY = 2.0
 
 
 def generate_launch_description():
-    package_name = 'white2'
+    package_name = 'white2'      # record — 신호 판단이 다른 것만
+    shared_pkg = 'white1'        # [2026-10-21] iahrs·speed·traffic_light 는 white1 실행 파일
 
     print("\n=====================================================")
     print(" 🕹️  white2 수동 계측 런치 (조이스틱 + 기록)")
@@ -182,7 +185,7 @@ def generate_launch_description():
     )
 
     iahrs = Node(
-        package=package_name,
+        package=shared_pkg,
         executable='iahrs',
         name='iahrs_node',
         output='screen',
@@ -200,7 +203,7 @@ def generate_launch_description():
     )
 
     speed = Node(
-        package=package_name,
+        package=shared_pkg,
         executable='speed',
         name='speed_node',
         output='screen',

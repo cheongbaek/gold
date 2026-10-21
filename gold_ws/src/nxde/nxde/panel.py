@@ -11,7 +11,8 @@ panel.py ― ★터치 조작반★ [nxde / 2026-10-16]
     [Check] [Kill] [<스택>] [Exit]
     [<스택> one_launch]       <상태> [x]   ros2 launch <스택> one_launch.py (HUD·인지 창·RViz 없이)
     [subcourse] [maincourse]  <상태> [x]   ros2 run <스택> prompt --route <그 CSV>  (= 2) 주행 → 경로 선택)
-    [braketest] [nolidar]     <상태> [x]   ros2 launch <스택> braketest.launch.py nolidar:=false/true
+    [braketest] [nolidar]     <상태> [x]   ros2 launch white1 braketest.launch.py nolidar:=false/true
+                                           ★[2026-10-21] 스택과 무관하게 white1★ (white2 에서 braketest 를 지웠다)
 
   ★[2026-10-16] <스택> = white1 / white2★ (3.1 투트랙) — [<스택>] 버튼이 둘을 오간다. 두 스택은
   노드 이름·토픽이 같아 같이 띄우면 안 되므로 ★세 줄이 전부 쉬는 중일 때만★ 바꿀 수 있다.
@@ -73,8 +74,12 @@ def cmd_prompt(stack, course):
     return ['ros2', 'run', stack, 'prompt', '--route', STACKS[stack][course]]
 
 
+BRAKETEST_STACK = 'white1'   # [2026-10-21] braketest 는 white1 에만 있다 — 스택 버튼과 무관하게 white1 로 띄운다
+
+
 def cmd_braketest(stack, nolidar):
-    return ['ros2', 'launch', stack, 'braketest.launch.py',
+    del stack                    # 스택이 white2 여도 white1 의 braketest 다
+    return ['ros2', 'launch', BRAKETEST_STACK, 'braketest.launch.py',
             f"nolidar:={'true' if nolidar else 'false'}"]
 
 

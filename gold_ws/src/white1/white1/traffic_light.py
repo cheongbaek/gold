@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-traffic_light.py ― 신호등 인지·정지 [white1]
+traffic_light.py ― 신호등 인지·정지 [white1 · white2 공용]
 ════════════════════════════════════════════════════════════════════════════════
 카메라로 신호등을 보고 ★빨간불이 확정되면 리니어 2단(/brake_level=2)★ 으로 세운다.
 빨간불이 red_release_hold_s 동안 안 보이고 초록이 확정되면 놓는다 — 초록도 못 보면 red_release_hold_lost_s 까지
 기다린다 [2026-10-08](stop_latch:=true 면 초록 확정까지 문다).
 변경 이력과 각 값의 실측 근거는 white1/CHANGELOG.md 에 있다.
-[2026-10-07] 인지 쪽은 white2 판(10/5 ROI·1280 엔진·구간 게이트 · 10/6 정리)을 그대로 옮겨 왔다 —
-두 패키지의 이 파일은 머리말·import 줄만 다르다.
+[2026-10-07] 인지 쪽은 white2 판(10/5 ROI·1280 엔진·구간 게이트 · 10/6 정리)을 그대로 옮겨 왔다.
+★[2026-10-21] white2 도 이 파일을 그대로 쓴다★ (white2/white2/traffic_light.py 는 지웠다 — 머리말만 달랐다).
+   white2 one_launch 가 white1 의 traffic_light 실행 파일을 띄우고, 녹화 폴더(paths.video_dir)는
+   WHITE_STACK=white2 로 src/white2/video 가 된다. 제동 판단(/tl_permit 이 True 인 구간에서 2단)이
+   실제로 쓰이는 것은 white2 쪽이다 — 아래 '⚠️' 는 white1 에서의 이야기다.
 
 ⚠️ ★[2026-10-01] white1 의 자율주행에서는 이 노드가 제동하지 않는다★ driving 이 /tl_permit 을 항상
    False 로 낸다 — 신호 정지는 driving 이 이 노드의 /tl/state(색)만 읽어 ★정지선(T 구간 끝) 1 m 앞★ 에

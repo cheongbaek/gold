@@ -31,6 +31,8 @@
     ★nxde★ — 아두이노 A/B 2보드 브리지. 의존은 (white2 → nxde) 한 방향뿐이다.
   -->
   <exec_depend>nxde</exec_depend>
+  <!-- [2026-10-21] white2 는 신호 판단(driving·prompt·record)만 갖고 나머지는 white1 모듈·실행 파일을 쓴다 -->
+  <exec_depend>white1</exec_depend>
   <exec_depend>nmea_navsat_driver</exec_depend>
   <!-- iahrs 시리얼 + ports.py 의 VID/PID 스캔 -->
   <exec_depend>python3-serial</exec_depend>

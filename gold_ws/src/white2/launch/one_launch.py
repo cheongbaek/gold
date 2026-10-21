@@ -5,18 +5,22 @@ one_launch.py ― white2 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
 ════════════════════════════════════════════════════════════════════════════════
     ros2 launch white2 one_launch.py
 
+★[2026-10-21] white2 는 신호 판단만 다르다 — driving·record 만 white2 것이고, 나머지 노드는
+white1 의 실행 파일을 띄운다★ (white2/__init__.py). 폴더(gps_data·ros2bag·video·sound)는 white2 의
+것이다 — 이 파일이 `import white2` 로 WHITE_STACK=white2 를 걸고 NODE_ENV 로도 넘긴다(white1/paths.py '스택').
+
 띄우는 것 (카메라 없음):
     nxde/arduino          A/B 2보드 시리얼 브리지  ★수정 없이 그대로 쓴다★
-    white2/iahrs        6축 IMU 드라이버 → /imu
-    white2/speed        /imu 적분 속도계 → /speed [km/h]
+    white1/iahrs        6축 IMU 드라이버 → /imu
+    white1/speed        /imu 적분 속도계 → /speed [km/h]
     nmea_navsat_driver    GPS 수신기 → /fix
-    white2/gps          ★/fix + /imu → /gps_fused★ RTK Fixed/Float 판정 +
+    white1/gps          ★/fix + /imu → /gps_fused★ RTK Fixed/Float 판정 +
                           5Hz fix 사이 공백을 IMU 로 메운 20Hz 가상좌표
     white2/driving      ★헤딩 + 모드스위치 상태기계 + 경로추종★ (위치는 gps 가 준다)
-    white2/mapping      ★/fix 원값만★ 보고 경로 수집 (gps 후처리를 거치지 않는다)
+    white1/mapping      ★/fix 원값만★ 보고 경로 수집 (gps 후처리를 거치지 않는다)
     white2/record       자율주행 구간 토픽 → CSV
     usb_cam             카메라 → /image_raw                      (use_camera)
-    white2/traffic_light 신호등 인지 — 빨간불이면 리니어 2단      (use_camera)
+    white1/traffic_light 신호등 인지 — 빨간불이면 리니어 2단      (use_camera)
         ★DRIVE_RUN 중에만 개입한다★ 빨간불이 사라지거나 초록불이면 즉시 풀고,
         driving 이 계속 내던 목표펄스가 그대로 통해 스스로 재출발한다.
         카메라를 안 꽂았으면 use_camera:=false (usb_cam 이 respawn 루프를 돈다)
@@ -25,7 +29,7 @@ one_launch.py ― white2 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
         받아 <src>/white2/video/tl-<날짜>_<시각>.mp4 로 적는다. 런치가 뜬 순간부터
         내려갈 때까지다. ★그래서 인지 결과 창은 기본으로 안 띄운다★
         (tl_show_window 기본 false) — 볼 때만 tl_show_window:=true 로 켠다.
-    white2/hud          차량 상면도 HUD (구독 전용)               (use_hud)
+    white1/hud          차량 상면도 HUD (구독 전용)               (use_hud)
     nxde/tts            domichat 채팅방 읽어 주기 ★ROS 노드 아님★  (use_tts)
     ouster_ros/os_driver  OS1-32 라이다 → /ouster/points           (use_lidar)
     mppi_local_planner  ★라바콘 회피 — CSV terrain 열이 'L' 인 구간만★ (use_lidar)
@@ -57,7 +61,7 @@ one_launch.py ― white2 통합 런치 (GPS + IMU + 아두이노 + 자율주행)
     ─────────  ────────────────────────────────────   ───────────────────────
     L / l      라바콘 회피 (★여러 행 연속★)             mppi_local_planner
     S / s      3초 일시정지 후 재출발 (★한 행★)         white2/driving 내부
-    T / t      ★신호등 인지 구간★ (★여러 행 연속★)      white2/traffic_light
+    T / t      ★신호등 인지 구간★ (★여러 행 연속★)      white1/traffic_light (공용)
     그 밖       GPS 추종                               white2/driving
     (빈 칸·'0'·숫자·열 없음 — ★기존 CSV 가 그대로 돈다★)
 
@@ -106,12 +110,15 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from white2 import camera_launch, paths, ports
+import white2      # ★먼저★ — WHITE_STACK=white2 를 건다. 아래 white1.paths 가 white2 폴더를 고른다
+from white1 import camera_launch, paths, ports      # [2026-10-21] white1 공용
 
 
 # 파이썬 stdout 버퍼링을 끄지 않으면 노드 로그가 뭉쳐서 늦게 나온다
+#   WHITE_STACK : 띄우는 white1 노드가 white2 폴더를 보게 (환경은 물려받지만 적어 둔다)
 NODE_ENV = {'PYTHONUNBUFFERED': '1',
-            'RCUTILS_LOGGING_BUFFERED_STREAM': '0'}
+            'RCUTILS_LOGGING_BUFFERED_STREAM': '0',
+            white2.STACK_ENV: white2.STACK}
 RESPAWN_DELAY = 2.0
 
 
@@ -205,7 +212,8 @@ def _lidar_actions(context, *_a, **_kw):
 
 
 def generate_launch_description():
-    package_name = 'white2'
+    package_name = 'white2'      # driving·record — 신호 판단이 다른 것만
+    shared_pkg = 'white1'        # [2026-10-21] 나머지는 white1 실행 파일 (폴더는 WHITE_STACK)
 
     print("\n=====================================================")
     print(" 🔌 하드웨어 장치 경로 확인 (GPS / IMU)")
@@ -570,7 +578,7 @@ def generate_launch_description():
     #  [하드웨어] iAHRS IMU → /imu. 자체 2초 재연결 + VID/PID 재탐색.
     # ═══════════════════════════════════════════════════════════════════
     iahrs = Node(
-        package=package_name,
+        package=shared_pkg,
         executable='iahrs',
         name='iahrs_node',
         output='screen',
@@ -593,7 +601,7 @@ def generate_launch_description():
     #    그대로 돌고, 보정이 엔코더로 내려갈 뿐이다(measured_pulse).
     # ═══════════════════════════════════════════════════════════════════
     speed = Node(
-        package=package_name,
+        package=shared_pkg,
         executable='speed',
         name='speed_node',
         output='screen',
@@ -629,7 +637,7 @@ def generate_launch_description():
     #    ★매핑에는 영향이 없다★ mapping 은 /fix 원값을 직접 받는다.
     # ═══════════════════════════════════════════════════════════════════
     gps_post = Node(
-        package=package_name,
+        package=shared_pkg,
         executable='gps',
         name='gps_node',
         output='screen',
@@ -685,7 +693,7 @@ def generate_launch_description():
     )
 
     mapping = Node(
-        package=package_name,
+        package=shared_pkg,
         executable='mapping',
         name='mapping_node',
         output='screen',
@@ -737,7 +745,7 @@ def generate_launch_description():
 
     # 구독 전용 계기판. respawn 없음 — 창을 닫으면 끝이고 주행은 그대로다.
     hud = Node(
-        package=package_name,
+        package=shared_pkg,
         executable='hud',
         name='hud_node',
         output='screen',
@@ -797,4 +805,4 @@ def generate_launch_description():
         #   driving 이다. 순서가 동작을 바꾸지는 않지만(둘 다 신선도로 판단한다)
         #   로그를 읽을 때 누가 누구를 기다리는지가 순서로 드러난다.
         OpaqueFunction(function=_lidar_actions),
-    ] + camera_launch.actions(package_name, cam_format, NODE_ENV, RESPAWN_DELAY))
+    ] + camera_launch.actions(shared_pkg, cam_format, NODE_ENV, RESPAWN_DELAY))

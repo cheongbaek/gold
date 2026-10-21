@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hud.py ― kasa 차량 상태 HUD  [white1]
+hud.py ― kasa 차량 상태 HUD  [white1 · white2 공용]
 ════════════════════════════════════════════════════════════════════════════════
     ros2 run white1 hud
+    ros2 run white2 hud                       # [2026-10-21] 같은 코드 — 경로 CSV 를 src/white2/gps_data 에서
     ros2 launch white1 one_launch.py          # use_hud:=true (기본)
     ros2 launch lidar one_launch.py           # 동일
 
@@ -695,7 +696,9 @@ class HudNode(Node):
                 self.map_trail = self.map_trail[-TRAIL_MAX_N:]
 
     def _route_dirs(self):
-        """driving 과 같은 data_dir + 워크스페이스 src/white1/gps_data 보조."""
+        """driving 과 같은 data_dir + 워크스페이스 src/<스택>/gps_data 보조.
+        [2026-10-21] 스택(paths.stack()) — white2 로 돌면 white2 의 gps_data 만 본다(같은 이름
+        maincourse.csv 가 두 스택에 따로 있다 — white1 것을 잘못 그리면 안 된다)."""
         dirs = []
         for d in (self.data_dir, wpaths.data_dir('')):
             if d and d not in dirs:
@@ -704,7 +707,7 @@ class HudNode(Node):
         p = here
         for _ in range(8):
             p = os.path.dirname(p)
-            cand = os.path.join(p, 'src', 'white1', 'gps_data')
+            cand = os.path.join(p, 'src', wpaths.stack(), 'gps_data')
             if os.path.isdir(cand) and cand not in dirs:
                 dirs.append(cand)
         return dirs

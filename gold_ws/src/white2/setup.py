@@ -14,10 +14,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'),
             sorted(set(glob('launch/*.launch.py')) | set(glob('launch/*.py')))),
-        # ★[2026-08-19] 카메라 캘리브레이션 — camera_model.py 가 share 에서 읽는다★
-        #   어안 왜곡보정 계수의 단일 소유자다. 재캘리브하면 이 yaml 만 바꾼다.
-        (os.path.join('share', package_name, 'calibration'),
-            glob('calibration/*.yaml')),
+        # ★[2026-10-21] 카메라 캘리브레이션은 white1 의 것을 쓴다★ (camera_model 이 white1 공용 —
+        #   share/white1/calibration). white2/calibration 은 같은 yaml 이라 지웠다.
         # ★[2026-08-14] 음성 안내 음원 — nxde/sound 에서 옮겨 왔다★
         #   .gitignore 가 *.mp3 를 막으므로 새로 clone 하면 이 폴더는 비어 있다
         #   (glob 이 빈 목록이 되어 설치도 조용히 건너뛴다). sound 노드는 '음원 없음'
@@ -29,40 +27,19 @@ setup(
     zip_safe=True,
     maintainer='windo',
     maintainer_email='yellsote9@gmail.com',
-    description='kasa GPS+IMU 최소 추종 자율주행 스택 (카메라 없음)',
+    description='kasa 자율주행 투트랙의 white2 — 신호 판단만 다르고 나머지는 white1 을 쓴다',
     license='TODO',
     entry_points={
         'console_scripts': [
-            # ── 센서 드라이버 ──
-            #   GPS 수신기 드라이버(nmea_serial_driver)는 외부 패키지라 여기 없고
-            #   one_launch.py 가 띄운다. 아래 gps 는 그 /fix 를 ★후처리★ 하는 노드다.
-            'iahrs   = white2.iahrs:main',      # 6축 IMU → /imu (순수 드라이버)
-            'speed   = white2.speed:main',      # /imu 적분 → /speed [km/h]
-            # ★[2026-08-18] gps 신설★ /fix + /imu → /gps_fused
-            #   ① RTK Fixed / Float 판정(status.status 로는 구별 불가 — 그쪽 헤더 ①절)
-            #   ② 5Hz fix 사이 공백을 IMU 로 메워 20Hz 가상좌표
-            #   ★매핑은 이 노드를 거치지 않는다★ mapping 은 /fix 원값을 직접 받는다.
-            'gps     = white2.gps:main',
-            # ── 주행 ──
-            #   ★driving 이 헤딩·상태기계·추종을 맡는다★ 구 white 의 gps_imu 노드는 없고,
-            #   위치는 [2026-08-18] 부터 gps 노드가 만든다.
-            'driving = white2.driving:main',
-            #  ★[2026-09-09] 브레이크 제동거리 측정 전용★ driving 과 배타다 —
-            #  braketest.launch.py 가 driving 대신 이것을 띄운다.
-            'braketest = white2.braketest:main',
-            'mapping = white2.mapping:main',    # /fix 만 보고 경로 수집
-            'prompt  = white2.prompt:main',     # CLI (경로 선택·상태 표시)
-            #  ★[2026-08-14] prompt_g(tkinter GUI)를 삭제했다★ 화면이 둘이면 각자
-            #   다른 대기 상태를 들고 있게 되고, 안전 게이트도 두 곳에 두게 된다.
-            #   화면은 prompt(CLI) 하나로 간다.
-            'record  = white2.record:main',     # 주행 구간 토픽 → CSV
-            #  ★구독 전용 계기판★ F1 상면도 + 게이지. 제어 토픽은 발행하지 않는다.
-            #    ros2 run white2 hud     (이미 떠 있는 스택 위에 얹는다)
-            'hud     = white2.hud:main',
-            # ── 카메라 ──
-            #   ★[2026-08-14] 신호등 인지·정지★ 빨간불이면 리니어 2단, 사라지거나
-            #   초록불이면 해제. 개입 허락은 DRIVE_RUN 또는 master 의 체크박스.
-            'traffic_light = white2.traffic_light:main',
+            # ★[2026-10-21] white2 에 남은 것은 white1 과 다른 셋뿐이다★ (white2/__init__.py)
+            #   gps·iahrs·speed·mapping·traffic_light 는 white1 실행 파일을 쓴다 —
+            #   white2 의 런치가 package='white1' 로 띄우고, 폴더는 WHITE_STACK=white2 로 갈린다.
+            #   braketest 는 white1 에만 있다(ros2 launch white1 braketest.launch.py).
+            'driving = white2.driving:main',   # T·A·B 태그 · traffic_light 가 2단으로 세운다
+            'prompt  = white2.prompt:main',    # CLI (경로 선택·상태 표시) — 타이머 없음
+            'record  = white2.record:main',    # 주행 구간 토픽 → CSV (/traffic_timer 열 없음)
+            #  ★구독 전용 계기판★ white1 의 hud 를 white2 폴더로 — ros2 run white2 hud
+            'hud     = white2:hud',
         ],
     },
 )

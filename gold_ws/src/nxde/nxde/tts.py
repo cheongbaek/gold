@@ -526,6 +526,13 @@ class Speaker:
                     except Exception as e:
                         # 대부분 망이 없거나 목소리 이름이 틀린 경우다. 노드는 계속 돈다.
                         log('[합성 실패] %s' % e)
+                        # ★[2026-10-21] 403 = edge-tts 가 낡았다★ — Microsoft 가 토큰 규격
+                        #   (Sec-MS-GEC-Version)을 바꾸면 옛 판은 접속부터 거절당한다. 실측 :
+                        #   7.2.8 → 403 · 7.3.1 → 정상(시계는 NTP 동기, 망 정상). 접속·방 입장은
+                        #   멀쩡해서 '채팅은 올라오는데 소리만 안 나는' 꼴로 보인다.
+                        if '403' in str(e):
+                            log('  → edge-tts 를 올릴 것 : pip3 install --user -U edge-tts '
+                                '(지금 %s)' % getattr(edge_tts, '__version__', '?'))
                         continue
                     if not data or not self._is_current(gen):
                         continue           # 그 사이 새 채팅이 왔다 — 이것은 버린다

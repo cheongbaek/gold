@@ -94,6 +94,19 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-21 — ★white2 가 이 패키지의 코드를 쓴다 (`paths.py` 스택) · TTS 합성 403 · E-STOP 해제음 교체★ (사용자 지시)
+
+- **white2 공용** — white2 패키지에는 driving·prompt·record 만 남고 gps·iahrs·speed·mapping·hud·traffic_light·paths·ports·camera_launch·camera_model·
+  tl_params 는 **이 패키지의 것**을 쓴다(white2 CHANGELOG 2026-10-21). 그래서 `paths.py` 가 폴더를 '이 파일이 어느 패키지에 있나' 가 아니라
+  **환경변수 `WHITE_STACK`**(없으면 white1)으로 고른다 — `stack()` · 환경변수 이름도 `<스택>_*_DIR`. `hud._route_dirs` 의 'white1' 리터럴도 `paths.stack()` 으로.
+  white1 으로 띄울 때는 아무것도 바뀌지 않는다(같은 조건 런치에서 폴더 전부 `src/white1/…` 확인). **braketest 는 이제 white1 에만 있다.**
+- **TTS 가 소리를 못 냈다 — edge-tts 7.2.8 이 Microsoft 합성 서버에서 403** — domichat 접속·로그인·두 방 입장은 정상이어서 '채팅은 받는데 소리만 없는' 꼴이었다
+  (`output='screen'` 이라 런치 로그에도 '[합성 실패]' 가 남지 않았다). 시계(NTP 동기)·망은 정상, 7.3.1 은 같은 기계에서 바로 합성됐다 →
+  `pip3 install --user edge-tts==7.3.1`. 확인 : 받은 메시지 프레임을 그대로 넣어 합성 1.05 s → ffplay 재생 종료 코드 0.
+  `nxde/tts.py` 는 403 이면 'edge-tts 를 올릴 것' 을 한 줄 더 남긴다. ⚠️ 다른 계정으로 방에 실제로 글을 올려 보는 끝단 시험은 못 했다(같은 계정 동시 접속 불가).
+- **E-STOP 해제음** — `sound/estop_re.wav` = `~/Documents/estop_out.wav`(음성, 2.64 s, 평균 −19.1 dB — 재생 증폭 x3 으로 다른 안내 음성과 비슷) ·
+  옛 사이렌은 `~/Documents/estop_re_before_20261021.wav`. white2 도 같다. 음원은 .gitignore 라 이력에는 없다.
+
 ## 2026-10-20 (2) — ★`traffic_light.py` 구간 T·A 녹색 HSV 확인 — 녹색 화소 없는 GREEN 은 버린다★ (white2 와 같은 줄)
 
 > 구간 T·A 에서 모델 GREEN 박스는 이 규칙 전용 HSV(H 45~100 · S≥55 · V≥35, 중앙 85 %·3×3 열림)의 녹색 화소가 3px 이상이어야 남는다(`tl_green_hsv_confirm` · `tl_green_hsv_min_px`).

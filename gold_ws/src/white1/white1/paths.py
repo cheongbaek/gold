@@ -7,12 +7,12 @@
 각자 자기 상수를 들고 있으면 반드시 어긋난다(구 white 에서 prompt.py 주석이
 "mapping.py 가 저장하는 폴더와 동일해야 한다"고 경고하고 있던 바로 그 문제다).
 
-우선순위 (네 함수 공통):
+우선순위 (네 함수 공통). <스택> = white1 또는 white2 (아래 '스택' 절):
   1) 노드 파라미터로 준 명시 경로
-  2) 환경변수 (WHITE1_DATA_DIR / WHITE1_RECORD_DIR / WHITE1_VIDEO_DIR / WHITE1_SOUND_DIR)
-  3) ★소스 트리★ <...>/src/white1/{gps_data,ros2bag,video,sound}
-  4) ★sound 만★ 설치본 share/white1/sound (소스트리가 아예 없는 배포본용)
-  5) 못 찾으면 ~/white1/{gps_data,ros2bag,video,sound}
+  2) 환경변수 (<스택>_DATA_DIR / _RECORD_DIR / _VIDEO_DIR / _SOUND_DIR, 대문자 — 예 WHITE1_DATA_DIR)
+  3) ★소스 트리★ <...>/src/<스택>/{gps_data,ros2bag,video,sound}
+  4) ★sound 만★ 설치본 share/<스택>/sound (소스트리가 아예 없는 배포본용)
+  5) 못 찾으면 ~/<스택>/{gps_data,ros2bag,video,sound}
      install/ 안에는 절대 쌓지 않는다 — 재빌드하면 날아간다.
      (4 는 예외다 — 음원은 ★읽기 전용★ 이라 재빌드로 날아가도 잃을 것이 없다.)
 
@@ -46,15 +46,43 @@
       colcon build --packages-select white1 nxde
   (--symlink-install 로 빌드해 두면 3) 이 첫 줄에서 바로 맞으므로 이 폴백이
    일을 하지 않는다 — 그것도 정상이다.)
+
+════════════════════════════════════════════════════════════════════════════════
+ ★★ [2026-10-21] 스택 — white2 도 이 파일을 쓴다 (환경변수 WHITE_STACK) ★★
+════════════════════════════════════════════════════════════════════════════════
+  white2 패키지에는 신호 판단이 다른 driving·prompt·record 만 남고, 나머지 노드(gps·iahrs·
+  speed·mapping·hud·traffic_light 등)는 white1 의 코드를 그대로 돈다(CLAUDE.md 3.1 투트랙).
+  그래도 ★폴더는 갈라져 있어야 한다★ — white2 의 gps_data(T·A·B 태그판 maincourse.csv)·
+  ros2bag·video 를 white1 의 것과 섞으면 안 된다.
+  → 폴더를 고르는 기준이 '이 파일이 어느 패키지에 있나' 가 아니라 ★WHITE_STACK★ 이다.
+    없으면 white1. white2 쪽은 white2/__init__.py 가 'white2' 로 건다(그 패키지의 어떤 모듈을
+    import 해도 먼저 돈다) — white2 의 런치·prompt·hud 가 모두 그 길로 들어온다.
+  ★매 호출마다 다시 읽는다★ — 모듈을 import 한 뒤에 걸어도 듣게.
 """
 
 import os
 
-PACKAGE_NAME = 'white1'
+STACK_ENV = 'WHITE_STACK'
+STACKS = ('white1', 'white2')
+DEFAULT_STACK = 'white1'
+_warned_stack = []
+
+
+def stack():
+    """지금 폴더를 고르는 스택 이름 — 'white1' | 'white2'. 모르는 값이면 경고하고 white1."""
+    s = os.environ.get(STACK_ENV, '').strip()
+    if s in STACKS:
+        return s
+    if s and s not in _warned_stack:
+        _warned_stack.append(s)
+        import sys
+        print(f"[paths] ⚠️ {STACK_ENV}={s!r} 는 모르는 스택이다 — {DEFAULT_STACK} 폴더를 쓴다",
+              file=sys.stderr)
+    return DEFAULT_STACK
 
 
 def _source_root_from_prefix(start):
-    """설치본 경로에서 ★소스 트리의 white1 패키지 루트★ 를 되찾는다. 못 찾으면 None.
+    """설치본 경로에서 ★소스 트리의 <스택> 패키지 루트★ 를 되찾는다. 못 찾으면 None.
 
     start 예 : <ws>/install/white1/lib/python3.10/site-packages/white1
     조상을 하나씩 올라가며 <조상>/src/white1/package.xml 을 확인한다. <ws> 에서
@@ -62,6 +90,7 @@ def _source_root_from_prefix(start):
     접두어 이름(예: --install-base 로 바꾼 경우)에서도 같은 논리가 통해야 하기
     때문이다 — '옆에 src/white1 을 끼고 있는 조상' 이 곧 워크스페이스다.
     """
+    name = stack()
     d = start
     while True:
         parent = os.path.dirname(d)
@@ -71,7 +100,7 @@ def _source_root_from_prefix(start):
         src = os.path.join(d, 'src')
         if not os.path.isdir(src):
             continue
-        cand = os.path.join(src, PACKAGE_NAME)
+        cand = os.path.join(src, name)
         if os.path.isfile(os.path.join(cand, 'package.xml')):
             return cand
         # src/<하위폴더>/white1 로 한 단계 접혀 있는 경우도 받는다(vcs 로 받은 트리).
@@ -79,27 +108,33 @@ def _source_root_from_prefix(start):
             entries = sorted(os.listdir(src))
         except OSError:
             continue
-        for name in entries:
-            cand = os.path.join(src, name, PACKAGE_NAME)
+        for sub in entries:
+            cand = os.path.join(src, sub, name)
             if os.path.isfile(os.path.join(cand, 'package.xml')):
                 return cand
 
 
 def _package_root():
-    """설치본이 아닌 '소스 트리의 white1 패키지 루트'. 못 찾으면 None.
+    """설치본이 아닌 '소스 트리의 <스택> 패키지 루트'. 못 찾으면 None.
 
     ① --symlink-install : 이 파일이 소스를 가리키는 링크라 realpath 한 번으로 끝난다.
+                          스택이 white2 면 그 옆 src/white2 다([2026-10-21]).
     ② 복사설치           : ①이 끊긴다 — 워크스페이스를 거슬러 올라가 찾는다([0904] 절).
     """
+    name = stack()
     here = os.path.dirname(os.path.realpath(__file__))   # .../src/white1/white1
     root = os.path.dirname(here)                         # .../src/white1
     if os.path.isfile(os.path.join(root, 'package.xml')):
-        return root
+        if os.path.basename(root) == name:
+            return root
+        sib = os.path.join(os.path.dirname(root), name)
+        if os.path.isfile(os.path.join(sib, 'package.xml')):
+            return sib
     return _source_root_from_prefix(here)
 
 
 def _share_subdir(subdir):
-    """설치본 share/white1/<subdir>. 없거나 ament 를 못 쓰면 None.
+    """설치본 share/<스택>/<subdir>. 없거나 ament 를 못 쓰면 None.
 
     ★읽기 전용 자원에만 쓴다★ (지금은 sound 뿐) — 여기에 쓰기를 하면 재빌드로 날아간다.
     ament_index 를 import 로 감싸는 이유는 이 모듈이 ROS 밖(테스트·도구)에서도
@@ -107,33 +142,38 @@ def _share_subdir(subdir):
     """
     try:
         from ament_index_python.packages import get_package_share_directory
-        share = get_package_share_directory(PACKAGE_NAME)
+        share = get_package_share_directory(stack())
     except Exception:
         return None
     path = os.path.join(share, subdir)
     return path if os.path.isdir(path) else None
 
 
-def _resolve(explicit, env_key, subdir):
+def _env_key(kind):
+    """<스택>_<kind>_DIR — 예 WHITE1_DATA_DIR · WHITE2_RECORD_DIR."""
+    return f"{stack().upper()}_{kind}_DIR"
+
+
+def _resolve(explicit, kind, subdir):
     if explicit:
         return os.path.abspath(os.path.expanduser(explicit))
-    env = os.environ.get(env_key, '').strip()
+    env = os.environ.get(_env_key(kind), '').strip()
     if env:
         return os.path.abspath(os.path.expanduser(env))
     root = _package_root()
     if root:
         return os.path.join(root, subdir)
-    return os.path.expanduser(os.path.join('~/white1', subdir))
+    return os.path.expanduser(os.path.join('~', stack(), subdir))
 
 
 def data_dir(explicit: str = "") -> str:
     """경로(맵) CSV 폴더 — mapping 이 쓰고 driving·prompt 가 읽는다."""
-    return _resolve(explicit, 'WHITE1_DATA_DIR', 'gps_data')
+    return _resolve(explicit, 'DATA', 'gps_data')
 
 
 def record_dir(explicit: str = "") -> str:
     """주행 기록 CSV 폴더 — record 가 쓴다."""
-    return _resolve(explicit, 'WHITE1_RECORD_DIR', 'ros2bag')
+    return _resolve(explicit, 'RECORD', 'ros2bag')
 
 
 def video_dir(explicit: str = "") -> str:
@@ -152,7 +192,7 @@ def video_dir(explicit: str = "") -> str:
     (1728x590)도 분당 4~15MB 다. .gitignore 가 *.mp4 · *.avi 를 막고 있으므로
     이력에는 안 들어가지만, ★작업트리에는 그대로 쌓이므로 가끔 비워야 한다.★
     """
-    return _resolve(explicit, 'WHITE1_VIDEO_DIR', 'video')
+    return _resolve(explicit, 'VIDEO', 'video')
 
 
 def sound_dir(explicit: str = "") -> str:
@@ -171,7 +211,7 @@ def sound_dir(explicit: str = "") -> str:
     """
     if explicit:
         return os.path.abspath(os.path.expanduser(explicit))
-    env = os.environ.get('WHITE1_SOUND_DIR', '').strip()
+    env = os.environ.get(_env_key('SOUND'), '').strip()
     if env:
         return os.path.abspath(os.path.expanduser(env))
     root = _package_root()
@@ -180,4 +220,4 @@ def sound_dir(explicit: str = "") -> str:
     share = _share_subdir('sound')
     if share:
         return share
-    return os.path.expanduser('~/white1/sound')
+    return os.path.expanduser(os.path.join('~', stack(), 'sound'))

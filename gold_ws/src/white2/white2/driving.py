@@ -274,13 +274,13 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Float32, Float64MultiArray, Int32, String
 
-from white2 import paths
+from white1 import paths      # [2026-10-21] white1 공용 — 폴더는 WHITE_STACK=white2 (white2/__init__.py)
 # ★[2026-08-18] GPS 는 이제 gps.py 가 받는다★ 이 노드는 /fix 를 직접 구독하지 않고
 #   후처리된 /gps_fused(품질 판정 + IMU 공백 메움)를 받는다. 배열 규약과 품질 코드는
 #   ★gps.py 가 단일 소유자★ 이므로 리터럴을 여기 다시 적지 않고 import 한다.
 #   (mapping.py 는 종전대로 /fix 원값을 직접 받는다 — gps.py 헤더의 '매핑' 절 참고)
-from white2.gps import (GPS_FUSED_FIELDS, GPS_FUSED_TOPIC, Q_FIXED, Q_LABEL,
-                        Q_NONE)
+from white1.gps import (GPS_FUSED_FIELDS, GPS_FUSED_TOPIC, Q_FIXED, Q_LABEL,
+                        Q_NONE)       # [2026-10-21] gps 는 white1 것을 쓴다
 
 
 # ══════════════════════════════════════════════════════════════════════════════
