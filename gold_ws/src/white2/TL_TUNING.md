@@ -90,7 +90,7 @@
 
 | 파라미터 | 기본 | 뜻 | 올리면 / 내리면 · 끄기 | 근거·주의 |
 |---|---|---|---|---|
-| `tl_zone_min_box_h_t` | 16 | 구간 T 에서 이 높이 미만 YOLO 박스는 **만들지 않는다**(빨강·초록 모두 — 판단·근접·정지선 추론·그림·`/tl/boxes` 어디에도 없다) | 0 = 끔. 올리면 체결이 늦어지고 내리면 다음 교차로가 다시 들어온다 | T 체결 순간 내 빨강 20~27px · 정지 중 28~47px / 다음 교차로 4~7px · 건너편 등기구 8~12px. 켜 두면 T 의 `tl_zone_red_min_height_t`·`tl_near_release_ratio_t`(12·0.75)는 판단을 바꾸지 않는다. ⚠️ white1 도 같은 `/tl/state` 를 쓰므로 white1 서브 코스 T 의 첫 빨강이 2.1~2.4 s(≈6 m) 늦다 — 사용자 결정으로 그대로. ⚠️ **잠금과 짝** — 이것만 켜면 내 신호가 화면 위로 빠진 정지에서 건너편 11px 이 사라져 빨간불에 풀린다(140401 288) |
+| `tl_zone_min_box_h_t` | 16 | 구간 T 에서 이 높이 미만 YOLO 박스는 **만들지 않는다**(빨강·초록 모두 — 판단·근접·정지선 추론·그림·`/tl/boxes` 어디에도 없다) | 0 = 끔. 올리면 체결이 늦어지고 내리면 다음 교차로가 다시 들어온다 | T 체결 순간 내 빨강 20~27px · 정지 중 28~47px / 다음 교차로 4~7px · 건너편 등기구 8~12px. 켜 두면 T 의 `tl_zone_red_min_height_t`·`tl_near_release_ratio_t`(12·0.75)는 판단을 바꾸지 않는다. ⚠️ white1 도 같은 `/tl/state` 를 쓰므로 white1 서브 코스 T 의 첫 빨강이 2.1~2.4 s(≈6 m) 늦다 — 사용자 결정으로 그대로. ⚠️ **잠금과 짝** — 이것만 켜면 정지 중 내 신호를 잃었을 때 남은 작은 빨강까지 사라져 '1.5 s 미감지' 로 빨간불에 풀린다(140401 288 — ★S 지점에 구간 T 를 씌운 시험 장면★, 실주행에서는 신호 판단을 하지 않는 자리다) |
 | `tl_lock_enable` | true | 2단을 무는 순간 정지 근거가 된 근접 RED 박스(가장 큰 것) 하나를 잠그고 위치로 따라간다. 잠금이 있으면 해제 = **그 박스의** 초록 `green_hold_s` 확정 + 그 박스 빨강 `red_release_hold_s` 미감지. 남의 빨강·초록은 무시. **잃으면 계속 정지**('빨강 1.5 s 미감지' 해제를 쓰지 않는다) | false = 종전 해제 규칙 | 지우는 때 : 다음 체결 · 허락 상실 · 구간 변경. HUD 구간 칸 `잠금 35px 녹 0.2s` / `잃음` / `풀림`, 로그 `🔒 내 신호 잠금` · `🔒 잠금 다시 붙음` |
 | `tl_lock_track_k` | 1.2 | 이어지는 박스 = 중심 거리 ≤ k × 잠금 높이(그리고 높이비 `LOCK_GEOM['h_ratio']` 0.7~1.8) | 올리면 남의 박스에 붙을 위험 / 내리면 굴러가며 흔들릴 때 잃는다 | 못 본 시간만큼 넓힌다(`gap_grow` 3 — 1 s 끊기면 k·h × 4). 101543 : 1 s 끊긴 뒤 3.8·h 옮겨 나타났다. 2.8 fps 영상처럼 한 장에 크게 움직이면 잃는다(그래도 정지 유지) |
 | `tl_lock_lost_s` | 1.0 | 이만큼 못 보면 '잃음' 표시 | | HUD·로그용 — 해제는 하지 않는다. `gap_grow` 의 시간 기준이기도 하다 |
@@ -204,7 +204,7 @@
 | ROI 크기·위치 | 확대 배율 → 박스 높이 → `tl_zone_min_box_h_t`·`tl_zone_red_min_height_{t,a,b}`·`tl_solo_stop_min_height`·`tl_b_arrow_min_h`·`tl_gamma_max_h`·`tl_green_max_y2`(y 기준) |
 | 카메라(틸트·높이·보정 `cam_undistort`) | 위 px 문턱 전부 + `tl_green_max_y2` + BEV 사다리꼴 → `sl_trigger_bev_y` |
 | `sl_trigger_bev_y` | `sl_lost_min_bev_y`(발화선보다 작아야 안전망이 산다) |
-| ★`tl_zone_min_box_h_t` ↔ `tl_lock_enable`★ | 짝이다 — 박스 버리기만 켜면 내 신호가 화면 위로 빠진 정지에서 빨간불에 풀린다(140401 288). 둘 다 끄면 T 는 `ZONE_GATE`(12·0.75)로 종전과 같다 |
+| ★`tl_zone_min_box_h_t` ↔ `tl_lock_enable`★ | 짝이다 — 잠금이 없으면 정지 중 내 신호를 잃었을 때 '빨강 1.5 s 미감지' 로 빨간불에 풀린다. 실제 T 정지 : 094820 #300 역광, 2544 정지 → 2595 빨간불 해제(`LK0-Z094820`) ↔ 잠금이면 유지. 박스 버리기만 켜면 더 쉽게 난다(140401 288 — S 지점에 T 를 씌운 시험). 둘 다 끄면 T 는 `ZONE_GATE`(12·0.75)로 종전과 같다 |
 | `tl_near_release_ratio_t` · `tl_zone_red_min_height_t` | 박스 버리기가 꺼졌을 때만 뜻이 있다. 정지 중 문턱(= 둘의 곱)이 다음 교차로 빨강(4~7px) 이하로 내려가면 해제를 막는다(`⏳ 해제 보류` 로그로 확인). 위로는 체결 순간 내 빨강(20px~) |
 | `green_hold_s` | 잠금의 초록 확정 · `stop_latch` · 거짓 녹색(역광) 내성 — 녹색 HSV 확인과 함께 본다 |
 | HSV 초록 범위·채도·밝기·`hsv_crop_center_ratio` | 'A' 화살표 판독(`tl_a_arrow_min_px`) · 감마 GREEN(`tl_gamma_green_px`) — 같은 녹색 화소 수를 쓴다. `hsv_sat_low` 는 녹색 HSV 확인에도 |
@@ -245,7 +245,8 @@ run --video $V/cam-20260912_105807.mp4 --preset ~/tl_eval/zone400B.yaml --start 
 run --video $V/cam-20260913_144031.mp4 --preset ~/tl_eval/zone400B.yaml --start 2545 --limit 395 --name X-B4v2
 run --video $N/cam-20260912_114105.mp4 --preset ~/tl_eval/zone400B.yaml --start 3050 --limit 380 --name X-kc400
 run --video $N/cam-20260913_160149.mp4 --preset ~/tl_eval/zone400B.yaml --start 150  --limit 80  --name X-s400
-# 구간 T 문제 장면 — P3T(뒤 신호등 빨강) · q288(내 신호가 위로 빠짐, realtime) · P4T(역광)
+# 구간 T 문제 장면 — P3T(뒤 신호등 빨강) · P4T(역광)
+#   q288 = 내 신호가 위로 빠지는 스트레스 시험. ★140401 287 은 예선 S 지점(#1400 우회전 3초 정지)이다 — 실주행 구간이 아닌 곳에 zoneT 로 T 를 씌운 것★
 run --video $N/cam-20261017_154550.mp4 --preset ~/tl_eval/zoneT.yaml --start 5850 --limit 800  --name X-P3T
 run --video $V/cam-20260913_140401.mp4 --preset ~/tl_eval/zoneT.yaml --start 270  --limit 66   --name X-q288 --mode realtime
 run --video $N/cam-20261017_094820.mp4 --preset ~/tl_eval/zoneT.yaml --start 2445 --limit 1060 --name X-P4T
