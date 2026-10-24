@@ -23,7 +23,7 @@ B_ARROW = {
     'tl_b_arrow_x0':    0.50,
     'tl_b_arrow_x1':    0.66,
     'tl_b_arrow_y0':    0.15,
-    'tl_b_arrow_y1':    0.85,
+    'tl_b_arrow_y1':    0.85, #서브 코스 카메라 재시험은 돌리지 않아도 됩니다
     'tl_b_arrow_h_lo':  45.0,
     'tl_b_arrow_h_hi':  100.0,
     'tl_b_arrow_s_lo':  45.0,

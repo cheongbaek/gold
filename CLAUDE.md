@@ -20,6 +20,7 @@
 > | ★신호 구간 (T) — 본선 코스 타이머 T1~T5 [2026-09-30] · 신호 접근(정지선 1 m 앞) [2026-10-01]★ | 요약 4.10 · ★질문과 답 `gold_ws/src/white1/TRAFFIC_TIMER.md`★ [2026-10-12] · 신호 시각표·`/traffic_timer` 배열·`LightFilter` `gold_ws/src/white1/white1/traffic_timer.py` 헤더 · 정지 방법 `driving.py` 상수절 '신호 접근' · 모의 `sim/signal_sim.py` |
 > | ★**대회 규정 (2026 자작자율차 부문) · 점검 결과 · AS 상태** [2026-10-07]★ | 원문 = 저장소 최상단 PDF · 점검 = **8절** · AS 상태 구현 = **8.0** · 펌웨어 `../mad-code/kasa_1007_B.ino` 헤더 `[1007-1]`·`[1007-2]` |
 > | ★**white2 — 투트랙의 다른 한쪽** (타이머 없이 CSV 태그 · 카메라가 세운다) [2026-10-07]★ ★[2026-10-21] white2 패키지엔 driving·prompt·record 만 — 나머지는 white1 코드(`WHITE_STACK`)★ | **3.1 의 '투트랙' 문단** · `gold_ws/src/white2/CHANGELOG.md` 머리 · `white2/white2/__init__.py` |
+> | ★**white3 — white1 의 10/17 주행 코드 + 현재 카메라 코드** [2026-10-24 사용자 지시]★ | **3.1 의 'white3' 문단** · `white3/white3/__init__.py` · white1 CHANGELOG 2026-10-24 (4) |
 > | ★**신호등 인지·판단 설명 (질문과 답) · 파라미터 튜닝 가이드**★ [2026-10-08] | `gold_ws/src/white2/TRAFFIC_LIGHT.md` · `gold_ws/src/white2/TL_TUNING.md` (white1·white2 공통) |
 > | ★**K-City 맵·신호 현시·예선/본선 미션 신호등 — 대회 기준 문서**★ [2026-10-09 사용자 제공] | `docs/kcity/` — `260831_Mapdata_K-City.pdf`(교차로 기준점·SG↔차로·차로 노드) · `260331_신호현시정보.pdf`(주기 100 s 현시표) · `예선본선_미션신호등.xlsx` · ★값을 옮겨 적은 `README.md`★ — 경로 CSV·타이머와 어긋나면 이쪽이 정본 |
 > | 카메라 인지 시험 (cam_testbed · 스킬 `cam-test`) [2026-10-07] | `~/cam_testbed`(별도 저장소 Anjabom/cam_testbed) · 이 기계용 계약 `contracts/gold_white{1,2}_stopline.yaml` · ⚠️ `RMW_IMPLEMENTATION=rmw_fastrtps_cpp` 를 붙여 돌린다(3.1) |
@@ -111,8 +112,8 @@ source install/setup.bash
 갱신되지 않는다. `--symlink-install` 시절의 "고치고 노드만 재시작" 습관이 남아
 있으면 **고친 적 없는 코드를 계속 돌리게 된다.**
 
-빌드 대상 7개 : `white1` `white2` `nxde` `lidar` `mppi_local_planner` `ouster_ros` `ouster_sensor_msgs`
-(`ouster-ros` 폴더 하나에 패키지가 둘이다. `white1_0929` 는 백업이라 패키지가 아니다.) — `white2` 는 [2026-10-07] 추가(3.1 투트랙).
+빌드 대상 8개 : `white1` `white2` `white3` `nxde` `lidar` `mppi_local_planner` `ouster_ros` `ouster_sensor_msgs`
+(`ouster-ros` 폴더 하나에 패키지가 둘이다. `white1_0929` 는 백업이라 패키지가 아니다.) — `white2` 는 [2026-10-07] 추가(3.1 투트랙), `white3` 은 [2026-10-24] 추가(3.1 'white3').
 
 > **[2026-09-30] `src/` 에는 쓰는 것만 남겼다** — 이전 세대 스냅샷 `white` · `white806` ·
 > `white0901` 과 백업·임시물 `white2` · `white1 0910` · `rosbag2_2026_09_12-*` 2개 · `sliver.zip` 을
@@ -428,6 +429,10 @@ gold_ws/src/
     white2/  __init__.py(WHITE_STACK=white2 · hud 진입점) · driving.py · prompt.py · record.py
     launch/  one_launch · master · joy · hud — 나머지 노드는 package='white1' 로 띄운다 (아래 '투트랙')
 
+  white3/     ★white1 의 10/17 주행 코드판★ [2026-10-24] (ament_python) — 아래 'white3'
+    white3/  __init__.py(WHITE_STACK=white3 · hud 진입점) · driving.py · gps.py · traffic_timer.py · record.py · prompt.py (전부 96408b9 판)
+    launch/  one_launch — driving·gps·record 만 white3, 카메라·iahrs·speed·mapping·hud 는 package='white1'
+
   nxde/       아두이노 계층 (런치파일 없음, 전부 ros2 run)
     arduino.py   ★차량 구동의 필수 노드★ ★[2026-10-17] 통합 보드(kasa_1017) + J★ 시리얼 브리지
                  (옛 A/B 두 보드용은 arduino_old.py — 하위호환 없음, 토픽은 그대로)
@@ -503,6 +508,17 @@ gold_ws/src/
     drive_gps_node     GPS 직선 매핑 + 스탠리 추종 ⚠️ driving.py 와 정면으로 겹친다
     include/lidar/kasa_units.hpp   ★C++ 쪽 단위·게이트 단일 소유자★
 ```
+
+> ### ★white3 — white1 의 10/17 주행 코드 + 현재 카메라 코드 [2026-10-24 사용자 지시]★
+>
+> - **주행 코드 = 10/17 마지막 커밋 `96408b9` 판** — `driving`·`gps`·`traffic_timer`·`record`·`prompt`. 바꾼 것은 서로 부르는 import(`white3.*`)·스택 이름·
+>   driving 의 **C(`yaw_damp_k`) 기본 0.0**(10/19 `ab7206d` 의 driving 변경분, 사용자 결정)뿐이다. `diff <(git show 96408b9:gold_ws/src/white1/white1/<파일>) white3/white3/<파일>` 로 본다.
+> - **10/17 이후 white1 에 들어간 주행 변경은 white3 에 없다** — 본선 T5 타이머(→ 카메라) · L 진입 판단(→ 5 m 앞 2펄스 서행) · terrain `Y`·`Xa…Xb`(→ GPS 추종) ·
+>   RTK Fixed 대기 · gps 10/24 채움 수정 · `/traffic_timer` 11칸째(→ 10칸). 이 문서의 그 절(4.6·4.10·4.11·1.6 [2026-10-24])은 white3 에 해당하지 않는다.
+> - **카메라·HUD·하드웨어 노드는 white1 현재 판**(`traffic_light`·`tl_params`·`camera_launch`·`camera_model`·`hud`·`iahrs`·`speed`·`mapping`) — 인지를 고치면 white1 한 곳만 고친다.
+> - **폴더는 white3 독립** — `src/white3/{gps_data,ros2bag,video,sound}`(`paths.STACKS` · `.gitignore` 예외 4). gps_data 는 white1 의 `maincourse.csv`·`subcourse.csv` 를
+>   2026-10-24 에 복사한 것이다 — white1 코스를 고치면 white3 에도 복사한다. `sound/` 는 로컬 복사(추적 안 함).
+> - 실행 : `ros2 launch white3 one_launch.py` · `ros2 run white3 prompt` · `ros2 run white3 hud`. ★white1·white2 와 동시에 띄우지 말 것★. panel 에는 없다. ⚠️ 실차 미검증.
 
 > ### ★투트랙 — white1 과 white2 [2026-10-07]★
 >
@@ -1576,6 +1592,7 @@ ros2 run white1 prompt                 # 2) CLI 메뉴 (별 터미널) — ★�
                                        #    목록 맨 위 = maincourse.csv · subcourse.csv
 ros2 run white1 hud                    # 2') 상면도 HUD (구독 전용, 선택)
 #  white2 로 달릴 때는 위 white1 을 전부 white2 로 (둘을 같이 띄우지 않는다 — 3.1 투트랙)
+#  white3(10/17 주행 코드 + 현재 카메라)도 같다 — ros2 launch white3 one_launch.py · ros2 run white3 prompt [2026-10-24]
 #  ★braketest 는 white1 에만 있다★ [2026-10-21] — ros2 launch white1 braketest.launch.py
 ros2 run nxde kill                     # 끝낼 때 / 종료가 질척거릴 때
 ros2 run nxde panel                    # ★터치 조작반★ 위 셋 + braketest 를 버튼으로 [2026-10-16] (white1/white2 전환)
@@ -1646,6 +1663,7 @@ ros2 launch white1 braketest.launch.py                       # ★경로 CSV 선
 ros2 launch white1 braketest.launch.py pick_route:=false     # 창 없이 상단 ROUTE·GOAL_LAT/LON 으로
 ros2 launch white1 braketest.launch.py route:=subcourse.csv  # 창 없이 그 CSV 끝점으로
 ros2 launch white1 braketest.launch.py nolidar:=true         # ★라이다 미사용★ S 지점 / 끝점에서만 정지 [2026-10-16]
+ros2 launch white1 braketest.launch.py use_hud:=false        # ★[2026-10-24] HUD 는 기본으로 뜬다★ (one_launch 와 같은 white1 hud)
 ros2 launch white1 braketest.launch.py goal_lat:=37.1 goal_lon:=127.1
 ros2 launch white1 braketest.launch.py drive_pulse:=8
 ros2 launch white1 braketest.launch.py t_preview:=1.2        # ★좁은 차로★

@@ -138,7 +138,7 @@ def declare_args(cam_dev):
             'tl_conf', default_value='0.35',
             description='YOLO 신뢰도 임계. 올리면 오검출이 줄고 놓치는 것이 는다'),
         DeclareLaunchArgument(
-            'tl_red_stop_min_height', default_value='25',
+            'tl_red_stop_min_height', default_value='20',
             description='★근접도 게이트★ 빨간불 박스 높이가 이 픽셀 이상이어야 정지한다. '
                         '작으면 멀리서 서고, 크면 늦게 선다(1920x1080 기준). ⚠️ 상한이 '
                         '있다 — 너무 크면 서 있는 동안 등기구가 화면 위로 벗어나 해제되어 '
@@ -172,7 +172,7 @@ def declare_args(cam_dev):
                         '문자열을 그대로 형변환하므로 정수로 주면 노드 선언 타입(double)과 '
                         '어긋나 기동에 실패한다(tl_conf 등 기존 인자와 같은 성질이다)'),
         DeclareLaunchArgument(
-            'tl_solo_stop_min_height', default_value='25.0',
+            'tl_solo_stop_min_height', default_value='20.0',
             description='★신호등 단독 정지 문턱★ 빨간 박스 높이가 이 픽셀 이상이면 '
                         '풀브레이크다. ★정지선을 보고 있든 아니든 본다(OR 조건)★ — '
                         '정지선이 발화선에 닿는 것과 이 문턱 중 ★먼저 성립하는 쪽★ 이 문다. '

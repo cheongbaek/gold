@@ -47,13 +47,15 @@ braketest.launch.py ― ★제동검차 전용 런치★ [white1 / 2026-09-12 �
       white1/gps            /fix + /imu → /gps_fused (RTK 판정 + 20Hz 보간)
       white1/braketest      ★이 시험의 본체★ (driving 대신 들어간다)
       white1/record         토픽 → CSV (ros2bag/) — 나중에 그래프로 되짚는다
+      white1/hud            ★상면도 HUD — one_launch 와 같은 white1 hud★ (use_hud, [2026-10-24] 기본 켬)
+                            구독 전용이라 제어에 끼어들지 않는다. 창을 닫아도 시험은 그대로다.
+                            CTE·헤딩오차·목표거리는 braketest 의 /drive_diag(기준선 기준)를 그대로 보인다
 
   ★띄우지 않는 것과 그 이유★
       driving   — 이 시험의 반대말이다. 코너 감속·종점 접근제동·CTE 적분·라이다
                   이양이 전부 '제동거리를 재는 일'에 개입한다.
       mapping   — 시험 중에 경로를 쓸 이유가 없다.
       prompt    — ★런치 = 출발★ 이다(아래). 고를 것이 없다.
-      hud       — 띄워도 되지만 기본은 끈다(use_hud:=true 로 켤 수 있다).
       drive_lidar_node · drive_gps_node
                 — lidar 패키지의 ★주행★ 노드들이다. /cmd_vel_raw 발행자가 겹친다.
                   (pedal_drive_node 는 이름과 달리 구동을 안 내므로 함께 띄운다)
@@ -286,9 +288,15 @@ def _setup(context, *args, **kwargs):
         condition=IfCondition(cfg('use_record')),
     )
 
+    #  [2026-10-24] one_launch 와 같은 white1 hud 를 같은 파라미터로 (사용자 지시 — braketest 에서도 그대로 본다).
+    #  카메라는 이 런치에 없으므로 show_camera 는 끈다.
     hud = Node(
         package=PACKAGE, executable='hud', name='hud_node',
         output='screen', additional_env=NODE_ENV,
+        parameters=[{
+            'show_camera': False,
+            'data_dir': cfg('data_dir'),
+        }],
         condition=IfCondition(cfg('use_hud')),
     )
 
@@ -480,7 +488,8 @@ def generate_launch_description():
             description='기록 CSV 폴더. 비우면 소스트리의 white1/ros2bag/'),
         DeclareLaunchArgument('use_record', default_value='true',
                               description='주행 기록 CSV 를 남긴다'),
-        DeclareLaunchArgument('use_hud', default_value='false',
-                              description='상면도 HUD 를 함께 띄운다(구독 전용)'),
+        DeclareLaunchArgument('use_hud', default_value='true',
+                              description='상면도 HUD(white1 hud)를 함께 띄운다(구독 전용). '
+                                          '[2026-10-24] 기본 켬 — 끄려면 use_hud:=false'),
         OpaqueFunction(function=_setup),
     ])

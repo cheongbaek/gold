@@ -58,18 +58,19 @@
     없으면 white1. white2 쪽은 white2/__init__.py 가 'white2' 로 건다(그 패키지의 어떤 모듈을
     import 해도 먼저 돈다) — white2 의 런치·prompt·hud 가 모두 그 길로 들어온다.
   ★매 호출마다 다시 읽는다★ — 모듈을 import 한 뒤에 걸어도 듣게.
+  [2026-10-24] white3(white1 10/17 주행 코드판)도 같은 방식이다 — white3/__init__.py 가 'white3' 으로 건다.
 """
 
 import os
 
 STACK_ENV = 'WHITE_STACK'
-STACKS = ('white1', 'white2')
+STACKS = ('white1', 'white2', 'white3')   # [2026-10-24] white3 = white1 10/17 주행 코드판
 DEFAULT_STACK = 'white1'
 _warned_stack = []
 
 
 def stack():
-    """지금 폴더를 고르는 스택 이름 — 'white1' | 'white2'. 모르는 값이면 경고하고 white1."""
+    """지금 폴더를 고르는 스택 이름 — 'white1' | 'white2' | 'white3'. 모르는 값이면 경고하고 white1."""
     s = os.environ.get(STACK_ENV, '').strip()
     if s in STACKS:
         return s

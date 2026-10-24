@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>white3</name>
+  <version>0.0.0</version>
+  <description>
+    kasa(금색차) 자율주행 — white1 의 10/17(96408b9) 주행 코드판 [2026-10-24].
+    driving·gps·traffic_timer·record·prompt 만 10/17 판이고, 카메라(traffic_light)·hud·
+    iahrs·speed·mapping 은 white1 의 현재 실행 파일을 띄운다. 폴더는 src/white3/ 의 것이다.
+  </description>
+  <maintainer email="yellsote9@gmail.com">windo</maintainer>
+  <license>TODO</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+
+  <!--
+    one_launch.py 가 함께 띄우는 것들.
+    ★nxde★ — 아두이노 A/B 2보드 브리지. 의존은 (white3 → nxde) 한 방향뿐이다.
+  -->
+  <exec_depend>nxde</exec_depend>
+  <!-- [2026-10-24] white3 = white1 10/17 주행 코드(driving·gps·traffic_timer·record·prompt) — 카메라·hud 등 나머지는 white1 현재 판 -->
+  <exec_depend>white1</exec_depend>
+  <exec_depend>nmea_navsat_driver</exec_depend>
+  <!-- iahrs 시리얼 + ports.py 의 VID/PID 스캔 -->
+  <exec_depend>python3-serial</exec_depend>
+  <!-- hud.py 계기판 (tkinter 캔버스). 구독 전용, 제어에 끼어들지 않는다. -->
+  <exec_depend>python3-tk</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

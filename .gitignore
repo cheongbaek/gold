@@ -46,6 +46,11 @@ Thumbs.db
 !gold_ws/src/white2/gps_data/*.csv
 !gold_ws/src/white2/ros2bag/*.csv
 
+# ★예외 4 : white3 도 같은 두 폴더를 추적한다★ [2026-10-24]
+#   white3 = white1 의 10/17 주행 코드 + 현재 카메라 코드 (CLAUDE.md 3.1). 이유는 위와 같다.
+!gold_ws/src/white3/gps_data/*.csv
+!gold_ws/src/white3/ros2bag/*.csv
+
 # ★사무용 프로그램의 임시·락 파일★ [2026-09-13]
 #   CSV 를 LibreOffice 로 열어 두면 같은 폴더에 `.~lock.<이름>#` 이 생긴다.
 #   위 예외 두 줄이 그것까지 추적 대상으로 끌어올리므로 여기서 되막는다.

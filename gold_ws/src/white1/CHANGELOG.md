@@ -94,6 +94,28 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-24 (4) — ★white3 신설 — white1 의 10/17 주행 코드 + 현재 카메라 코드★ · ★braketest 런치에 white1 HUD 기본 켬★ (사용자 지시)
+
+> 사용자 : "현재 white1 의 주행 코드들을 10월 17일자 주요 주행 ROS2 코드들과 비교하여 교체 … 카메라 코드는 현재 카메라 코드로 … 교체한 코드들은
+> 새로운 런치 white3 로" · "braketest 런치를 실행할 때 white1 의 hud 를 그대로 보고 싶다". 결정 : C 끔 · gps 도 10/17(RTK 대기 없음) · 폴더 전부 white3 독립.
+
+- **기준** = 10/17 마지막 커밋 `96408b9`. 그 뒤 white1 주행에 들어간 것 — driving(C 끔 · T5 타이머 · L 진입 판단 · Y · Xa…Xb · RTK Fixed 대기) ·
+  gps(10/24 fix 사이 채움) · traffic_timer(T5 · 11칸) · record(그 열). prompt·mapping·iahrs·speed 는 그 뒤 바뀌지 않았다.
+- **`src/white3`** (white2 와 같은 틀) — `driving`·`gps`·`traffic_timer`·`record`·`prompt` = `96408b9` 판. 바꾼 것은 서로 부르는 import(`white1.*` → `white3.*`) ·
+  화면·로그의 스택 이름 · 머리말 한 줄 · driving 의 C(`ab7206d` 의 driving 변경분 그대로 — `YAW_DAMP_K` 0.0 · 시작 경고)뿐이다.
+  `launch/one_launch.py` = 10/17 one_launch — driving·gps·record 는 `package='white3'`, iahrs·speed·mapping·hud·카메라(`camera_launch.actions`)는 `'white1'`(현재 판),
+  `yaw_damp_k` 기본 0.0, `WHITE_STACK=white3`. `ros2 run white3 hud` = white1 hud.
+- **폴더** — `white1/paths.py STACKS` 에 white3. `src/white3/gps_data` 에 white1 의 `maincourse.csv`·`subcourse.csv`(현재 판, 10/20 직선 연장 포함)를 복사 —
+  subcourse 의 `Y`(10/21)는 10/17 코드가 몰라 GPS 추종으로 달린다. `sound/` 는 로컬 복사(추적 안 함). `.gitignore` 예외 4(gps_data·ros2bag).
+- **호환** — `/gps_fused` 13칸 같다 · 현재 traffic_light 는 `/tl_zone` 첫 글자만 본다(`T1`~`T5` → T) · HUD 는 `/drive_diag` 앞 칸만 · mppi 의 `/lstatus`·`/lidar_ref` 계약 그대로.
+- **braketest.launch.py** — `use_hud` 기본 false → **true**, one_launch 와 같은 white1 hud 에 `show_camera:=false`·`data_dir`. braketest 의 `/drive_diag` 앞 18칸이 driving 과
+  같은 배열이라 CTE(기준선)·헤딩오차·목표거리가 그대로 보인다. panel 의 braketest 버튼도 HUD 를 띄운다(끄려면 `use_hud:=false`).
+- **카메라** — 작업트리에 있던 근접 문턱 25 → 20 px(`tl_red_stop_min_height`·`tl_solo_stop_min_height`, camera_launch·traffic_light)를 함께 올렸다(사용자 지시, white1·white2·white3 공용).
+- **검증 (도메인 77)** — `colcon build white1 white3` · `96408b9` 대비 diff 가 위 줄뿐 · `--show-args`(white3 yaw_damp_k 0.0 · 폴더 white3 / braketest use_hud true) ·
+  driving·gps·record·prompt(+traffic_timer) 단독 기동 : 경로 폴더 `src/white3/gps_data` · 기록 `src/white3/ros2bag` · 음원 `src/white3/sound` · `/traffic_timer`·`/tl_zone` 발행 ·
+  hud 를 braketest 와 같은 파라미터로 기동. ⚠️ 실차 미검증 — white3 에서는 10/17 이후 고친 거동이 돌아온다(본선 T5 카메라 · L 앞 5 m 2펄스 서행 · RTK Fixed 대기 없음).
+- ⚠️ hud 는 SIGINT 하나로는 창이 안 닫힌다(tk 루프 — 런치는 SIGTERM·SIGKILL 로 마저 내린다). 종전부터의 거동이다.
+
 ## 2026-10-24 (3) — ★RTK Fixed 일 때만 주행 — 아니면 서서 Fixed 를 기다린다★ · ★(2) 의 정차 고정·의심 추측항법은 지웠다★ (사용자 지시, white1·white2 같은 줄)
 
 > 사용자 : "GPS 가 Fixed 일 때에만 주행을 이어가고 Float 일 때는 정지 후 Fixed 될 때까지 대기 후 출발" · "기존 임의 GPS 보정도 방해될 것으로 판단되면

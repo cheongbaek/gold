@@ -627,11 +627,11 @@ class TrafficLight(Node):
         #   RED 에는 걸지 않는다(버리면 위험 방향). 'B' 에서 수풀이 차량 박스로 뽑혀 단독 급정지하는 경로도 막는다.
         self.declare_parameter('tl_green_max_y2', 520)
         # RED(정지 대상) / RED_FAR(아직 멀다) 를 가르는 근접 게이트 [박스 높이 px].
-        self.declare_parameter('tl_red_stop_min_height',    25)
+        self.declare_parameter('tl_red_stop_min_height',    20)
         # ★정지선 없이도 설 만큼 가까운가★ — 이 높이 이상이면 정지선과 무관하게 선다
         #   (_stop_plan 의 OR). K-City 에서 25px 첫 도달 때 정지선이 3.1~3.9 m 앞이었다
         #   = 정지선 발화와 거의 같은 자리. 0 이면 정지선을 못 볼 때 안 선다(실차 금지).
-        self.declare_parameter('tl_solo_stop_min_height',   25.0)
+        self.declare_parameter('tl_solo_stop_min_height',   20.0)
         # 물고 있는 동안 근접 게이트를 이 비율로 낮춘다 — 박스가 몇 px 줄었다고
         #   RED_FAR 로 떨어져 해제 타이머가 도는 것을 막는다. 1.0 = 히스테리시스 없음.
         #   ★[2026-10-19] 구간 밖(tl_red_stop_min_height)에만 쓴다★ — 신호 구간 안은 tl_near_release_ratio_{t,a,b}(tl_params.ZONE_GATE).
