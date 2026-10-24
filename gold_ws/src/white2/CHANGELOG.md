@@ -98,6 +98,25 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-24 (4) — ★L 진입 최대 1단 — (1) 의 '빠르면 2단' 을 되돌렸다★ · ★펌웨어 kasa_1024(제동등 삭제) 호환 확인 · 정지 후 출발 무펄스 조사★ (사용자 지시, white1·white2 같은 줄)
+
+- **L 진입** — 사용자 : "진입구간을 충분히 늘려놨으므로 최대 1단제동만 사용할 것, 충분히 빠를 때 1단제동 걸고 속도가 충분히 느리다면
+  제동 없이 라이다구간 기본속도 유지하며 갈 것". 같은 날 ff95e34(white1 CHANGELOG 2026-10-24) 의 `driving.py`·`record.py` 를 그대로 되돌렸다(`lidar_entry_brake` 는
+  다시 시각 하나를 돌려준다 · `slow_release2_kmh`·`release_lead2_ms`·`LIDAR_ENTRY_SETTLE_M`·`_lz_carry_lv`·slow_zone 9 삭제). 상수절 '지나는 그 틱에' 끝에 한 줄.
+  - 검증 (도메인 77, 설치본 DrivingNode 에 GPS 속도만 넣어 `lidar_entry_brake`) — 두 스택 같다 :
+    5 · 12 km/h → 리니어 없이 인계 / 13.5 · 14 · 20 · 25 km/h · 속도 모름 → 1단(해제선 10.9 km/h). 2단은 나오지 않는다. ⚠️ 실차 미검증.
+- **펌웨어 kasa_1024** (mad-code — 제동등 D11·스위치 D53 만 뺐다, 상태 칸 0·2, 인휠 차단 = E-STOP OR 리니어 1·2단 지령) — `.ino` 둘을 가짜 Arduino API 로
+  같은 32 s 입력(주행·1·2단·직접 PWM·형식 오류·E-STOP·수동·워치독·캘리브)에 돌려 비교 : 제동등 줄과 상태 1→0 을 빼면 시리얼 줄·핀 쓰기가 한 줄도 같다.
+  `nxde/arduino.py` 는 1·2단인 모든 분기에서 이미 구동 0 을 보내므로 ROS 코드는 그대로다(compose 의 상태 1 덮어쓰기는 1020 이하 호환으로만 남는다).
+  ⚠️ 실차 차이 하나 — 1020 은 리니어가 다 빠져 D53 이 닫힐 때까지 인휠을 끊었고 1024 는 해제 지령 즉시 푼다(사용자 결정 : 지금 1024 그대로).
+- **정지 후 출발 때 '브레이크는 풀렸는데 펄스가 안 나간다'** — 10/16~10/24 기록 전수 조사(gold-issue — 전문은 white1 CHANGELOG 2026-10-24 (5)). 정상 재출발 27건은 해제 뒤 보드 펄스 1.05~1.65 s ·
+  바퀴 ≤ 2.25 s(리니어 복귀 대기 설계 + arduino `BRAKE_RELEASE_HOLD_S` 0.5 s). 증상과 맞는 장면의 원인은 셋 :
+  ① 보드 상태 1 = D53 페달 스위치 열림(1020) → 보드·arduino 가 인휠 0 — white2 subcourse 114748 출발 대기 1.95 s 등, 10/20~24 누적 8.8 s → ★kasa_1024 로 사라진다★
+  ② GPS 두절 분기의 펄스 0·브레이크 0 — white2 maincourse 091812 8.5 s 등 → (3) RTK 대기 이후는 2단으로 서서 기다린다(해소)
+  ③ mppi `lowSpeedTrim` 이 기동 직후 허수 엔코더로 펄스를 4↔0 — white2 maincourse 123945(정지 상태에서 L 인계, 3 km/h 까지 6 s) → ★이번엔 고치지 않았다(사용자)★ — TODO.
+  A보드 적분 동결은 관측되지 않았다. 조사 스크립트는 그 세션 스크래치(scan·lat·cls·lz.py)였다.
+  · 함께 본 것(미확인) : 기록 밖 arduino 로그에 E-STOP 0.10 s 켜짐·꺼짐 묶음(13:57 12회 · 14:38 12회 · 16:28 38회) — 버튼 시험인지 D18 접점인지 모른다.
+
 ## 2026-10-24 (3) — ★RTK Fixed 일 때만 주행 — 아니면 서서 Fixed 를 기다린다★ (사용자 지시, white1 과 같은 줄)
 
 > `driving.py` `_rtk_hold` · 상수 `RTK_ONLY`·`RTK_LOST_S`·`RTK_RESUME_S`·`RTK_FIX_STALE_S` · `one_launch.py rtk_only`. 근거(이 패키지 `ros2bag/subcourse-20261024_{104426,104722}` —

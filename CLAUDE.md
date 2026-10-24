@@ -36,6 +36,9 @@
 > - **상태 2·1 이면 보드가 스스로 인휠 0**(ROS 의 쓰로틀 0 도 그대로) · 조향 칸이 같으면 0.9 s 마다만 다시 건다.
 > - **ROS 토픽은 그대로**, `arduino.py` 는 하위호환 없음 — 옛 두 보드용은 `nxde/arduino_old.py`. 아래 1.5·3.2·7절의 A/B 서술은 **1016 까지**다.
 > - 정본 : `kasa_1017.ino` 머리말 `[1017-1]`~`[1017-4]` · `white1/BOARD_B.md` 머리 · CHANGELOG 2026-10-17 (TODO-15 실차 확인).
+> - ★[2026-10-24] `kasa_1024.ino` — 제동등(D11)·제동등 스위치(D53) 코드만 뺐다★ — 상태 칸은 **0·2 만**(1 없음) · 보드 인휠 차단 = **E-STOP 효력 OR 리니어 1·2단 지령**
+>   (해제 지령 즉시 풀린다 — 1020 은 D53 페달 스위치가 닫힐 때까지 끊었다) · 사람이 페달을 밟아도 보드는 인휠을 끊지 않는다. 1020 과의 PC 모의 비교 :
+>   제동등 줄·상태 1→0 을 빼면 출력이 한 줄도 다르지 않다. **ROS(`arduino.py`)는 그대로 쓴다** — 1·2단인 모든 분기가 이미 구동 0 을 보낸다(`../mad-code/CLAUDE.md` 22절).
 
 > ### ⚠️ [2026-10-16] 펌웨어 1016 (A·B) — 보드 계약이 바뀌었다 (`kasa_1016_A.ino` · `kasa_1016_B.ino` 를 함께 굽는다)
 > - **B → ROS 는 늘 `P,<조향각>,<상태>,<모드>`** — `STOP` 줄이 없다. 상태 **2 = E-STOP · 1 = 제동등 조건 · 0**. 모드 칸은 실제 D5.
@@ -1265,7 +1268,9 @@ S 지점 : driving 이 세운다 ·  /lstatus = 'S' → mppi 침묵
   선감속 로직은 코드가 복잡해진다 · 속도 감안해서 L 영역 지정할 것'). 평소 GPS 추종 그대로 L 에 닿는다.
   - 판단 = Y 진입과 같은 `slow_brake_need(v, 0, 2펄스)` : 체결문턱(해제선 10.9 + a1×최소물림 = 13.2 km/h) 넘으면 **그 틱에 1단**,
     아니면 리니어 없이 인계. **GPS 속도를 모르면 빠르다고 본다.** (`lidar_entry_brake`)
-  - ★[2026-10-24] 빠르면 2단★ (사용자 '필요시 2단 제동까지') — 1단으로 `LIDAR_ENTRY_SETTLE_M`(4.5 m = 첫 줄 권고 하한 6 m − 1.5) 안에
+  - ★[2026-10-24 저녁] 최대 1단 — 아래 '빠르면 2단' 은 철회했다★ (사용자 '진입구간을 충분히 늘려놨으므로 최대 1단제동만 ·
+    느리면 제동 없이 라이다구간 기본속도') — 13.2 km/h 이하 리니어 없이 인계 · 그 위·속도 모름 1단(위 줄 그대로). ff95e34 의 driving·record 를 되돌렸다.
+  - ~~★[2026-10-24] 빠르면 2단★~~ (사용자 '필요시 2단 제동까지') — 1단으로 `LIDAR_ENTRY_SETTLE_M`(4.5 m = 첫 줄 권고 하한 6 m − 1.5) 안에
     해제선까지 못 내리면 2단 : **13.2 km/h 이하 없음 · 13.2~14.1 1단 · 그 위·속도 모름 2단**. 2단 해제선 13.2 km/h(a2 실측 하한 2.2 로 —
     늦게 푸는 쪽) · 상한 3 s. record `slow_zone` 9. 근거 white2 `maincourse-20261024_092247`(20.2 km/h 1단 인계 → 1.5 s 에 18.6 km/h 뿐 ·
     mppi 우로 −74 °/s, mppi 과조향은 white1 CHANGELOG TODO-20). ⚠️ 실차 미검증.
@@ -2191,7 +2196,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | **terrain `Xa`…`Xb` 고속구간 (4.11, white1) · braketest 직선 추종 공용화 [2026-10-19]** | `white1/line_steer.py`(신설 — braketest 조향·출발 래치 상수와 순수 함수) · `braketest.py`(같은 이름 메서드가 그것을 부른다) · `driving.py` `X_*` 상수 · `_warn_x_zones` · `x_zone_step` · `begin_x` · `end_x` · `x_ret_speed` · `x_tail_step` · `demand_speed`(corner_speed 의 중첩 함수를 메서드로) · `send(limit=)` · `slow_zone_code` 5~8 · `hud.py ZONE_X` · `one_launch.py x_*` |
 | **RTK Fixed 일 때만 주행 (1.6) [2026-10-24 (3)]** | white1·white2 `driving.py` 상수절 'RTK Fixed 일 때만'(`RTK_ONLY`·`RTK_LOST_S`·`RTK_RESUME_S`·`RTK_FIX_STALE_S`) · `_rtk_hold` · `loop`(E-STOP 게이트 다음) · `enter` · `one_launch.py rtk_only` · white1 `gps.py` 상수절 'fix 사이 채움'(`cb_imu` 투영·바이어스 · `_is_still` · `_advance_dr` 출발 가속 상한) |
 | **mppi 조향 범위 (4.9) [2026-10-24 (2)]** | mppi `kasa_units.hpp roadWheelToPotDeg`(언더스티어 v 4펄스) · `path_tracker.hpp steerRangeRad` · 노드 `rangeSpeed`·`/gps_fused` 구독 · `params.yaml cmd.steer_range_*`·`cmd.steer_ay_max` · `test/avoid_sim.cpp`(RANGE·V) |
-| **L 진입 속도별 0·1·2단 (4.6) [2026-10-24]** | white1·white2 `driving.py` `lidar_entry_brake`(→ (시각, 단계)) · `lidar_carry_step` · `slow_release_why(level)` · `slow_release2_kmh` · `release_lead2_ms` · 상수 `LIDAR_FIRST_ROW_MIN_M`·`LIDAR_ENTRY_SETTLE_M`·`GOAL_RELEASE_RETRACT2_S` · `_lz_carry_lv` · `slow_zone_code` 9 · `record.py` 주석 |
+| ~~**L 진입 속도별 0·1·2단 (4.6) [2026-10-24]**~~ ★같은 날 저녁 되돌림 — 최대 1단★ | white1·white2 `driving.py` `lidar_entry_brake`(→ (시각, 단계)) · `lidar_carry_step` · `slow_release_why(level)` · `slow_release2_kmh` · `release_lead2_ms` · 상수 `LIDAR_FIRST_ROW_MIN_M`·`LIDAR_ENTRY_SETTLE_M`·`GOAL_RELEASE_RETRACT2_S` · `_lz_carry_lv` · `slow_zone_code` 9 · `record.py` 주석 |
 | **L 진입 틱 1단 · 문 채 인계 (4.6, [2026-10-19 (5)] — L 앞 서행·속도 창 삭제) · terrain `Y` 감속구간 (3.4, white1) [2026-10-19]** | white1·white2 `driving.py` `lidar_entry_brake` · `begin_lidar_zone` · `lidar_carry_step` · `cb_brake_level` · `_clear_transients(keep_brake)` · `slow_brake_need` · `slow_release_why` · `release_lead_ms` · `SlowZone`·`slow_step`·`slow_release`(Y·X) · white1 만 `Y_ZONE_CHARS`·`Y_PULSE`·`y_zone_step`·`_warn_y_zones`·`slow_zone_code` · `record.py slow_zone` · `hud.py ZONE_Y` · `one_launch.py y_pulse` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
 | **B 상태 칸 0/1/2 · `STOP` 폐지 · 상태 1·2 = A 쓰로틀 0 · A 의 STOP 무시 [2026-10-16]** | `nxde/arduino.py` `B_STATE_*` · `parse_b` · `update_estop` · `compose`(→ `_compose_modes`) · `_drop_board` · `../mad-code/kasa_1016_{A,B}.ino` |
@@ -3335,7 +3340,7 @@ ping -c2 192.168.6.11
 | **미리보기 ↔ `/lidar_ref[3]`** [2026-09-28] | mppi 미리보기는 driving 의 `zone_left`(다음 L 구간까지 호길이)로 켜진다. **그 열의 뜻을 바꾸면 미리보기가 조용히 꺼진다** |
 | 조종권 | **`/lstatus`**(driving → mppi, 허락) **+** **`/lidar_active`**(mppi → driving, 생존) — **방향이 반대라 합칠 수 없다.** `/lstatus` 발행부와 mppi 구독부는 **한 커밋에서 함께** 고친다(6.4⑤) |
 | 신선도 문턱 | `/lstatus` 발행 주기(20 Hz) **+** mppi `handover.lstatus_stale_s`(1.0) — **신선도가 곧 허락이다**(6.4⑤-3) |
-| **감속 판단 (L 진입 · Y · X)** [2026-10-19] | white1·white2 `driving.py` 의 `slow_brake_need`·`slow_release_why`·`lidar_entry_brake`·`lidar_carry_step`·`SlowZone`·`slow_step` 은 ★두 판이 같은 줄★(white1 만 `_sa_phase` 한 줄 — 신호 접근) — Y 는 [2026-10-21] 부터 white2 에도 같은 줄(`y_zone_step`·`_warn_y_zones`·`slow_zone_code` — white2 는 `_sa_phase` 줄 없음), X 는 white1 만. 문턱은 전부 `goal_a1`·`release_lead_ms()`·`A_BRAKE1_MS2`·`BRAKE_GATE_MARGIN` 에서 유도한다(새 숫자 없음). ★L 앞에서는 감속하지 않는다★(4.6 [2026-10-19 (5)]) — 선감속 로직을 다시 넣지 말 것. L 진입 단계(0·1·2)는 진입 틱 하나에서 고른다([2026-10-24] — 2단 해제선 `release_lead2_ms` 는 1단 `release_lead_ms` 와 같은 꼴). 새 구간은 `SlowZone` 하나를 `_slow_zones` 에 더하고 run_follow 의 소유권 순서 자리(종점 > S > 신호 > Y > X > 코너)에 끼운다. `y_pulse` 기본값의 소유자는 `driving.Y_PULSE` |
+| **감속 판단 (L 진입 · Y · X)** [2026-10-19] | white1·white2 `driving.py` 의 `slow_brake_need`·`slow_release_why`·`lidar_entry_brake`·`lidar_carry_step`·`SlowZone`·`slow_step` 은 ★두 판이 같은 줄★(white1 만 `_sa_phase` 한 줄 — 신호 접근) — Y 는 [2026-10-21] 부터 white2 에도 같은 줄(`y_zone_step`·`_warn_y_zones`·`slow_zone_code` — white2 는 `_sa_phase` 줄 없음), X 는 white1 만. 문턱은 전부 `goal_a1`·`release_lead_ms()`·`A_BRAKE1_MS2`·`BRAKE_GATE_MARGIN` 에서 유도한다(새 숫자 없음). ★L 앞에서는 감속하지 않는다★(4.6 [2026-10-19 (5)]) — 선감속 로직을 다시 넣지 말 것. L 진입은 진입 틱 하나에서 0단(인계)·1단만 고른다(★[2026-10-24 저녁] 최대 1단 — 2단은 넣지 말 것★). 새 구간은 `SlowZone` 하나를 `_slow_zones` 에 더하고 run_follow 의 소유권 순서 자리(종점 > S > 신호 > Y > X > 코너)에 끼운다. `y_pulse` 기본값의 소유자는 `driving.Y_PULSE` |
 | **직선 프리뷰 추종 (braketest · X 고속구간)** [2026-10-19] | `white1/line_steer.py` 하나가 상수(T_PREVIEW·LP·RATE_T·언더스티어 클램프·pot 상한들·CTE 적분·출발 래치 문턱)와 식의 소유자 — `braketest.py` 와 `driving.x_zone_step` 이 같이 쓴다. ★한쪽에 식을 따로 적지 말 것★. 고치면 braketest 동치 시험(옛/새 메서드에 같은 입력열)과 X 모의를 다시 돈다. X 만의 차이(pot 상한 6° · 트림+얼린 적분 · 백래시 선보상 · 댐핑 끔)는 `driving.py` 상수절 'terrain Xa' 에만 |
 | **X 고속구간 펄스 상한** [2026-10-19] | `driving.X_PULSE_LIMIT`(15) **+** 펌웨어 `kasa_1017.ino TARGET_MAX`(15) **+** `nxde/arduino.py PULSE_MAX`(15) — 셋이 같아야 한다. `MAX_PULSE_LIMIT`(10)는 일반 주행 상한으로 그대로이고 `send(limit=)` 를 X 만 넘긴다. `x_pulse`·`x_launch_pulse`·`x_switch_kmh` 기본값은 braketest 상단 `DRIVE_PULSE`·`LAUNCH_PULSE`·`CRUISE_SWITCH_KMH` 와 같은 근거 — 한쪽을 실측으로 바꾸면 다른 쪽도 본다 |
 | **통합 보드 입출력 한 줄 (`I,` 8칸 · 명령 4칸)** [2026-10-17] | `../mad-code/kasa_1017.ino` `sendOutput`·`handleCommandLine`(`[1017-2]`·`[1017-3]`) **+** `nxde/arduino.py` `TELEM_PREFIX`·`TELEM_FIELDS`·`parse_i`·`command_line` **+** `nxde/check.py` `TELEM_PREFIX` — **짝이다.** 칸을 늘리면 셋을 함께 고친다(칸 수가 다르면 줄 통째로 버려 값이 조용히 얼어붙는다). 조향 다시 걸기 `STEER_REARM_MS`(0.9 s)는 상위 `KEEPALIVE_S`(1.0 s)보다 짧고 `SETTLE_MS`(0.5 s)보다 길어야 한다 |
