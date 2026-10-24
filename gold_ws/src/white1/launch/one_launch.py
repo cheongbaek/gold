@@ -494,6 +494,11 @@ def generate_launch_description():
                         '남은 호길이와 직선거리가 둘 다 이 안일 때만 걸린다 — 순환 '
                         '코스 출발점 오작동 방지'),
         DeclareLaunchArgument(
+            'rtk_only', default_value='true',
+            description='★RTK Fixed 일 때만 주행★ [2026-10-24 사용자 지시] Fixed 가 아니거나(Float·DGPS) 두절이면 '
+                        '0.4 s 뒤 리니어 2단으로 서서 기다리고, Fixed 가 2 s 이어지면 그 자리에서 재개한다. '
+                        'false = 종전(품질과 무관하게 주행). 기본값의 소유자는 driving.RTK_ONLY'),
+        DeclareLaunchArgument(
             'y_pulse', default_value='3',
             description='★terrain Y 감속구간의 목표펄스 상한★ [2026-10-19] 구간 안에서 늘 건다. '
                         '진입할 때 빠르면(해제선 + a1×최소물림 = 3펄스 기준 16.4 km/h 초과) 1단으로 '
@@ -713,6 +718,7 @@ def generate_launch_description():
             'goal_creep_kmh': LaunchConfiguration('goal_creep_kmh'),
             'goal_brake1_ms2': LaunchConfiguration('goal_brake1_ms2'),
             'y_pulse':       LaunchConfiguration('y_pulse'),
+            'rtk_only':      LaunchConfiguration('rtk_only'),
             'x_pulse':       LaunchConfiguration('x_pulse'),
             'x_launch_pulse': LaunchConfiguration('x_launch_pulse'),
             'x_switch_kmh':  LaunchConfiguration('x_switch_kmh'),

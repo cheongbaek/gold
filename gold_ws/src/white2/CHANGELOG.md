@@ -98,9 +98,14 @@ ros2 launch white2 one_launch.py \
 
 ---
 
-## 2026-10-24 (2) — ★GPS 정차 고정 · 의심 추측항법 · mppi 조향 범위★ (white1 `gps.py` · mppi — 공용)
+## 2026-10-24 (3) — ★RTK Fixed 일 때만 주행 — 아니면 서서 Fixed 를 기다린다★ (사용자 지시, white1 과 같은 줄)
 
-> 근거는 이 패키지의 `ros2bag/subcourse-20261024_{093306,095839}`(S WP 992 에서 2단 직후 RTK → DGPS, 엔코더 0 인데 수신기 위치가 ≈2.4 m/s 로 흘러 포인터 994 → 1036 →
+> `driving.py` `_rtk_hold` · 상수 `RTK_ONLY`·`RTK_LOST_S`·`RTK_RESUME_S`·`RTK_FIX_STALE_S` · `one_launch.py rtk_only`. 근거(이 패키지 `ros2bag/subcourse-20261024_{104426,104722}` —
+> 주행 중 USB 해제 없음, 수신기 측위해 손실)와 모의는 **white1 CHANGELOG 2026-10-24 (3)**. (2) 의 `gps.py` 정차 고정·의심 추측항법은 지웠다.
+
+## 2026-10-24 (2) — ~~GPS 정차 고정 · 의심 추측항법~~ (★(3) 에서 지웠다★) · ★mppi 조향 범위★ (white1 `gps.py` · mppi — 공용)
+
+> 근거는 이 패키지의 `ros2bag/subcourse-20261024_{093306,095839}`(S WP 992 에서 RTK → DGPS 뒤 엔코더 0 인데 수신기 위치가 ≈2.4 m/s 로 흘러 포인터 994 → 1036 →
 > 8 m 일찍 우회전)와 `maincourse-20261024_092247`(L 진입 −74 °/s). 정본은 **white1 CHANGELOG 2026-10-24 (2)**. white2 패키지 코드는 바뀌지 않았다(gps·mppi 는 공용).
 
 ## 2026-10-24 — ★L 진입 — 속도에 따라 0·1·2단 (빠르면 2단을 문 채 인계)★ (사용자 지시, white1 과 같은 줄)

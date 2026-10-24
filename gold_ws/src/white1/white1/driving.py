@@ -1275,6 +1275,23 @@ MODE_SETTLE_S     = 0.7      # 스위치 엣지 직후 이만큼은 굴리지 �
 #   RUN(해제) → 출발이라, 해제 직후의 DRIVE_START 도 같은 유예를 받는다(_estop_release_t).
 ESTOP_RESUME_GRACE_S = 1.5
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-10-24] RTK Fixed 일 때만 주행한다 (사용자 지시) ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  사용자 : "GPS 가 Fixed 일 때에만 주행을 이어가고 Float 일 때는 정지 후 Fixed 될 때까지 대기 후 출발" ·
+#           "모든 상황에서 GPS 가 Fixed 일때만 주행을 이어가도록".
+#  → DRIVE_HEADING · DRIVE_RUN 에서 /gps_fused 품질이 RTK_FIXED 가 아니거나(Float·DGPS·SPS) 원시 fix 가
+#    RTK_FIX_STALE_S 넘게 없으면(두절) RTK_LOST_S 뒤 ★리니어 2단으로 서서 기다린다★ — E-STOP 일시정지와 같은 틀 :
+#    상태·WP 인덱스·헤딩은 그대로, 과도 상태(종점·코너·S·신호·감속 접근)만 지우고(_clear_transients), 라이다 조종권은 거둔다.
+#    Fixed 가 RTK_RESUME_S 이어지면 리니어를 풀고 ESTOP_RESUME_GRACE_S 뒤 그 자리에서 이어서 간다(재개 첫 틱에 다시 판단).
+#  · RTK_LOST_S — fix 한두 개(5 Hz)의 낱 튐에 서지 않게. 그 사이는 평소대로 간다.
+#  · 끄기 : 파라미터 rtk_only:=false (one_launch 인자 rtk_only) — 종전 거동(품질과 무관하게 주행, 두절이면 펄스 0).
+RTK_ONLY      = True
+RTK_LOST_S    = 0.4     # [s] Fixed 아님이 이만큼 이어지면 선다 (fix 2개)
+RTK_RESUME_S  = 2.0     # [s] Fixed 가 이만큼 이어지면 다시 간다
+RTK_FIX_STALE_S = 0.6   # [s] 원시 fix 가 이만큼 없으면 'Fixed 아님'(5 Hz 3개 누락) — GPS_TIMEOUT_S(2.0) 를 기다리면
+                        #     22 km/h 로 2.4 s(≈15 m)를 낡은 위치로 조향해 재개 직후 CTE −5 m 로 이탈했다(follow_sim)
+
 # ── GPS/IMU 융합 ──
 FUSE_GAIN          = 0.05    # GPS 코스헤딩으로 끌어당기는 비율(상보필터)
 FUSE_MIN_STEP_M    = 0.30    # 이만큼 움직였을 때만 GPS 코스헤딩을 신뢰한다
@@ -2117,6 +2134,7 @@ class DrivingNode(Node):
         #   lfd_omega_n_fast 가 정한다 — 둘 사이는 펄스로 선형보간한다.
         self.declare_parameter('lfd_omega_n_fast', LFD_OMEGA_N_FAST)
         self.declare_parameter('understeer_v_clamp_pulse', UNDERSTEER_V_CLAMP_PULSE)
+        self.declare_parameter('rtk_only', RTK_ONLY)       # [2026-10-24] RTK Fixed 일 때만 주행
         #  ★[2026-09-13] 조향 트림 자동 추정★ 상수절 참고. false 면 종전 거동.
         self.declare_parameter('trim_enable', TRIM_ENABLE)
         self.declare_parameter('trim_max_pot_deg', TRIM_MAX_POT_DEG)
@@ -2312,6 +2330,11 @@ class DrivingNode(Node):
         # ★[2026-08-21] E-STOP 해제 후 이 시각까지는 펄스 0 으로 붙잡는다★
         #   0.0 = 유예 없음(=한 번도 일시정지한 적 없거나 이미 지났다).
         self._estop_resume_t = 0.0
+        # ── [2026-10-24] RTK Fixed 일 때만 주행 (상수절 'RTK Fixed 일 때만') ──
+        self.rtk_only = bool(self.get_parameter('rtk_only').value)
+        self._rtk_wait = False        # Fixed 가 아니라 서서 기다리는 중
+        self._rtk_bad_t = 0.0         # Fixed 아님이 시작된 시각 (0 = Fixed)
+        self._rtk_good_t = 0.0        # 기다리는 중 Fixed 가 다시 시작된 시각
         # ★[2026-10-07] 마지막 E-STOP 해제 시각 — 상태와 무관하게 늘 적는다★
         #   대회 출발 절차(규정 2.16.1 사)는 AS-Emergency → RUN(해제) → 출발이다. 그때
         #   prompt 가 해제 0.4 s 안에 DRIVE_START 를 보내면 헤딩 초기화가 곧바로 3펄스로
@@ -4524,6 +4547,9 @@ class DrivingNode(Node):
         self._xs = None                          # [2026-10-19] X 고속구간
         self._x_done = set()
         self._sa_phase = SA_NONE          # [2026-10-01] 신호 접근도 (리니어는 아래 한 곳이)
+        self._rtk_wait = False            # [2026-10-24] RTK 대기도 상태가 바뀌면 끝 (리니어는 아래 한 곳이)
+        self._rtk_bad_t = 0.0
+        self._rtk_good_t = 0.0
         # ★라이다 이양도 함께 내린다 [2026-09-01]★ 도착·이탈·정지명령·수동전환으로
         #   상태가 바뀌면 조종권은 무조건 이 노드로 돌아온다. 내리지 않으면 도착해
         #   선 차를 mppi 가 계속 몰 수 있다 — publish_state_topics 가 다음 틱에
@@ -4680,6 +4706,11 @@ class DrivingNode(Node):
                 self.send(0, 0.0, control=True)
                 return
 
+        # ★[2026-10-24] RTK Fixed 일 때만 주행★ (상수절) — 두절도 'Fixed 아님' 으로 같이 기다린다
+        if self.rtk_only and self.state in (S_DRIVE_HEADING, S_DRIVE_RUN):
+            if self._rtk_hold(now):
+                return
+
         # GPS 두절 — 위치를 모르면 어떤 판단도 신뢰할 수 없다
         #   ★fix_time 은 '원시 fix 의 시각'이다★ gps.py 가 IMU 로 메운 표본이 계속
         #   와도 이 타이머는 흐른다(cb_gps_fused · 상수 GPS_TIMEOUT_S 절 참고).
@@ -4729,6 +4760,46 @@ class DrivingNode(Node):
         elif self.state == S_DRIVE_DONE:
             self.send(0, 0.0, control=True)     # 브레이크 2단은 enter() 에서 물렸다
             self._check_done_release()
+
+    def _rtk_hold(self, now):
+        """RTK Fixed 가 아니면 선다 → 이번 틱을 여기서 끝냈으면 True. [2026-10-24] (상수절 'RTK Fixed 일 때만')"""
+        lost = now - self.fix_time > RTK_FIX_STALE_S
+        fixed = (not lost) and self.gps_quality >= Q_FIXED
+        if not self._rtk_wait:
+            if fixed:
+                self._rtk_bad_t = 0.0
+                return False
+            if self._rtk_bad_t == 0.0:
+                self._rtk_bad_t = now
+            if now - self._rtk_bad_t < RTK_LOST_S:
+                return False                       # 낱 튐 — 평소대로 간다
+            self._rtk_wait = True
+            self._rtk_good_t = 0.0
+            self._revoke_lidar("RTK Fixed 아님")
+            self._clear_transients()
+            what = (f"원시 fix {now - self.fix_time:.1f}s 없음" if lost
+                    else f"{Q_LABEL.get(self.gps_quality, '?')} σ={self.gps_sigma_m:.2f}m")
+            self.event(f"🛰️ RTK Fixed 아님({what}) — 리니어 2단으로 서서 Fixed 를 기다린다 "
+                       f"(경로·헤딩 유지, Fixed {RTK_RESUME_S:.0f}s 면 그 자리에서 재개)")
+        # ── 기다리는 중 ──
+        self.set_brake(BRAKE_FULL)                 # E-STOP 해제 등으로 풀렸어도 다시 문다
+        self.send(0, self._last_steer, control=True)
+        if fixed:
+            if self._rtk_good_t == 0.0:
+                self._rtk_good_t = now
+            elif now - self._rtk_good_t >= RTK_RESUME_S:
+                self._rtk_wait = False
+                self._rtk_bad_t = 0.0
+                self.set_brake(BRAKE_NONE)
+                self._estop_resume_t = max(self._estop_resume_t, now + ESTOP_RESUME_GRACE_S)
+                self.event(f"🟢 RTK Fixed {RTK_RESUME_S:.0f}s — 리니어를 풀고 "
+                           f"{ESTOP_RESUME_GRACE_S:.1f}s 뒤 그 자리에서 재개")
+        else:
+            self._rtk_good_t = 0.0
+            self.throttle_event(
+                f"🛰️ RTK Fixed 대기 중 — 지금 "
+                f"{'두절' if lost else Q_LABEL.get(self.gps_quality, '?')}")
+        return True
 
     def _check_done_release(self):
         """DRIVE_DONE 에서 완전정지를 확인하고, 확인된 지 DRIVE_DONE_RELEASE_S 뒤

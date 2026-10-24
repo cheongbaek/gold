@@ -360,11 +360,11 @@ covariance 가 비어 있으면 **Fixed 로 올리지 않는다**(모르면 낮�
 ③ 5 Hz fix 사이 공백을 IMU 로 메워 20 Hz 가상좌표 ④ 품질 저하 구간 융합(DEGRADED,
 현재 기본 OFF). **상시 칼만필터가 아니다** — Fixed 면 fix 로 스냅한다.
 
-> ★**[2026-10-24] ⑤ 정차 고정 · 의심 추측항법**★ — 2단으로 서는 순간 수신기가 RTK → DGPS 로 떨어지며 ★엔코더 0 인데 위치를 정지 직전 속도로
-> 계속 밀었다★(white2 subcourse 093306·095839, 17 s 에 ≈20 m · USB 끊김 아님). 그래서 정차(엔코더 0 이 0.3 s) 중 비Fixed fix 는 위치가 아니라
-> 오프셋으로만 잰다(GPS 속도 0, mode 2). 오프셋 > 1 m 면 재출발 뒤에도 추측항법(mode 3 — 마지막 코스 + 중력축 투영 요레이트 − 정차 바이어스,
-> 엔코더를 지령 펄스·가속 1.5 m/s² 로 묶음). 정차 오프셋이 그대로면 그만큼 뺀 GPS 로 당기고, 변하면 안 당긴다. RTK Fixed 또는 수신기 복귀
-> (1 m 안 2 s)로 끝, 30 m·30 s 넘으면 발행 중지(driving 은 두절로 선다). 근거·재생 검증 = white1 CHANGELOG 2026-10-24 (2).
+> ★**[2026-10-24] RTK Fixed 일 때만 주행한다 (사용자 지시)**★ — driving(white1·white2 같은 줄) `_rtk_hold` :
+> DRIVE_HEADING·DRIVE_RUN 에서 품질이 RTK_FIXED 가 아니거나(Float·DGPS) 원시 fix 가 0.6 s 없으면 0.4 s 뒤 **리니어 2단으로 서서
+> 기다린다**(E-STOP 일시정지와 같은 틀 — 상태·WP·헤딩 유지, 과도 상태만 지움, 라이다 조종권 회수). Fixed 가 2 s 이어지면 풀고
+> 1.5 s 뒤 그 자리에서 재개. 끄기 `rtk_only:=false`. `gps.py` 에는 보정을 더하지 않았다 — fix 사이 0.2 s 채움만 고쳤다
+> (요레이트 중력축 투영·정차 바이어스, 출발 직후 3 s 엔코더 가속 상한). 근거 = white1 CHANGELOG 2026-10-24 (3).
 
 ⚠️ **아직 없는 것** — 듀얼 안테나(GNSS heading), 자이로 바이어스 보정. 그래서 헤딩은
 출발할 때 **곧게 굴려 GPS 변위로 초기화**한다(`HeadingEstimator`).
@@ -2171,7 +2171,8 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | **white2 terrain `Y` 감속구간 (white1 에서 이식) · subcourse.csv Y (WP 1521~1648, 두 스택 같은 행) [2026-10-21]** | white2 `driving.py` 상수 `Y_ZONE_CHARS`·`Y_PULSE` · `y_zone_here`·`y_zone_step`·`_warn_y_zones`·`slow_zone_code`(/drive_diag 끝 칸) · `corner_brake` ok · white2 `record.py` `slow_zone` 열 · white2 `one_launch.py y_pulse` |
 | **white2 → white1 코드 공용 · white2 braketest 삭제 · TTS 합성 403 (edge-tts 7.2.8 → 7.3.1) · E-STOP 해제음 교체 [2026-10-21]** | `white1/paths.py stack()` · `white1/hud.py _route_dirs` · `white2/__init__.py` · `white2/setup.py`(진입점 넷) · `white2/package.xml`(exec_depend white1) · white2 `launch/{one_launch,master,joy}.launch` · `nxde/panel.py BRAKETEST_STACK` · `nxde/tts.py`(403 안내) · `white{1,2}/sound/estop_re.wav`(= ~/Documents/estop_out.wav, 옛 것 ~/Documents/estop_re_before_20261021.wav) |
 | **terrain `Xa`…`Xb` 고속구간 (4.11, white1) · braketest 직선 추종 공용화 [2026-10-19]** | `white1/line_steer.py`(신설 — braketest 조향·출발 래치 상수와 순수 함수) · `braketest.py`(같은 이름 메서드가 그것을 부른다) · `driving.py` `X_*` 상수 · `_warn_x_zones` · `x_zone_step` · `begin_x` · `end_x` · `x_ret_speed` · `x_tail_step` · `demand_speed`(corner_speed 의 중첩 함수를 메서드로) · `send(limit=)` · `slow_zone_code` 5~8 · `hud.py ZONE_X` · `one_launch.py x_*` |
-| **GPS 정차 고정 · 의심 추측항법 (1.6) · mppi 조향 범위 (4.9) [2026-10-24 (2)]** | white1 `gps.py` 상수절 '정차 고정' · `_hold_fix` · `_is_still` · `_suspect_speed` · `_snap` · `cb_imu`(중력축 투영·정차 바이어스) · `cb_drive_cmd` · `record.py` gps_mode 2·3 · mppi `kasa_units.hpp roadWheelToPotDeg`(언더스티어 v 4펄스) · `path_tracker.hpp steerRangeRad` · 노드 `rangeSpeed`·`/gps_fused` 구독 · `params.yaml cmd.steer_range_*`·`cmd.steer_ay_max` · `test/avoid_sim.cpp`(RANGE·V) |
+| **RTK Fixed 일 때만 주행 (1.6) [2026-10-24 (3)]** | white1·white2 `driving.py` 상수절 'RTK Fixed 일 때만'(`RTK_ONLY`·`RTK_LOST_S`·`RTK_RESUME_S`·`RTK_FIX_STALE_S`) · `_rtk_hold` · `loop`(E-STOP 게이트 다음) · `enter` · `one_launch.py rtk_only` · white1 `gps.py` 상수절 'fix 사이 채움'(`cb_imu` 투영·바이어스 · `_is_still` · `_advance_dr` 출발 가속 상한) |
+| **mppi 조향 범위 (4.9) [2026-10-24 (2)]** | mppi `kasa_units.hpp roadWheelToPotDeg`(언더스티어 v 4펄스) · `path_tracker.hpp steerRangeRad` · 노드 `rangeSpeed`·`/gps_fused` 구독 · `params.yaml cmd.steer_range_*`·`cmd.steer_ay_max` · `test/avoid_sim.cpp`(RANGE·V) |
 | **L 진입 속도별 0·1·2단 (4.6) [2026-10-24]** | white1·white2 `driving.py` `lidar_entry_brake`(→ (시각, 단계)) · `lidar_carry_step` · `slow_release_why(level)` · `slow_release2_kmh` · `release_lead2_ms` · 상수 `LIDAR_FIRST_ROW_MIN_M`·`LIDAR_ENTRY_SETTLE_M`·`GOAL_RELEASE_RETRACT2_S` · `_lz_carry_lv` · `slow_zone_code` 9 · `record.py` 주석 |
 | **L 진입 틱 1단 · 문 채 인계 (4.6, [2026-10-19 (5)] — L 앞 서행·속도 창 삭제) · terrain `Y` 감속구간 (3.4, white1) [2026-10-19]** | white1·white2 `driving.py` `lidar_entry_brake` · `begin_lidar_zone` · `lidar_carry_step` · `cb_brake_level` · `_clear_transients(keep_brake)` · `slow_brake_need` · `slow_release_why` · `release_lead_ms` · `SlowZone`·`slow_step`·`slow_release`(Y·X) · white1 만 `Y_ZONE_CHARS`·`Y_PULSE`·`y_zone_step`·`_warn_y_zones`·`slow_zone_code` · `record.py slow_zone` · `hud.py ZONE_Y` · `one_launch.py y_pulse` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
@@ -3286,7 +3287,7 @@ ping -c2 192.168.6.11
 | **braketest 제동 경로** [2026-09-13] | `braketest.begin_brake(own_brake)` **+** `arduino.compose()` (4) 의 `pulse = 0 if brake > 0` — **`/brake_level` 을 안 내면 그 구동 무력화가 한 번도 타지 않는다.** `/aeb_stop` (1-1) 은 신선할 때만 듣는다(`aeb_stale_s`) |
 | B보드 텔레메트리 필드 수 | `arduino.py parse_b()` **+** 상태변수/퍼블리셔 **+** `record.py RECORD_TOPICS` |
 | `KEEPALIVE_S`(ROS) | A보드 `RX_TIMEOUT_MS`(3000) — **한 쌍이다** |
-| `/gps_fused` 배열 | `gps.py GPS_FUSED_FIELDS` **+** `driving.py cb_gps_fused` **+** `record.py _array(n)` **+** mppi 노드 `gps_sub_`([8] km/h — 조향 범위 속도) — [2026-10-24] [8] 은 HOLD 면 0 · SUSPECT-DR 면 추측항법 속도, [10] mode 2·3 |
+| `/gps_fused` 배열 | `gps.py GPS_FUSED_FIELDS` **+** `driving.py cb_gps_fused` **+** `record.py _array(n)` **+** mppi 노드 `gps_sub_`([8] km/h — 조향 범위 속도) |
 | 저장 경로 | `paths.py` 하나가 소유자 — 다른 곳에 리터럴을 적지 말 것. **받는 쪽이 `nxde` 노드면 런치가 미리 풀어서 넘긴다**(`sound_dir`·`tl_video_dir`) |
 | **음량 — 안내 음성** [2026-09-18] | **`nxde/soundutil.py` 의 `PLAY_GAIN`(3.0)·`PLAY_LIMIT` 하나가 소유자다** — `sound`·`kill`·`prompt`·`braketest`·`tts` 가 전부 그 `PLAYERS` 표를 쓴다. **재생기마다 증폭 단위가 다르므로**(`gain_args`: ffplay `-af volume,alimiter` / mpg123 `-f 32768×g` / mpv `--volume %` / cvlc `--gain`) 값만 고치고 표는 건드리지 말 것. ⚠️ **3.0 이 실질 상한이다** — 리미터가 이미 포화해 x4·x5 는 +0.5 dB 뿐이고 다이내믹만 잃는다(실측은 그 파일 주석) |
 | **음량 — 가상 배기음** [2026-09-18] | **`nxde/vess.py` 상단의 `VOLUME`(1.0)·`LOUDNESS`(2.5) 가 소유자**이고, `exhaust.py` 의 `MASTER_GAIN`·`SOFTCLIP_DRIVE` 를 **생성자로** 덮는다(모듈 전역을 밖에서 바꾸지 않는다 — 같은 프로세스의 다른 엔진까지 따라 바뀐다). `VOLUME` 은 tanh 뒤라 **1.0 이 상한**이고, 더 키우는 손잡이는 `LOUDNESS` 다(피크를 안 올리고 평균만 올린다, 실질 상한 ≈4.0). ⚠️ **안내 음성보다 크게 두지 말 것** — 말이 묻힌다 |

@@ -693,6 +693,7 @@ def generate_launch_description():
             'wp_reach_m':    LaunchConfiguration('wp_reach_m'),
             'require_rtk':   LaunchConfiguration('require_rtk'),
             'y_pulse':       LaunchConfiguration('y_pulse'),
+            'rtk_only':      LaunchConfiguration('rtk_only'),
         }],
     )
 
@@ -778,6 +779,11 @@ def generate_launch_description():
             'flip_lidar_xy', default_value='true',
             description='라이다 xy 180° 반전. lidar cone_lidar.yaml 과 같은 값이다. '
                         '차 앞 3m 에 사람이 서서 코스트맵 전방에 점이 생기면 맞다'),
+        DeclareLaunchArgument(
+            'rtk_only', default_value='true',
+            description='★RTK Fixed 일 때만 주행★ [2026-10-24 사용자 지시] Fixed 가 아니거나(Float·DGPS) 두절이면 '
+                        '0.4 s 뒤 리니어 2단으로 서서 기다리고, Fixed 가 2 s 이어지면 그 자리에서 재개한다. '
+                        'false = 종전(품질과 무관하게 주행). 기본값의 소유자는 driving.RTK_ONLY'),
         DeclareLaunchArgument(
             'y_pulse', default_value='3',
             description='★terrain Y 감속구간의 목표펄스 상한★ [2026-10-21 white1 에서 이식] 구간 안에서 늘 건다. '
