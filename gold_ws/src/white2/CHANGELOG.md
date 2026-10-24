@@ -98,6 +98,12 @@ ros2 launch white2 one_launch.py \
 
 ---
 
+## 2026-10-24 — ★L 진입 — 속도에 따라 0·1·2단 (빠르면 2단을 문 채 인계)★ (사용자 지시, white1 과 같은 줄)
+
+> 근거는 이 패키지의 `ros2bag/maincourse-20261024_092247`(L 에 20.2 km/h · 1단 · mppi 우로 −74 °/s). 정본은 **white1 CHANGELOG 2026-10-24**.
+> 바꾼 파일 `driving.py`(`lidar_entry_brake` · `lidar_carry_step` · `slow_release_why(level)` · `slow_release2_kmh` · `release_lead2_ms` · 상수 `LIDAR_ENTRY_SETTLE_M`·`GOAL_RELEASE_RETRACT2_S` · `slow_zone_code` 9) · `record.py` 주석.
+> 13.2 km/h 이하 없음 · 13.2~14.1 1단 · 그 위·속도 모름 2단(해제선 13.2 km/h). 빌드 안 함 · 실차 미검증.
+
 ## 2026-10-21 (3) — ★역광 감마 — 서 있는데 신호등 박스가 0 이면 모델 입력만 감마 1.8 로 한 번 더 본다 (#300 역광에서 녹색을 못 봐 재출발 못 하던 것)★ (사용자 승인 — 역광 조사 안 2 정식판 'G', `white1/white1/traffic_light.py` 공용 한 벌)
 
 **관측** — 10/17 white1 서브 코스(`white1/video/tl-testwekk4_sub1.mp4` = 원본 `cam-20261017_094820`, 디버그 시각 = 원본 + 110 s) 예선 1번 #300(SG11 85~97 s)
