@@ -156,6 +156,16 @@ public:
         enc_pulse_.store(med * 0.5, std::memory_order_relaxed);   // 합 → 바퀴 하나
         enc_t_.store(nowSeconds(), std::memory_order_relaxed);
       });
+    //  ★[2026-10-24] GPS 속도 — 조향 범위의 속도 상한에만 쓴다★ (/gps_fused [8] km/h — gps.py 규약)
+    //  엔코더는 기동 직후 위로 튄다(좌우 3~14펄스) — 속도를 크게 보면 조향을 너무 좁힌다. 둘 중 작은 쪽을 쓴다.
+    gps_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+      "/gps_fused", rclcpp::QoS(10),
+      [this](const std_msgs::msg::Float64MultiArray::ConstSharedPtr & m) {
+        if (m->data.size() > 8 && std::isfinite(m->data[8])) {
+          gps_ms_.store(std::max(0.0, m->data[8]) / 3.6, std::memory_order_relaxed);
+          gps_t_.store(nowSeconds(), std::memory_order_relaxed);
+        }
+      });
 
     // ══════════════════════════════════════════════════════════════════════
     //  ★[2026-09-11] GPS 기준선 — 추측항법을 대체한다 (사용자 지시)★
@@ -410,6 +420,12 @@ private:
     declare_parameter<double>("cmd.steer_slew_deg_s", 36.0);
     declare_parameter<double>("cmd.steer_deadband_deg", 0.0);
     declare_parameter<double>("cmd.dodge_steer_deg", 6.0);
+    //  ★[2026-10-24] 조향 범위★ (path_tracker.hpp SteerRangeParams 주석)
+    declare_parameter<bool>("cmd.steer_range_enable", true);
+    declare_parameter<double>("cmd.steer_range_ahead_m", 8.0);
+    declare_parameter<double>("cmd.steer_range_margin", 1.3);
+    declare_parameter<double>("cmd.steer_range_free_deg", 10.0);
+    declare_parameter<double>("cmd.steer_ay_max", 2.5);
     // ══════════════════════════════════════════════════════════════════════
     //  ★[2026-09-11] 회피 중 펄스를 1 → 2 로 (사용자 지시)★
     // ══════════════════════════════════════════════════════════════════════
@@ -763,6 +779,11 @@ private:
     steer_slew_deg_s_ = std::max(5.0, get_parameter("cmd.steer_slew_deg_s").as_double());
     steer_deadband_deg_ = std::max(0.0, get_parameter("cmd.steer_deadband_deg").as_double());
     dodge_steer_deg_ = std::max(0.0, get_parameter("cmd.dodge_steer_deg").as_double());
+    steer_range_.enable   = get_parameter("cmd.steer_range_enable").as_bool();
+    steer_range_.ahead_m  = std::max(0.0, get_parameter("cmd.steer_range_ahead_m").as_double());
+    steer_range_.margin   = std::max(1.0, get_parameter("cmd.steer_range_margin").as_double());
+    steer_range_.free_deg = std::max(0.0, get_parameter("cmd.steer_range_free_deg").as_double());
+    steer_range_.ay_max   = std::max(0.0, get_parameter("cmd.steer_ay_max").as_double());
     //  ★as_int() 는 int64_t 다★ int 멤버에 먼저 담고 나서 클램프한다
     //  (std::clamp 는 인자 타입이 같아야 추론된다 — cruise_pulse_ 와 같은 방식).
     dodge_pulse_     = static_cast<int>(get_parameter("cmd.dodge_pulse").as_int());
@@ -1654,6 +1675,22 @@ private:
       const double max_deg = vehicle_params_.max_steering_angle * 180.0 / M_PI;
       raw_steer_deg = std::clamp(raw_steer_deg, -max_deg, max_deg);
     }
+    {
+      //  ★[2026-10-24] 조향 범위 — 앞 계획 경로가 요구하는 만큼 · 속도별 횡가속 상한★ (path_tracker.hpp)
+      double need = 0.0;
+      double ay = 0.0;
+      const double v_rng = rangeSpeed();
+      const double lim_deg = steerRangeRad(
+        last_frenet_path_, current_pose.x, v_rng, tracker_params_.wheelbase, steer_range_,
+        vehicle_params_.max_steering_angle, &need, &ay) * 180.0 / M_PI;
+      if (std::abs(raw_steer_deg) > lim_deg) {
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "🪢 조향 범위 %+.1f° → ±%.1f° (앞 경로 요구 %.1f° · 속도 상한 %.1f° @ %.1f m/s)",
+          raw_steer_deg, lim_deg, need * 180.0 / M_PI, ay * 180.0 / M_PI, v_rng);
+        raw_steer_deg = std::clamp(raw_steer_deg, -lim_deg, lim_deg);
+      }
+    }
     const double steer_deg = filterSteer(raw_steer_deg);
     double hit_at_m = 0.0;
     //  ★정지 = 경로를 실제로 따라갔을 때 부딪히는가★ (종전: 지금 조향 2.2 m 고정 원호)
@@ -1769,6 +1806,23 @@ private:
       return std::max(0.3, enc_pulse_.load(std::memory_order_relaxed) * lidar::kasa::MS_PER_PULSE);
     }
     return std::max(0.3, mppi_params_.desired_speed);
+  }
+
+  /// 조향 범위의 속도 [m/s] — 엔코더와 GPS 중 ★작은 쪽★ (엔코더 기동 허수가 범위를 너무 좁히지 않게).
+  /// 하나만 신선하면 그것, 둘 다 없으면 순항 속도. [2026-10-24]
+  double rangeSpeed() const
+  {
+    const double now = nowSeconds();
+    const double te = enc_t_.load(std::memory_order_relaxed);
+    const double tg = gps_t_.load(std::memory_order_relaxed);
+    const bool enc_ok = te > 0.0 && (now - te) <= 1.0;
+    const bool gps_ok = tg > 0.0 && (now - tg) <= 1.0;
+    const double ve = enc_pulse_.load(std::memory_order_relaxed) * lidar::kasa::MS_PER_PULSE;
+    const double vg = gps_ms_.load(std::memory_order_relaxed);
+    if (enc_ok && gps_ok) {return std::min(ve, vg);}
+    if (enc_ok) {return ve;}
+    if (gps_ok) {return vg;}
+    return mppi_params_.desired_speed;
   }
 
   /// 계획기가 남긴 드문 사건(블록 발견·쪽 결정·통과)을 한 번씩 로그로 낸다.
@@ -2154,6 +2208,11 @@ private:
   double enc_buf_[3] = {0.0, 0.0, 0.0};
   unsigned enc_i_ = 0;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr encoder_sub_;
+  //  ★[2026-10-24] 조향 범위★
+  SteerRangeParams steer_range_;
+  std::atomic<double> gps_ms_{0.0};
+  std::atomic<double> gps_t_{0.0};
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr gps_sub_;
   //  ★GPS 기준선 [2026-09-11]★ (odom_mutex_ 가 지킨다)
   std::string ref_topic_ = "/lidar_ref";
   double ref_stale_s_ = 0.5;

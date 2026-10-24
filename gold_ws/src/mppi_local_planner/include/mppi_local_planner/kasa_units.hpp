@@ -88,6 +88,7 @@ constexpr double CTE_BLIND_M             = 0.26;
 //  ★쓸 수 있는 속도 지령이 사실상 {0,1,2,3,4} 다섯 개뿐이다★ — 연속량을 전제한
 //  감속 슬루(max_drop 등)는 대부분 같은 펄스에 머물러 아무 일도 하지 않는다.
 constexpr double MS_PER_PULSE  = 0.884;
+constexpr double UNDERSTEER_V_CLAMP_MS = 4 * MS_PER_PULSE;   // [m/s] 3.536 — roadWheelToPotDeg 의 v 상한 [2026-10-24]
 constexpr double KMH_PER_PULSE = 3.182;
 constexpr int    PULSE_PROTOCOL_MAX  = 15;   // A보드 수용 상한 (47.7 km/h)
 //  ★[2026-09-07] 4 → 6★ white1 MAX_PULSE_LIMIT 을 6 으로 올린 것과 ★짝이다★
@@ -190,10 +191,16 @@ inline double pulseToKmh(int pulse) { return pulse * KMH_PER_PULSE; }
 /// 도로휠각[deg] → B보드 pot 지령[deg]. ★부호는 입력 그대로 보존한다★
 ///     pot = 1.26·|δ| + 5.17·v²·tan|δ|/L,   그다음 ±40 클램프
 /// (white1 `driving.steer_command()` 와 같은 식 — 한쪽만 고치지 말 것)
+///
+/// ★[2026-10-24] 언더스티어 항의 v 를 4펄스(3.54 m/s)에서 묶는다★ — white1 `driving.py`
+/// `UNDERSTEER_V_CLAMP_PULSE`(CLAUDE.md 4.1b, 9/13 21340표본 회귀 : 큰 각 전달비 1.42~1.52 로 속도를 안 따른다)와
+/// 같은 값이다. 이 함수만 그 수정을 못 받아, 실측 v 5.3 m/s 에서 전달비 3.3(실측 1.45~1.49)로 2.2배 과조향했다 —
+/// white2 maincourse-20261024_092247 L 진입 20 km/h : 도로휠 −8.9° 지령에 실측 pot 27(≈19°) → 요레이트 −74 °/s.
+/// 3.54 m/s 이하에서는 식이 한 글자도 바뀌지 않는다(2펄스 순항 거동 그대로).
 inline double roadWheelToPotDeg(double road_deg, double v_ms) {
   const double d = std::fabs(road_deg);
   if (!std::isfinite(d) || d < 1e-6) return 0.0;
-  const double v = std::isfinite(v_ms) ? v_ms : 0.0;
+  const double v = std::isfinite(v_ms) ? std::min(std::max(0.0, v_ms), UNDERSTEER_V_CLAMP_MS) : 0.0;
   const double pot = STEER_PLANT_GAIN * d
                    + STEER_UNDERSTEER * v * v
                        * std::tan(d * M_PI / 180.0) / WHEELBASE_M;

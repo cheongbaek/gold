@@ -242,6 +242,14 @@ mppi_local_planner_node:
     cmd.brake_after_s: 1.2       # 그 전에는 펄스 0 만 (리니어 2단 깜빡임 방지)
     cmd.steer_lpf_alpha: 0.70    # 경로가 일찍 열려도 핸들이 따라오게
     cmd.steer_slew_deg_s: 36.0   # 도로휠 deg/s. 7 m 앞 S 를 따라가려면 28 은 늦다
+    #  ★[2026-10-24] 조향 범위 — 급조향 방지 (path_tracker.hpp SteerRangeParams)★ 사용자 '전방 장애물에 따라 조향범위'
+    #   범위 = atan(L·앞 경로 max|κ|)×margin + free  ·  속도 상한 atan(ay·L/v²) (v = 엔코더·GPS 중 작은 쪽)
+    #   white2 maincourse-20261024_092247 : 20 km/h 로 인계받아 −74 °/s 로 꺾였다(2펄스 기하 · pot 환산 2.2배)
+    cmd.steer_range_enable: true
+    cmd.steer_range_ahead_m: 8.0     # [m] 이만큼 앞까지 계획 경로 곡률을 본다
+    cmd.steer_range_margin: 1.3      # 그 곡률이 요구하는 도로휠각 × 이만큼
+    cmd.steer_range_free_deg: 10.0   # [deg] 꺾을 일이 없을 때 — 기준선 곡률(R 7 m 몫)·자세·횡오차 보정
+    cmd.steer_ay_max: 2.5            # [m/s²] 1.77 m/s 에서 45°(안 걸림) · 3.0 에서 19.1° · 5.3 에서 6.4° (모의 : 3.0 m/s 까지 끈 것과 같은 결과)
     cmd.steer_deadband_deg: 0.0  # SW 불감대 끔. B보드 1.41° 가 이미 있다
     cmd.dodge_steer_deg: 6.0     # |조향|이 이보다 크면 회피 펄스로 내린다
     # ★[2026-09-11] 회피 펄스 1 → 2 (사용자 지시)★

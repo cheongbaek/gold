@@ -360,6 +360,12 @@ covariance 가 비어 있으면 **Fixed 로 올리지 않는다**(모르면 낮�
 ③ 5 Hz fix 사이 공백을 IMU 로 메워 20 Hz 가상좌표 ④ 품질 저하 구간 융합(DEGRADED,
 현재 기본 OFF). **상시 칼만필터가 아니다** — Fixed 면 fix 로 스냅한다.
 
+> ★**[2026-10-24] ⑤ 정차 고정 · 의심 추측항법**★ — 2단으로 서는 순간 수신기가 RTK → DGPS 로 떨어지며 ★엔코더 0 인데 위치를 정지 직전 속도로
+> 계속 밀었다★(white2 subcourse 093306·095839, 17 s 에 ≈20 m · USB 끊김 아님). 그래서 정차(엔코더 0 이 0.3 s) 중 비Fixed fix 는 위치가 아니라
+> 오프셋으로만 잰다(GPS 속도 0, mode 2). 오프셋 > 1 m 면 재출발 뒤에도 추측항법(mode 3 — 마지막 코스 + 중력축 투영 요레이트 − 정차 바이어스,
+> 엔코더를 지령 펄스·가속 1.5 m/s² 로 묶음). 정차 오프셋이 그대로면 그만큼 뺀 GPS 로 당기고, 변하면 안 당긴다. RTK Fixed 또는 수신기 복귀
+> (1 m 안 2 s)로 끝, 30 m·30 s 넘으면 발행 중지(driving 은 두절로 선다). 근거·재생 검증 = white1 CHANGELOG 2026-10-24 (2).
+
 ⚠️ **아직 없는 것** — 듀얼 안테나(GNSS heading), 자이로 바이어스 보정. 그래서 헤딩은
 출발할 때 **곧게 굴려 GPS 변위로 초기화**한다(`HeadingEstimator`).
 
@@ -1371,6 +1377,7 @@ GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'�
 | 여유 | 차체 옆면 ↔ 콘 표면 **0.75 m** ([2026-09-29] 0.45 → 0.75, 사용자 '30 cm 더') | `avoid.pass_gap_m` |
 | 미리보기 | 다음 L 구간 25 m 안(또는 조종권 회수 20 s 안)이면 **발행 없이** 계획만. 인계 때 이어받음 | 노드 `runPreview` · `rearmReference` |
 | 추종·정지 | 순수추종 3.2 m + 편향 적분 · 정지 = ★그 경로를 따라갔을 때★ 3.0 m 안 충돌 | `path_tracker.hpp` |
+| ★조향 범위★ [2026-10-24] | atan(L·앞 8 m 계획 경로 max\|κ\|)×1.3 + 10° · 속도 상한 atan(2.5·L/v²)(v = 엔코더·GPS 중 작은 쪽) · pot 환산 언더스티어 v 4펄스 클램프 — 20 km/h 인계에서 −74 °/s 로 꺾인 것(092247). 1.3 m/s 모의 23장면 결과 불변 | `path_tracker.hpp steerRangeRad` · `kasa_units.hpp` |
 
 **'앞면 − 0.3' 이면 충분한 이유** — 차체는 경로 접선을 따라 서 있고, 통과 d 로 올라가며
 평평해지는(오목한) 곡선의 접선은 곡선보다 바깥이다. 뒤차축이 앞면에서 통과 d 에 닿으면
@@ -2164,6 +2171,7 @@ ros2 launch white1 one_launch.py tl_video_topic:=/image_raw  # 오버레이 없�
 | **white2 terrain `Y` 감속구간 (white1 에서 이식) · subcourse.csv Y (WP 1521~1648, 두 스택 같은 행) [2026-10-21]** | white2 `driving.py` 상수 `Y_ZONE_CHARS`·`Y_PULSE` · `y_zone_here`·`y_zone_step`·`_warn_y_zones`·`slow_zone_code`(/drive_diag 끝 칸) · `corner_brake` ok · white2 `record.py` `slow_zone` 열 · white2 `one_launch.py y_pulse` |
 | **white2 → white1 코드 공용 · white2 braketest 삭제 · TTS 합성 403 (edge-tts 7.2.8 → 7.3.1) · E-STOP 해제음 교체 [2026-10-21]** | `white1/paths.py stack()` · `white1/hud.py _route_dirs` · `white2/__init__.py` · `white2/setup.py`(진입점 넷) · `white2/package.xml`(exec_depend white1) · white2 `launch/{one_launch,master,joy}.launch` · `nxde/panel.py BRAKETEST_STACK` · `nxde/tts.py`(403 안내) · `white{1,2}/sound/estop_re.wav`(= ~/Documents/estop_out.wav, 옛 것 ~/Documents/estop_re_before_20261021.wav) |
 | **terrain `Xa`…`Xb` 고속구간 (4.11, white1) · braketest 직선 추종 공용화 [2026-10-19]** | `white1/line_steer.py`(신설 — braketest 조향·출발 래치 상수와 순수 함수) · `braketest.py`(같은 이름 메서드가 그것을 부른다) · `driving.py` `X_*` 상수 · `_warn_x_zones` · `x_zone_step` · `begin_x` · `end_x` · `x_ret_speed` · `x_tail_step` · `demand_speed`(corner_speed 의 중첩 함수를 메서드로) · `send(limit=)` · `slow_zone_code` 5~8 · `hud.py ZONE_X` · `one_launch.py x_*` |
+| **GPS 정차 고정 · 의심 추측항법 (1.6) · mppi 조향 범위 (4.9) [2026-10-24 (2)]** | white1 `gps.py` 상수절 '정차 고정' · `_hold_fix` · `_is_still` · `_suspect_speed` · `_snap` · `cb_imu`(중력축 투영·정차 바이어스) · `cb_drive_cmd` · `record.py` gps_mode 2·3 · mppi `kasa_units.hpp roadWheelToPotDeg`(언더스티어 v 4펄스) · `path_tracker.hpp steerRangeRad` · 노드 `rangeSpeed`·`/gps_fused` 구독 · `params.yaml cmd.steer_range_*`·`cmd.steer_ay_max` · `test/avoid_sim.cpp`(RANGE·V) |
 | **L 진입 속도별 0·1·2단 (4.6) [2026-10-24]** | white1·white2 `driving.py` `lidar_entry_brake`(→ (시각, 단계)) · `lidar_carry_step` · `slow_release_why(level)` · `slow_release2_kmh` · `release_lead2_ms` · 상수 `LIDAR_FIRST_ROW_MIN_M`·`LIDAR_ENTRY_SETTLE_M`·`GOAL_RELEASE_RETRACT2_S` · `_lz_carry_lv` · `slow_zone_code` 9 · `record.py` 주석 |
 | **L 진입 틱 1단 · 문 채 인계 (4.6, [2026-10-19 (5)] — L 앞 서행·속도 창 삭제) · terrain `Y` 감속구간 (3.4, white1) [2026-10-19]** | white1·white2 `driving.py` `lidar_entry_brake` · `begin_lidar_zone` · `lidar_carry_step` · `cb_brake_level` · `_clear_transients(keep_brake)` · `slow_brake_need` · `slow_release_why` · `release_lead_ms` · `SlowZone`·`slow_step`·`slow_release`(Y·X) · white1 만 `Y_ZONE_CHARS`·`Y_PULSE`·`y_zone_step`·`_warn_y_zones`·`slow_zone_code` · `record.py slow_zone` · `hud.py ZONE_Y` · `one_launch.py y_pulse` |
 | **라이다 인계 서행 — 이미 느리면 리니어 안 문다 (4.6) [2026-09-28]** | `driving.py lidar_brake_need` · `lidar_approach` · `_lz_done_s0` · `LIDAR_BRAKE_MIN_HOLD_S` |
@@ -3278,7 +3286,7 @@ ping -c2 192.168.6.11
 | **braketest 제동 경로** [2026-09-13] | `braketest.begin_brake(own_brake)` **+** `arduino.compose()` (4) 의 `pulse = 0 if brake > 0` — **`/brake_level` 을 안 내면 그 구동 무력화가 한 번도 타지 않는다.** `/aeb_stop` (1-1) 은 신선할 때만 듣는다(`aeb_stale_s`) |
 | B보드 텔레메트리 필드 수 | `arduino.py parse_b()` **+** 상태변수/퍼블리셔 **+** `record.py RECORD_TOPICS` |
 | `KEEPALIVE_S`(ROS) | A보드 `RX_TIMEOUT_MS`(3000) — **한 쌍이다** |
-| `/gps_fused` 배열 | `gps.py GPS_FUSED_FIELDS` **+** `driving.py cb_gps_fused` **+** `record.py _array(n)` |
+| `/gps_fused` 배열 | `gps.py GPS_FUSED_FIELDS` **+** `driving.py cb_gps_fused` **+** `record.py _array(n)` **+** mppi 노드 `gps_sub_`([8] km/h — 조향 범위 속도) — [2026-10-24] [8] 은 HOLD 면 0 · SUSPECT-DR 면 추측항법 속도, [10] mode 2·3 |
 | 저장 경로 | `paths.py` 하나가 소유자 — 다른 곳에 리터럴을 적지 말 것. **받는 쪽이 `nxde` 노드면 런치가 미리 풀어서 넘긴다**(`sound_dir`·`tl_video_dir`) |
 | **음량 — 안내 음성** [2026-09-18] | **`nxde/soundutil.py` 의 `PLAY_GAIN`(3.0)·`PLAY_LIMIT` 하나가 소유자다** — `sound`·`kill`·`prompt`·`braketest`·`tts` 가 전부 그 `PLAYERS` 표를 쓴다. **재생기마다 증폭 단위가 다르므로**(`gain_args`: ffplay `-af volume,alimiter` / mpg123 `-f 32768×g` / mpv `--volume %` / cvlc `--gain`) 값만 고치고 표는 건드리지 말 것. ⚠️ **3.0 이 실질 상한이다** — 리미터가 이미 포화해 x4·x5 는 +0.5 dB 뿐이고 다이내믹만 잃는다(실측은 그 파일 주석) |
 | **음량 — 가상 배기음** [2026-09-18] | **`nxde/vess.py` 상단의 `VOLUME`(1.0)·`LOUDNESS`(2.5) 가 소유자**이고, `exhaust.py` 의 `MASTER_GAIN`·`SOFTCLIP_DRIVE` 를 **생성자로** 덮는다(모듈 전역을 밖에서 바꾸지 않는다 — 같은 프로세스의 다른 엔진까지 따라 바뀐다). `VOLUME` 은 tanh 뒤라 **1.0 이 상한**이고, 더 키우는 손잡이는 `LOUDNESS` 다(피크를 안 올리고 평균만 올린다, 실질 상한 ≈4.0). ⚠️ **안내 음성보다 크게 두지 말 것** — 말이 묻힌다 |
@@ -3293,6 +3301,7 @@ ping -c2 192.168.6.11
 | **헤딩 출처** | **mppi = OS1 자체 IMU(`params.yaml` 의 `imu_topic`·`use_os1_imu`·`imu_yaw_sign`) / driving = 외장 iAHRS(`/imu`)** — ★섞지 않는다★. `one_launch.py` 는 mppi 에 IMU 를 **넘기지 않는다**(넘기면 `use_os1_imu` 가 무시하고 경고만 남는다). mppi 의 IMU 설정 단일 소유자는 `params.yaml` [2026-09-12] |
 | **조이스틱 프로토콜** [2026-09-16] | `~/Arduino/joyled.ino` **+** `nxde/joyread.py`(파싱·영점·환산) **+** `nxde/arduino.py`(포트·게이트·LCD 송신) — **필드를 늘리면 세 곳을 함께 고친다.** 지금은 `J,x1,y1,k1,x2,y2,k2,swa,swb`(9토큰) 이고 구 `joy.ino`(12토큰)도 받는다. `nxde/joystick.py`(점검 도구)도 **같은 `joyread` 를 쓴다** — 그래서 "점검에서는 맞는데 실차에서 다르다" 가 생기지 않는다. LCD 줄 `D,<on>,<pulse>,<steer>,<kmh>` 는 `arduino` 와 `joystick` 두 곳이 쓰지만 **둘은 동시에 띄우지 않는다**(포트가 하나다) |
 | **회피 폭** [2026-09-28] | mppi `avoid.max_offset_m`(3.0) **+** `mppi.max_lateral_offset`(3.2)·`lateral_hard`(3.5) — **벽은 계획 폭보다 바깥이어야 한다.** 같으면 계획과 벽이 같은 자리에서 싸운다 |
+| **mppi 조향 범위** [2026-10-24] | `path_tracker.hpp steerRangeRad` 하나를 노드와 `test/avoid_sim.cpp` 가 같이 쓴다 — `SteerRangeParams` 기본값과 `params.yaml cmd.steer_range_*`·`cmd.steer_ay_max` 를 같이 고친다. `free_deg` 는 L 기준선 곡률 몫도 덮는다(mppi 는 기준선 곡률을 모른다 — /lidar_ref 에 없음) |
 | **회피 추종·정지** [2026-09-28] | `mppi_local_planner/include/.../path_tracker.hpp` 하나를 노드와 모의실험(`test/avoid_sim.cpp`)이 같이 쓴다 — 노드에 식을 따로 적지 말 것. 계획기·추종기를 고치면 그 모의실험과 `test/ros_smoke.py` 를 다시 돌린다(빌드 명령은 각 파일 머리말) |
 | **GPS 안테나 위치** [2026-09-29 · 09-30] | ★**안테나는 앞차축 위, 라이다는 뒷차축 위**★ — driving `gps_ant_x_m`(뒷차축 → 안테나, 4.1e B) **+** mppi `handover.gps_antenna_x_m`(라이다 원점 → 안테나) **+** hud 라이다 겹쳐 그리기(`driving.GPS_ANT_X_M` 을 쓴다) — **지금은 셋 다 1.25 m(축거)다. 안테나나 라이다를 옮기면 함께 고친다.** driving 의 CTE(`/lidar_ref[0]`)는 **안테나 자리**다 — driving 이 언젠가 CTE 를 뒤차축으로 투영하게 되면 **mppi 값을 0 으로** 내려야 한다(두 번 빼게 된다). B 는 순수추종 조준만 옮기고 CTE 는 투영하지 않으므로 B 를 켜도 mppi 값은 그대로 둔다 |
 | **본선 코스 이름 · 신호 시각표** [2026-09-30] | `traffic_timer.py` 의 `MAINCOURSE_FILE`·`SIGNAL_WINDOWS`(★[2026-10-19] 라벨마다 창 목록 — T5 0~37 · 40~57★)·`TIMER_SIGNALS` **한 곳** — prompt·driving·record·`sim/signal_sim.py` 가 import 한다. 사이트(find_wc)의 `PINNED_ROUTE` 는 다른 저장소라 이름을 베껴 적었다 — **파일 이름을 바꾸면 거기도** |

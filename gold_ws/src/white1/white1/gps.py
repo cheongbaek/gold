@@ -192,11 +192,12 @@ mapping.py 는 ★그대로 /fix 원값★ 을 받는다(사용자 결정). 경�
   [5] is_raw       1=이 표본이 갓 온 원시 fix / 0=DR 로 메운 표본
   [6] raw_age_s    마지막 ★수용된★ fix 로부터 경과 [s]  ★두절 판정은 이 값으로★
   [7] dr_dist_m    이 표본에서 DR 이 외삽한 거리 [m]  (0=메우지 않았다)
-  [8] gps_kmh      원시 fix 변위 속도 [km/h]. NaN=아직 없음
+  [8] gps_kmh      원시 fix 변위 속도 [km/h]. NaN=아직 없음  ★[2026-10-24] HOLD 면 0 · SUSPECT-DR 면 추측항법 속도★
   [9] course_deg   마지막 유효 GPS 코스 [deg]. NaN=아직 없음
   [10] mode        0=NORMAL(스냅) 1=DEGRADED(잔차 중앙값 융합)     ← [2026-08-18 (3)]
+                   2=HOLD(정차 고정) 3=SUSPECT-DR(의심 추측항법)     ← [2026-10-24] '정차 고정' 절
   [11] reject_n    누적 게이트 기각 수. ★늘어나는 구간이 튀는 구간이다★
-  [12] resid_m     DEGRADED 잔차 중앙값의 크기 [m] = GPS 와 DR 의 불일치
+  [12] resid_m     DEGRADED 잔차 중앙값의 크기 [m] = GPS 와 DR 의 불일치  ★[2026-10-24] HOLD·SUSPECT 면 수신기 오프셋 |fix − 추정|★
 
 값이 없을 때는 ★전부 NaN★ 으로 통일한다(-1 같은 파수꾼 값을 쓰지 않는다 — 각
 소비처가 그 규약을 따로 기억해야 하고, 한 곳이 잊으면 -1 이 실측값처럼 흘러간다).
@@ -264,7 +265,8 @@ Q_LABEL = {Q_NONE:  'NO_FIX',
 Q_EMOJI = {Q_NONE: '❌', Q_SPS: '🟡', Q_DGPS: '🟠', Q_FLOAT: '🔵', Q_FIXED: '🟢'}
 
 M_NORMAL, M_DEGRADED = 0, 1     # [10] mode
-M_LABEL = {M_NORMAL: 'NORMAL', M_DEGRADED: 'DEGRADED'}
+M_HOLD, M_SUSPECT = 2, 3        # [10] mode [2026-10-24] 2 = 정차 고정 · 3 = 의심 추측항법 (아래 '정차 고정' 절)
+M_LABEL = {M_NORMAL: 'NORMAL', M_DEGRADED: 'DEGRADED', M_HOLD: 'HOLD', M_SUSPECT: 'SUSPECT-DR'}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -454,6 +456,57 @@ COURSE_FIRST_MIN_STEP_M = 1.00
 #    σ 판정까지 한다). 여기 코스는 DR 의 방향 기준일 뿐이고 GPS 로 계속 교정된다.
 COURSE_STALE_S    = 3.0  # 이보다 오래된 코스는 DR·방향게이트에 쓰지 않는다
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ★★ [2026-10-24] 정차 고정 · 의심 추측항법 — 서 있는 차를 수신기가 앞으로 밀었다 ★★
+# ══════════════════════════════════════════════════════════════════════════════
+#  실측 white2 ros2bag/subcourse-20261024_{093306,095839} (같은 S 지점 WP 992, 두 번 다) :
+#    2단으로 서는 순간 수신기가 RTK_FIXED → DGPS(fix_status 1, σ 0.05) 로 떨어지고, ★엔코더 0 인데★
+#    /fix 원값이 정지 직전 진행방향으로 정지 직전 속도(≈2.4 m/s)로 계속 움직였다 — 천천히만 줄었다
+#    (095839 : 17 s 동안 ≈20 m, 2.4 → 1.4 m/s). RTK_FLOAT 로 돌아와서도 그 자리(실제보다 ≈15 m 앞)에 머문 채
+#    0.03 m/s 로만 되돌아왔다. USB 끊김 없음(커널 로그 · fix 5 Hz 공백 0) — 수신기 측위 필터가 급정지를 못 따라간 것.
+#    이 노드의 물리 게이트는 그것을 실제로 기각했다(엔코더 0 → 0.2 s 에 0.37 m 허용) — 그런데 연속 5회 기각
+#    탈출구(GATE_MAX_REJECT_N)가 흐른 좌표를 강제수용했다. driving 포인터가 서 있는 채로 WP 994 → 1036 으로 가
+#    재출발하자마자 코너가 왔다고 보고 ≈8 m 일찍 우회전했다. 그 가짜 GPS 속도로 '재출발 확인' 까지 났다.
+#  → (사용자 결정 2026-10-24 '정차 고정 + 추측항법, 오프셋 빼기도 — 오프셋이 다시 복구될 수 있음을 감안' · 30 m 면 정지)
+#    ① 정차(엔코더 0 이 HOLD_STILL_S) 중에는 위치를 고정한다. RTK Fixed 가 아닌 fix 는 위치로 쓰지 않고
+#       ★수신기 오프셋(fix − 고정점)★ 으로만 잰다. GPS 속도 [8] 은 0 으로 낸다.
+#    ② 그 오프셋이 HOLD_SUSPECT_M 을 넘으면 '수신기가 흐른다(의심)' — 재출발 뒤에도 ★추측항법★ 으로 위치를 잇는다 :
+#       방향 = 마지막 유효 코스 + 투영 요레이트 적분(중력축 · 정차 중 바이어스 제거), 거리 = 엔코더(지령 펄스 ·
+#       가속 DR_ACCEL_MAX_MS2 로 묶어 기동 허수를 막는다). GPS 속도 [8] 은 그 추측항법 속도로 낸다.
+#    ③ 오프셋 빼기 — 정차 때 잰 오프셋이 그대로면(SUSPECT_OFFSET_STABLE_M 안) 'fix − 그 오프셋' 쪽으로 추측항법을
+#       조금씩(OFFSET_PULL_GAIN) 당긴다. ★오프셋이 변하면(수신기가 제자리로 돌아오는 중) 당기지 않는다★.
+#    ④ 끝 — RTK Fixed 가 오면 그 자리로 스냅(사실이다) · 또는 수신기 위치가 추측항법과 SUSPECT_RECOVER_M 안에
+#       SUSPECT_RECOVER_S 머물면(오프셋이 복구됐다) GPS 로 돌아간다.
+#    ⑤ 추측항법이 SUSPECT_DR_MAX_M 또는 SUSPECT_DR_MAX_S 를 넘으면 ★위치 발행을 멈춘다★ → driving 은 GPS 두절로 선다.
+#       (내부 추측항법은 계속 돌아 ④ 가 오면 다시 낸다)
+#    이 구간의 표본은 is_raw=0 이다 — driving 이 헤딩 융합(_fuse_gps_course)에 쓰지 않는다(추측항법이 자기 헤딩을 되먹지 않게).
+HOLD_ENABLE             = True
+HOLD_STILL_S            = 0.3    # [s] 엔코더 0 이 이만큼 이어지면 '서 있다' (driving ZUPT_HOLD_S 와 같다)
+HOLD_SUSPECT_M          = 1.0    # [m] 서 있는데 비Fixed fix 가 고정점에서 이만큼 벗어나면 '수신기가 흐른다'
+HOLD_OFFSET_WIN         = 5      # 정차 오프셋 중앙값 표본 수 (5 Hz 1 s)
+SUSPECT_DR_MAX_M        = 30.0   # [m] 의심 추측항법 상한 거리 (사용자 2026-10-24) — 헤딩 1° 면 횡 0.5 m
+SUSPECT_DR_MAX_S        = 30.0   # [s] 같은 상한의 시간 쪽
+SUSPECT_RECOVER_M       = 1.0    # [m] |fix − 추측항법| 이 이 안이면 수신기가 돌아온 것
+SUSPECT_RECOVER_S       = 2.0    # [s] … 이만큼 이어져야 인정한다
+SUSPECT_OFFSET_STABLE_M = 0.5    # [m] (fix − 정차 오프셋) 이 추측항법과 이 안이면 오프셋이 그대로다 → 당긴다
+OFFSET_PULL_GAIN        = 0.10   # fix 하나마다 그 차의 이 비율만 당긴다 (5 Hz 시상수 ≈2 s)
+DR_ACCEL_MAX_MS2        = 1.5    # [m/s²] 의심 추측항법 속도가 오르는 기울기 상한 (기동 허수 방어)
+#   이 차의 실측 가속은 15펄스로 0 → 30 km/h 8.2 s(평균 ≈1.0 m/s², CLAUDE.md 5.1) — 재출발 직후 엔코더는 좌우가
+#   3~14펄스로 제각각 튄다(subcourse-20261024_093306 72~76 s). 2.5 로 두었더니 그 허수를 따라 16~18 km/h 로 굴렀다.
+DR_LAUNCH_SLEW_S        = 3.0    # [s] 평소 채움은 정차에서 출발한 뒤 이만큼만 가속 상한을 건다 (기동 허수 구간 —
+#   braketest LAUNCH_ENC_BLANK_S 와 같은 값). 늘 걸면 주행 중 아래로 튄 엔코더에서 천천히만 회복해 채움이 뒤처진다
+#   (기록 재생 : 평상 위치차 p99 0.02 → 0.56 m). 의심 추측항법은 늘 건다.
+DR_CMD_WIN_S            = 3.0    # [s] 이 창 안의 최대 지령 펄스 × 0.884 를 추측항법 속도 상한으로 (보드는 지령보다 낮게 돈다 — 5.1)
+DR_SIGMA_PER_M          = 0.02   # [m/m] 의심 추측항법 σ 팽창 — 헤딩 1° 오차 몫 (★추정값★)
+# ── 투영 요레이트 (중력축) — driving 4.7 절과 같은 방법 · 정차 중 바이어스 ──
+#   종전 이 노드는 angular_velocity.z 한 축만 썼다 — 지금 IMU 는 z 축이 수직에서 87~89° 누워 있어(시작 로그)
+#   그 값이 거의 0 이었다(실제 요레이트는 x 축). 추측항법이 회전을 못 따라갔다(maincourse-20261024_092247 L 구간).
+IMU_G_MS2               = 9.81
+IMU_UP_ACC_TOL          = 0.6    # [m/s²] |‖a‖ − g| 이 이 안인 표본만 '위' 를 잰다
+IMU_UP_ALPHA            = 0.05   # 위 벡터 지수평균 (정차 중 · 처음 잡을 때)
+IMU_BIAS_ALPHA          = 0.01   # 정차 중 바이어스 지수평균 (20 Hz 면 시상수 ≈5 s)
+IMU_BIAS_MAX_RS         = 0.05   # [rad/s] 바이어스 추정 상한 (≈2.9 °/s)
+
 # ── 로그 ──
 QUALITY_LOG_PERIOD_S = 5.0   # 변화가 없어도 이 주기로 한 번은 상태를 남긴다
 
@@ -543,6 +596,7 @@ class GpsNode(Node):
         #   "status 1 과 0" 만 잡고 싶으면 Q_FLOAT(3) 으로 내린다 — 그러면 Float 은
         #   종전처럼 스냅한다. ⚠️ Float 은 σ 가 수 m 라 스냅하면 그 튐이 조향에 실린다.
         self.declare_parameter('degraded_below', Q_FIXED)
+        self.declare_parameter('hold_enable', HOLD_ENABLE)     # [2026-10-24] 정차 고정 · 의심 추측항법
 
         self.min_quality = int(self.get_parameter('min_quality').value)
         self.dr_enable   = bool(self.get_parameter('dr_enable').value)
@@ -552,6 +606,7 @@ class GpsNode(Node):
         self.gate_enable = bool(self.get_parameter('gate_enable').value)
         self.deg_enable  = bool(self.get_parameter('degraded_enable').value)
         self.deg_below   = int(self.get_parameter('degraded_below').value)
+        self.hold_enable = bool(self.get_parameter('hold_enable').value)
 
         # ── 앵커 (발행 좌표의 기준점) ★[2026-08-18 (3)] fix 좌표에서 앵커로 바뀌었다★
         #   NORMAL   : 마지막으로 수용한 fix 좌표 그대로(스냅)
@@ -587,8 +642,24 @@ class GpsNode(Node):
         self._course_pt = None           # 코스 계산 기준점 (x, y)
 
         # ── IMU ──
-        self._gyro_z = 0.0               # [rad/s] CCW +
+        self._gyro_z = 0.0               # [rad/s] CCW + — ★[2026-10-24] 중력축 투영 · 바이어스 뺀 요레이트★
         self._imu_t = 0.0
+        self._up = None                  # 위 단위벡터 (가속도로 잰다). None = 아직 → z 축 단독
+        self._gyro_bias = 0.0            # [rad/s] 정차 중 투영 요레이트 평균
+
+        # ── 정차 고정 · 의심 추측항법 [2026-10-24] (상수절 '정차 고정') ──
+        self._still_since = 0.0          # 엔코더 0 이 시작된 시각 (0 = 움직인다)
+        self._suspect = False            # 정차 중 수신기가 흘렀다 → 재출발 뒤에도 추측항법
+        self._sus_moving_t = 0.0         # 의심 상태에서 움직이기 시작한 시각 (0 = 아직 서 있다)
+        self._sus_path = 0.0             # [m] 의심 추측항법으로 간 거리
+        self._sus_dead = False           # 상한을 넘어 위치 발행을 멈췄다
+        self._off_buf = []               # [(ox, oy)] 정차 중 수신기 오프셋
+        self._off_hold = None            # (ox, oy) 정차 오프셋 중앙값 — 재출발 순간 얼린다
+        self._off_pull = False           # 지금 '오프셋 빼기' 로 당기는 중인가 (로그 엣지)
+        self._rec_since = 0.0            # 수신기가 추측항법과 맞기 시작한 시각
+        self._v_dr = 0.0                 # [m/s] 의심 추측항법 속도 (기울기 상한 적용 뒤)
+        self._move_t = 0.0               # 정차(HOLD_STILL_S 이상)에서 움직이기 시작한 시각
+        self._cmd_hist = []              # [(t, 지령 펄스)] /drive_pulse_cmd
 
         # ── 엔코더 ──
         self._enc_buf = []
@@ -614,6 +685,7 @@ class GpsNode(Node):
         self.create_subscription(NavSatFix, '/fix',     self.cb_fix,     10)
         self.create_subscription(Imu,       '/imu',     self.cb_imu,     10)
         self.create_subscription(Int32,     '/encoder', self.cb_encoder, 10)
+        self.create_subscription(Int32,     '/drive_pulse_cmd', self.cb_drive_cmd, 10)   # [2026-10-24]
 
         self.create_timer(1.0 / self.pub_hz, self.on_timer)
 
@@ -624,7 +696,9 @@ class GpsNode(Node):
             f"DEGRADED={'ON' if self.deg_enable else 'OFF'}"
             f"(<{Q_LABEL.get(self.deg_below, '?')}) | "
             f"DR={'ON' if self.dr_enable else 'OFF'}(≤{self.dr_max_s:.1f}s) | "
-            f"Fixed 문턱 σ≤{self.fixed_sigma:.2f}m")
+            f"Fixed 문턱 σ≤{self.fixed_sigma:.2f}m | "
+            f"정차고정={'ON' if self.hold_enable else 'OFF'}"
+            f"(흐름 {HOLD_SUSPECT_M:.1f}m → 추측항법 ≤{SUSPECT_DR_MAX_M:.0f}m)")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  수신
@@ -647,6 +721,13 @@ class GpsNode(Node):
                 f"({Q_EMOJI.get(quality,'')} {Q_LABEL.get(quality)})")
 
         x, y = latlon_to_xy(msg.latitude, msg.longitude, self.lat0, self.lon0)
+
+        # ── ★[2026-10-24] 정차 고정 · 의심 추측항법★ 게이트보다 먼저 — 서 있는 차의 fix 는 위치가 아니라 오프셋이다 ──
+        #   정차 중이라도 RTK Fixed 면 종전 처리(스냅)다 — 고정할 이유가 없고, 속도 계산(trail)도 끊지 않는다.
+        if self.hold_enable and self._fix_t > 0.0 and (
+                self._suspect or (quality < Q_FIXED and self._is_still(now))):
+            self._hold_fix(x, y, now, quality, sigma)
+            return
 
         # ── ★게이트★ 말이 안 되는 fix 는 버린다 (헤더 ②절) ─────────────────────
         ok, why = self._gate(x, y, now, sigma)
@@ -716,8 +797,48 @@ class GpsNode(Node):
         """자이로 z 만 쓴다. ★적분은 여기서 하지 않는다★ — DR 스텝과 시각을 한
         곳(_advance_dr)에서 맞추지 않으면 '적분은 됐는데 위치는 안 옮겨진' 틱이
         생긴다. 여기서는 최신 각속도와 도착 시각만 남긴다."""
-        self._gyro_z = float(msg.angular_velocity.z)
-        self._imu_t = time.time()
+        now = time.time()
+        w = (float(msg.angular_velocity.x), float(msg.angular_velocity.y),
+             float(msg.angular_velocity.z))
+        a = (float(msg.linear_acceleration.x), float(msg.linear_acceleration.y),
+             float(msg.linear_acceleration.z))
+        still = self._is_still(now)
+        # ★[2026-10-24] 위(중력 반대)를 가속도로 잰다 — 처음 잡을 때와 정차 중에만★ (상수절 '투영 요레이트')
+        an = math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+        if (abs(an - IMU_G_MS2) < IMU_UP_ACC_TOL and an > 1e-6
+                and (self._up is None or still)):
+            u = (a[0] / an, a[1] / an, a[2] / an)
+            if self._up is None:
+                self._up = u
+                tilt = math.degrees(math.acos(max(-1.0, min(1.0, u[2]))))
+                self.get_logger().info(
+                    f"📐 DR 요레이트 축 — z 축이 수직에서 {tilt:.1f}° (위 = [{u[0]:+.3f}, {u[1]:+.3f}, "
+                    f"{u[2]:+.3f}]). 자이로를 이 축에 투영해서 쓴다")
+            else:
+                m = [(1.0 - IMU_UP_ALPHA) * self._up[i] + IMU_UP_ALPHA * u[i] for i in range(3)]
+                mn = math.sqrt(sum(c * c for c in m))
+                self._up = tuple(c / mn for c in m)
+        r = (w[0] * self._up[0] + w[1] * self._up[1] + w[2] * self._up[2]
+             if self._up is not None else w[2])
+        if still:
+            # 서 있다 = 요레이트 0 이 사실 — 그 차이가 바이어스다
+            b = (1.0 - IMU_BIAS_ALPHA) * self._gyro_bias + IMU_BIAS_ALPHA * r
+            self._gyro_bias = max(-IMU_BIAS_MAX_RS, min(IMU_BIAS_MAX_RS, b))
+        self._gyro_z = r - self._gyro_bias
+        self._imu_t = now
+
+    def cb_drive_cmd(self, msg: Int32):
+        """보드로 나간 주행 목표펄스 — 의심 추측항법 속도 상한에만 쓴다 [2026-10-24]."""
+        now = time.time()
+        self._cmd_hist.append((now, int(msg.data)))
+        while self._cmd_hist and now - self._cmd_hist[0][0] > DR_CMD_WIN_S:
+            del self._cmd_hist[0]
+
+    def _is_still(self, now):
+        """바퀴가 서 있나 — 엔코더(3점 중앙값) 0 이 HOLD_STILL_S 이어졌고 엔코더가 신선하다 [2026-10-24].
+        ★엔코더 허수는 위로만 튄다★ — 그래서 0 을 믿는 쪽은 안전하다(서 있지 않은데 0 이 이어지는 일은 없다)."""
+        return (self._still_since > 0.0 and now - self._still_since >= HOLD_STILL_S
+                and self._enc_t > 0.0 and now - self._enc_t <= ENC_FRESH_S)
 
     def cb_encoder(self, msg: Int32):
         """A보드 좌+우 펄스 합 → 바퀴 하나 기준 속도 [m/s].
@@ -733,6 +854,14 @@ class GpsNode(Node):
         # 물리 상한으로 자른다 — 허수 카운트가 DR 을 밀어내지 못하게 하는 1차 방어
         self._enc_ms = max(0.0, min(GATE_SPEED_MAX_MS, v))
         self._enc_t = time.time()
+        if self._enc_ms <= DR_MIN_MS:                      # [2026-10-24] 정차 판정 (_is_still)
+            if self._still_since == 0.0:
+                self._still_since = self._enc_t
+        else:
+            if (self._still_since > 0.0
+                    and self._enc_t - self._still_since >= HOLD_STILL_S):
+                self._move_t = self._enc_t                 # 정차에서 출발했다 (평소 채움의 가속 상한 창)
+            self._still_since = 0.0
 
     # ══════════════════════════════════════════════════════════════════════════
     #  판정
@@ -851,6 +980,145 @@ class GpsNode(Node):
                 self.get_logger().info(
                     f"🟢 NORMAL 복귀 — {Q_LABEL.get(quality)} 가 "
                     f"{now - self._q_good_since:.1f}초 지속. fix 스냅으로 되돌린다")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  정차 고정 · 의심 추측항법 [2026-10-24] (상수절 '정차 고정')
+    # ══════════════════════════════════════════════════════════════════════════
+    def _hold_mode(self, now):
+        """지금 발행 모드 — M_HOLD / M_SUSPECT / None(종전 처리)."""
+        if not self.hold_enable or self._fix_t <= 0.0:
+            return None
+        if self._is_still(now):
+            return M_HOLD
+        if self._suspect:
+            return M_SUSPECT
+        return None
+
+    def _hold_fix(self, x, y, now, quality, sigma):
+        """정차 중이거나 의심 상태일 때의 fix 하나. ★위치는 고정점/추측항법이고 fix 는 오프셋으로만 본다★
+        끝내는 길은 둘 — RTK Fixed(스냅) · 수신기가 추측항법과 다시 맞음(오프셋 복구)."""
+        self._advance_dr(now)                                  # 이 fix 시각까지 추측항법을 민다
+        px, py = self._ax + self._dr_x, self._ay + self._dr_y  # 지금 추정
+        ox, oy = x - px, y - py                                # 수신기 오프셋
+        off = math.hypot(ox, oy)
+        self._resid_m = off
+        self._fix_t = now                                      # 수신기는 살아 있다 (두절 판정은 그대로)
+        self._quality, self._sigma = quality, sigma
+        still = self._is_still(now)
+
+        if quality >= Q_FIXED:
+            # ★RTK Fixed 는 사실이다★ — 의심을 끝내고 그 자리로 스냅한다
+            if self._suspect:
+                self.get_logger().warning(
+                    f"🟢 RTK Fixed 복귀 — 추측항법과 {off:.2f}m 차이. 그 자리로 스냅하고 GPS 로 돌아간다 "
+                    f"(추측항법 {self._sus_path:.1f}m)")
+            self._end_suspect()
+            self._snap(x, y, now)
+            self._publish(now, is_raw=True)
+            self._log_quality(now, force=False)
+            return
+
+        if still:
+            # ── 정차 : 위치를 고정하고 오프셋을 잰다 ──
+            self._v_dr = 0.0
+            self._sus_moving_t = 0.0
+            self._off_buf.append((ox, oy))
+            if len(self._off_buf) > HOLD_OFFSET_WIN:
+                del self._off_buf[0]
+            self._off_hold = (_median([o[0] for o in self._off_buf]),
+                              _median([o[1] for o in self._off_buf]))
+            if not self._suspect and off > HOLD_SUSPECT_M:
+                self._suspect = True
+                self._sus_path = 0.0
+                self._sus_dead = False
+                self._rec_since = 0.0
+                self.get_logger().warning(
+                    f"🧊 정차 중 GPS 가 {off:.1f}m 흘렀다 ({Q_LABEL.get(quality)} σ={sigma:.2f}m, 엔코더 0) — "
+                    f"위치를 고정한다. 재출발 뒤에도 RTK Fixed 가 오거나 수신기가 돌아올 때까지 추측항법"
+                    f"(≤{SUSPECT_DR_MAX_M:.0f}m)")
+            if not self._suspect:
+                # 흐르지 않는 정차 — 게이트 기준만 따라 둔다(재출발 첫 fix 가 기각되지 않게)
+                self._last_ok_x, self._last_ok_y, self._last_ok_t = x, y, now
+        else:
+            # ── 의심 상태로 움직인다 : 추측항법 ──
+            if self._sus_moving_t == 0.0:
+                self._sus_moving_t = now
+                self._sus_path = 0.0
+                oh = self._off_hold
+                self.get_logger().warning(
+                    f"🧭 재출발 — 추측항법으로 간다 (정차 오프셋 "
+                    f"{'모름' if oh is None else f'{math.hypot(*oh):.1f}m'}, 지금 {off:.1f}m)")
+            # ③ 오프셋 빼기 : 정차 때 잰 오프셋이 그대로면 'fix − 그 오프셋' 쪽으로 조금씩 당긴다
+            pull = False
+            if self._off_hold is not None:
+                rx, ry = ox - self._off_hold[0], oy - self._off_hold[1]
+                if math.hypot(rx, ry) <= SUSPECT_OFFSET_STABLE_M:
+                    self._ax += OFFSET_PULL_GAIN * rx
+                    self._ay += OFFSET_PULL_GAIN * ry
+                    pull = True
+            if pull != self._off_pull:
+                self._off_pull = pull
+                self.get_logger().info(
+                    "📌 정차 오프셋이 그대로다 — 그만큼 뺀 GPS 로 추측항법을 당긴다" if pull else
+                    "📌 수신기 오프셋이 변한다(돌아오는 중일 수 있다) — 당기지 않고 추측항법만")
+            # ⑤ 상한
+            if (not self._sus_dead and (self._sus_path > SUSPECT_DR_MAX_M
+                                        or now - self._sus_moving_t > SUSPECT_DR_MAX_S)):
+                self._sus_dead = True
+                self.get_logger().error(
+                    f"⛔ 추측항법 {self._sus_path:.1f}m / {now - self._sus_moving_t:.0f}s — 상한"
+                    f"({SUSPECT_DR_MAX_M:.0f}m·{SUSPECT_DR_MAX_S:.0f}s)을 넘었다. 위치 발행을 멈춘다 "
+                    f"(driving 은 GPS 두절로 선다). RTK Fixed 나 수신기 복귀를 기다린다")
+
+        # ④ 수신기가 돌아왔나 — 오프셋이 다시 작아져 머문다(정차·주행 모두)
+        if self._suspect:
+            if off <= SUSPECT_RECOVER_M:
+                if self._rec_since == 0.0:
+                    self._rec_since = now
+                elif now - self._rec_since >= SUSPECT_RECOVER_S:
+                    self.get_logger().warning(
+                        f"🟢 수신기 위치가 추측항법과 다시 맞는다({off:.2f}m, {SUSPECT_RECOVER_S:.0f}s) — "
+                        f"GPS 로 돌아간다 ({Q_LABEL.get(quality)}, 추측항법 {self._sus_path:.1f}m)")
+                    self._end_suspect()
+                    if not still:
+                        self._snap(x, y, now)
+            else:
+                self._rec_since = 0.0
+
+        if not self._sus_dead:
+            self._publish(now, is_raw=False)
+        self._log_quality(now, force=False)
+
+    def _end_suspect(self):
+        self._suspect = False
+        self._sus_dead = False
+        self._sus_moving_t = 0.0
+        self._sus_path = 0.0
+        self._off_buf = []
+        self._off_hold = None
+        self._off_pull = False
+        self._rec_since = 0.0
+
+    def _snap(self, x, y, now):
+        """그 fix 로 스냅하고 ★운동으로 오해할 이력★ 을 버린다 (탈출구 강제수용과 같은 정리)."""
+        self._accept_normal(x, y, now)
+        self._last_ok_x, self._last_ok_y, self._last_ok_t = x, y, now
+        self._trail = []
+        self._kmh = None
+        self._course_pt = None           # 코스는 그대로 두고 기준점만 새로
+        self._reject_run = 0
+        self._resid = []
+
+    def _suspect_speed(self, now, dt):
+        """의심 추측항법 속도 [m/s] — 엔코더를 ① 최근 최대 지령 펄스 ② 가속 상한으로 묶는다. 엔코더가 없으면 None."""
+        if self._enc_ms is None or now - self._enc_t > ENC_FRESH_S:
+            return None
+        v = self._enc_ms
+        if self._cmd_hist:
+            v = min(v, max(p for _, p in self._cmd_hist) * ENC_MS_PER_PULSE)
+        v = min(v, self._v_dr + DR_ACCEL_MAX_MS2 * max(0.0, dt))
+        self._v_dr = max(0.0, v)
+        return self._v_dr
 
     # ══════════════════════════════════════════════════════════════════════════
     #  앵커 갱신
@@ -995,6 +1263,10 @@ class GpsNode(Node):
         if now - self._fix_t > self.dr_max_s:
             self._log_quality(now, force=False)
             return
+        if self._sus_dead:
+            self._advance_dr(now)        # [2026-10-24] 발행은 멈췄어도 추측항법은 돌린다 (복귀 판정용)
+            self._log_quality(now, force=False)
+            return
 
         self._publish(now, is_raw=False)
         self._log_quality(now, force=False)
@@ -1017,6 +1289,14 @@ class GpsNode(Node):
         kmh = self._kmh if (self._kmh is not None
                             and now - self._kmh_t <= GPS_SPEED_STALE_S) else float('nan')
         course = math.degrees(self._course) if self._course is not None else float('nan')
+        #  ★[2026-10-24] 정차 고정 · 의심 추측항법★ — 수신기의 흐름을 속도로 내보내지 않는다
+        mode = self._mode
+        hold = self._hold_mode(now)
+        if hold == M_HOLD:
+            mode, kmh = M_HOLD, 0.0
+        elif hold == M_SUSPECT:
+            mode, kmh = M_SUSPECT, self._v_dr * 3.6
+            sigma = max(sigma if math.isfinite(sigma) else 0.0, 0.3) + DR_SIGMA_PER_M * self._sus_path
 
         msg = Float64MultiArray()
         msg.data = [
@@ -1030,7 +1310,7 @@ class GpsNode(Node):
             float(dr_dist),                              # [7]
             float(kmh),                                  # [8]
             float(course),                               # [9]
-            float(self._mode),                           # [10]
+            float(mode),                                 # [10] (2026-10-24 : 2 HOLD · 3 SUSPECT-DR)
             float(self._reject_n),                       # [11]
             float(self._resid_m),                        # [12]
         ]
@@ -1062,13 +1342,33 @@ class GpsNode(Node):
         #   기준은 ★코스가 갱신될 때만★ 리셋한다(_update_course).
         #   ※ 아래 조기 리턴들보다 앞에 두는 것도 같은 이유다 — 속도를 몰라 위치를
         #     못 옮기는 틱에도 ★방향은 계속 따라가야★ 한다.
-        self._yaw_ref += self._gyro_z * dt
+        #   ★[2026-10-24] 서 있으면 적분하지 않는다★ (요레이트 0 이 사실 — 바이어스가 각도로 쌓이지 않게)
+        hold = self._hold_mode(now)
+        if hold != M_HOLD:
+            self._yaw_ref += self._gyro_z * dt
+
+        suspect = hold == M_SUSPECT
+        #  ★속도는 코스 판정보다 먼저 갱신한다★ — 가속 상한(_v_dr)이 코스가 없던 틱에 굳으면 다음 채움이 늦는다.
+        if suspect:
+            v = self._suspect_speed(now, dt)
+        elif self._enc_ms is not None and now - self._enc_t <= ENC_FRESH_S:
+            #  ★[2026-10-24] 정차에서 출발한 직후(DR_LAUNCH_SLEW_S)만 평소 채움에도 가속 상한★ — 출발 직후 허수가
+            #  0.15 s 에 1.2 m 를 밀었다(maincourse-20261024_091812 151.9 s). 내려가는 쪽은 그대로 따른다.
+            v = self._enc_ms
+            if self._move_t > 0.0 and now - self._move_t <= DR_LAUNCH_SLEW_S:
+                v = min(v, self._v_dr + DR_ACCEL_MAX_MS2 * max(0.0, dt))
+            self._v_dr = v
+        else:
+            v = self._dr_speed_raw()
+            if v is not None:
+                self._v_dr = v
 
         if not self.dr_enable:
             return
-        if self._course is None or now - self._course_t > COURSE_STALE_S:
+        #  ★[2026-10-24] 의심 추측항법은 코스가 낡아도 간다★ — 코스(정차 전 마지막 유효 방위) + 그 뒤 계속 적분한
+        #  요레이트가 방향이다. 낡았다고 멈추면 서 있던 몇 초 때문에 재출발하자마자 위치가 얼어붙는다.
+        if self._course is None or (not suspect and now - self._course_t > COURSE_STALE_S):
             return                       # 절대 방향 기준이 없거나 낡았다
-        v = self._dr_speed_raw()
         if v is None or v < DR_MIN_MS:
             return                       # 속도를 모르거나 서 있다
 
@@ -1078,6 +1378,9 @@ class GpsNode(Node):
         self._dr_x += v * math.cos(psi) * dt
         self._dr_y += v * math.sin(psi) * dt
 
+        if suspect:
+            self._sus_path += v * dt     # 상한은 SUSPECT_DR_MAX_M (_hold_fix) — 아래 3 m 상한은 걸지 않는다
+            return
         # 누적 거리 상한 — 속도 오독으로 가상좌표가 날아가는 것을 막는 마지막 방벽
         d = math.hypot(self._dr_x, self._dr_y)
         if d > DR_MAX_DIST_M:

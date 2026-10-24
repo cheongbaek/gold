@@ -144,7 +144,8 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
   const double L = 1.25, dt = 0.05;
   double X = sc.s_start, Y = sc.d_h + std::tan(sc.psi_h_deg * M_PI / 180) * (sc.s_start - sc.s_handover);
   double psi = sc.psi_h_deg * M_PI / 180;
-  double v = sc.v;
+  double v = env("V", sc.v);
+  const double v_set = v;
   double steer_act = 0.0;                      // road wheel actual [rad]
   std::deque<double> dead(5, 0.0);             // 0.25 s dead time
   double steer_filt = 0.0, last_pub = 0.0;     // node filterSteer state [deg]
@@ -191,6 +192,14 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
                           v > 0.3 && !latched && (!int_gate || steadyTracking(path, pose.x)));
       raw = std::clamp(raw, -22.9, 22.9);
     }
+    // ★[2026-10-24] 노드와 같은 조향 범위 (path_tracker.hpp steerRangeRad)★ RANGE=0 이면 끔(종전 비교용)
+    if (env("RANGE", 1.0) > 0.5) {
+      SteerRangeParams rp;
+      rp.free_deg = env("RANGE_FREE", rp.free_deg);
+      rp.ay_max = env("RANGE_AY", rp.ay_max);
+      const double lim = steerRangeRad(path, pose.x, v, L, rp, 22.9 * M_PI / 180) * 180 / M_PI;
+      raw = std::clamp(raw, -lim, lim);
+    }
     // filterSteer (node): LPF 0.7 + slew 36 deg/s
     steer_filt = 0.70 * raw + 0.30 * steer_filt;
     const double md = 36.0 * dt;
@@ -205,7 +214,7 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
     // vehicle speed
     if (braking) v = std::max(0.0, v - 2.2 * dt);
     else if (latched) v = std::max(0.0, v - 0.41 * dt);
-    else v = std::min(sc.v, v + 1.0 * dt);
+    else v = std::min(v_set, v + 1.0 * dt);
     if (latched) R.stop_time += dt;
     // steering actuator: dead time, deadband 1.41 deg, slew 55 deg/s
     dead.push_back(cmd_deg * M_PI / 180);

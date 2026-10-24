@@ -72,6 +72,50 @@ inline bool steadyTracking(const FrenetPath & path, double s, double ahead_m = 2
   return true;
 }
 
+// ★[2026-10-24] 조향 범위 — 앞 계획 경로가 요구하는 만큼만 · 속도별 횡가속 상한★ (사용자 '급조향 방지 ·
+// 전방 장애물에 따라 조향범위도 다르게' → '계획 경로 곡률 기반')
+// 실측 white2 maincourse-20261024_092247 : L 에 20 km/h 로 들어와 첫 블록(15.8 m 앞)을 −1.08 m 비키는 κ 0.12 경로를
+// 2펄스 기하 그대로 따르다 요레이트 −74 °/s · 헤딩 −54°. 10/17 172835 는 +100 °/s. 22일 white1 10회(4~5 km/h)는 ≤ 28 °/s.
+//  · 범위 = atan(L · max|κ|(앞 ahead_m)) × margin + free — 콘 블록이 경로를 굽힌 만큼만 연다. 앞에 꺾을 일이 없으면 free 만.
+//    ★κ 는 기준선(GPS 경로)에 대한 d(s) 곡률이다★ — 기준선 자체의 곡률은 들어 있지 않아 free 가 그 몫(과 자세·횡오차 보정)을 덮는다.
+//  · 속도 상한 = atan(ay_max · L / v²) — 빠를수록 좁다(2.5 m/s² : 1.77 m/s 에서 45° = 걸리지 않는다 · 3.0 에서 19.1° · 5.3 에서 6.4°).
+//  · 정지 판단(predictTrackHits)은 이 뒤 조향으로 그대로 돈다 — 범위에 막혀 못 비키면 서는 쪽으로 틀린다.
+struct SteerRangeParams
+{
+  bool enable = true;
+  double ahead_m = 8.0;     // [m] 이만큼 앞까지 계획 경로의 최대 |κ|
+  double margin = 1.3;      // 그 곡률이 요구하는 도로휠각 × 이만큼
+  double free_deg = 10.0;   // [deg] 꺾을 일이 없어도 허용 (기준선 곡률 R 7 m 몫 · 자세·횡오차 보정)
+  double ay_max = 2.5;      // [m/s²] 속도별 상한. 0 = 끔 — 모의 23장면 : 2.0 은 3.0 m/s 에서 충돌 3 → 4, 2.5 는 끈 것과 같다
+};
+
+/// 지금 허용하는 도로휠각 상한 [rad] (양수). need·ay 는 진단용 [rad].
+inline double steerRangeRad(
+  const FrenetPath & path, double s, double v, double wheelbase,
+  const SteerRangeParams & p, double hard_max, double * need = nullptr, double * ay = nullptr)
+{
+  double lim = hard_max;
+  double n = hard_max;
+  double a = hard_max;
+  if (p.enable) {
+    double kmax = 0.0;
+    if (path.valid && path.pts.size() >= 2) {
+      for (double ds = 0.0; ds <= std::max(0.0, p.ahead_m) + 1e-9; ds += 0.5) {
+        kmax = std::max(kmax, std::abs(path.sample(s + ds).kappa));
+      }
+    }
+    n = std::atan(wheelbase * kmax) * std::max(1.0, p.margin) + p.free_deg * M_PI / 180.0;
+    lim = std::min(lim, n);
+    if (p.ay_max > 0.0 && v > 0.1) {
+      a = std::atan(p.ay_max * wheelbase / (v * v));
+      lim = std::min(lim, a);
+    }
+  }
+  if (need) {*need = n;}
+  if (ay) {*ay = a;}
+  return std::max(0.0, lim);
+}
+
 // 기준선 (s,d) 를 평면으로 보고 자세를 v·dt 만큼 굴린다.
 inline OdomPose advancePose(const OdomPose & p, double v, double steer, double dt, double L)
 {

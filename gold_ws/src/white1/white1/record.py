@@ -478,7 +478,9 @@ RECORD_TOPICS: Tuple[TopicSpec, ...] = (
                    '않도록 원시 fix 의 나이를 그대로 싣는다). '
                    '★gps_reject_n 이 늘어나는 구간이 GPS 가 튀는 구간이다★ — '
                    'fix_lat/fix_lon(원값)과 겹쳐 보면 무엇을 버렸는지 보인다. '
-                   'gps_mode 0=NORMAL(fix 스냅) 1=DEGRADED(DR + 잔차 중앙값 융합). '
+                   'gps_mode 0=NORMAL(fix 스냅) 1=DEGRADED(DR + 잔차 중앙값 융합) '
+                   '2=HOLD(정차 고정 — gps_kmh 0) 3=SUSPECT-DR(정차 중 수신기가 흘러 재출발 뒤 추측항법 — '
+                   'gps_resid_m = 수신기 오프셋) [2026-10-24]. '
                    'gps_resid_m 은 DEGRADED 에서 GPS 와 DR 의 불일치 크기 — '
                    '★DEGRADED_RESID_MAX_M(3.0) 근처로 굳으면 DR 이 GPS 를 못 따라가는 '
                    '것이므로 엔코더 환산(ENC_MS_PER_PULSE)이나 자이로를 의심할 것★'),
