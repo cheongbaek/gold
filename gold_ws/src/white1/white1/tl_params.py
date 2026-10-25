@@ -7,6 +7,7 @@ traffic_light.py 가 이 값으로 파라미터를 선언하고, camera_launch.p
     ros2 launch white1 one_launch.py tl_b_arrow_frac:=0.25      # 덮는 법 (white1 도 같다)
     ros2 launch white1 one_launch.py tl_b_go_mode:=arrow        # 'B' 진행 근거를 10/18 까지처럼 화살표만
     ros2 launch white1 one_launch.py tl_zone_red_min_height_t:=9 tl_near_release_ratio_t:=0.7   # T 를 종전 값으로
+    ros2 launch white2 one_launch.py tl_solo_stop_min_height_t:=20                               # T 단독 정지를 구간 밖 값과 같게
 
 근거·쓰는 법은 TL_TUNING.md 2절 'B' — 값을 바꾸면 cam-test 로 #400 런을 다시 돌린다.
 """
@@ -23,7 +24,7 @@ B_ARROW = {
     'tl_b_arrow_x0':    0.50,
     'tl_b_arrow_x1':    0.66,
     'tl_b_arrow_y0':    0.15,
-    'tl_b_arrow_y1':    0.85, #서브 코스 카메라 재시험은 돌리지 않아도 됩니다
+    'tl_b_arrow_y1':    0.85,  #서브 코스 카메라 재시험은 돌리지 않아도 됩니다
     'tl_b_arrow_h_lo':  45.0,
     'tl_b_arrow_h_hi':  100.0,
     'tl_b_arrow_s_lo':  45.0,
@@ -34,9 +35,9 @@ B_ARROW = {
     #   '버스 빨강 + 차량 원등 녹색' 은 2현시(우리 좌회전 35~47 s)뿐이다(1현시는 버스 녹, 3·4현시·47~50 은 차량 빨강·황).
     #   버스 빨강은 화살표보다 0.15~0.23 s 먼저 켜졌다 → tl_b_bus_red_s 0.3 s 로 확정한다(버스 황색을 빨강으로 읽은 것은
     #   전환 경계 1프레임뿐, 143장 중). 오프라인 5런: 'either' 진행 인정 322/325 · 오진행 39(전부 황혼 화살표 오판, 172742 1802~1840).
-    'tl_b_go_mode':     'either',
+    'tl_b_go_mode':     'bus',
     'tl_b_bus_red_s':   0.3,    # 버스 RED 를 이만큼(그리고 BUS_GO['min_red_n'] 장 이상) 봐야 '버스 빨강' 으로 기억한다 [s]
-    'tl_b_round_min':   0.10,   # 차량 녹색 = 라벨 GREEN AND 넷째 칸(원등) 녹색 비율 ≥ 이것 (녹색 현시 776/778 이 넘었다)
+    'tl_b_round_min':   0.10,   # 차량 녹색 = 라벨 GREE   N AND 넷째 칸(원등) 녹색 비율 ≥ 이것 (녹색 현시 776/778 이 넘었다)
     'tl_b_amber_max':   0.20,   #             AND 둘째 칸(황색) 황색 비율 < 이것 (실측 최대 0.09 — 황색 녹화는 없다)
 }
 
@@ -85,7 +86,7 @@ LOCK_GEOM = {
 #                 ⚠️ 여유는 2px(7 ↔ 9) · −1px(8px 건너편 등기구는 못 붙잡는다) — 두 분포가 붙어 있다
 #   A 9 · 0.7  — #1100 은 정지선 앞에서도 내 신호가 9~10px(건너편 등기구만 보인다) — 올리면 빨간불에 안 선다
 #   B 9 · 0.7  — #400 은 판단 박스가 차량 박스 하나(_decision_boxes)라 남의 신호와 무관 — 종전 값 그대로
-#   0 이하의 문턱 = 그 구간도 구간 밖 문턱(tl_red_stop_min_height 25px)과 배율(tl_near_release_ratio)을 쓴다.
+#   0 이하의 문턱 = 그 구간도 구간 밖 문턱(tl_red_stop_min_height 20px)과 배율(tl_near_release_ratio)을 쓴다.
 ZONE_GATE = {
     'tl_zone_red_min_height_t': 12.0,
     'tl_zone_red_min_height_a': 9.0,
@@ -93,6 +94,18 @@ ZONE_GATE = {
     'tl_near_release_ratio_t':  0.75,
     'tl_near_release_ratio_a':  0.7,
     'tl_near_release_ratio_b':  0.7,
+}
+
+# [2026-10-25] 구간별 신호등 단독 정지 문턱 [px] — traffic_light._solo_gate · _stop_plan (사용자 지시 2026-10-25)
+#   RED 확정 뒤 판단 박스 중 가장 큰 빨강이 이 높이 이상이면 정지선과 무관하게 2단(OR — 파일 헤더 '판단').
+#   T 17 — 구간 밖 20 보다 일찍 문다. 체결 순간 내 빨강 20~27px(13건) · T 작은 박스 버리기 16px(TL_LOCK) 바로 위.
+#   B 20 — 종전(구간 밖 값)과 같다. 판단 박스는 차량 박스 하나(_decision_boxes).
+#   A 0  — 구간 밖 값(tl_solo_stop_min_height). #1100 은 정지선 앞에서도 9~10px 라 정지선으로 선다.
+#   0 이하 = 그 구간도 구간 밖 값. 구간 신호가 끊기면(tl_zone_stale_s) 구간 밖 값.
+SOLO_GATE = {
+    'tl_solo_stop_min_height_t': 17.0,
+    'tl_solo_stop_min_height_a': 0.0,
+    'tl_solo_stop_min_height_b': 20.0,
 }
 
 # [2026-10-20] 구간 T·A 의 GREEN 은 박스 안에 HSV 녹색 화소가 있어야 GREEN — traffic_light._all_tl_boxes · _green_hsv_px

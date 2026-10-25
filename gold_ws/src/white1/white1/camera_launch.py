@@ -307,6 +307,8 @@ def declare_args(cam_dev):
          for k, v in tl_params.B_ARROW.items()] \
       + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_ZONE_DESC[k[-1]].format(k=k))
          for k, v in tl_params.ZONE_GATE.items()] \
+      + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_SOLO_DESC[k[-1]].format(k=k))
+         for k, v in tl_params.SOLO_GATE.items()] \
       + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_LOCK_DESC[k])
          for k, v in tl_params.TL_LOCK.items()] \
       + [DeclareLaunchArgument(k, default_value=_launch_str(v), description=_TL_GREEN_DESC[k])
@@ -350,6 +352,14 @@ _TL_ZONE_DESC = {
 }
 
 
+#  [2026-10-25] 구간별 신호등 단독 정지 문턱 — 기본값·근거는 tl_params.SOLO_GATE (노드와 같은 값).
+_TL_SOLO_DESC = {
+    't': "{k} — 구간 'T' 신호등 단독 정지 문턱 [px]. 빨간 박스가 이 이상이면 정지선과 무관하게 2단. 0 이하 = 구간 밖 값(tl_solo_stop_min_height)",
+    'a': "{k} — 구간 'A'(#1100) 신호등 단독 정지 문턱 [px]. 기본 0 = 구간 밖 값 — 내 신호가 9~10px 라 정지선으로 선다",
+    'b': "{k} — 구간 'B'(#400) 신호등 단독 정지 문턱 [px]. 판단 박스는 차량 박스 하나",
+}
+
+
 #  [2026-10-18] 구간 'B'(#400) 좌회전 화살표 판독 — 기본값은 tl_params.B_ARROW (노드와 같은 값).
 _TL_B_DESC = {
     'tl_b_arrow_frac':  "'B' 셋째 칸 녹색 비율 문턱 — 이 이상이면 좌회전 화살표 켜짐(진행). TL_TUNING.md 2절",
@@ -383,7 +393,7 @@ def tl_b_params():
     """traffic_light 에 넘길 'B' 화살표 + 구간별 문턱 파라미터 — ★형을 고정해 넘긴다★: `tl_b_arrow_min_h:=20` ·
     `tl_zone_red_min_height_t:=12` 처럼 정수로 줘도 float 로 바꿔 넘겨 노드가 형 오류로 안 뜨는 일이 없게 한다."""
     return {k: ParameterValue(LaunchConfiguration(k), value_type=type(v))
-            for k, v in {**tl_params.B_ARROW, **tl_params.ZONE_GATE, **tl_params.TL_LOCK,
+            for k, v in {**tl_params.B_ARROW, **tl_params.ZONE_GATE, **tl_params.SOLO_GATE, **tl_params.TL_LOCK,
                                       **tl_params.GREEN_HSV, **tl_params.GAMMA}.items()}
 
 
@@ -568,7 +578,7 @@ def actions(package_name, cam_format, node_env, respawn_delay):
             'stop_latch':             LaunchConfiguration('tl_stop_latch'),
             'publish_cmd_vel':        LaunchConfiguration('tl_publish_cmd_vel'),
             'hsv_red_h2_low':         LaunchConfiguration('tl_hsv_red_h2_low'),
-            **tl_b_params(),          # 'B' 화살표 4 + 구간별 문턱·배율 6 (tl_params.B_ARROW · ZONE_GATE)
+            **tl_b_params(),          # 'B' 화살표 + 구간별 문턱·배율·단독 문턱 (tl_params.B_ARROW · ZONE_GATE · SOLO_GATE …)
             # ★카메라 기하는 한 벌로 받는다★ 차선 인지가 붙으면 같은 dict 를 넘긴다.
             **camera_params(),
         }],

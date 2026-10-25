@@ -94,6 +94,36 @@ ros2 launch white1 one_launch.py \
 
 ---
 
+## 2026-10-25 — ★L 진입 = 정지선처럼 — 진입 즉시 2단으로 서고 0단 · 1.0 s 뒤 mppi 에 넘긴다★ (사용자 지시, white1·white2 같은 줄)
+
+사용자 : "라이다 구간은 기본 2펄스로 주행하도록 한다. 라이다 진입 즉시 2단정지 후 출발하도록 하자. 정지선처럼."
+
+- **원인** — white2 `ros2bag/maincourse-20261025_122955` : 22.6 km/h 에 1단을 문 채 인계(10/24 저녁 '최대 1단') → 1단이 풀린
+  38.2 s 까지 2.7 s 동안 mppi(앞보기 3.2 m — 2펄스 설계)가 그 속도로 계획을 따라 꺾었다(요레이트 −32 °/s, 헤딩 −26° → +47°).
+  계획 자체도 교차로 잡음·노변과 합쳐진 블록으로 흔들렸다(mppi 쪽은 이번에 고치지 않았다).
+- **변경** (`driving.py`, 두 판 같은 줄 — diff 로 확인) :
+  - L 시작을 지나는 틱에 속도와 무관하게 **리니어 2단 + 펄스 0**, 조향 직전 각, `/lstatus` '0'(조종권은 아직 driving) —
+    `lidar_entry_stop_step`. 섰다 = 엔코더 ≤ `ENC_STOP_EPS` 또는 GPS < `ZUPT_GPS_KMH` 가 `STOP_ZERO_HOLD_S`(상한 `STOP_WAIT_MAX_S`)
+    → 곧바로 0단(force) → `STOP_RELEASE_WAIT_S` 1.0 s 펄스 0 → `begin_lidar_zone`(생존 확인 · 0 펄스 · 'L'). S 의 3.5 s 대기는 없다.
+  - 정지 중 `/lidar_ref[3]` = 0 — mppi 미리보기가 계속 돌아 인계 때 블록 기억을 이어받는다(종전엔 이 자리에서 NaN).
+  - 한 L 구간에 한 번(`_lzs_done` = 구간 시작 WP). E-STOP·RTK 대기 → `_clear_transients` 가 단계를 지워 재개 첫 틱에 다시 선다.
+  - 지웠다 : `lidar_entry_brake` · `lidar_carry_step` · `cb_brake_level`(`/brake_level` 구독) · `_lz_carry_t` · `_brake_full_other_t` ·
+    `BRAKE_OTHER_FRESH_S` · `_clear_transients(keep_brake)`. record `slow_zone` 2 = 'L 진입 정지'(뜻만 바뀜).
+  - '기본 2펄스' — mppi `cruise_pulse` 2 · `cmd.dodge_pulse` 2 · white1·white2 `one_launch lidar_pulse` 2 : 이미 2 라 그대로.
+- **검증 (모의, 도메인 77 · follow_sim + 가짜 mppi · white2 본선 L WP 1568~)** :
+
+  | 경우 | L 시작 통과 | 2단 → 정지 확인 | 정지 위치 | 0단 → 인계 | 인계 → 2펄스 움직임 |
+  |---|---|---|---|---|---|
+  | 7펄스 진입 | 22.3 km/h | 2.50 s | L 시작 +7.3 m | 1.05 s | 0.30 s |
+  | Y(3펄스) 진입 | 9.7 km/h | 1.50 s | +1.1 m | 1.05 s | 0.30 s |
+  | 7펄스 + 정지 중 E-STOP 2 s | 22.3 km/h | 재개 첫 틱 다시 2단 → 0.55 s | +9.3 m | 1.05 s | 0.30 s |
+
+  정지 중 `/lstatus` '0' · 펄스 0 · zone_left 0. terrain 지운 경로 A·B 궤적 해시 수정 전과 같다(1c64fee204f8 · 9e53ac52c322).
+- ⚠️ **남은 위험** — 실차 미검증. ★7펄스로 L 에 닿으면 ≈7 m 를 미끄러진다★ — 첫 물체 앞 여유가 그보다 짧으면 L 시작을 앞당기거나
+  앞에 Y 를 둔다. 조향 pot +15 고착(10/24~, 하드웨어 의심)과 mppi 블록 합쳐짐·쪽 뒤집힘은 그대로다.
+- 실차에서 먼저 볼 것 : record `slow_zone` 2 구간의 `gps_kmh`·`brake_level`·정지 위치, '🛑 L 진입 정지' → '⏸️ … 확인' → '🛞 라이다 구간 진입' 시각,
+  mppi 로그 '🛞 조종권 인수 — 미리보기 이어받음' 이 나오는가, 출발 첫 1 s 의 조향.
+
 ## 2026-10-24 (5) — ★L 진입 최대 1단 — (1) 의 '빠르면 2단' 을 되돌렸다★ · ★펌웨어 kasa_1024(제동등 삭제) 호환 확인 · 정지 후 출발 무펄스 조사★ (사용자 지시, white1·white2 같은 줄)
 
 - **L 진입** — 사용자 : "진입구간을 충분히 늘려놨으므로 최대 1단제동만 사용할 것, 충분히 빠를 때 1단제동 걸고 속도가 충분히 느리다면

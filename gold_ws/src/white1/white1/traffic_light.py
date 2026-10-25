@@ -31,7 +31,7 @@ traffic_light.py ― 신호등 인지·정지 [white1 · white2 공용]
 ════════════════════════════════════════════════════════════════════════════════
   보정(camera_model.undistort) → ROI → YOLO → 크기·종횡비·conf 필터 → HSV 색 교정
   → RED 적색픽셀 관문 · GREEN 아랫변 관문(tl_green_max_y2, 지평선 아래 수풀·사람) → RED / RED_FAR / GREEN / UNKNOWN
-  · RED 와 RED_FAR 는 박스 높이로 가른다 — tl_red_stop_min_height(25px), 신호 구간(/tl_zone
+  · RED 와 RED_FAR 는 박스 높이로 가른다 — tl_red_stop_min_height(20px), 신호 구간(/tl_zone
     'T'·'A'·'B')에서는 구간별 tl_zone_red_min_height_{t,a,b}(12·9·9px, [2026-10-19]). 'A' 에서는 빨강+좌회전 화살표가 진행이다
     — 화살표는 박스 안 녹색 픽셀로 직접 읽는다(tl_a_arrow_min_px · tl_a_arrow_min_h, [2026-10-09]).
   · 정지선 seg 는 빨간 박스가 보이는 동안(sl_gate_red_s)만 같은 프레임에 한 번 더 돈다.
@@ -43,7 +43,8 @@ traffic_light.py ― 신호등 인지·정지 [white1 · white2 공용]
   확정 뒤에는 마지막 RED 로부터 tl_arm_hold_s 동안 확정이 이어진 것으로 본다(_red_armed).
      ├ 정지선이 확정됐고 BEV 행 ≥ sl_trigger_bev_y          → 2단 [정지선 앞]
      ├ 확정했던 정지선을 놓쳤다(sl_lost_min_bev_y 까지 온 것) → 2단 [정지선 놓침]  ※ 기본값(40 = 발화선)에서는 도달 불가
-     ├ 빨간 박스 높이 ≥ tl_solo_stop_min_height            → 2단 [신호등 단독]
+     ├ 빨간 박스 높이 ≥ 단독 문턱                          → 2단 [신호등 단독]
+     │   (tl_solo_stop_min_height 20px · 신호 구간은 tl_solo_stop_min_height_{t,b} 17·20px, [2026-10-25] — _solo_gate)
      └ 그 밖                                                  → 무개입 (기다린다)
   두 근거는 OR 다 — 가까워지면 등기구가 ROI 위로 벗어나 정지선보다 먼저 사라지기 때문이다.
   0 으로 돌아가는 길은 해제뿐이다 — 빨간불 사라짐 · 허락 없음 · (래치면) 초록 확정.
@@ -739,6 +740,9 @@ class TrafficLight(Node):
         #    A(#1100) 는 정지선 앞에서도 9~10px 라 T 와 한 값으로 둘 수 없다. 문턱 0 이하 = 그 구간도 구간 밖 값.
         for _k, _v in tl_params.ZONE_GATE.items():
             self.declare_parameter(_k, _v)
+        #  ★[2026-10-25] 구간별 신호등 단독 정지 문턱★ — T 17px · B 20px · A 0(= 구간 밖 값). 기본값·근거는 tl_params.SOLO_GATE(_solo_gate)
+        for _k, _v in tl_params.SOLO_GATE.items():
+            self.declare_parameter(_k, _v)
         #  ★[2026-10-20] T 작은 박스 버리기 · 내 신호 잠금★ — 기본값·근거는 tl_params.TL_LOCK(_lock_start · _lock_track · _lock_green_confirmed)
         for _k, _v in tl_params.TL_LOCK.items():
             self.declare_parameter(_k, _v)
@@ -800,6 +804,8 @@ class TrafficLight(Node):
         self.zone_gates = {z: (float(g(f'tl_zone_red_min_height_{z.lower()}')),
                                min(1.0, max(0.1, float(g(f'tl_near_release_ratio_{z.lower()}')))))
                            for z in ('T', 'A', 'B')}      # 구간 → (근접 문턱 px, 정지 중 배율)
+        self.zone_solo = {z: float(g(f'tl_solo_stop_min_height_{z.lower()}'))
+                          for z in ('T', 'A', 'B')}       # 구간 → 단독 정지 문턱 px (0 이하 = 구간 밖 값)
         self.tl_zone_stale_s   = max(0.1, float(g('tl_zone_stale_s')))
         self.zone_min_box_h_t  = max(0.0, float(g('tl_zone_min_box_h_t')))
         self.lock_enable       = bool(g('tl_lock_enable'))
@@ -864,11 +870,13 @@ class TrafficLight(Node):
         self.green_max_y2 = max(0, int(g('tl_green_max_y2')))
         # 단독 문턱이 인지 게이트보다 작으면 'RED 확정 = 즉시 정지' 와 같아진다.
         self.tl_solo_stop_min_height = max(0.0, float(g('tl_solo_stop_min_height')))
-        if 0.0 < self.tl_solo_stop_min_height < self._near_gate_base():
-            self.get_logger().warn(
-                f"tl_solo_stop_min_height({self.tl_solo_stop_min_height:.0f}) < "
-                f"인지 게이트({self._near_gate_base():.0f}) — 단독 정지 문턱이 "
-                "RED 인정 문턱보다 낮다. 사실상 'RED 확정 = 즉시 정지' 로 동작한다")
+        for _z, _solo, _gate in [('구간 밖', self.tl_solo_stop_min_height, float(self.tl_red_stop_min_height))] + [
+                (z, self.zone_solo[z], self.zone_gates[z][0]) for z in ('T', 'A', 'B')
+                if self.zone_solo[z] > 0.0 and self.zone_gates[z][0] > 0.0]:
+            if 0.0 < _solo < _gate:
+                self.get_logger().warn(
+                    f"{_z} 단독 정지 문턱({_solo:.0f}px) < 인지 게이트({_gate:.0f}px) — 단독 정지 문턱이 "
+                    "RED 인정 문턱보다 낮다. 사실상 'RED 확정 = 즉시 정지' 로 동작한다")
         self.hsv_min_color_pixels = int(g('hsv_min_color_pixels'))
         self.hsv_crop_center_ratio = float(g('hsv_crop_center_ratio'))
         self.hsv_red_h1_low   = int(g('hsv_red_h1_low'))
@@ -1063,9 +1071,12 @@ class TrafficLight(Node):
                f"| ★대기 상한 없음★ — 정지선이 보이는 동안은 발화선까지 기다린다"
                if (self.sl_enable and self.sl_model is not None)
                else "\n   🛑 정지선: ★꺼져 있다★ — 신호등 단독 문턱만 남는다")
-            + (f"\n   🚦 신호등 단독 정지: ★정지선을 못 볼 때만★ 박스높이 ≥"
-               f"{self.tl_solo_stop_min_height:.0f}px → {self.brake_level}단"
-               if self.tl_solo_stop_min_height > 0.0
+            + (f"\n   🚦 신호등 단독 정지: 박스높이 ≥"
+               f"{self.tl_solo_stop_min_height:.0f}px · 구간 "
+               + ' '.join(f"{z} {(v if v > 0.0 else self.tl_solo_stop_min_height):g}px"
+                          for z, v in self.zone_solo.items())
+               + f" → {self.brake_level}단 (정지선과 OR)"
+               if self.tl_solo_stop_min_height > 0.0 or any(v > 0.0 for v in self.zone_solo.values())
                else "\n   🚦 신호등 단독 정지: ★꺼져 있다★ — 정지선을 못 보면 안 선다")
             + ("\n   🚌 구간 'B'(#400): 버스 신호를 판단에서 뺀다 · "
                + (f"★좌회전 화살표만 진행★ (차량 박스 ≥{self.b_arrow_min_h:.0f}px · "
@@ -1596,6 +1607,15 @@ class TrafficLight(Node):
         """히스테리시스를 뺀 근접 게이트[px] — 게이지의 자도 여기에 맞춘다(무는 순간 안 튀게)."""
         return self._zone_gate()[0]
 
+    def _solo_gate(self):
+        """신호등 단독 정지 문턱[px] — 신호 구간이 신선하고 그 구간 값(tl_params.SOLO_GATE)이 0 보다 크면 그 값,
+        아니면 구간 밖 값 tl_solo_stop_min_height [2026-10-25]. 0 = 단독 정지 꺼짐."""
+        if self._zone_active():
+            v = self.zone_solo[self.tl_zone]
+            if v > 0.0:
+                return v
+        return self.tl_solo_stop_min_height
+
     def _zone_active(self):
         """driving 이 '지금 신호 정지 구간(T/A/B)' 이라고 ★신선하게★ 알려 주고 있는가.
         __init__ 의 경고 검사가 상태 변수보다 먼저 부르므로 getattr 로 받는다."""
@@ -2086,7 +2106,7 @@ class TrafficLight(Node):
         cv2.rectangle(canvas, (px + 1, yy - 4), (px + pw, yy + 80), C_BG, -1)
         gate, near = self._near_gate(), self._near_metric(dec)
         base = max(1e-6, self._near_gate_base())
-        solo = self.tl_solo_stop_min_height
+        solo = self._solo_gate()
         span = max(base, solo) * 1.3
         blit(canvas, self.tr.patch('근접', C_DIM, 12), px + 7, yy)
         col_near = C_RED if near >= gate else C_TXT
@@ -2214,7 +2234,7 @@ class TrafficLight(Node):
         lvl = self.stop_level if self.stopping else 0
         lvl_txt = f"제동 {lvl}단" if lvl else '제동 없음'
         gate, near = self._near_gate(), self._near_metric(boxes)
-        solo = self.tl_solo_stop_min_height
+        solo = self._solo_gate()
         near_txt = f"근접 {near:.0f}  RED≥{gate:.0f} 단독≥{solo:.0f}px"
         # 구간 — 'B' 면 화살표 판독과 버스 근거(tl_b_go_mode)가 곧 근거다.
         z = self.tl_zone if self._zone_active() else ''
@@ -2399,8 +2419,9 @@ class TrafficLight(Node):
                 self.get_logger().info(f"🛑 정지선을 놓쳤다 — 이미 선 위다, 즉시 {full}단")
                 return full, '정지선 놓침'
         # OR — 정지선을 보고 있든 아니든 신호등이 단독 문턱을 넘으면 선다.
-        if self.tl_solo_stop_min_height > 0.0:
-            if self._near_metric(self.last_dec) >= self.tl_solo_stop_min_height:
+        solo = self._solo_gate()
+        if solo > 0.0:
+            if self._near_metric(self.last_dec) >= solo:
                 return full, '신호등 단독'
         return 0, ('대기' if sl_seen else '신호등 대기')
 
@@ -2508,7 +2529,7 @@ class TrafficLight(Node):
                         f"🚦⏸ 빨간불 확정 — 대기 중 [{why}] "
                         f"(정지선 {self._sl_px_txt()} · 신호등 "
                         f"{self._near_metric(self.last_dec):.0f}/"
-                        f"{self.tl_solo_stop_min_height:.0f}px, "
+                        f"{self._solo_gate():.0f}px, "
                         f"확정 후 {now - self.red_conf_t:.1f}s)",
                         throttle_duration_sec=1.0)
                 else:
@@ -2591,7 +2612,7 @@ class TrafficLight(Node):
             f"🚦🛑 빨간불 확정 — 정지 [{why}] (리니어 {prev}단 → {level}단, "
             f"정지선 {self._sl_px_txt()}, 신호등 "
             f"{self._near_metric(self.last_dec):.0f}/"
-            f"{self.tl_solo_stop_min_height:.0f}px)"
+            f"{self._solo_gate():.0f}px)"
             + (" + /cmd_vel_raw 0/0" if self.publish_cmd_vel else ""))
 
     def _apply_brake(self, level):

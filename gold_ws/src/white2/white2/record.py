@@ -185,7 +185,7 @@ DRIVE_DIAG_COLUMNS: Tuple[str, ...] = (
     'cb_state', 'cb_v0_ms', 'cb_v_corner_ms', 'goal_need_m',
     'lidar_zone', 'rejoin',
     'steer_trim_deg', 'steer_bl_dir', 'yaw_damp_deg', 'corner_ay_cap_ms',
-    'slow_zone',                                 # [2026-10-21] 0 / 2 L 진입 1단 / 3 Y 안 / 4 Y 1단 (white1 과 같은 값)
+    'slow_zone',                                 # [2026-10-21] 0 / 2 L 진입 정지(2단·0단 대기 [2026-10-25]) / 3 Y 안 / 4 Y 1단 (white1 과 같은 값)
 )
 
 RECORD_TOPICS: Tuple[TopicSpec, ...] = (

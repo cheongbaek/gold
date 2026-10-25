@@ -19,8 +19,8 @@
      - 기본 : `tl_device` `tl_conf` `tl_red_stop_min_height` `tl_near_release_ratio` `tl_solo_stop_min_height` `tl_hsv_red_h2_low`
        `sl_enable` `sl_trigger_bev_y` `sl_conf` `sl_gate_red_s` `tl_stop_latch` `tl_publish_cmd_vel`
        `tl_show_window` `tl_record_video` `tl_window_width` (+ 녹화 `tl_video_*`, 카메라 기하는 `camera_model`)
-     - `tl_params.py` 의 dict 다섯 개 — **키 이름 그대로 런치 인자다** :
-       `B_ARROW`('B' 화살표·진행 근거 16개) · `ZONE_GATE`(구간별 근접 문턱·배율 6개) · `TL_LOCK`(T 박스 버리기·잠금 4개) ·
+     - `tl_params.py` 의 dict 여섯 개 — **키 이름 그대로 런치 인자다** :
+       `B_ARROW`('B' 화살표·진행 근거 16개) · `ZONE_GATE`(구간별 근접 문턱·배율 6개) · `SOLO_GATE`(구간별 단독 정지 문턱 3개) · `TL_LOCK`(T 박스 버리기·잠금 4개) ·
        `GREEN_HSV`(녹색 HSV 확인 2개) · `GAMMA`(역광 감마 6개).
        예 : `tl_b_go_mode:=arrow` · `tl_zone_min_box_h_t:=0 tl_lock_enable:=false` · `tl_gamma:=0` · `tl_green_hsv_confirm:=false`.
    - **그 밖** — 코드 기본값(`declare_parameter` 또는 `tl_params.py`)을 고치고 `colcon build --packages-select white1`
@@ -124,7 +124,8 @@
 | `sl_enable` · `sl_weights` | true (런치 같음) · 차선 seg 엔진 | 정지선 인지 | false = 신호등 단독 정지만 | |
 | `sl_trigger_bev_y` | 40 (40) | 정지선 발화 BEV 행 | 올리면 더 가까이 가서 선다 / 내리면 일찍 | 40 ≈ 3.6 m. 접근 17회 중 정지선 앞 12 · 단독 4 · 안 섬 1. ⚠️ BEV 사다리꼴(`bev_src_pts`)을 바꾸면 다시 잡는다 |
 | `sl_lost_min_bev_y` | 40 | '정지선 놓침' 은 이 행까지 온 선만 | | ⚠️ 발화선과 같아 지금은 도달하지 않는다. 발화선을 올리면 **이것을 발화선보다 작게** 둬야 안전망이 산다. 음수 = 문턱 없음 |
-| `tl_solo_stop_min_height` | 25 (25) | 신호등 단독 정지 px | 내리면 정지선 한참 앞에서 선다 / 올리면 정지선을 못 볼 때 늦게 | K-City 25px 첫 도달 때 정지선 3.1~3.9 m 앞. 0 = 끔(실차 금지). ⚠️ 근접 문턱보다 작으면 '확정 = 즉시 정지' |
+| `tl_solo_stop_min_height` | 20 (20) | 신호등 단독 정지 px — ★구간 밖★ | 내리면 정지선 한참 앞에서 선다 / 올리면 정지선을 못 볼 때 늦게 | K-City 25px 첫 도달 때 정지선 3.1~3.9 m 앞. 0 = 끔(실차 금지). ⚠️ 근접 문턱보다 작으면 '확정 = 즉시 정지' |
+| `tl_solo_stop_min_height_{t,a,b}` [2026-10-25] | 17 · 0 · 20 | 신호 구간별 단독 정지 px (`tl_params.SOLO_GATE`) | 위와 같다 | 0 이하 = 구간 밖 값(A 는 그래서 20). T 17 은 T 작은 박스 버리기 16px 바로 위 · 체결 순간 내 빨강 20~27px |
 | `sl_conf` · `sl_imgsz` | 0.30 (런치 같음) · 640 | 정지선 모델 | | |
 | `sl_hold_s` · `sl_stale_s` | 0.2 · 0.5 | 정지선 확정·놓침 | | |
 | `sl_min_width_frac` · `sl_min_area_frac` | 0.12 · 0.0004 | 정지선 최소 폭·면적 | | |
