@@ -255,7 +255,7 @@ DRIVE_PWM   = 0           # 0 아니면 이쪽이 이긴다. A보드 직접 PWM 
 #  ⚠️ 15펄스는 A보드 TARGET_MAX 와 같은 값이다(그 위는 없다).
 #  ⚠️ 내려가기만 한다 — 한 번 순항으로 내려오면 ★다시 올리지 않는다★(래치).
 #     올렸다 내렸다 하면 그것이 곧 속도 되먹임이고, 이 시험이 재려는 것이 아니다.
-LAUNCH_PULSE      = 15    # 출발 구간 목표펄스 (A보드 상한과 같다)
+LAUNCH_PULSE      = 12    # 출발 구간 목표펄스 (A보드 상한과 같다)
 CRUISE_SWITCH_KMH = 33.0  # ★GPS 속도★ 가 이 값을 넘으면 순항(DRIVE_PULSE)으로 내린다 [2026-10-17] 30 → 33
 #  ── 내려오는 방벽(LAUNCH_SWITCH_ENC_PULSE · LAUNCH_ENC_BLANK_S · GPS_SPEED_FRESH_S · LAUNCH_MAX_S)과
 #     그 근거(2026-09-13 저녁 · 2026-10-16 허수 펄스)는 white1/line_steer.py 로 옮겼다 [2026-10-19] ──

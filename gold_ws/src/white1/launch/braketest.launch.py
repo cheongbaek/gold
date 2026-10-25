@@ -114,6 +114,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from white1 import paths, ports
+from white1 import braketest as bt   # ★속도 기본값의 단일 소유자 = braketest.py 상단★
 from white1.braketest import pick_csv
 
 PACKAGE = 'white1'
@@ -385,20 +386,20 @@ def generate_launch_description():
                         'route:= 나 goal_lat/goal_lon 을 주면 창을 띄우지 않는다. '
                         'false 면 braketest.py 상단 ROUTE·GOAL_LAT/GOAL_LON 을 쓴다'),
         DeclareLaunchArgument(
-            'drive_pulse', default_value='12',
-            description='★순항 목표펄스 0~15★ 기본 12 [2026-10-17] — 통합 보드(kasa_1017)는 지령보다 '
+            'drive_pulse', default_value=str(bt.DRIVE_PULSE),
+            description='★순항 목표펄스 0~15★ 기본 = braketest.py 상단 DRIVE_PULSE [2026-10-25] (10/17 에 12) — 통합 보드(kasa_1017)는 지령보다 '
                         '낮게 돈다(지령 9 → 실측 ≈7.3, 23 km/h). 12 면 ≈30.5 km/h 로 본다. '
-                        'braketest.py 상단 DRIVE_PULSE 와 같은 값이며 여기가 이긴다. '
+                        '런치 인자를 주면 그것이 이긴다. '
                         '★출발은 launch_pulse 로 민다★ (2단 속도 루틴)'),
         #  ★[2026-09-13] 2단 속도 루틴 — 제동검차는 30 km/h 를 넘겨야 한다★
         #   출발만 15펄스로 밀어 30 km/h 도달을 앞당기고, GPS 로 그 속도를 확인하는
         #   순간 순항(drive_pulse)으로 내린 뒤 제동한다. 한 번 내려오면 래치된다.
         DeclareLaunchArgument(
-            'launch_pulse', default_value='15',
-            description='★출발 구간 목표펄스★ 기본 15 (A보드 TARGET_MAX 와 같다). '
+            'launch_pulse', default_value=str(bt.LAUNCH_PULSE),
+            description='★출발 구간 목표펄스★ 기본 = braketest.py 상단 LAUNCH_PULSE [2026-10-25] (상한 15 = TARGET_MAX). '
                         'drive_pulse 이하로 주면 2단 루틴이 꺼진다(단일 속도 주행)'),
         DeclareLaunchArgument(
-            'cruise_switch_kmh', default_value='33.0',
+            'cruise_switch_kmh', default_value=str(bt.CRUISE_SWITCH_KMH),
             description='★GPS 속도★ 가 이 값을 넘으면 순항으로 내린다. '
                         '[2026-10-17] 30 → 33 — 통과선 30 km/h 위에서 내려와 순항이 30 위에 머물게'),
         DeclareLaunchArgument(
