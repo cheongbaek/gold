@@ -158,21 +158,47 @@ ros2 launch mppi_local_planner one_launch.py flip_lidar_xy:=false
 
 ## 4. 튜닝
 
-감지 기하·순항·회피는 `config/params.yaml` 한 곳이다(재빌드 불필요, 노드 재시작만).
+감지 기하·순항·회피는 `config/params.yaml` 한 곳이다. ★[2026-10-28 정정] 고친 뒤 `colcon build --packages-select
+mppi_local_planner` 를 다시 해야 한다★ — 런치는 `install/share/…/params.yaml` 사본을 넘기고 복사설치라 소스를 고쳐도
+사본이 안 바뀐다(실행 중에는 `ros2 param set /mppi_local_planner_node <이름> <값>` 으로 바로 바뀐다).
+★`include/.../frenet_planner.hpp` 의 `FrenetPlannerParams` 기본값은 노드에 쓰이지 않는다★ — 노드가 모든 필드를
+`avoid.*`·`frenet.*` 파라미터로 덮는다(`mppi_local_planner_node.cpp` `frenetDoubleParams`). 정본은 yaml, hpp 기본값은
+`test/avoid_sim.cpp` 기본 모드에서만 쓰인다(`YAML=1` 이면 모의도 yaml 값).
 
 - `cruise_pulse` — 기본 2펄스 ≈ 6.4 km/h. 정지 재출발에서 4펄스는 피한다.
-- `avoid.max_offset_m` — 회피 폭 (GPS 궤적 ± 3.0 m). ★`mppi.max_lateral_offset`·
+- `avoid.max_offset_m` — 회피 폭 (GPS 궤적 ± **2.00** m, [2026-10-26] 3.0 에서). ★`mppi.max_lateral_offset`·
   `mppi.lateral_hard` 는 이보다 바깥에 둔다★ (같으면 계획과 벽이 같은 자리에서 싸운다).
-- `avoid.pass_gap_m` — 차체 옆면 ↔ 콘 표면 여유 (**0.75**, [2026-09-29] 0.45 에서 +30 cm). 키우면 교대가 빡빡해진다.
+- `avoid.pass_gap_m` — 차체 옆면 ↔ 콘 표면 여유 (**0.38**, [2026-10-26] 0.75 에서 · [2026-09-29] 0.45 → 0.75). 키우면 교대가 빡빡해진다.
 - `handover.gps_antenna_x_m` — GPS 안테나가 라이다 원점보다 앞선 거리 (**1.25** — 안테나는 앞차축 위, 라이다는 뒷차축 위 = 축거. [2026-09-29] 콘 회귀값 0.6 → [2026-09-30] 1.25). CTE 를 라이다 원점으로 되돌린다.
-- `frenet.hold_pre_m` / `hold_post_m` — 블록 앞뒤로 통과 d 를 지키는 거리 (0.3).
+- `frenet.hold_pre_m` / `hold_post_m` — 블록 앞뒤로 통과 d 를 지키는 거리 (**0.2**, [2026-10-26] 0.3 에서).
 - `frenet.kappa_max` — 이보다 굽는 진입이면 확정 전 블록의 쪽을 반대로 검토 (0.34 ≈ 조향 상한).
-- `avoid.lookahead_m` — 순수추종 앞 점 (3.2). 줄이면 여유가 늘고 헤딩이 커진다.
+- `avoid.lookahead_m` — 순수추종 앞 점 (**2.4**, [2026-10-26] 3.2 에서). 줄이면 여유가 늘고 헤딩이 커진다.
 - `preview.enable` / `preview.zone_dist_m` — 인계 전 미리보기.
 - `flip_lidar_xy` — 장착 방향.
 - `sensor_height_m` · `roi_agl_*` — z 슬랩. 콘이 안 보이면 AGL 창을 넓힌다.
 - `costmap.ego_clear_*` — 너무 크면 가까운 장애물을 지운다. 금색차 캐빈이
   ~1.2 m 이라 1/5카의 0.45 m 를 쓰면 자기 차체에 멈춘다.
 - `mppi.num_samples` / `horizon_steps` — CPU.
+
+### ★[2026-10-28] 장애물 (s,d) 상자는 점유 셀로 만든다★
+
+`frenet_planner.cpp` `observe()` 는 군집(`cone_detector.cpp` `clusterOccupancy`)의 ★셀마다★ 기준선 (s,d) 로 옮겨
+상자를 잡는다(셀 반 칸 0.05 m 를 더해 셀 바깥 모서리까지). 종전에는 차체 좌표 상자 네 모서리만 옮겼는데, 차가
+ψ 만큼 기울어 있으면 길쭉한 물체의 상자가 (차체 x 길이) × sin ψ 만큼 차 쪽으로 부풀었다.
+
+- 실주행 : white2 `route_20261028_210148` 4주행(21:17 · 21:22 · 21:28 · 21:37) — 둘째 장애물(경로 s 57.2, d −1.25 ~ −0.25)을
+  왼쪽으로 비키려 ψ +15~23° 로 꺾자 왼쪽 도로가 물체(실제 d ≥ +2.73, 정체 미확인)의 상자 안쪽 끝이 +2.86(ψ 4°) →
+  −0.18(ψ 14.6°) → −2.46(ψ 22.8°) 로 내려와 둘째 장애물과 한 블록 d [−1.84, +7.65] 가 됐다. '오른쪽 −2.00' 은 폭
+  ±2.0 밖(필요 −2.76)이라 경로가 장애물을 뚫어 `stop latch: track` — 실제 통로는 3.0 m(필요 1.84 m)였다.
+- 모의 (`test/avoid_sim.cpp`, `YAML=1`, 장면 `r1028` — 그 배치 재구성, 10 시드) : 정지 8/10 → **0/10**, 둘째 장애물
+  왼쪽 통과 max|d| 0.86 이하, 장애물 여유 최소 **0.36 m**. 회귀 23장면 충돌 0 · full_block 정지 유지.
+- 대가 : 종전 상자 부풂이 우연히 주던 여유(ψ 에 비례, 0.05~0.13 m)가 사라져 회귀 장면 여유가 조금 준다 —
+  시드 1 최대 −0.12 m(`today_yawerr` 0.56 → 0.44, `YAML=1`), 10 시드 평균 −0.01~−0.09 m. **사용자가 받아들였다.**
+  `test/ros_smoke.py` 0.53 → 0.46 m.
+- 비용 : 셀 약 2,500 개 좌표 변환 / 틱.
+- ⚠️ 실차 미검증 — mppi 로그 `🚧 블록` 의 도로가 물체 d 안쪽 끝이 ψ 와 무관하게 유지되는가, 둘째 블록이 '왼쪽으로
+  통과' 로 남는가, track 정지 0회인가를 본다.
+- ⚠️ 남은 것 : 한 번 잘못 합쳐진 블록은 기억에서 거의 줄지 않아(kShrinkA 0.15, 코앞에서는 안 줄임) track 정지가
+  스스로 안 풀린다(10/28 30~120 s, 수동으로 내림).
 
 원본 설계 메모(타임스텝, lookahead, 풋프린트)는 catkin_ws 쪽 README 와 같다.

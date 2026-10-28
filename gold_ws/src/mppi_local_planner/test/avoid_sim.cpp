@@ -13,6 +13,10 @@
 //    QUIET=1 /tmp/avoid_sim /tmp/trace.csv /tmp/paths.csv      # 요약만
 //    SCEN=diagram /tmp/avoid_sim /tmp/t.csv /tmp/p.csv          # 장면 이름 일부로 거르고 사건 로그까지
 //  환경변수로 값을 덮는다: PASS_GAP HOLD_PRE HOLD_POST KAPPA_MAX COMMIT LD PRED KCTE KI IMAX
+//  ★YAML=1 [2026-10-28]★ 계획기·추종 값을 config/params.yaml 과 같게 둔다(기본은 frenet_planner.hpp
+//  기본값 — 노드는 그 기본값을 쓰지 않고 yaml 이 정본이다). 바꾸는 것 : max_offset 2.0 · pass_gap 0.38 ·
+//  block_link_s 1.5 · hold 0.2/0.2 · shift/return_len_min 2.5/3.5 · flat_min 0.8 · lookahead 2.4 ·
+//  조향 슬루 50°/s · 조향 범위 free 2.0°. 위 환경변수가 그 위를 다시 덮는다.
 //  한 줄 요약 : min_clear(차체↔콘 최소 여유) · max|d| · max|psi| · stops · rev(복귀 뒤
 //  조향 반전) · tail(마지막 콘 +11 m 뒤 최대 |d| = 궤적 복귀 잔차).
 // ══════════════════════════════════════════════════════════════════════════
@@ -126,6 +130,12 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
 
   FrenetPlannerParams fp;
   auto env = [](const char * k, double def) { const char * v = std::getenv(k); return v ? std::atof(v) : def; };
+  const bool yaml = env("YAML", 0.0) > 0.5;   // ★params.yaml 값 (머리말)★
+  if (yaml) {
+    fp.max_offset_m = 2.0; fp.pass_gap_m = 0.38; fp.block_link_s_m = 1.5; fp.block_link_d_m = 1.9;
+    fp.hold_pre_m = 0.20; fp.hold_post_m = 0.20;
+    fp.shift_len_min_m = 2.5; fp.return_len_min_m = 3.5; fp.flat_min_m = 0.8;
+  }
   fp.pass_gap_m = env("PASS_GAP", fp.pass_gap_m);
   fp.hold_pre_m = env("HOLD_PRE", fp.hold_pre_m);
   fp.hold_post_m = env("HOLD_POST", fp.hold_post_m);
@@ -133,7 +143,7 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
   fp.commit_dist_m = env("COMMIT", fp.commit_dist_m);
   FrenetPlanner planner(fp, vp);
   TrackerParams tp;
-  tp.lookahead = env("LD", tp.lookahead);
+  tp.lookahead = env("LD", yaml ? 2.4 : tp.lookahead);
   tp.lookahead_min = std::min(tp.lookahead_min, tp.lookahead);
   tp.predict_s = env("PRED", tp.predict_s);
   tp.k_cte = env("KCTE", tp.k_cte);
@@ -195,14 +205,14 @@ static Result run(const Scenario & sc, FILE * trace, FILE * paths)
     // ★[2026-10-24] 노드와 같은 조향 범위 (path_tracker.hpp steerRangeRad)★ RANGE=0 이면 끔(종전 비교용)
     if (env("RANGE", 1.0) > 0.5) {
       SteerRangeParams rp;
-      rp.free_deg = env("RANGE_FREE", rp.free_deg);
+      rp.free_deg = env("RANGE_FREE", yaml ? 2.0 : rp.free_deg);
       rp.ay_max = env("RANGE_AY", rp.ay_max);
       const double lim = steerRangeRad(path, pose.x, v, L, rp, 22.9 * M_PI / 180) * 180 / M_PI;
       raw = std::clamp(raw, -lim, lim);
     }
     // filterSteer (node): LPF 0.7 + slew 36 deg/s
     steer_filt = 0.70 * raw + 0.30 * steer_filt;
-    const double md = 36.0 * dt;
+    const double md = (yaml ? 50.0 : 36.0) * dt;
     steer_filt = std::clamp(steer_filt, last_pub - md, last_pub + md);
     last_pub = steer_filt;
     cmd_deg = steer_filt;
@@ -326,6 +336,22 @@ int main(int argc, char ** argv)
     s.name = "edges_tight"; s.cones = cat(row(10.0, {0.0, -0.5, -1.0}), row(18.0, {0.0, 0.5, 1.0}));
     for (double e = 0.0; e <= 32.0; e += 2.0) { s.cones.push_back({e, 2.6}); s.cones.push_back({e, -2.6}); }
     S.push_back(s);
+  }
+  {  // ★2026-10-28 white2 route_20261028_210148 4주행 재구성★ (s 0 = 인계 뒤차축, 경로 s 41.3)
+    //  첫 장애물 경로 s 51.0 d [+0.25, +1.0] · 둘째 s 57.2 d [−1.25, −0.25] · 왼쪽 도로가 물체
+    //  s 52.2~68 d ≥ +3.0 (s 52~58 은 d +5 까지 두껍다) — .cones.csv · 디버그 덤프 점유로 잰 값.
+    //  실차는 둘째 장애물 왼쪽으로 꺾다(ψ +15~23°) 도로가 물체 상자가 부풀어 둘째와 합쳐져 섰다.
+    //  r1028_nowall = 도로가 물체만 뺀 대조군. YAML=1 로 돌린다.
+    Scenario s; s.name = "r1028"; s.v = 1.3;
+    s.cones = {{9.7, 0.40}, {9.7, 0.85}, {15.9, -1.10}, {15.9, -0.75}, {15.9, -0.40}};
+    const std::vector<Cone> obst = s.cones;
+    for (double e = 10.9; e <= 26.7; e += 0.25) s.cones.push_back({e, 3.0});
+    for (double e = 10.9; e <= 16.7; e += 0.3) {
+      for (double d = 3.3; d <= 5.0; d += 0.3) s.cones.push_back({e, d});
+    }
+    s.s_end = 32.0;
+    S.push_back(s);
+    s.name = "r1028_nowall"; s.cones = obst; S.push_back(s);
   }
   {  // slalom of single cones (older course)
     Scenario s; s.name = "slalom"; s.v = 1.5;

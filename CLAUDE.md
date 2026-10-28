@@ -1407,8 +1407,8 @@ GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'�
 | 블록 | 진행 2.5 m · 가로 1.9 m 안은 한 덩어리. 기억은 GPS 기준선 (s,d) | `frenet_planner.cpp observe` |
 | 쪽 | ★궤적 기준 치우친 쪽의 반대★(사용자) → 가운데면 이웃 블록 상대 위치 → 앞 블록 반대 → 차가 있는 쪽. 앞범퍼 5 m 에서 확정 | `desiredSide` · `decideSides` |
 | 경로 | 뒤차축이 블록 **앞면 − 0.3 ~ 뒷면 + 0.3** 에서 통과 d. 5차 다항식, 남은 거리 전부, 복귀 R 8 m | `makeGroups` · `buildPath` |
-| 폭 | ★\|d\| ≤ 3.0 m★ (GPS 궤적 ± 3 m, 사용자) | `avoid.max_offset_m` |
-| 여유 | 차체 옆면 ↔ 콘 표면 **0.75 m** ([2026-09-29] 0.45 → 0.75, 사용자 '30 cm 더') | `avoid.pass_gap_m` |
+| 폭 | ★\|d\| ≤ 3.0 m★ (GPS 궤적 ± 3 m, 사용자) → ★[2026-10-26] 2.00 m★ (차선 이탈 방지) | `avoid.max_offset_m` |
+| 여유 | 차체 옆면 ↔ 콘 표면 **0.75 m** ([2026-09-29] 0.45 → 0.75, 사용자 '30 cm 더') → ★[2026-10-26] 0.38 m★ | `avoid.pass_gap_m` |
 | 미리보기 | 다음 L 구간 25 m 안(또는 조종권 회수 20 s 안)이면 **발행 없이** 계획만. 인계 때 이어받음 | 노드 `runPreview` · `rearmReference` |
 | 추종·정지 | 순수추종 3.2 m + 편향 적분 · 정지 = ★그 경로를 따라갔을 때★ 3.0 m 안 충돌 | `path_tracker.hpp` |
 | ★조향 범위★ [2026-10-24] | atan(L·앞 8 m 계획 경로 max\|κ\|)×1.3 + 10° · 속도 상한 atan(2.5·L/v²)(v = 엔코더·GPS 중 작은 쪽) · pot 환산 언더스티어 v 4펄스 클램프 — 20 km/h 인계에서 −74 °/s 로 꺾인 것(092247). 1.3 m/s 모의 23장면 결과 불변 | `path_tracker.hpp steerRangeRad` · `kasa_units.hpp` |
@@ -1487,6 +1487,35 @@ GPS 속도를 모르면 **−1** 을 보낸다(0 을 보내면 '멈춰 있다'�
 > mppi 로그의 `🚧 블록 #n → 쪽 (근거)` · `🛞 조종권 인수 — 미리보기 이어받음` ·
 > `ld_y` 가 `ld_target_y` 를 따라가는가 · 콘 옆 실제 여유.
 
+
+#### ★[2026-10-28] 장애물 (s,d) 상자를 점유 셀로 만든다 — 둘째 장애물 앞 정지★
+
+**증상** — white2 `route_20261028_210148` 4주행(21:17 · 21:22 · 21:28 · 21:37)이 전부 첫 장애물(경로 s 51, d +0.25~+1.0)을
+오른쪽으로 비킨 뒤, 둘째 장애물(s 57.2, d −1.25~−0.25)을 왼쪽으로 비키려 꺾다가 그 앞 1.5~1.8 m(앞차축 기준), ψ +14~20° 로 섰다
+(mppi `stop latch: track`, 경로 여유 −2.0~−2.5 m, 수동으로 내릴 때까지 30~120 s). 장애물 간격(종 6 m)이 원인이 아니다 —
+9/28 성공 배치(8.6 m)보다 짧아 ψ 가 컸을 뿐이고, 왼쪽 도로가의 긴 물체(실제 d ≥ +2.73, 정체 미확인)를 모의에서 빼면 그대로 통과한다.
+(같은 날 첫 주행 21:12 는 옛 경로판 L 시작 WP 138 이라 첫 장애물 2 m 앞에서 인계받아 곧바로 섰다 — 사용자가 21:14 에 WP 111 로 고쳤다.)
+
+**원인** — `observe()` 가 군집의 차체 좌표 상자 네 모서리만 (s,d) 로 옮겨 상자를 다시 잡았다. 차가 ψ 만큼 기울면 길쭉한 물체의 상자가
+(차체 x 길이) × sin ψ 만큼 차 쪽으로 부푼다 — 디버그 덤프로 잰 도로가 물체 안쪽 끝 : 실제 +2.97 / 상자 +2.86 (ψ 4.1°) · +1.89 (9.0°) ·
+−0.18 (14.6°) · 실제 +2.73 / 상자 −2.46 (22.8°). 상자가 둘째 장애물에 닿자 한 블록 d [−1.84, +7.65] 로 합쳐졌고(10/26 '반대편 예외'는
+횡 틈 0 이라 듣지 않는다) '오른쪽 −2.00' 은 폭 ±2.0 밖(필요 −2.76)이라 경로가 장애물을 뚫었다. 실제 통로 3.0 m (필요 1.84 m).
+
+**고침** — 군집이 셀 중심 목록을 들고(`ObstacleCluster::pts`) `observe()` 가 셀마다 옮긴다(+ 반 칸 0.05 m). 파라미터 변화 없음.
+
+| `test/avoid_sim.cpp` `YAML=1` (params.yaml 값) | 종전 | 수정 |
+|---|---|---|
+| `r1028`(10/28 배치 재구성) 10 시드 — 정지 | 8/10 | **0/10** |
+| 〃 — 둘째 장애물 쪽 · max\|d\| 최대 | 오른쪽 우회 2.11 | 왼쪽 0.86 |
+| 〃 — 장애물 여유 최소 | 0.19 m | **0.36 m** |
+| 회귀 23장면 시드 1 — 충돌 · full_block | 0 · 정지 | 0 · 정지 |
+| 〃 — 여유 최대 감소 | — | −0.12 m (`today_yawerr` 0.56 → 0.44) |
+| `test/ros_smoke.py` 여유 | 0.53 m | 0.46 m |
+
+- 여유가 조금 주는 것은 종전 부풂이 ψ 에 비례해 우연히 주던 몫(0.05~0.13 m)이 사라져서다(10 시드 평균 −0.01~−0.09 m). ★사용자가 받아들였다★ [2026-10-28].
+- ⚠️ 실차 미검증 — 볼 것 : mppi 로그 `🚧 블록` 의 도로가 물체 d 안쪽 끝이 ψ 와 무관한가 · 둘째 블록 '왼쪽으로 통과' 유지 · track 정지 0회.
+- ⚠️ 남은 것 : 잘못 합쳐진 블록은 기억에서 거의 줄지 않아(kShrinkA 0.15, 코앞에서는 안 줄임) track 정지가 스스로 안 풀린다.
+- 그림·분석 : 이 기계 `~/tl_eval/mppi_1028/`(디버그 덤프 이어붙인 그림 `dbg_*.jpg`). 상세 = white2 CHANGELOG 2026-10-28 · mppi README 4절.
 
 ### 4.10 ★신호 구간(T) — 정지선 1 m 앞에 맞춰 선다 · 본선 코스는 타이머★ [2026-09-30 · 2026-10-01]
 
@@ -3338,7 +3367,9 @@ ping -c2 192.168.6.11
 | mppi 순항속도 | `params.yaml` 의 `mppi.desired_speed` **+** `max_speed` **+** `kasa.max_pulse` **+** `one_launch.py` 의 `lidar_speed`/`lidar_pulse` — **★넷이 짝이다. 6.4② 의 단일화 권고 참고★** |
 | **헤딩 출처** | **mppi = OS1 자체 IMU(`params.yaml` 의 `imu_topic`·`use_os1_imu`·`imu_yaw_sign`) / driving = 외장 iAHRS(`/imu`)** — ★섞지 않는다★. `one_launch.py` 는 mppi 에 IMU 를 **넘기지 않는다**(넘기면 `use_os1_imu` 가 무시하고 경고만 남는다). mppi 의 IMU 설정 단일 소유자는 `params.yaml` [2026-09-12] |
 | **조이스틱 프로토콜** [2026-09-16] | `~/Arduino/joyled.ino` **+** `nxde/joyread.py`(파싱·영점·환산) **+** `nxde/arduino.py`(포트·게이트·LCD 송신) — **필드를 늘리면 세 곳을 함께 고친다.** 지금은 `J,x1,y1,k1,x2,y2,k2,swa,swb`(9토큰) 이고 구 `joy.ino`(12토큰)도 받는다. `nxde/joystick.py`(점검 도구)도 **같은 `joyread` 를 쓴다** — 그래서 "점검에서는 맞는데 실차에서 다르다" 가 생기지 않는다. LCD 줄 `D,<on>,<pulse>,<steer>,<kmh>` 는 `arduino` 와 `joystick` 두 곳이 쓰지만 **둘은 동시에 띄우지 않는다**(포트가 하나다) |
-| **회피 폭** [2026-09-28] | mppi `avoid.max_offset_m`(3.0) **+** `mppi.max_lateral_offset`(3.2)·`lateral_hard`(3.5) — **벽은 계획 폭보다 바깥이어야 한다.** 같으면 계획과 벽이 같은 자리에서 싸운다 |
+| **회피 폭** [2026-09-28] | mppi `avoid.max_offset_m`(3.0 → [2026-10-26] 2.00) **+** `mppi.max_lateral_offset`(3.2 → 2.15)·`lateral_hard`(3.5 → 2.35) — **벽은 계획 폭보다 바깥이어야 한다.** 같으면 계획과 벽이 같은 자리에서 싸운다 |
+| **mppi 계획기 파라미터의 정본** [2026-10-28] | ★`config/params.yaml` 이 정본이다★ — `frenet_planner.hpp` `FrenetPlannerParams` 기본값은 노드에 쓰이지 않는다(노드가 모든 필드를 `avoid.*`·`frenet.*` 로 덮는다 — `mppi_local_planner_node.cpp` `frenetDoubleParams`·`frenetIntParams`). 그 기본값을 쓰는 것은 `test/avoid_sim.cpp` 기본 모드뿐 — 실차 값으로 모의하려면 `YAML=1`(값은 그 파일 머리말, yaml 을 고치면 함께). yaml 을 고친 뒤에는 `colcon build --packages-select mppi_local_planner`(설치본 사본을 런치가 넘긴다) |
+| **군집 셀 목록 ↔ (s,d) 상자** [2026-10-28] | `cone_detector.hpp` `ObstacleCluster::pts`(셀 중심) **+** `cone_detector.cpp` `clusterOccupancy`(채움) **+** `frenet_planner.cpp` `observe`(셀마다 egoToOdom) — 군집을 다른 곳에서 만들면 `pts` 도 채울 것. 비우면 종전 모서리 넷 방식으로 떨어지고, 차가 기울면 길쭉한 물체 상자가 부푼다(4.9 [2026-10-28]) |
 | **mppi 조향 범위** [2026-10-24] | `path_tracker.hpp steerRangeRad` 하나를 노드와 `test/avoid_sim.cpp` 가 같이 쓴다 — `SteerRangeParams` 기본값과 `params.yaml cmd.steer_range_*`·`cmd.steer_ay_max` 를 같이 고친다. `free_deg` 는 L 기준선 곡률 몫도 덮는다(mppi 는 기준선 곡률을 모른다 — /lidar_ref 에 없음) |
 | **회피 추종·정지** [2026-09-28] | `mppi_local_planner/include/.../path_tracker.hpp` 하나를 노드와 모의실험(`test/avoid_sim.cpp`)이 같이 쓴다 — 노드에 식을 따로 적지 말 것. 계획기·추종기를 고치면 그 모의실험과 `test/ros_smoke.py` 를 다시 돌린다(빌드 명령은 각 파일 머리말) |
 | **GPS 안테나 위치** [2026-09-29 · 09-30] | ★**안테나는 앞차축 위, 라이다는 뒷차축 위**★ — driving `gps_ant_x_m`(뒷차축 → 안테나, 4.1e B) **+** mppi `handover.gps_antenna_x_m`(라이다 원점 → 안테나) **+** hud 라이다 겹쳐 그리기(`driving.GPS_ANT_X_M` 을 쓴다) — **지금은 셋 다 1.25 m(축거)다. 안테나나 라이다를 옮기면 함께 고친다.** driving 의 CTE(`/lidar_ref[0]`)는 **안테나 자리**다 — driving 이 언젠가 CTE 를 뒤차축으로 투영하게 되면 **mppi 값을 0 으로** 내려야 한다(두 번 빼게 된다). B 는 순수추종 조준만 옮기고 CTE 는 투영하지 않으므로 B 를 켜도 mppi 값은 그대로 둔다 |

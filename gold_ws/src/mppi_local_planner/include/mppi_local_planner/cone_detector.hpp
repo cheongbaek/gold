@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <utility>
 #include <vector>
 
 #include "mppi_local_planner/ego_costmap.hpp"
@@ -28,6 +29,12 @@ struct ObstacleCluster
   double cx = 0.0;
   double cy = 0.0;
   int cells = 0;
+  //  ★[2026-10-28] 점유 셀 중심 (x, y) — 계획기가 (s,d) 상자를 셀로 만든다★
+  //  x0..y1 은 차체 좌표 축정렬 상자다. 그 네 모서리를 기준선 (s,d) 로 옮겨 상자를
+  //  다시 잡으면, 차가 기울어 있을 때 길쭉한 물체의 상자가 길이 × sin ψ 만큼 차 쪽으로
+  //  부푼다(white2 route_20261028_210148 4주행 — ψ 22.8° 에서 도로가 물체 안쪽 끝
+  //  실제 +2.73 m → 상자 −2.46 m, 둘째 장애물과 합쳐져 정지). frenet_planner.cpp observe.
+  std::vector<std::pair<float, float>> pts;
 };
 
 // /lidar_cones 한 항목 (x, y, cells) — white1/record 의 .cones.csv 규약.

@@ -87,6 +87,7 @@ std::vector<ObstacleCluster> clusterOccupancy(
         c.y0 = std::min(c.y0, wy - 0.5 * res);
         c.y1 = std::max(c.y1, wy + 0.5 * res);
         ++c.cells;
+        c.pts.emplace_back(static_cast<float>(wx), static_cast<float>(wy));
         for (int dy = -k; dy <= k; ++dy) {
           const int ny = cy + dy;
           if (ny < 0 || ny >= h) {

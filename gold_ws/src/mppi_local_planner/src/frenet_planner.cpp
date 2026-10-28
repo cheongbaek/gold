@@ -247,22 +247,40 @@ void FrenetPlanner::observe(const OdomPose & odom, const CostmapSnapshot & snap,
   last_clusters_ = clusterOccupancy(snap, cp, &last_stats_);
 
   //  기준선 (s,d) 상자로 옮긴다. 회피 폭(±3 m) 바깥은 계획에 영향이 없다.
+  //  ★[2026-10-28] 셀마다 옮긴다 — 차체 상자의 네 모서리를 옮기지 않는다★
+  //  모서리로 잡으면 차가 ψ 만큼 기울어 있을 때 길쭉한 물체(도로가 벽·연석)의 상자가
+  //  (차체 x 길이) × sin ψ 만큼 차 쪽으로 부푼다. white2 route_20261028_210148 4주행 :
+  //  둘째 장애물을 왼쪽으로 비키려 ψ +15~23° 로 꺾자 왼쪽 도로가 물체(실제 d ≥ +2.73)의
+  //  상자가 d −0.18 ~ −2.46 까지 내려와 둘째 장애물과 한 블록 d [−1.84, +7.65] 가 됐고,
+  //  '오른쪽 −2.00' 이 폭 밖이라 경로가 장애물을 뚫어 track 정지(실통로는 3.0 m).
+  //  셀 반 칸(res/2)을 더해 셀 바깥 모서리까지 덮는다 — 종전 x0..y1 과 같은 경계 규약.
   const double band = params_.max_offset_m + clearance() + 0.5;
+  const double half_cell = 0.5 * snap.resolution;
   std::vector<Box> boxes;
   boxes.reserve(last_clusters_.size());
   for (const auto & c : last_clusters_) {
     Box b{kInf, -kInf, kInf, -kInf};
-    const double xs[2] = {c.x0, c.x1};
-    const double ys[2] = {c.y0, c.y1};
-    for (double x : xs) {
-      for (double y : ys) {
-        double s = 0.0;
-        double d = 0.0;
-        egoToOdom(odom, x, y, s, d);
-        b.s0 = std::min(b.s0, s);
-        b.s1 = std::max(b.s1, s);
-        b.d0 = std::min(b.d0, d);
-        b.d1 = std::max(b.d1, d);
+    auto grow = [&](double x, double y, double pad) {
+      double s = 0.0;
+      double d = 0.0;
+      egoToOdom(odom, x, y, s, d);
+      b.s0 = std::min(b.s0, s - pad);
+      b.s1 = std::max(b.s1, s + pad);
+      b.d0 = std::min(b.d0, d - pad);
+      b.d1 = std::max(b.d1, d + pad);
+    };
+    if (!c.pts.empty()) {
+      for (const auto & q : c.pts) {
+        grow(q.first, q.second, half_cell);
+      }
+    } else {
+      //  셀 목록이 없는 군집(외부에서 만든 것)은 종전대로 모서리 넷
+      const double xs[2] = {c.x0, c.x1};
+      const double ys[2] = {c.y0, c.y1};
+      for (double x : xs) {
+        for (double y : ys) {
+          grow(x, y, 0.0);
+        }
       }
     }
     if (b.d1 < -band || b.d0 > band) {
