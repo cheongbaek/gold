@@ -8,6 +8,16 @@
 //   단위·부호 계약(펄스/pot/제동)은 액추에이터를 만지는 노드들의 몫이고
 //   lidar/kasa_units.hpp 가 소유한다.
 //
+//   ★[2026-10-28 방안 1 개편] 고속(30 km/h) 종단 라바콘 줄 정밀 검출★
+//     1) 전방 노면 링 하위 15% 백분위 직선 피팅(Dynamic Ground Leveling):
+//        가속 시 후륜 스쿼트(Nose-Up) 및 노면 경사 변화를 매 프레임 추적하여
+//        수평 복원 → roi_agl_min 을 0.14 m 까지 낮춰 콘 하단 두꺼운 몸통 포착.
+//     2) 종방향 연속 벽면 사전 제거(max_wall_x_extent):
+//        차량 요동 시 시야에 들어오는 콘크리트 방호벽·펜스 등 긴 벽면 배제.
+//     3) 횡방향 종단 라바콘 줄 기하 판별(Transverse Cone-Row Matching) +
+//        초근거리 중앙 비상/점검 폴백(Close-Range Fallback):
+//        양옆 차선 라바콘 오인식(0%)을 유지하면서 15~20 m 종단 콘 줄 조기 감지.
+//
 // 발행:
 //   ~/stop_signal          (std_msgs/Bool)    — ROI 내 유효 장애물
 //   ~/obstacle_distance    (std_msgs/Float32) — 최근접 전방 거리 [m]
@@ -24,10 +34,15 @@
 // ============================================================================
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #ifndef M_PI
@@ -124,8 +139,12 @@ public:
     //    측정오차·노면 요철에 그 빔이 잘려 나간다 — 콘 높이 + 5 cm 여유.
     //    운전석 머리/헬멧(≳0.9 m AGL)은 이 상한 위에 있다.
     this->declare_parameter<double>("sensor_height_m", 1.17);
-    this->declare_parameter<double>("roi_agl_min", 0.25);
-    this->declare_parameter<double>("roi_agl_max", 0.75);
+    this->declare_parameter<double>("roi_agl_min", 0.14);
+    this->declare_parameter<double>("roi_agl_max", 0.78);
+    // ★센서 상하 각도 보정 [deg]★ 전방 숙임 = 양수(+), 전방 들림 = 음수(-)
+    //   센서가 바닥을 향해 숙여져 먼 거리 바닥(6~10m)을 장애물로 오탐할 때
+    //   이 값을 1.5 ~ 2.5 등으로 주면 점군이 수평 지면으로 회전 복원된다.
+    this->declare_parameter<double>("pitch_angle_deg", 0.0);
 
     // ⚠️ ★차폭 미실측★ — 이 값은 ★차 반폭 + 여유★ 여야 한다.
     //   좁으면 차가 칠 콘을 못 보고, 넓으면 갓길 풀에 헛 AEB 가 뜬다.
@@ -136,7 +155,42 @@ public:
     //   7 로 두면 유효 검출한계가 ≈5.5 m 로 짧아진다. 5 면 ≈6.5 m.
     this->declare_parameter<int>("min_point_count", 5);
     // 연속 프레임 확인 (지면 깜빡임 오탐 완화)
-    this->declare_parameter<int>("confirm_frames", 2);
+    this->declare_parameter<int>("confirm_frames", 1);
+
+    // ── ★[방안 1] 동적 지면 수평 보정 & 횡방향 종단 라바콘 줄 판별 파라미터★ ──
+    this->declare_parameter<bool>("enable_dynamic_ground", true);
+    this->declare_parameter<double>("ground_fit_x_min", 2.5);
+    this->declare_parameter<double>("ground_fit_x_max", 16.0);
+    this->declare_parameter<double>("ground_fit_half_width", 1.5);
+    this->declare_parameter<double>("ground_ema_alpha", 0.35);
+    this->declare_parameter<double>("max_dynamic_pitch_deg", 4.0);
+
+    this->declare_parameter<bool>("enable_transverse_row", true);
+    this->declare_parameter<double>("observe_half_width", 2.6);
+    this->declare_parameter<double>("max_wall_x_extent", 0.95);
+    this->declare_parameter<int>("min_row_cones", 3);
+    this->declare_parameter<double>("min_cone_y_sep", 0.50);
+    this->declare_parameter<double>("min_row_y_span", 1.15);
+    this->declare_parameter<double>("max_row_y_gap", 1.65);
+    this->declare_parameter<double>("max_row_slope", 0.22);
+    this->declare_parameter<double>("row_line_tol", 0.26);
+    this->declare_parameter<double>("straddle_margin", 0.45);
+
+    // 초근거리 중앙 비상/점검 폴백 (정지 상태 3 m 앞 사람 점검 + 2 m 사각지대 진입 추적)
+    this->declare_parameter<bool>("close_fallback_enable", true);
+    this->declare_parameter<double>("close_fallback_max_x", 5.0);
+    this->declare_parameter<double>("close_fallback_half_width", 0.50);
+    this->declare_parameter<int>("close_fallback_min_pts", 4);
+    this->declare_parameter<double>("close_fallback_agl_min", 0.18);
+
+    // 기존 YAML 호환용 선언 (cone_lidar_txa1.yaml 등 레거시 파일 로드 시 경고 방지)
+    this->declare_parameter<double>("cluster_cell_size", 0.30);
+    this->declare_parameter<int>("min_cluster_points", 1);
+    this->declare_parameter<double>("max_cluster_extent", 0.8);
+    this->declare_parameter<double>("max_row_x_span", 1.0);
+    this->declare_parameter<double>("row_x_gate", 0.75);
+    this->declare_parameter<double>("transverse_aspect", 1.2);
+
     // ══════════════════════════════════════════════════════════════════
     //  ★★ 사각지대 래치 — roi_x_min 을 올린 대가를 갚는 장치 ★★
     // ══════════════════════════════════════════════════════════════════
@@ -167,7 +221,11 @@ public:
     this->get_parameter("sensor_height_m", sensor_height_m_);
     this->get_parameter("roi_agl_min", roi_agl_min_);
     this->get_parameter("roi_agl_max", roi_agl_max_);
+    this->get_parameter("pitch_angle_deg", pitch_angle_deg_);
+    updatePitchTrig();
     recomputeZSlab();
+    resetDynamicGroundState();
+
     this->get_parameter("path_corridor_half_width", corridor_half_width_);
     this->get_parameter("corridor_center_y", corridor_center_y_);
     this->get_parameter("min_point_count", min_point_count_);
@@ -179,6 +237,32 @@ public:
     this->get_parameter("blind_zone_latch", blind_zone_latch_);
     this->get_parameter("blind_latch_hold_s", blind_latch_hold_s_);
     this->get_parameter("blind_latch_near_m", blind_latch_near_m_);
+
+    this->get_parameter("enable_dynamic_ground", enable_dynamic_ground_);
+    this->get_parameter("ground_fit_x_min", ground_fit_x_min_);
+    this->get_parameter("ground_fit_x_max", ground_fit_x_max_);
+    this->get_parameter("ground_fit_half_width", ground_fit_half_width_);
+    this->get_parameter("ground_ema_alpha", ground_ema_alpha_);
+    this->get_parameter("max_dynamic_pitch_deg", max_dynamic_pitch_deg_);
+
+    this->get_parameter("enable_transverse_row", enable_transverse_row_);
+    this->get_parameter("observe_half_width", observe_half_width_);
+    this->get_parameter("max_wall_x_extent", max_wall_x_extent_);
+    this->get_parameter("min_row_cones", min_row_cones_);
+    this->get_parameter("min_cone_y_sep", min_cone_y_sep_);
+    this->get_parameter("min_row_y_span", min_row_y_span_);
+    this->get_parameter("max_row_y_gap", max_row_y_gap_);
+    this->get_parameter("max_row_slope", max_row_slope_);
+    this->get_parameter("row_line_tol", row_line_tol_);
+    this->get_parameter("straddle_margin", straddle_margin_);
+    this->get_parameter("row_x_gate", row_x_gate_);
+    this->get_parameter("cluster_cell_size", cluster_cell_size_);
+
+    this->get_parameter("close_fallback_enable", close_fallback_enable_);
+    this->get_parameter("close_fallback_max_x", close_fallback_max_x_);
+    this->get_parameter("close_fallback_half_width", close_fallback_half_width_);
+    this->get_parameter("close_fallback_min_pts", close_fallback_min_pts_);
+    this->get_parameter("close_fallback_agl_min", close_fallback_agl_min_);
 
     // ★설정 실수를 조용히 넘기지 않는다★ roi_x_min 이 차량 앞끝보다 앞이면
     //   자기 차체가 ROI 에 들어온다. 경고만 하고 넘기면 "왜 계속 AEB 가 뜨지"
@@ -205,17 +289,44 @@ public:
     param_callback_handle_ = this->add_on_set_parameters_callback(
         std::bind(&ConeLidarNode::onParamChange, this, std::placeholders::_1));
 
-    RCLCPP_INFO(this->get_logger(),
-                "cone_lidar AEB: topic=%s range=%.1f..%.1fm "
-                "AGL=[%.2f,%.2f]m (센서 %.2fm → z=[%.2f,%.2f]) "
-                "half_w=%.2f min_pts=%d confirm=%d flip_xy=%d",
-                lidar_topic.c_str(), roi_x_min_, stop_distance_threshold_,
-                roi_agl_min_, roi_agl_max_, sensor_height_m_,
-                roi_z_min_, roi_z_max_, corridor_half_width_, min_point_count_,
-                confirm_frames_, flip_lidar_xy_ ? 1 : 0);
+    RCLCPP_INFO(
+        this->get_logger(),
+        "cone_lidar AEB: topic=%s range=%.1f..%.1fm AGL=[%.2f,%.2f]m (센서 %.2fm) "
+        "dyn_gnd=%d trans_row=%d(obs_w=%.2fm, min_cones=%d, span>=%.2fm) "
+        "close_fb=%d(<=%.1fm) confirm=%d flip_xy=%d",
+        lidar_topic.c_str(), roi_x_min_, stop_distance_threshold_,
+        roi_agl_min_, roi_agl_max_, sensor_height_m_,
+        enable_dynamic_ground_ ? 1 : 0, enable_transverse_row_ ? 1 : 0,
+        observe_half_width_, min_row_cones_, min_row_y_span_,
+        close_fallback_enable_ ? 1 : 0, close_fallback_max_x_,
+        confirm_frames_, flip_lidar_xy_ ? 1 : 0);
   }
 
 private:
+  struct Pt2D {
+    float x;
+    float y;
+    float z;
+  };
+
+  struct VoxelNode {
+    float sum_x = 0.0f;
+    float sum_y = 0.0f;
+    float min_x = std::numeric_limits<float>::max();
+    int count = 0;
+  };
+
+  struct RowCentroid {
+    float x = 0.0f;
+    float y = 0.0f;
+    float min_x = 0.0f;
+  };
+
+  static int64_t packCell(int gx, int gy) {
+    return (static_cast<int64_t>(gx) << 32) |
+           static_cast<uint32_t>(gy);
+  }
+
   /// 기동 시 ★이 장착에서 물리적으로 무엇이 가능한가★ 를 찍는다.
   /// 파라미터만 보고는 "왜 2 m 앞 콘이 안 잡히지"의 답이 안 나온다 — 답은
   /// 전부 FOV 하단각과 장착 높이의 기하이고, 그것을 여기서 계산해 보여 준다.
@@ -243,12 +354,27 @@ private:
                 vehicle_front_m_, roi_x_min_, stop_distance_threshold_,
                 roi_x_min_ - vehicle_front_m_,
                 stop_distance_threshold_ - vehicle_front_m_);
+    if (has_pitch_) {
+      RCLCPP_INFO(this->get_logger(),
+                  "   ★기본 피치 보정 : %.2f° (전방 %s)★",
+                  std::fabs(pitch_angle_deg_),
+                  (pitch_angle_deg_ > 0 ? "숙임/Down" : "들림/Up"));
+    }
+    if (enable_dynamic_ground_) {
+      RCLCPP_INFO(this->get_logger(),
+                  "   ★동적 노면 피치·높이 추적 ON★ (x=%.1f~%.1fm, 허용 ±%.1f°)",
+                  ground_fit_x_min_, ground_fit_x_max_, max_dynamic_pitch_deg_);
+    }
+    if (enable_transverse_row_) {
+      RCLCPP_INFO(this->get_logger(),
+                  "   ★횡방향 종단 콘 줄 판별 ON★ (관측반폭 ±%.2fm, 최소 %d콘, 폭≥%.2fm, 벽제거 x≤%.2fm)",
+                  observe_half_width_, min_row_cones_, min_row_y_span_, max_wall_x_extent_);
+    }
     RCLCPP_INFO(this->get_logger(),
                 "   최하단 빔 AGL : 앞끝 %.2fm→%.2fm / 감지시작 %.2fm→%.2fm",
                 vehicle_front_m_, agl_at(vehicle_front_m_),
                 roi_x_min_, agl_at(roi_x_min_));
-    // 슬랩 하한이 각 거리에서 견디는 피치각 — 지면이 슬랩에 들어오는 문턱이다
-    if (stop_distance_threshold_ > ground_r) {
+    if (!enable_dynamic_ground_ && stop_distance_threshold_ > ground_r) {
       const double pitch_deg =
           std::atan(roi_agl_min_ / stop_distance_threshold_) * 180.0 / M_PI;
       RCLCPP_INFO(this->get_logger(),
@@ -257,7 +383,7 @@ private:
       if (pitch_deg < 1.5) {
         RCLCPP_WARN(this->get_logger(),
                     "   ⚠️ 피치 여유 %.1f° 는 제동 시 노즈다이브보다 작습니다 — "
-                    "roi_agl_min 을 올리거나 stop_distance_threshold 를 줄이세요",
+                    "enable_dynamic_ground 를 켜거나 roi_agl_min 을 올리세요",
                     pitch_deg);
       }
     }
@@ -279,6 +405,19 @@ private:
     roi_z_max_ = roi_agl_max_ - sensor_height_m_;
   }
 
+  void updatePitchTrig() {
+    const double rad = pitch_angle_deg_ * M_PI / 180.0;
+    cos_pitch_ = static_cast<float>(std::cos(rad));
+    sin_pitch_ = static_cast<float>(std::sin(rad));
+    has_pitch_ = std::fabs(pitch_angle_deg_) > 1e-4;
+  }
+
+  void resetDynamicGroundState() {
+    dyn_slope_ = 0.0f;
+    dyn_z0_ = static_cast<float>(-sensor_height_m_);
+    ground_initialized_ = false;
+  }
+
   void clampRoiToVehicleFront(bool warn) {
     if (roi_x_min_ >= vehicle_front_m_) return;
     if (warn) {
@@ -288,6 +427,133 @@ private:
                    "끌어올립니다.", roi_x_min_, vehicle_front_m_, vehicle_front_m_);
     }
     roi_x_min_ = vehicle_front_m_;
+  }
+
+  static bool fitLineOLS(const std::vector<float>& xs,
+                         const std::vector<float>& zs,
+                         float& out_slope,
+                         float& out_z0) {
+    const size_t n = xs.size();
+    if (n < 3) return false;
+    double sx = 0.0, sz = 0.0, sxx = 0.0, sxz = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+      sx += xs[i];
+      sz += zs[i];
+      sxx += static_cast<double>(xs[i]) * xs[i];
+      sxz += static_cast<double>(xs[i]) * zs[i];
+    }
+    const double denom = static_cast<double>(n) * sxx - sx * sx;
+    if (std::fabs(denom) < 1e-6) return false;
+    out_slope = static_cast<float>((static_cast<double>(n) * sxz - sx * sz) / denom);
+    out_z0 = static_cast<float>((sz - out_slope * sx) / static_cast<double>(n));
+    return true;
+  }
+
+  void updateDynamicGround(const std::vector<Pt2D>& base_pts) {
+    constexpr int kNumBins = 12;
+    const float x_min = static_cast<float>(ground_fit_x_min_);
+    const float x_max = static_cast<float>(ground_fit_x_max_);
+    if (x_max <= x_min + 1.0f) return;
+    const float bin_w = (x_max - x_min) / static_cast<float>(kNumBins);
+    const float half_w = static_cast<float>(ground_fit_half_width_);
+    const float cy = static_cast<float>(corridor_center_y_);
+    const float nom_z = static_cast<float>(-sensor_height_m_);
+
+    std::array<std::vector<float>, kNumBins> bin_x;
+    std::array<std::vector<float>, kNumBins> bin_z;
+    for (int b = 0; b < kNumBins; ++b) {
+      bin_x[b].reserve(64);
+      bin_z[b].reserve(64);
+    }
+
+    for (const auto& p : base_pts) {
+      if (p.x < x_min || p.x >= x_max) continue;
+      if (std::fabs(p.y - cy) > half_w) continue;
+      if (p.z < nom_z - 0.55f || p.z > nom_z + 0.55f) continue;
+      int b = static_cast<int>((p.x - x_min) / bin_w);
+      if (b < 0) b = 0;
+      if (b >= kNumBins) b = kNumBins - 1;
+      bin_x[b].push_back(p.x);
+      bin_z[b].push_back(p.z);
+    }
+
+    std::vector<float> bx;
+    std::vector<float> bz;
+    bx.reserve(kNumBins);
+    bz.reserve(kNumBins);
+
+    for (int b = 0; b < kNumBins; ++b) {
+      auto& xs = bin_x[b];
+      auto& zs = bin_z[b];
+      if (zs.size() < 12) continue;
+      const size_t mid_idx = xs.size() / 2;
+      std::nth_element(xs.begin(), xs.begin() + static_cast<std::ptrdiff_t>(mid_idx), xs.end());
+      const size_t p15_idx = (zs.size() * 15) / 100;
+      std::nth_element(zs.begin(), zs.begin() + static_cast<std::ptrdiff_t>(p15_idx), zs.end());
+      bx.push_back(xs[mid_idx]);
+      bz.push_back(zs[p15_idx]);
+    }
+
+    if (bx.size() < 4) return;
+
+    const double max_slope = std::tan(max_dynamic_pitch_deg_ * M_PI / 180.0);
+    int best_inliers = 0;
+    float best_l1 = std::numeric_limits<float>::max();
+    float cand_slope = 0.0f, cand_z0 = nom_z;
+
+    for (size_t i = 0; i < bx.size(); ++i) {
+      for (size_t j = i + 1; j < bx.size(); ++j) {
+        const float dx = bx[j] - bx[i];
+        if (dx < 2.5f) continue;
+        const float s = (bz[j] - bz[i]) / dx;
+        if (std::fabs(s) > max_slope) continue;
+        const float z0_ij = bz[i] - s * bx[i];
+        if (std::fabs(z0_ij - nom_z) > 0.25f) continue;
+
+        int cnt = 0;
+        float l1 = 0.0f;
+        for (size_t k = 0; k < bx.size(); ++k) {
+          const float err = std::fabs(bz[k] - (s * bx[k] + z0_ij));
+          if (err <= 0.035f) {
+            ++cnt;
+            l1 += err;
+          }
+        }
+        if (cnt > best_inliers || (cnt == best_inliers && l1 < best_l1)) {
+          best_inliers = cnt;
+          best_l1 = l1;
+          cand_slope = s;
+          cand_z0 = z0_ij;
+        }
+      }
+    }
+
+    if (best_inliers < 4) return;
+
+    std::vector<float> bx_in, bz_in;
+    bx_in.reserve(bx.size());
+    bz_in.reserve(bz.size());
+    for (size_t i = 0; i < bx.size(); ++i) {
+      if (std::fabs(bz[i] - (cand_slope * bx[i] + cand_z0)) <= 0.035f) {
+        bx_in.push_back(bx[i]);
+        bz_in.push_back(bz[i]);
+      }
+    }
+
+    float slope = cand_slope, z0 = cand_z0;
+    if (!fitLineOLS(bx_in, bz_in, slope, z0)) return;
+    if (std::fabs(slope) > max_slope) return;
+    if (std::fabs(z0 - nom_z) > 0.25f) return;
+
+    const float alpha = static_cast<float>(std::clamp(ground_ema_alpha_, 0.05, 1.0));
+    if (!ground_initialized_) {
+      dyn_slope_ = slope;
+      dyn_z0_ = z0;
+      ground_initialized_ = true;
+    } else {
+      dyn_slope_ += alpha * (slope - dyn_slope_);
+      dyn_z0_ += alpha * (z0 - dyn_z0_);
+    }
   }
 
   rcl_interfaces::msg::SetParametersResult onParamChange(
@@ -307,14 +573,21 @@ private:
       else if (name == "sensor_height_m") {
         sensor_height_m_ = p.as_double();
         recomputeZSlab();
+        resetDynamicGroundState();
       } else if (name == "roi_agl_min") {
         roi_agl_min_ = p.as_double();
         recomputeZSlab();
       } else if (name == "roi_agl_max") {
         roi_agl_max_ = p.as_double();
         recomputeZSlab();
-      }
-      else if (name == "path_corridor_half_width")
+      } else if (name == "pitch_angle_deg") {
+        pitch_angle_deg_ = p.as_double();
+        updatePitchTrig();
+        resetDynamicGroundState();
+        RCLCPP_INFO(this->get_logger(),
+                    "🔄 [AEB] pitch_angle_deg 갱신: %.2f deg (has_pitch=%d)",
+                    pitch_angle_deg_, has_pitch_ ? 1 : 0);
+      } else if (name == "path_corridor_half_width")
         corridor_half_width_ = p.as_double();
       else if (name == "corridor_center_y")
         corridor_center_y_ = p.as_double();
@@ -330,6 +603,53 @@ private:
         blind_latch_hold_s_ = p.as_double();
       else if (name == "blind_latch_near_m")
         blind_latch_near_m_ = p.as_double();
+      else if (name == "enable_dynamic_ground") {
+        enable_dynamic_ground_ = p.as_bool();
+        resetDynamicGroundState();
+      } else if (name == "ground_fit_x_min")
+        ground_fit_x_min_ = p.as_double();
+      else if (name == "ground_fit_x_max")
+        ground_fit_x_max_ = p.as_double();
+      else if (name == "ground_fit_half_width")
+        ground_fit_half_width_ = p.as_double();
+      else if (name == "ground_ema_alpha")
+        ground_ema_alpha_ = p.as_double();
+      else if (name == "max_dynamic_pitch_deg")
+        max_dynamic_pitch_deg_ = p.as_double();
+      else if (name == "enable_transverse_row")
+        enable_transverse_row_ = p.as_bool();
+      else if (name == "observe_half_width")
+        observe_half_width_ = p.as_double();
+      else if (name == "max_wall_x_extent")
+        max_wall_x_extent_ = p.as_double();
+      else if (name == "min_row_cones")
+        min_row_cones_ = static_cast<int>(p.as_int());
+      else if (name == "min_cone_y_sep")
+        min_cone_y_sep_ = p.as_double();
+      else if (name == "min_row_y_span")
+        min_row_y_span_ = p.as_double();
+      else if (name == "max_row_y_gap")
+        max_row_y_gap_ = p.as_double();
+      else if (name == "max_row_slope")
+        max_row_slope_ = p.as_double();
+      else if (name == "row_line_tol")
+        row_line_tol_ = p.as_double();
+      else if (name == "straddle_margin")
+        straddle_margin_ = p.as_double();
+      else if (name == "row_x_gate")
+        row_x_gate_ = p.as_double();
+      else if (name == "cluster_cell_size")
+        cluster_cell_size_ = p.as_double();
+      else if (name == "close_fallback_enable")
+        close_fallback_enable_ = p.as_bool();
+      else if (name == "close_fallback_max_x")
+        close_fallback_max_x_ = p.as_double();
+      else if (name == "close_fallback_half_width")
+        close_fallback_half_width_ = p.as_double();
+      else if (name == "close_fallback_min_pts")
+        close_fallback_min_pts_ = static_cast<int>(p.as_int());
+      else if (name == "close_fallback_agl_min")
+        close_fallback_agl_min_ = p.as_double();
     }
     clampRoiToVehicleFront(/*warn=*/true);
     rcl_interfaces::msg::SetParametersResult result;
@@ -344,11 +664,15 @@ private:
     auto pcl_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
     pcl::fromROSMsg(*cloud_msg, *pcl_cloud);
 
-    auto bumper_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
-    bumper_cloud->reserve(pcl_cloud->size() / 8);
+    // 1. 전후 반전 및 기본 정적 피치 회전 적용 (전방 섹터만 추출해 연산량 최소화)
+    const float max_scan_x =
+        static_cast<float>(std::max(stop_distance_threshold_ + 2.0, ground_fit_x_max_ + 1.0));
+    const float max_scan_y = static_cast<float>(
+        std::max({observe_half_width_, corridor_half_width_, ground_fit_half_width_}) +
+        std::fabs(corridor_center_y_) + 0.5);
 
-    int points_in_bumper = 0;
-    float closest = std::numeric_limits<float>::max();
+    std::vector<Pt2D> base_pts;
+    base_pts.reserve(pcl_cloud->size() / 6);
 
     for (const auto& p : pcl_cloud->points) {
       if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
@@ -359,17 +683,277 @@ private:
         x = -p.x;
         y = -p.y;
       }
-
-      if (z < roi_z_min_ || z > roi_z_max_) continue;
-      if (std::fabs(y - corridor_center_y_) > corridor_half_width_) continue;
-      if (x < roi_x_min_ || x > stop_distance_threshold_) continue;
-
-      ++points_in_bumper;
-      if (x < closest) closest = x;
-      if (publish_debug_) bumper_cloud->points.emplace_back(x, y, z);
+      if (has_pitch_) {
+        const float x_corr =  x * cos_pitch_ + z * sin_pitch_;
+        const float z_corr = -x * sin_pitch_ + z * cos_pitch_;
+        x = x_corr;
+        z = z_corr;
+      }
+      if (x < 1.0f || x > max_scan_x || std::fabs(y) > max_scan_y) continue;
+      base_pts.push_back(Pt2D{x, y, z});
     }
 
-    const bool raw_hit = points_in_bumper >= min_point_count_;
+    // 2. [방안 1-1] 매 프레임 전방 노면 링 하위 15% 백분위 직선 피팅 (스쿼트·경사 보정)
+    float cos_dp = 1.0f, sin_dp = 0.0f;
+    float gnd_z0 = static_cast<float>(-sensor_height_m_);
+    if (enable_dynamic_ground_) {
+      updateDynamicGround(base_pts);
+      const float dp_rad = std::atan(dyn_slope_);
+      cos_dp = std::cos(dp_rad);
+      sin_dp = std::sin(dp_rad);
+      gnd_z0 = dyn_z0_ * cos_dp;
+    }
+
+    auto bumper_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+    if (publish_debug_) {
+      bumper_cloud->reserve(256);
+    }
+
+    bool raw_hit = false;
+    int points_in_bumper = 0;
+    float closest = std::numeric_limits<float>::max();
+    has_detected_row_line_ = false;
+
+    const float x_min_f = static_cast<float>(roi_x_min_);
+    const float x_max_f = static_cast<float>(stop_distance_threshold_);
+    const float agl_min_f = static_cast<float>(roi_agl_min_);
+    const float agl_max_f = static_cast<float>(roi_agl_max_);
+    const float cy_f = static_cast<float>(corridor_center_y_);
+
+    if (!enable_transverse_row_) {
+      // ── 레거시 단일 고정 코리도 박스 모드 ──
+      const float hw_f = static_cast<float>(corridor_half_width_);
+      for (const auto& p : base_pts) {
+        const float xl =  p.x * cos_dp + p.z * sin_dp;
+        const float zl = -p.x * sin_dp + p.z * cos_dp;
+        const float agl = zl - gnd_z0;
+        if (agl < agl_min_f || agl > agl_max_f) continue;
+        if (std::fabs(p.y - cy_f) > hw_f) continue;
+        if (xl < x_min_f || xl > x_max_f) continue;
+        ++points_in_bumper;
+        if (xl < closest) closest = xl;
+        if (publish_debug_) bumper_cloud->points.emplace_back(xl, p.y, zl);
+      }
+      raw_hit = (points_in_bumper >= min_point_count_);
+    } else {
+      // ── [방안 1-2] 종방향 연속 벽면 제거 + 횡방향 종단 라바콘 줄 기하 판별 ──
+      const float obs_hw_f = static_cast<float>(observe_half_width_);
+      const float wall_margin_x = x_max_f + 1.5f;  // 경계면 걸침 벽 길이 측정 여유
+
+      struct CandPt {
+        float x;
+        float y;
+        float z;
+        float agl;
+      };
+      std::vector<CandPt> cand_pts;
+      cand_pts.reserve(256);
+
+      for (const auto& p : base_pts) {
+        const float xl =  p.x * cos_dp + p.z * sin_dp;
+        const float zl = -p.x * sin_dp + p.z * cos_dp;
+        const float agl = zl - gnd_z0;
+        if (agl < agl_min_f || agl > agl_max_f) continue;
+        if (xl < x_min_f || xl > wall_margin_x) continue;
+        if (std::fabs(p.y - cy_f) > obs_hw_f) continue;
+        cand_pts.push_back(CandPt{xl, p.y, zl, agl});
+      }
+
+      // 0.30m 격자 8방향 연결성분으로 콘크리트 방호벽·가드레일(x_extent > max_wall_x_extent_) 제거
+      const float cell_sz = static_cast<float>(std::max(0.15, cluster_cell_size_));
+      std::unordered_map<int64_t, std::vector<size_t>> grid;
+      std::unordered_map<int64_t, std::pair<int, int>> grid_coords;
+      grid.reserve(cand_pts.size());
+      grid_coords.reserve(cand_pts.size());
+
+      for (size_t idx = 0; idx < cand_pts.size(); ++idx) {
+        const int gx = static_cast<int>(std::floor(cand_pts[idx].x / cell_sz));
+        const int gy = static_cast<int>(std::floor(cand_pts[idx].y / cell_sz));
+        const int64_t key = packCell(gx, gy);
+        grid[key].push_back(idx);
+        grid_coords.emplace(key, std::make_pair(gx, gy));
+      }
+
+      std::unordered_set<int64_t> visited;
+      visited.reserve(grid.size());
+      std::vector<CandPt> cone_pts;
+      cone_pts.reserve(cand_pts.size());
+
+      std::vector<std::pair<int, int>> stack;
+      std::vector<size_t> comp_indices;
+      for (const auto& kv : grid) {
+        if (visited.count(kv.first)) continue;
+        visited.insert(kv.first);
+        stack.clear();
+        comp_indices.clear();
+        stack.push_back(grid_coords[kv.first]);
+
+        float min_cx = std::numeric_limits<float>::max();
+        float max_cx = -std::numeric_limits<float>::max();
+
+        while (!stack.empty()) {
+          const auto [kx, ky] = stack.back();
+          stack.pop_back();
+          const int64_t cur_key = packCell(kx, ky);
+          const auto it = grid.find(cur_key);
+          if (it != grid.end()) {
+            for (const size_t pt_i : it->second) {
+              comp_indices.push_back(pt_i);
+              min_cx = std::min(min_cx, cand_pts[pt_i].x);
+              max_cx = std::max(max_cx, cand_pts[pt_i].x);
+            }
+          }
+          for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+              if (dx == 0 && dy == 0) continue;
+              const int nx = kx + dx;
+              const int ny = ky + dy;
+              const int64_t nb_key = packCell(nx, ny);
+              if (grid.count(nb_key) && !visited.count(nb_key)) {
+                visited.insert(nb_key);
+                stack.emplace_back(nx, ny);
+              }
+            }
+          }
+        }
+
+        if (static_cast<double>(max_cx - min_cx) <= max_wall_x_extent_) {
+          for (const size_t pt_i : comp_indices) {
+            if (cand_pts[pt_i].x <= x_max_f) {
+              cone_pts.push_back(cand_pts[pt_i]);
+            }
+          }
+        }
+      }
+
+      if (publish_debug_) {
+        for (const auto& cp : cone_pts) {
+          bumper_cloud->points.emplace_back(cp.x, cp.y, cp.z);
+        }
+      }
+
+      // 0.20m 복셀 압축 후 횡방향 직선 슬라이스 탐색
+      constexpr float kVoxSize = 0.20f;
+      std::unordered_map<int64_t, VoxelNode> vox_map;
+      vox_map.reserve(cone_pts.size());
+      for (const auto& cp : cone_pts) {
+        const int vx = static_cast<int>(std::floor(cp.x / kVoxSize));
+        const int vy = static_cast<int>(std::floor(cp.y / kVoxSize));
+        auto& v = vox_map[packCell(vx, vy)];
+        v.sum_x += cp.x;
+        v.sum_y += cp.y;
+        v.min_x = std::min(v.min_x, cp.x);
+        ++v.count;
+      }
+
+      std::vector<RowCentroid> nodes;
+      nodes.reserve(vox_map.size());
+      for (const auto& kv : vox_map) {
+        const auto& v = kv.second;
+        const float inv = 1.0f / static_cast<float>(v.count);
+        nodes.push_back(RowCentroid{v.sum_x * inv, v.sum_y * inv, v.min_x});
+      }
+      std::sort(nodes.begin(), nodes.end(),
+                [](const RowCentroid& a, const RowCentroid& b) { return a.x < b.x; });
+
+      bool row_found = false;
+      float best_row_x = std::numeric_limits<float>::max();
+      int best_row_support = 0;
+      const size_t n_nodes = nodes.size();
+      const float x_gate_f = static_cast<float>(row_x_gate_);
+      const float min_pair_dy = static_cast<float>(std::max(0.6, min_row_y_span_ - 0.05));
+      const float max_slope_f = static_cast<float>(max_row_slope_);
+      const float line_tol_f = static_cast<float>(row_line_tol_);
+      const float min_span_f = static_cast<float>(min_row_y_span_);
+      const float max_gap_f = static_cast<float>(max_row_y_gap_);
+      const float straddle_f = static_cast<float>(straddle_margin_);
+      const float min_sep_f = static_cast<float>(min_cone_y_sep_);
+
+      std::vector<RowCentroid> inliers;
+      inliers.reserve(n_nodes);
+
+      for (size_t i = 0; i < n_nodes; ++i) {
+        for (size_t j = i + 1; j < n_nodes; ++j) {
+          if (nodes[j].x - nodes[i].x > x_gate_f) break;
+          const float dy = nodes[j].y - nodes[i].y;
+          if (std::fabs(dy) < min_pair_dy) continue;
+          const float slope = (nodes[j].x - nodes[i].x) / dy;
+          if (std::fabs(slope) > max_slope_f) continue;
+          const float x0 = nodes[i].x - slope * nodes[i].y;
+
+          inliers.clear();
+          for (const auto& nd : nodes) {
+            if (std::fabs(nd.x - (slope * nd.y + x0)) <= line_tol_f) {
+              inliers.push_back(nd);
+            }
+          }
+          if (static_cast<int>(inliers.size()) < min_row_cones_) continue;
+
+          std::sort(inliers.begin(), inliers.end(),
+                    [](const RowCentroid& a, const RowCentroid& b) { return a.y < b.y; });
+
+          const float y_lo = inliers.front().y;
+          const float y_hi = inliers.back().y;
+          if ((y_hi - y_lo) < min_span_f) continue;
+          if (y_lo > cy_f + straddle_f || y_hi < cy_f - straddle_f) continue;
+
+          float max_gap = 0.0f;
+          for (size_t k = 0; k + 1 < inliers.size(); ++k) {
+            max_gap = std::max(max_gap, inliers[k + 1].y - inliers[k].y);
+          }
+          if (max_gap > max_gap_f) continue;
+
+          int distinct_cnt = 1;
+          float last_y = inliers.front().y;
+          float row_min_x = inliers.front().min_x;
+          for (size_t k = 1; k < inliers.size(); ++k) {
+            row_min_x = std::min(row_min_x, inliers[k].min_x);
+            if (inliers[k].y - last_y >= min_sep_f) {
+              ++distinct_cnt;
+              last_y = inliers[k].y;
+            }
+          }
+
+          if (distinct_cnt >= min_row_cones_ && row_min_x < best_row_x) {
+            row_found = true;
+            best_row_x = row_min_x;
+            best_row_support = distinct_cnt;
+            has_detected_row_line_ = true;
+            det_row_x1_ = slope * y_lo + x0;
+            det_row_y1_ = y_lo;
+            det_row_x2_ = slope * y_hi + x0;
+            det_row_y2_ = y_hi;
+          }
+        }
+      }
+
+      if (row_found) {
+        raw_hit = true;
+        closest = best_row_x;
+        points_in_bumper = best_row_support;
+      }
+
+      // 초근거리 중앙 비상/점검 폴백 (정지 중 전방 3m 점검 및 2~5m 사각지대 진입 연속 추적)
+      if (close_fallback_enable_) {
+        const float cf_max_x = static_cast<float>(close_fallback_max_x_);
+        const float cf_hw = static_cast<float>(close_fallback_half_width_);
+        const float cf_agl = static_cast<float>(close_fallback_agl_min_);
+        int close_cnt = 0;
+        float close_min_x = std::numeric_limits<float>::max();
+        for (const auto& cp : cone_pts) {
+          if (cp.x <= cf_max_x && std::fabs(cp.y - cy_f) <= cf_hw && cp.agl >= cf_agl) {
+            ++close_cnt;
+            close_min_x = std::min(close_min_x, cp.x);
+          }
+        }
+        if (close_cnt >= close_fallback_min_pts_) {
+          raw_hit = true;
+          if (close_min_x < closest) closest = close_min_x;
+          if (!row_found) points_in_bumper = close_cnt;
+        }
+      }
+    }
+
     if (raw_hit)
       ++hit_streak_;
     else
@@ -415,8 +999,9 @@ private:
     if (confirmed) {
       RCLCPP_WARN_THROTTLE(
           this->get_logger(), *this->get_clock(), 500,
-          "🚨 [AEB] obstacle d=%.2fm pts=%d (streak=%d)", closest,
-          points_in_bumper, hit_streak_);
+          "🚨 [AEB] obstacle d=%.2fm support/pts=%d (streak=%d, dyn_pitch=%+.2f°)",
+          closest, points_in_bumper, hit_streak_,
+          std::atan(dyn_slope_) * 180.0 / M_PI);
     } else if (latched) {
       RCLCPP_WARN_THROTTLE(
           this->get_logger(), *this->get_clock(), 500,
@@ -443,9 +1028,12 @@ private:
     clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
     marker_array.markers.push_back(clear_marker);
 
+    const double bound_hw =
+        enable_transverse_row_ ? observe_half_width_ : corridor_half_width_;
+
     for (int side = 0; side < 2; ++side) {
-      float y =
-          corridor_center_y_ + (side == 0 ? corridor_half_width_ : -corridor_half_width_);
+      const float y = static_cast<float>(
+          corridor_center_y_ + (side == 0 ? bound_hw : -bound_hw));
       visualization_msgs::msg::Marker line;
       line.header = header;
       line.ns = "bumper_boundary";
@@ -477,6 +1065,33 @@ private:
       line.points.push_back(p2);
       marker_array.markers.push_back(line);
     }
+
+    if (has_detected_row_line_) {
+      visualization_msgs::msg::Marker row_mk;
+      row_mk.header = header;
+      row_mk.ns = "transverse_stopline";
+      row_mk.id = 10;
+      row_mk.type = visualization_msgs::msg::Marker::LINE_STRIP;
+      row_mk.action = visualization_msgs::msg::Marker::ADD;
+      row_mk.scale.x = 0.12;
+      row_mk.color.r = 1.0f;
+      row_mk.color.g = 0.1f;
+      row_mk.color.b = 0.1f;
+      row_mk.color.a = 1.0f;
+      row_mk.lifetime = rclcpp::Duration::from_seconds(0.2);
+      row_mk.pose.orientation.w = 1.0;
+      geometry_msgs::msg::Point q1, q2;
+      q1.x = det_row_x1_;
+      q1.y = det_row_y1_;
+      q1.z = 0.0;
+      q2.x = det_row_x2_;
+      q2.y = det_row_y2_;
+      q2.z = 0.0;
+      row_mk.points.push_back(q1);
+      row_mk.points.push_back(q2);
+      marker_array.markers.push_back(row_mk);
+    }
+
     marker_pub_->publish(marker_array);
   }
 
@@ -489,18 +1104,57 @@ private:
   // ★roi_z_* 는 유도값이다★ 소유자는 아래 AGL 세 값이고, recomputeZSlab() 만
   //   이 둘을 쓴다. 직접 파라미터로 열어 두지 않았다 — 두 경로가 생기면 어느
   //   쪽이 이겼는지 로그로 알 수 없게 된다.
-  double roi_z_min_ = -0.92, roi_z_max_ = -0.42;
+  double roi_z_min_ = -1.03, roi_z_max_ = -0.39;
   double sensor_height_m_ = 1.17;  // 지면 → 센서 원점 [m]
-  double roi_agl_min_ = 0.25;      // 슬랩 하단 [m AGL]
-  double roi_agl_max_ = 0.75;      // 슬랩 상단 [m AGL]
+  double pitch_angle_deg_ = 0.0;   // 센서 전방 숙임 각도 [deg] (+: 앞 숙임, -: 뒤 젖힘)
+  float cos_pitch_ = 1.0f;
+  float sin_pitch_ = 0.0f;
+  bool has_pitch_ = false;
+  double roi_agl_min_ = 0.14;      // 슬랩 하단 [m AGL]
+  double roi_agl_max_ = 0.78;      // 슬랩 상단 [m AGL]
   double corridor_half_width_ = 0.8;
   double corridor_center_y_ = 0.0;
   int min_point_count_ = 5;
-  int confirm_frames_ = 2;
+  int confirm_frames_ = 1;
   bool publish_debug_ = true;
   bool blind_zone_latch_ = true;
   double blind_latch_hold_s_ = 3.0;
   double blind_latch_near_m_ = 0.5;
+
+  // [방안 1] 동적 노면 추적 & 횡방향 종단 콘 줄 판별 상태
+  bool enable_dynamic_ground_ = true;
+  double ground_fit_x_min_ = 2.5;
+  double ground_fit_x_max_ = 16.0;
+  double ground_fit_half_width_ = 1.5;
+  double ground_ema_alpha_ = 0.35;
+  double max_dynamic_pitch_deg_ = 4.0;
+  float dyn_slope_ = 0.0f;
+  float dyn_z0_ = -1.17f;
+  bool ground_initialized_ = false;
+
+  bool enable_transverse_row_ = true;
+  double observe_half_width_ = 2.6;
+  double max_wall_x_extent_ = 0.95;
+  int min_row_cones_ = 3;
+  double min_cone_y_sep_ = 0.50;
+  double min_row_y_span_ = 1.15;
+  double max_row_y_gap_ = 1.65;
+  double max_row_slope_ = 0.22;
+  double row_line_tol_ = 0.26;
+  double straddle_margin_ = 0.45;
+  double row_x_gate_ = 0.75;
+  double cluster_cell_size_ = 0.30;
+
+  bool close_fallback_enable_ = true;
+  double close_fallback_max_x_ = 5.0;
+  double close_fallback_half_width_ = 0.50;
+  int close_fallback_min_pts_ = 4;
+  double close_fallback_agl_min_ = 0.18;
+
+  bool has_detected_row_line_ = false;
+  float det_row_x1_ = 0.0f, det_row_y1_ = 0.0f;
+  float det_row_x2_ = 0.0f, det_row_y2_ = 0.0f;
+
   int hit_streak_ = 0;
   float last_obstacle_distance_ = std::numeric_limits<float>::infinity();
   float last_confirmed_distance_ = std::numeric_limits<float>::infinity();

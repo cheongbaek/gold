@@ -89,6 +89,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -148,12 +149,18 @@ public:
     stop_sub_ = create_subscription<std_msgs::msg::Bool>(
         stop_signal_topic_, rclcpp::QoS(5),
         [this](const std_msgs::msg::Bool::ConstSharedPtr& m) {
+          const bool prev_signal = signal_;
           signal_ = m->data;
+          ++signal_seq_;
           last_signal_t_ = nowSec();
           if (!signal_seen_) {
             signal_seen_ = true;
             RCLCPP_INFO(get_logger(), "✅ 정지신호 수신 시작 — %s",
                         stop_signal_topic_.c_str());
+          }
+          // ★[방안 2] 정지신호 true 수신 시 50ms 타이머를 기다리지 않고 즉시 발행★
+          if (signal_ && (!prev_signal || !engaged_)) {
+            tick();
           }
         });
     dist_sub_ = create_subscription<std_msgs::msg::Float32>(
@@ -260,10 +267,14 @@ private:
 
     const bool hit = fresh && signal_;
     if (hit) {
-      if (hit_streak_ < engage_frames_) hit_streak_++;
+      if (processed_seq_ != signal_seq_) {
+        processed_seq_ = signal_seq_;
+        if (hit_streak_ < engage_frames_) hit_streak_++;
+      }
       last_hit_t_ = now;
     } else {
       hit_streak_ = 0;
+      processed_seq_ = signal_seq_;
     }
 
     if (!engaged_) {
@@ -353,6 +364,8 @@ private:
   // ── 상태 ──
   bool   signal_ = false;
   bool   signal_seen_ = false;
+  uint64_t signal_seq_ = 0;
+  uint64_t processed_seq_ = 0;
   double last_signal_t_ = 0.0;
   float  dist_m_ = std::numeric_limits<float>::infinity();
   bool   engaged_ = false;

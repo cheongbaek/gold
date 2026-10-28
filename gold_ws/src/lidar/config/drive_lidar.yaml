@@ -13,7 +13,7 @@ drive_lidar_node:
 
     # ── 장착 (2026-08-25 실측) ────────────────────────────────────────────
     #  cone_lidar 과 같은 OS1-32. AGL 슬랩의 기준 높이는 여기가 정본.
-    sensor_height_m: 1.17
+    sensor_height_m: 1.25
     roi_agl_min: 0.20
     roi_agl_max: 1.20
     flip_lidar_xy: true        # ⚠️ 커넥터 방향 미확인 — cone_lidar.yaml 주석 참고

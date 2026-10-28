@@ -89,7 +89,7 @@ LOCK_GEOM = {
 #   0 이하의 문턱 = 그 구간도 구간 밖 문턱(tl_red_stop_min_height 20px)과 배율(tl_near_release_ratio)을 쓴다.
 ZONE_GATE = {
     'tl_zone_red_min_height_t': 12.0,
-    'tl_zone_red_min_height_a': 9.0,
+    'tl_zone_red_min_height_a': 7.0,
     'tl_zone_red_min_height_b': 9.0,
     'tl_near_release_ratio_t':  0.75,
     'tl_near_release_ratio_a':  0.7,
@@ -103,9 +103,9 @@ ZONE_GATE = {
 #   A 0  — 구간 밖 값(tl_solo_stop_min_height). #1100 은 정지선 앞에서도 9~10px 라 정지선으로 선다.
 #   0 이하 = 그 구간도 구간 밖 값. 구간 신호가 끊기면(tl_zone_stale_s) 구간 밖 값.
 SOLO_GATE = {
-    'tl_solo_stop_min_height_t': 17.0,
-    'tl_solo_stop_min_height_a': 0.0,
-    'tl_solo_stop_min_height_b': 20.0,
+    'tl_solo_stop_min_height_t': 20.0,
+    'tl_solo_stop_min_height_a': 8.0,
+    'tl_solo_stop_min_height_b': 25.0,
 }
 
 # [2026-10-20] 구간 T·A 의 GREEN 은 박스 안에 HSV 녹색 화소가 있어야 GREEN — traffic_light._all_tl_boxes · _green_hsv_px

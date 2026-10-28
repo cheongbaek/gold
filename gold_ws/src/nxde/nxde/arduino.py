@@ -1592,18 +1592,22 @@ class Arduino(Node):
                 f"★0~255 PWM 이 아니라 단계값이다★ (0 놓음 / 1 약 / 2 풀)",
                 throttle_duration_sec=5.0)
             return
-        if level != self.cmd_brake:
+        prev_brake = self.cmd_brake
+        if level != prev_brake:
             # ★진단★ 값이 언제 바뀌었는지, 직전 값이 얼마나 유지됐는지 함께 남긴다.
             #   '리니어가 나왔다 들어갔다' 를 추적할 때 필요한 것은 이 시간차다.
             held = time.monotonic() - self._brake_rx_t
             self.get_logger().info(
-                f"/brake_level → {level}단  (직전 {self.cmd_brake}단을 {held:.2f}초 유지)")
+                f"/brake_level → {level}단  (직전 {prev_brake}단을 {held:.2f}초 유지)")
         self._brake_rx_t = time.monotonic()
         self.cmd_brake = level
         if level > 0:
             # 해제 유예의 기준 — ★마지막으로 '물어라' 를 받은 시각·단계★
             self._brake_hold_level = level
             self._brake_hold_t = self._brake_rx_t
+        if level > prev_brake:
+            # ★[방안 2] 제동 단계 상승 즉시 시리얼 전송 (50ms TX 타이머 대기 제거)★
+            self._flush_urgent_tx()
 
     def cb_gps_fused(self, msg: Float64MultiArray):
         """/gps_fused[8] = 원시 fix 변위속도 [km/h]. ★조이스틱 LCD 표시 전용★
@@ -1719,8 +1723,12 @@ class Arduino(Node):
         엣지가 아니라 ★상태★ 를 받는다(발행자가 20Hz 로 계속 낸다). 여기서는
         값과 수신 시각만 남기고, 판단은 compose() (1-1) 이 한다 —
         ★aeb_brake_level=0 이면 아래 값은 아무 데도 쓰이지 않는다★."""
+        prev = self.aeb_stop
         self.aeb_stop = bool(msg.data)
         self.aeb_stop_t = time.monotonic()
+        if self.aeb_stop and not prev and self.aeb_brake_level > 0:
+            # ★[방안 2] AEB 상승 엣지 즉시 시리얼 전송 (50ms TX 타이머 대기 제거)★
+            self._flush_urgent_tx()
 
     def aeb_engaged(self):
         """지금 AEB 로 차를 세워야 하는가. ★신선도까지 본다★ (헤더 (1-1))
@@ -2086,6 +2094,19 @@ class Arduino(Node):
                     f"[조향 복귀] 브레이크 {brake}단 · 바퀴 {self.pulse_l}/{self.pulse_r} — 조향 "
                     f"{self.to_board_angle(self.cmd_angle)}° 다시 건다")
         return STEER_RELEASE_TOKEN if rest else self.to_board_angle(self.cmd_angle)
+
+    def _flush_urgent_tx(self):
+        """★[방안 2] 비상제동 상승 엣지 즉시 송신★
+        TX_PERIOD_S(50ms) 타이머를 기다리지 않고 변경된 명령 줄을 즉시 보드에 쓴다.
+        _joy_tick()·주기 토픽 발행은 건드리지 않으며, line != self._last_k 변경감지
+        규칙을 그대로 따르므로 다음 정기 TX 틱에서 중복 송신되지 않는다."""
+        self._disarm_brakes_on_mode_edge()
+        a_payload, b_payload, _ = self.compose()
+        line = self.command_line(a_payload, b_payload)
+        if line != self._last_k:
+            if self.send_line('k', line):
+                self._last_k = line
+                self._last_k_t = time.monotonic()
 
     def on_tx_timer(self):
         """값이 바뀌었거나 KEEPALIVE_S 가 지났을 때만 실제로 시리얼에 쓴다.
