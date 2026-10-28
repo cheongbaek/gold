@@ -16,10 +16,19 @@ struct CostmapParams
   double size_y = 12.0;         // [m] total grid extent along y (left/right)
   double resolution = 0.1;      // [m/cell]
 
-  // Ground / overhang height filter, in the SENSOR's own frame (before offset correction
-  // below is applied to x/y only -- z filtering happens pre-offset, tune to mount height).
+  // Fixed z slab, sensor frame. Used only when a ground plane cannot be fit.
+  // A level mount keeps ground at z = -sensor_height. Nose-down pitch lifts
+  // ground at range into this slab, so the slab alone paints rings as obstacles.
   double ground_z_min = -0.25;  // points below this z are treated as ground and dropped
   double ground_z_max = 0.05;   // points above this z are treated as overhead and dropped
+
+  // Plane-relative AGL. The scan's lowest surface is fit as z = a + b x + c y
+  // in the ego frame, so a wrong mount height and a few degrees of pitch come
+  // out of the plane instead of the obstacle mask. Nominal ground is -sensor_height.
+  double sensor_height_m = 1.17;
+  double pitch_angle_deg = 0.0;  // [deg] 센서 상하 기울기 보정 (+ = 전방 숙임 / Nose Down)
+  double roi_agl_min = 0.30;
+  double roi_agl_max = 1.50;
 
   double robot_half_width = 0.45;  // lethal radius (~track_width/2 + margin)
   double inflation_radius = 0.8;   // extra radius over which cost decays smoothly to 0
@@ -130,7 +139,10 @@ class EgoCostmap
 public:
   explicit EgoCostmap(const CostmapParams & params);
 
-  void setFilterParams(double ground_z_min, double ground_z_max, double inflation_radius);
+  void setFilterParams(
+    double ground_z_min, double ground_z_max, double inflation_radius,
+    double sensor_height_m, double roi_agl_min, double roi_agl_max,
+    double pitch_angle_deg = 0.0);
 
   // Rebuild the grid from a raw PointCloud2 (fields x, y, z, float32).
   void updateFromPointCloud(const sensor_msgs::msg::PointCloud2 & cloud);

@@ -126,6 +126,14 @@ inline OdomPose advancePose(const OdomPose & p, double v, double steer, double d
   return q;
 }
 
+/// 순수추종이 보는 앞 거리 [m]. 조향과 진단 `target_d` 가 같은 점을 보게
+/// 이 함수 하나만 쓴다. 거리는 파라미터로 고정이고 속도에는 안 늘어난다
+/// (`v_mps` 는 호출 자리와 맞춘 인자).
+inline double purePursuitLookahead(double /*v_mps*/, const TrackerParams & p)
+{
+  return std::max(p.lookahead_min, p.lookahead);
+}
+
 /// 도로휠각 [rad], + = 좌. `steer_now` 는 지금 내고 있는 도로휠각(지연 보상용).
 inline double purePursuitSteer(
   const OdomPose & pose, const FrenetPath & path, const TrackerParams & p,
@@ -142,7 +150,7 @@ inline double purePursuitSteer(
       q = advancePose(q, v, steer_now, dt, p.wheelbase);
     }
   }
-  const double Ld = std::max(p.lookahead_min, p.lookahead);
+  const double Ld = purePursuitLookahead(v, p);
   const FrenetPoint tgt = path.sample(q.x + Ld);
   double ex = 0.0;
   double ey = 0.0;

@@ -290,7 +290,19 @@ void FrenetPlanner::observe(const OdomPose & odom, const CostmapSnapshot & snap,
       const Box & b = boxes[static_cast<size_t>(j)];
       const double gap_s = std::max(0.0, std::max(a.s0, b.s0) - std::min(a.s1, b.s1));
       const double gap_d = std::max(0.0, std::max(a.d0, b.d0) - std::min(a.d1, b.d1));
-      if (gap_s <= params_.block_link_s_m && gap_d <= params_.block_link_d_m) {
+
+      //  ★[2026-10-26 B안] 지그재그 슬라럼 회피 보장★
+      //  기준선(d=0) 기준으로 서로 반대편(하나는 좌측, 하나는 우측)에 위치하고,
+      //  차량이 통과할 수 있는 횡방향 여유(차폭 1.08m)가 있거나 종방향으로 떨어져 있다면
+      //  사이로 통과해야 하는 지그재그 통로이므로 하나의 블록으로 합치지 않는다.
+      //  반면, 같은 편(좌측끼리 또는 우측끼리) 모아둔 꼬깔콘들은 아래 조건에 따라 하나의 블록으로 묶여 틈새 돌진을 막는다.
+      const double ca = 0.5 * (a.d0 + a.d1);
+      const double cb = 0.5 * (b.d0 + b.d1);
+      const bool is_opposite = (ca > 0.1 && cb < -0.1) || (ca < -0.1 && cb > 0.1);
+      const double min_passable_gap = std::max(1.0, vehicle_.track_width);
+      const bool can_pass_between = is_opposite && (gap_d >= min_passable_gap || gap_s >= 1.5);
+
+      if (!can_pass_between && gap_s <= params_.block_link_s_m && gap_d <= params_.block_link_d_m) {
         parent[static_cast<size_t>(root(j))] = root(i);
       }
     }
@@ -891,11 +903,14 @@ FrenetPath FrenetPlanner::plan(
   if (g0 && g0->members.size() == 1) {
     Block & b = mem_[static_cast<size_t>(g0->members.front())];
     const double k0 = entryKappa(start, *g0);
-    //  ★반대쪽이 ±3 m 안일 때만 본다★ 9/28 23:03 : 폭 밖의 쪽으로 바꿨다가 decideSides
-    //  가 같은 틱에 되돌렸다(⚠️ → ↔️). 갈 수 없는 쪽은 후보가 아니다.
+    //  ★반대쪽이 ±max_offset 안이고, 바깥쪽 차선으로 크게 돌아가지 않을 때만 본다★
+    //  [2026-10-26] 이미 기준선 한쪽으로 뚜렷하게 치우친 바리케이드(|alt_target| > |cur_target| + 0.25)인데
+    //  초기 진입 헤딩 때문에 반대편(장애물 바깥쪽/차선 이탈 방향)으로 b.side 를 뒤집고 잠가버리는 현상 방지.
     const double clear = clearance();
-    const bool other_ok = (b.side > 0) ? (b.box.d0 - clear >= -params_.max_offset_m)
-                                       : (b.box.d1 + clear <= params_.max_offset_m);
+    const double cur_target = (b.side > 0) ? (b.box.d1 + clear) : (b.box.d0 - clear);
+    const double alt_target = (b.side > 0) ? (b.box.d0 - clear) : (b.box.d1 + clear);
+    const bool other_ok = (std::abs(alt_target) <= params_.max_offset_m) &&
+                          (std::abs(alt_target) <= std::abs(cur_target) + 0.25);
     if (k0 > params_.kappa_max && !b.committed && !b.feas_locked && other_ok) {
       b.side = -b.side;
       std::vector<Bound> alt_bounds;
@@ -960,7 +975,9 @@ FrenetPath FrenetPlanner::plan(
   fillDiag(odom, path, groups);
   exportBlocks(groups);
   path.n_gates = diag_.n_blocks;
-  path.target_d = path.valid ? path.sample(odom.x).d : 0.0;
+  //  ★[2026-10-26] CSV target_y(diag[9])에 뒷바퀴(odom.x)가 아니라 전방 주시점(odom.x + 2.4m) 경로 d 를 기본 기록★
+  //  노드에서는 실제 purePursuitLookahead(Ld) 위치의 d 로 한 번 더 갱신하여 조향 목표와 CSV 가 정확히 일치하게 한다.
+  path.target_d = path.valid ? path.sample(odom.x + 2.4).d : 0.0;
   last_path_ = path;
   return path;
 }

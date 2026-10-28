@@ -82,9 +82,18 @@ mppi_local_planner_node:
       gps_antenna_x_m: 1.25
 
     # 장착 (lidar cone_lidar.yaml / drive_lidar.yaml 2026-08-25 실측)
-    sensor_height_m: 1.17
-    roi_agl_min: 0.30            # 지면 제거. 0.20/0.23 은 바닥 링이 맵에 남았다
-    roi_agl_max: 1.50            # 사람·차체 상단. drive_lidar 1.20 보다 약간 높임
+    sensor_height_m: 1.25
+    # pitch_angle_deg: [★신설★] 라이다 센서 상하 기울기(Pitch) 보정 각도 [deg]
+    #     - 전방 숙임(Nose Down) = 양수(+), 전방 들림(Nose Up) = 음수(-)
+    #     - 센서가 앞으로 살짝 기울어져 먼 거리(6~10m) 바닥을 장애물로 오탐할 때
+    #       1.5 ~ 2.5 사이로 조정하면 점군이 완벽한 수평 지면으로 회전 복원됩니다.
+    #     - 런치가 켜진 상태에서도 터미널에서 실시간 변경 가능:
+    #       `ros2 param set /mppi_local_planner_node pitch_angle_deg 1.8`
+    pitch_angle_deg: 2.0
+    # 장애물 높이는 맞춘 지면 평면 기준이다. 센서가 숙이면 먼 지면이 고정 z 슬래브
+    # 안으로 올라와 링이 장애물 띠가 됐다. 평면이 안 맞으면 아래 슬래브로 떨어진다.
+    roi_agl_min: 0.20            # 지면 위 이 높이부터. 0.20/0.23 은 바닥 링이 맵에 남았다
+    roi_agl_max: 1.00            # 사람·차체 상단. drive_lidar 1.20 보다 약간 높임
     flip_lidar_xy: true          # lidar 와 동일. 앞뒤가 뒤집히면 false
     brake_enable: true           # 회피 실패(stop gate) 때 리니어 2단
 
@@ -140,24 +149,24 @@ mppi_local_planner_node:
     #    옛 계획기 같은 장면         6 m 간격·슬라럼 등 5장면에서 정지 래치로 멈춤
     #  (도구: test/avoid_sim.cpp — 빌드 명령은 그 파일 머리말)
     avoid.range_m: 17.5           # 차체 x 이 안의 점유 군집만 본다 (코스트맵 전방 18 m)
-    avoid.max_offset_m: 3.0       # ★GPS 궤적 ± 3 m★ — 경로 |d| 상한 (사용자 지시)
+    #  ★[2026-10-26] 3.0 → 2.00 (차선 이탈 방지 + 쪽 뒤집힘 방지 마진)★
+    #  실제 통과 목표(target_d)는 콘 외곽 + clearance(0.92m)로 약 1.2~1.4m에서 형성된다.
+    #  상한을 1.6m로 너무 좁히면 중앙선을 살짝 물고 놓인 바리케이드(d1≈+0.7m)에서
+    #  lp(1.62m) > max_offset 이 되어 decideSides 가 막힌 반대쪽으로 방향을 뒤집으므로 2.0m로 둔다.
+    avoid.max_offset_m: 2.00
     #  차체 옆면 ↔ 장애물 표면(라이다가 본 점). 중심 기준으로는 차 반폭 0.54 +
-    #  콘 반폭 ~0.15 + 이 값.
-    #  ★[2026-09-29] 0.45 → 0.75 (사용자 지시 '콘 옆으로 30 cm 더')★
-    #  9/28 23:03·23:05 두 주행은 성공적이었지만 콘 옆에 거의 붙어 갔다 — 차체 ↔ 콘 중심
-    #  최소 0.35 / 0.54 m(첫 줄 안쪽), 0.69 / 0.52 m(둘째 줄 안쪽). 콘 밑단은 스캔 높이
-    #  (0.3 m 위)보다 ~0.1 m 넓어 실제로는 더 가깝다. 목표 오프셋이 그대로 30 cm 바깥이 된다.
-    #  대가 : 교대 폭이 0.6 m 커져 헤딩이 최대 ~35° (종전 ~28°) — 모의 23장면 충돌 0.
-    avoid.pass_gap_m: 0.75
+    #  콘 반폭 ~0.20 + 이 값 = 약 1.12m (차선 1.5~1.6m 안쪽 유지).
+    #  ★[2026-10-26] 0.75 → 0.38 (지그재그 회피 시 차선 밖 튕김 방지)★
+    avoid.pass_gap_m: 0.38
     #  아래 둘은 /lidar_cones·진단 최근접 콘을 고르는 필터다 (계획과 무관).
     avoid.pass_x_m: 0.90
     avoid.cone_y_max_m: 4.0
     # true 면 Frenet d(s) 를 순수추종으로 쫓고 MPPI 조향은 버린다.
     # 정지도 MPPI 비용이 아니라, ★그 경로를 따라갔을 때★ 중심선이 치사 원반에 드는가다.
     avoid.geometric_steer: true
-    #  ★3.6 → 3.2★ 경로가 조향 한계 안의 5차 다항식이 되자 짧게 봐도 떨지 않는다.
-    #  모의: 3.6 여유 0.49 / 3.2 0.72 m (오늘 배치). 2.8 은 헤딩이 32° 까지 커졌다.
-    avoid.lookahead_m: 3.2
+    #  ★[2026-10-26] 3.2 → 2.4 (지그재그 S자 교대 응답성 개선)★
+    #  너무 길면(3.2m) 첫 콘을 다 돌기 전에 반대 조향을 일찍 하거나 안쪽을 깎아 먹는다.
+    avoid.lookahead_m: 2.4
     avoid.k_cte: 0.50             # 뒤차축 횡오차 약보정
     avoid.steer_predict_s: 0.15   # 조향 지연 보상. 크게 주면 코너를 더 자른다(0.3 → 여유 −0.07)
     #  ★조향 편향 적분★ 이 차는 pot −3° 를 물어야 직진한다(CLAUDE.md 4.1d). 경로
@@ -183,17 +192,16 @@ mppi_local_planner_node:
     frenet.cluster_link_m: 0.30
     frenet.cluster_min_cells: 1
     frenet.cluster_max_width_m: 5.0
-    #  블록 — 진행 2.5 m · 가로 1.9 m 보다 가까운 군집은 사이로 못 지나가므로 한 덩어리.
-    #  가로 3개 줄은 한 블록, 5~8 m 떨어진 다음 줄은 다른 블록이다.
-    frenet.block_link_s_m: 2.5
+    #  블록 — 같은 줄 가로 바리케이드는 한 덩어리로 묶고, 앞뒤로 떨어진 줄(1.5m 초과)은 분리.
+    frenet.block_link_s_m: 1.5
     frenet.block_link_d_m: 1.9
     frenet.confirm_hits: 2        # 이만큼 보여야 계획에 넣는다 (잡음 한 점 거름)
     frenet.lost_s: 2.5            # 보여야 할 자리에서 이만큼 안 보이면 버린다
     frenet.blind_x_m: 2.2         # 차체 x 이보다 가까우면 안 보이는 게 정상 (자기 차체 지움)
     frenet.assoc_gap_m: 1.0
     #  창 — 뒤차축이 [앞면 − pre, 뒷면 + post] 에서 통과 d 를 지킨다.
-    frenet.hold_pre_m: 0.30
-    frenet.hold_post_m: 0.30
+    frenet.hold_pre_m: 0.20
+    frenet.hold_post_m: 0.20
     #  쪽 결정
     frenet.bias_deadband_m: 0.15
     frenet.bias_deadband_per_m: 0.03
@@ -205,11 +213,12 @@ mppi_local_planner_node:
     #  같은 쪽으로 돌았다. 모의에서 R 3.2 m S 자를 여유 0.55 m 로 따라갔다.
     frenet.kappa_comfort: 0.125
     frenet.kappa_max: 0.34
-    frenet.shift_len_min_m: 4.0
+    #  ★[2026-10-26] 지그재그 슬라럼 전이 길이 최적화★
+    frenet.shift_len_min_m: 2.5
     frenet.shift_len_max_m: 12.0
-    frenet.return_len_min_m: 6.0
+    frenet.return_len_min_m: 3.5
     frenet.return_len_max_m: 12.0
-    frenet.flat_min_m: 2.0
+    frenet.flat_min_m: 0.8
     frenet.entry_len_min_m: 1.5
     frenet.on_path_d_m: 0.30      # 차가 직전 경로에서 이 안이면 그 경로에서 이어 그린다
     frenet.on_path_yaw_rad: 0.15
@@ -241,14 +250,15 @@ mppi_local_planner_node:
     cmd.stop_exit_frames: 12     # 0.6s 연속 열려야 재출발
     cmd.brake_after_s: 1.2       # 그 전에는 펄스 0 만 (리니어 2단 깜빡임 방지)
     cmd.steer_lpf_alpha: 0.70    # 경로가 일찍 열려도 핸들이 따라오게
-    cmd.steer_slew_deg_s: 36.0   # 도로휠 deg/s. 7 m 앞 S 를 따라가려면 28 은 늦다
+    #  ★[2026-10-26] 36.0 → 50.0 deg/s (지그재그 슬라럼 조향 응답 지연 단축)★
+    cmd.steer_slew_deg_s: 50.0
     #  ★[2026-10-24] 조향 범위 — 급조향 방지 (path_tracker.hpp SteerRangeParams)★ 사용자 '전방 장애물에 따라 조향범위'
     #   범위 = atan(L·앞 경로 max|κ|)×margin + free  ·  속도 상한 atan(ay·L/v²) (v = 엔코더·GPS 중 작은 쪽)
     #   white2 maincourse-20261024_092247 : 20 km/h 로 인계받아 −74 °/s 로 꺾였다(2펄스 기하 · pot 환산 2.2배)
     cmd.steer_range_enable: true
     cmd.steer_range_ahead_m: 8.0     # [m] 이만큼 앞까지 계획 경로 곡률을 본다
     cmd.steer_range_margin: 1.3      # 그 곡률이 요구하는 도로휠각 × 이만큼
-    cmd.steer_range_free_deg: 10.0   # [deg] 꺾을 일이 없을 때 — 기준선 곡률(R 7 m 몫)·자세·횡오차 보정
+    cmd.steer_range_free_deg: 2.0   # [deg] 10.0 → 15.0 (슬라럼 시 조향 클램핑 방지 여유)
     cmd.steer_ay_max: 2.5            # [m/s²] 1.77 m/s 에서 45°(안 걸림) · 3.0 에서 19.1° · 5.3 에서 6.4° (모의 : 3.0 m/s 까지 끈 것과 같은 결과)
     cmd.steer_deadband_deg: 0.0  # SW 불감대 끔. B보드 1.41° 가 이미 있다
     cmd.dodge_steer_deg: 6.0     # |조향|이 이보다 크면 회피 펄스로 내린다
@@ -316,8 +326,9 @@ mppi_local_planner_node:
       #  ★앞쪽은 그대로 두고 뒤쪽만 넓힌다★ 앞을 넓히면 아직 피해야 할 콘까지
       #  지운다. ★[2026-09-13] 1.30 → 0.90★ 1.30 은 앞차축(1.25) 앞이라
       #  둘째 콘이 1.3 m 에 있을 때 occupancy 가 지워졌다. avoid.pass_x 와 짝.
-      ego_clear_pass_x: 0.90          # 이보다 뒤에서만 넓은 반폭
-      ego_clear_y_half_passed: 1.60   # 그 뒤쪽 반폭 (회피 목표 1.09 를 덮는다)
+      #  ★[2026-10-26] 드럼 라바콘(지름 45cm) 통과 후 조기 클리어★
+      ego_clear_pass_x: 1.05          # 이보다 뒤에서만 넓은 반폭
+      ego_clear_y_half_passed: 1.80   # 그 뒤쪽 반폭 (드럼 라바콘 횡반경 커버)
       ego_cost_clear_radius: 1.00
 
     mppi:
@@ -380,9 +391,10 @@ mppi_local_planner_node:
       # ★[2026-09-11] 1.00 → 1.60 — 회피 목표(±1.0)보다 ★바깥★ 에 둔다★
       #   같은 값이면 목표가 정확히 벽 위에 앉아 서로 밀어낸다. 0.6m 슬랙을 준다.
       #  ★1.60 → 1.90★ 회피 목표 상한(1.25)보다 충분히 바깥이어야 서로 안 민다.
-      max_lateral_offset: 3.2    # ★[2026-09-28] 1.15 → 3.2★ 회피 폭 ±3 m 바깥 (계획과 벽이 싸우지 않게)
-      # 하드 벽은 차선 가장자리. 2.5 m 는 이미 차선을 나간 뒤라 막지 못했다.
-      lateral_hard: 3.5
+      #  ★[2026-10-26] 회피 폭(avoid.max_offset_m: 2.00)에 맞춰 차선 경계로 재조정★
+      max_lateral_offset: 2.15    # 회피 폭 ±2.00m 바로 바깥
+      # 하드 벽은 차선 가장자리 마진 포함.
+      lateral_hard: 2.35
       weight_lateral_hard: 4000.0
       # ★헤딩 벽 — S 를 완만하게 만드는 직접적 수단★
       #   횡위치는 헤딩의 적분이라 헤딩을 묶으면 벗어나는 속도가 묶인다.

@@ -33,7 +33,7 @@ struct FrenetPlannerParams
   double assoc_gap_m = 1.0;       // 새 관측을 기억 블록에 붙이는 허용 틈
 
   // ── 통과 ──
-  double max_offset_m = 3.0;      // |d| 상한 = GPS 궤적 ± 3 m (사용자 지시)
+  double max_offset_m = 2.0;      // |d| 상한 = GPS 궤적 ± 3 m (사용자 지시)
   double pass_gap_m = 0.75;       // 차체 옆면 ↔ 장애물 표면 [2026-09-29 0.45 → 0.75]
   double hold_pre_m = 0.30;       // 장애물 앞면 이만큼 앞에서 통과 d 에 도착 (뒤차축 기준)
   double hold_post_m = 0.30;      // 장애물 뒷면을 이만큼 지날 때까지 유지

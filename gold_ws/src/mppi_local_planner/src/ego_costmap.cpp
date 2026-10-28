@@ -2,11 +2,251 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <unordered_map>
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
 namespace mppi_local_planner
 {
+
+namespace
+{
+
+struct EgoPt
+{
+  float x;
+  float y;
+  float z;
+};
+
+// z = a + b x + c y. ok == false → caller keeps the fixed z slab.
+struct GroundPlane
+{
+  double a = 0.0;
+  double b = 0.0;
+  double c = 0.0;
+  bool ok = false;
+
+  double zAt(double x, double y) const
+  {
+    return a + b * x + c * y;
+  }
+};
+
+struct GroundBin
+{
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+};
+
+bool solve3(double m[3][4], double & a, double & b, double & c)
+{
+  for (int col = 0; col < 3; ++col) {
+    int piv = col;
+    for (int r = col + 1; r < 3; ++r) {
+      if (std::abs(m[r][col]) > std::abs(m[piv][col])) {
+        piv = r;
+      }
+    }
+    if (std::abs(m[piv][col]) < 1e-8) {
+      return false;
+    }
+    if (piv != col) {
+      for (int k = col; k < 4; ++k) {
+        std::swap(m[col][k], m[piv][k]);
+      }
+    }
+    const double div = m[col][col];
+    for (int k = col; k < 4; ++k) {
+      m[col][k] /= div;
+    }
+    for (int r = 0; r < 3; ++r) {
+      if (r == col) {
+        continue;
+      }
+      const double f = m[r][col];
+      for (int k = col; k < 4; ++k) {
+        m[r][k] -= f * m[col][k];
+      }
+    }
+  }
+  a = m[0][3];
+  b = m[1][3];
+  c = m[2][3];
+  return std::isfinite(a) && std::isfinite(b) && std::isfinite(c);
+}
+
+bool fitThree(const GroundBin & p, const GroundBin & q, const GroundBin & r,
+              double & a, double & b, double & c)
+{
+  double m[3][4] = {
+    {1.0, p.x, p.y, p.z},
+    {1.0, q.x, q.y, q.z},
+    {1.0, r.x, r.y, r.z}};
+  return solve3(m, a, b, c);
+}
+
+bool fitLeastSquares(const std::vector<GroundBin> & bins, const std::vector<int> & id,
+                     double & a, double & b, double & c)
+{
+  if (id.size() < 6) {
+    return false;
+  }
+  double n = 0.0;
+  double sx = 0.0, sy = 0.0, sz = 0.0;
+  double sxx = 0.0, syy = 0.0, sxy = 0.0;
+  double sxz = 0.0, syz = 0.0;
+  for (int i : id) {
+    const GroundBin & p = bins[static_cast<size_t>(i)];
+    n += 1.0;
+    sx += p.x;
+    sy += p.y;
+    sz += p.z;
+    sxx += static_cast<double>(p.x) * p.x;
+    syy += static_cast<double>(p.y) * p.y;
+    sxy += static_cast<double>(p.x) * p.y;
+    sxz += static_cast<double>(p.x) * p.z;
+    syz += static_cast<double>(p.y) * p.z;
+  }
+  double m[3][4] = {
+    {n, sx, sy, sz},
+    {sx, sxx, sxy, sxz},
+    {sy, sxy, syy, syz}};
+  return solve3(m, a, b, c);
+}
+
+// Lowest return in each 1 m cell, then a plane under those lows.
+// A cone-only cloud (no surface near -sensor_height) is rejected so the
+// fixed slab still marks the cones.
+GroundPlane fitGroundPlane(const std::vector<EgoPt> & pts, const CostmapParams & params)
+{
+  GroundPlane none;
+  constexpr double kCell = 1.0;
+  constexpr float kInlier = 0.12f;
+  struct Acc
+  {
+    float z = 1.0e9f;
+    float x = 0.0f;
+    float y = 0.0f;
+    int n = 0;
+  };
+  std::unordered_map<uint64_t, Acc> grid;
+  grid.reserve(pts.size() / 8 + 1);
+  for (const EgoPt & p : pts) {
+    const int ix = static_cast<int>(std::floor(p.x / kCell));
+    const int iy = static_cast<int>(std::floor(p.y / kCell));
+    const uint64_t key =
+      (static_cast<uint64_t>(static_cast<uint32_t>(ix)) << 32) |
+      static_cast<uint32_t>(iy);
+    Acc & a = grid[key];
+    ++a.n;
+    if (p.z < a.z) {
+      a.z = p.z;
+      a.x = p.x;
+      a.y = p.y;
+    }
+  }
+  std::vector<GroundBin> bins;
+  bins.reserve(grid.size());
+  for (const auto & kv : grid) {
+    if (kv.second.n < 4) {
+      continue;
+    }
+    bins.push_back(GroundBin{kv.second.x, kv.second.y, kv.second.z});
+  }
+  const int n = static_cast<int>(bins.size());
+  if (n < 10) {
+    return none;
+  }
+
+  auto countInliers = [&](double a, double b, double c, float tol) {
+    int hit = 0;
+    for (const GroundBin & p : bins) {
+      if (std::abs(p.z - (a + b * p.x + c * p.y)) <= tol) {
+        ++hit;
+      }
+    }
+    return hit;
+  };
+
+  double best_a = 0.0, best_b = 0.0, best_c = 0.0;
+  int best_hit = 0;
+  const int trials = std::min(48, n);
+  for (int t = 0; t < trials; ++t) {
+    const int i = (t * 17) % n;
+    const int j = (i + n / 3) % n;
+    const int k = (i + (2 * n) / 3) % n;
+    if (i == j || j == k || i == k) {
+      continue;
+    }
+    double a = 0.0, b = 0.0, c = 0.0;
+    if (!fitThree(bins[static_cast<size_t>(i)], bins[static_cast<size_t>(j)],
+                  bins[static_cast<size_t>(k)], a, b, c))
+    {
+      continue;
+    }
+    if (std::abs(b) > 0.45 || std::abs(c) > 0.45) {
+      continue;
+    }
+    const int hit = countInliers(a, b, c, kInlier);
+    if (hit > best_hit) {
+      best_hit = hit;
+      best_a = a;
+      best_b = b;
+      best_c = c;
+    }
+  }
+  if (best_hit < 8) {
+    return none;
+  }
+
+  std::vector<int> inliers;
+  inliers.reserve(static_cast<size_t>(best_hit));
+  for (int i = 0; i < n; ++i) {
+    const GroundBin & p = bins[static_cast<size_t>(i)];
+    if (std::abs(p.z - (best_a + best_b * p.x + best_c * p.y)) <= kInlier) {
+      inliers.push_back(i);
+    }
+  }
+  double a = best_a, b = best_b, c = best_c;
+  if (!fitLeastSquares(bins, inliers, a, b, c)) {
+    return none;
+  }
+  if (std::abs(b) > 0.36 || std::abs(c) > 0.36) {
+    return none;
+  }
+  // Mount height may be off by about half a metre. A cloud of only cones
+  // (sim obstacles at z ≈ -0.5, no ground) sits well above -sensor_height
+  // and must fall back to the slab, or the plane eats the cones.
+  const double nominal = -std::max(0.3, params.sensor_height_m);
+  if (std::abs(a - nominal) > 0.50) {
+    return none;
+  }
+  float xmin = 1.0e9f, xmax = -1.0e9f;
+  int kept = 0;
+  for (int i : inliers) {
+    const GroundBin & p = bins[static_cast<size_t>(i)];
+    if (std::abs(p.z - (a + b * p.x + c * p.y)) > 0.15f) {
+      continue;
+    }
+    xmin = std::min(xmin, p.x);
+    xmax = std::max(xmax, p.x);
+    ++kept;
+  }
+  if (kept < 8 || (xmax - xmin) < 3.0f) {
+    return none;
+  }
+  GroundPlane gp;
+  gp.a = a;
+  gp.b = b;
+  gp.c = c;
+  gp.ok = true;
+  return gp;
+}
+
+}  // namespace
 
 EgoCostmap::EgoCostmap(const CostmapParams & params)
 : params_(params)
@@ -18,10 +258,17 @@ EgoCostmap::EgoCostmap(const CostmapParams & params)
 }
 
 void EgoCostmap::setFilterParams(
-  double ground_z_min, double ground_z_max, double inflation_radius)
+  double ground_z_min, double ground_z_max, double inflation_radius,
+  double sensor_height_m, double roi_agl_min, double roi_agl_max,
+  double pitch_angle_deg)
 {
+  std::lock_guard<std::mutex> lock(mutex_);
   params_.ground_z_min = ground_z_min;
   params_.ground_z_max = ground_z_max;
+  params_.sensor_height_m = std::max(0.3, sensor_height_m);
+  params_.roi_agl_min = std::max(0.05, roi_agl_min);
+  params_.roi_agl_max = std::max(params_.roi_agl_min + 0.2, roi_agl_max);
+  params_.pitch_angle_deg = pitch_angle_deg;
   if (inflation_radius > 0.05) {
     params_.inflation_radius = inflation_radius;
   }
@@ -64,36 +311,66 @@ void EgoCostmap::updateFromPointCloud(const sensor_msgs::msg::PointCloud2 & clou
 
   const double cos_off = std::cos(params_.sensor_yaw_offset);
   const double sin_off = std::sin(params_.sensor_yaw_offset);
+  const double pitch_rad = params_.pitch_angle_deg * M_PI / 180.0;
+  const double cos_pitch = std::cos(pitch_rad);
+  const double sin_pitch = std::sin(pitch_rad);
+  const bool has_pitch = std::abs(params_.pitch_angle_deg) > 1e-4;
 
+  // Keep ground returns in this pass. The fixed slab drops them only when the
+  // plane fit fails. Sky and deep underground never enter the fit.
+  std::vector<EgoPt> pts;
+  pts.reserve(static_cast<size_t>(cloud.width) * static_cast<size_t>(std::max(1u, cloud.height)));
   for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
     const float xs = *iter_x;
     const float ys = *iter_y;
     const float zs = *iter_z;
-
     if (!std::isfinite(xs) || !std::isfinite(ys) || !std::isfinite(zs)) {
       continue;
     }
-    // Ground / overhang height filter, done in the raw sensor frame.
-    if (zs < params_.ground_z_min || zs > params_.ground_z_max) {
+    if (zs < -3.5f || zs > 2.5f) {
       continue;
     }
+    double x_rot = xs * cos_off - ys * sin_off;
+    double y_rot = xs * sin_off + ys * cos_off;
+    double z_rot = static_cast<double>(zs);
 
-    // Apply static sensor -> base/ego frame extrinsics (translation + yaw only).
-    const double x = params_.sensor_offset_x + xs * cos_off - ys * sin_off;
-    const double y = params_.sensor_offset_y + xs * sin_off + ys * cos_off;
+    // ★ 전방 기울어짐(Pitch) 보정 ★
+    // 센서가 전방으로 숙여진 각도(+)만큼 좌표계를 수평으로 회전 복원
+    if (has_pitch) {
+      const double x_corr =  x_rot * cos_pitch + z_rot * sin_pitch;
+      const double z_corr = -x_rot * sin_pitch + z_rot * cos_pitch;
+      x_rot = x_corr;
+      z_rot = z_corr;
+    }
 
+    const double x = params_.sensor_offset_x + x_rot;
+    const double y = params_.sensor_offset_y + y_rot;
+    const float z = static_cast<float>(z_rot);
     if ((x * x + y * y) < params_.min_range * params_.min_range) {
       continue;
     }
-
     if (x < -params_.size_x / 2.0 || x >= params_.size_x / 2.0 ||
         y < -params_.size_y / 2.0 || y >= params_.size_y / 2.0)
     {
       continue;
     }
+    pts.push_back(EgoPt{static_cast<float>(x), static_cast<float>(y), z});
+  }
 
-    const int ix = worldToIndex(x, params_.size_x, params_.resolution);
-    const int iy = worldToIndex(y, params_.size_y, params_.resolution);
+  const GroundPlane gp = fitGroundPlane(pts, params_);
+  for (const EgoPt & p : pts) {
+    bool keep = false;
+    if (gp.ok) {
+      const double agl = static_cast<double>(p.z) - gp.zAt(p.x, p.y);
+      keep = agl >= params_.roi_agl_min && agl <= params_.roi_agl_max;
+    } else if (p.z >= params_.ground_z_min && p.z <= params_.ground_z_max) {
+      keep = true;
+    }
+    if (!keep) {
+      continue;
+    }
+    const int ix = worldToIndex(p.x, params_.size_x, params_.resolution);
+    const int iy = worldToIndex(p.y, params_.size_y, params_.resolution);
     if (ix < 0 || ix >= cells_x_ || iy < 0 || iy >= cells_y_) {
       continue;
     }

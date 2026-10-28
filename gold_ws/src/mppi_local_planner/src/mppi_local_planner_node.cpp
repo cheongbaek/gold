@@ -244,9 +244,10 @@ public:
       control_frequency_, mppi_params_.dt);
     RCLCPP_INFO(
       get_logger(),
-      "LiDAR mount: height=%.2f m AGL, z_slab=[%.2f, %.2f] (sensor frame), "
-      "yaw_offset=%.2f rad (flip_lidar_xy=%s)",
-      sensor_height_m_, costmap_params_.ground_z_min, costmap_params_.ground_z_max,
+      "LiDAR mount: height=%.2f m, pitch=%.2f deg, obstacle AGL [%.2f, %.2f] on a fitted ground plane "
+      "(fallback z_slab=[%.2f, %.2f]), yaw_offset=%.2f rad (flip_lidar_xy=%s)",
+      sensor_height_m_, pitch_angle_deg_, roi_agl_min_, roi_agl_max_,
+      costmap_params_.ground_z_min, costmap_params_.ground_z_max,
       costmap_params_.sensor_yaw_offset,
       flip_lidar_xy_ ? "true" : "false");
     RCLCPP_INFO(
@@ -462,6 +463,7 @@ private:
 
     // 장착 (cone_lidar.yaml / drive_lidar.yaml 2026-08-25 실측)
     declare_parameter<double>("sensor_height_m", 1.17);
+    declare_parameter<double>("pitch_angle_deg", 0.0);
     declare_parameter<double>("roi_agl_min", 0.30);
     declare_parameter<double>("roi_agl_max", 1.50);
     // lidar flip_lidar_xy:true = os_lidar xy 180° = sensor_yaw_offset π.
@@ -798,6 +800,7 @@ private:
     trim_hold_s_     = std::max(0.0, get_parameter("cmd.trim_hold_s").as_double());
 
     sensor_height_m_ = get_parameter("sensor_height_m").as_double();
+    pitch_angle_deg_ = get_parameter("pitch_angle_deg").as_double();
     roi_agl_min_ = get_parameter("roi_agl_min").as_double();
     roi_agl_max_ = get_parameter("roi_agl_max").as_double();
     flip_lidar_xy_ = get_parameter("flip_lidar_xy").as_bool();
@@ -813,6 +816,11 @@ private:
       costmap_params_.ground_z_min = roi_agl_min_ - sensor_height_m_;
       costmap_params_.ground_z_max = roi_agl_max_ - sensor_height_m_;
     }
+    // Plane fit uses these. The slab above is only the fallback.
+    costmap_params_.sensor_height_m = sensor_height_m_;
+    costmap_params_.pitch_angle_deg = pitch_angle_deg_;
+    costmap_params_.roi_agl_min = roi_agl_min_;
+    costmap_params_.roi_agl_max = roi_agl_max_;
     costmap_params_.inflation_radius = get_parameter("costmap.inflation_radius").as_double();
     costmap_params_.min_range = get_parameter("costmap.min_range").as_double();
     costmap_params_.sensor_offset_x = get_parameter("costmap.sensor_offset_x").as_double();
@@ -1526,7 +1534,11 @@ private:
   // - zero yaw only if preserve_heading == false  (this is what used to walk the path)
   void applyReferenceReset(OdomPose & pose) const
   {
-    pose.x = 0.0;
+    // ★Frenet 계획기가 켜져 있을 때는 pose.x(= 진행거리 s)를 0으로 리셋하지 않는다★
+    // 주행 도중 s가 0으로 뛰면 블록 기억(mem_)의 s 좌표계와 어긋나게 된다.
+    if (!frenet_params_.enable) {
+      pose.x = 0.0;
+    }
     if (!reference_reset_preserve_lateral_) {
       pose.y = 0.0;
     }
@@ -1629,6 +1641,10 @@ private:
     const double kappa0 = std::tan(last_pub_steer_deg_ * M_PI / 180.0) /
       std::max(0.5, vehicle_params_.wheelbase);
     last_frenet_path_ = frenet_planner_->plan(current_pose, snap, nowSeconds(), kappa0);
+    if (last_frenet_path_.valid) {
+      const double ld_now = purePursuitLookahead(trackSpeed(), tracker_params_);
+      last_frenet_path_.target_d = last_frenet_path_.sample(current_pose.x + ld_now).d;
+    }
     logPlannerEvents(false);
     n_cones_ahead_ = last_frenet_path_.n_gates;
     trail_odom_.push_back({current_pose.x, current_pose.y});
@@ -1640,28 +1656,28 @@ private:
       dumpDebugImage(current_pose, snap);
     }
 
-    // How many model steps elapsed since the last control cycle.
-    // When frequency == 1/dt this is normally 1; if the loop lagged it can be >1.
-    int shift_steps = 1;
-    if (mppi_params_.dt > 1e-6 && elapsed > 0.0 && elapsed < 1.0) {
-      shift_steps = std::max(1, static_cast<int>(std::lround(elapsed / mppi_params_.dt)));
-      shift_steps = std::min(shift_steps, mppi_params_.horizon_steps);
-    }
+    double raw_steer_deg = 0.0;
+    double avg_cost = 0.0;
+    bool mppi_stopped = false;
 
-    const MPPIResult result =
-      controller_->computeControl(current_pose, snap, last_frenet_path_, shift_steps);
-    const double avg_cost = result.min_cost /
-      static_cast<double>(std::max(1, mppi_params_.horizon_steps));
-
-    // 직진은 순항 펄스(2). 회피 중(|조향| 큼)에도 ★2펄스★ — 1펄스는 이 차가
-    // 거의 움직이지 않는다(cmd.dodge_pulse 선언부의 근거).
-    //
-    //  계획 = Frenet d(s). geometric_steer 이면 그 곡선을 퓨어 퍼슛으로 쫓고
-    //  MPPI 조향은 버린다. MPPI 평균비용으로 세우면, 차가 안 가는 샘플이
-    //  비싸다는 이유만으로 회피 중에 선다.
-    double raw_steer_deg = result.control.delta * 180.0 / M_PI;
-    if (geometric_steer_) {
-      //  ★[2026-09-28] 추종·정지는 path_tracker.hpp — 모의실험과 같은 코드다★
+    if (!geometric_steer_) {
+      // 구 MPPI 조향 모드에서만 롤아웃 계산
+      int shift_steps = 1;
+      if (mppi_params_.dt > 1e-6 && elapsed > 0.0 && elapsed < 1.0) {
+        shift_steps = std::max(1, static_cast<int>(std::lround(elapsed / mppi_params_.dt)));
+        shift_steps = std::min(shift_steps, mppi_params_.horizon_steps);
+      }
+      const MPPIResult result =
+        controller_->computeControl(current_pose, snap, last_frenet_path_, shift_steps);
+      avg_cost = result.min_cost /
+        static_cast<double>(std::max(1, mppi_params_.horizon_steps));
+      raw_steer_deg = result.control.delta * 180.0 / M_PI;
+      mppi_stopped = result.stopped_for_collision;
+    } else {
+      //  ★[2026-10-26] MPPI computeControl 즉시 스킵 (CPU 자원 절약)★
+      //  geometric_steer_ 가 켜져 있으면 조향은 Frenet 순수추종, 정지는 경로 치사영역 예측을 쓰므로
+      //  초당 144만 회(1200샘플×60스텝×20Hz)의 무거운 MPPI 롤아웃 연산을 완전히 건너뛰어
+      //  CPU 부하를 획기적으로 낮추고 제어 루프 타이머 지연(Lag)을 방지한다.
       const double v_trk = trackSpeed();
       raw_steer_deg = purePursuitSteer(
         current_pose, last_frenet_path_, tracker_params_, v_trk,
@@ -1698,7 +1714,7 @@ private:
       predictTrackHits(current_pose, last_frenet_path_, snap, tracker_params_,
                        std::max(0.8, mppi_params_.desired_speed),
                        steer_deg * M_PI / 180.0, stop_predict_m_, &hit_at_m);
-    const bool raw_stop = geometric_steer_ ? imminent : result.stopped_for_collision;
+    const bool raw_stop = geometric_steer_ ? imminent : mppi_stopped;
     const bool latched_stop = updateStopLatch(raw_stop);
 
     if (latched_stop) {
@@ -1903,7 +1919,7 @@ private:
   ///   [6] gps_ref  1 = 기준선이 GPS, 0 = 추측항법
   ///   [7] obs_x    최근접 장애물 전방거리 [m] (라이다 원점 기준). 없으면 NaN
   ///   [8] obs_y    그 콘의 횡위치 [m] + 왼쪽. ★부호가 곧 '어느 쪽 라바콘인가'★
-  ///   [9] target_y ★지금 Frenet d(s_now)★ [m] + 왼쪽
+  ///   [9] target_y ★순수추종 전방 주시점 Frenet d(s_now + Ld)★ [m] + 왼쪽
   ///  [10] n_cones  ★앞에 남은 장애물 블록 수★ [2026-09-28] — 0 이면 복귀 구간이다
   ///  [11..13]      치사 셀 수 / 점유 군집 수 / 버린 군집 수 (cone_detector.hpp ConeStats)
   void publishDiag(const OdomPose & pose, double road_deg, double avg_cost,
@@ -2097,7 +2113,15 @@ private:
     for (const auto & p : params) {
       const std::string & n = p.get_name();
       try {
-        if (n == "roi_agl_min") {
+        if (n == "sensor_height_m") {
+          sensor_height_m_ = p.as_double();
+        } else if (n == "pitch_angle_deg") {
+          pitch_angle_deg_ = p.as_double();
+          RCLCPP_INFO(
+            get_logger(),
+            "🔄 [MPPI] pitch_angle_deg 갱신: %.2f deg",
+            pitch_angle_deg_);
+        } else if (n == "roi_agl_min") {
           roi_agl_min_ = p.as_double();
         } else if (n == "roi_agl_max") {
           roi_agl_max_ = p.as_double();
@@ -2141,10 +2165,16 @@ private:
     }
     costmap_params_.ground_z_min = roi_agl_min_ - sensor_height_m_;
     costmap_params_.ground_z_max = roi_agl_max_ - sensor_height_m_;
+    costmap_params_.sensor_height_m = sensor_height_m_;
+    costmap_params_.pitch_angle_deg = pitch_angle_deg_;
+    costmap_params_.roi_agl_min = roi_agl_min_;
+    costmap_params_.roi_agl_max = roi_agl_max_;
     if (costmap_) {
       costmap_->setFilterParams(
         costmap_params_.ground_z_min, costmap_params_.ground_z_max,
-        costmap_params_.inflation_radius);
+        costmap_params_.inflation_radius,
+        costmap_params_.sensor_height_m, costmap_params_.roi_agl_min,
+        costmap_params_.roi_agl_max, costmap_params_.pitch_angle_deg);
     }
     if (frenet_planner_) {
       frenet_planner_->setParams(frenet_params_);
@@ -2179,6 +2209,7 @@ private:
   bool flip_lidar_xy_ = true;
   bool brake_enable_ = true;
   double sensor_height_m_ = 1.17;
+  double pitch_angle_deg_ = 0.0;
   double roi_agl_min_ = 0.30;
   double roi_agl_max_ = 1.50;
 
